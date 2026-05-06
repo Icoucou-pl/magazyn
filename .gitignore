@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Środowisko - HASŁA NIGDY NIE IDĄ NA GITHUB!
+.env
+.env.local
+.env.*.local
+
+# Frontend
+node_modules/
+.next/
+out/
+build/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# OS
+desktop.ini
+
+# Pliki tymczasowe
+*.tmp
+*.bak

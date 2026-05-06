@@ -1,0 +1,19 @@
+# ============================================================
+# Konfiguracja aplikacji MAGAZYN v3.2
+# ============================================================
+# Uzupełnij PIĘĆ pól DB_* - hasło może zawierać dowolne znaki
+# specjalne, nie trzeba nic kodować.
+# ============================================================
+
+DB_HOST=maccolo.home.pl
+DB_PORT=5432
+DB_NAME=03386842_powerbi_data
+DB_USER=03386842_powerbi_data
+DB_PASSWORD=54cTx!NrzBv5sya
+
+# ============================================================
+# Reszta - zostaw jak jest
+# ============================================================
+ALLOWED_ORIGINS=http://localhost:3000
+DEFAULT_LEAD_TIME_DAYS=90
+EXCLUDED_ORDER_STATUSES=

@@ -1,0 +1,12 @@
+cd C:\magazyn
+venv\Scripts\activate
+uvicorn main:app --reload --port 8000
+
+
+
+
+cd C:\magazyn\frontend
+npm run dev
+
+
+http://localhost:3000
