@@ -38,16 +38,198 @@ const getCarrier = (n) => {
   return CARRIER_TRACKING[prefix] || null;
 };
 
+const getToken = () => sessionStorage.getItem('magazyn_token');
+const setToken = (t) => sessionStorage.setItem('magazyn_token', t);
+const clearToken = () => sessionStorage.removeItem('magazyn_token');
+
 const api = {
-  get: async (path) => { const r = await fetch(`${API_BASE}${path}`); if (!r.ok) throw new Error(`GET ${path}: ${r.status}`); return r.json(); },
-  post: async (path, body) => { const r = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }); if (!r.ok) throw new Error(`POST ${path}: ${r.status} - ${await r.text()}`); return r.json(); },
-  patch: async (path, body) => { const r = await fetch(`${API_BASE}${path}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }); if (!r.ok) throw new Error(`PATCH ${path}: ${r.status}`); return r.json(); },
-  put: async (path, body) => { const r = await fetch(`${API_BASE}${path}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }); if (!r.ok) throw new Error(`PUT ${path}: ${r.status}`); return r.json(); },
-  del: async (path) => { const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE' }); if (!r.ok && r.status !== 204) throw new Error(`DELETE ${path}: ${r.status}`); },
-  download: (path) => { window.open(`${API_BASE}${path}`, '_blank'); },
+  get: async (path) => {
+    const r = await fetch(`${API_BASE}${path}`, { headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {} });
+    if (r.status === 401) { clearToken(); window.location.reload(); throw new Error('Sesja wygasła'); }
+    if (!r.ok) throw new Error(`GET ${path}: ${r.status}`);
+    return r.json();
+  },
+  post: async (path, body) => {
+    const r = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) }, body: JSON.stringify(body) });
+    if (r.status === 401) { clearToken(); window.location.reload(); throw new Error('Sesja wygasła'); }
+    if (!r.ok) throw new Error(`POST ${path}: ${r.status} - ${await r.text()}`);
+    return r.json();
+  },
+  patch: async (path, body) => {
+    const r = await fetch(`${API_BASE}${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) }, body: JSON.stringify(body) });
+    if (r.status === 401) { clearToken(); window.location.reload(); throw new Error('Sesja wygasła'); }
+    if (!r.ok) throw new Error(`PATCH ${path}: ${r.status}`);
+    return r.json();
+  },
+  put: async (path, body) => {
+    const r = await fetch(`${API_BASE}${path}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) }, body: JSON.stringify(body) });
+    if (r.status === 401) { clearToken(); window.location.reload(); throw new Error('Sesja wygasła'); }
+    if (!r.ok) throw new Error(`PUT ${path}: ${r.status}`);
+    return r.json();
+  },
+  del: async (path) => {
+    const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE', headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {} });
+    if (r.status === 401) { clearToken(); window.location.reload(); throw new Error('Sesja wygasła'); }
+    if (!r.ok && r.status !== 204) throw new Error(`DELETE ${path}: ${r.status}`);
+  },
+  download: (path) => { window.open(`${API_BASE}${path}?token=${getToken() || ''}`, '_blank'); },
 };
 
 export default function WarehouseApp() {
+  const [currentUser, setCurrentUser] = useState(null);  // null = niezalogowany, loading = sprawdzanie
+  const [authChecked, setAuthChecked] = useState(false); // czy sprawdziliśmy token
+
+  // Przy starcie sprawdź czy token jest ważny
+  useEffect(() => {
+    const token = getToken();
+    if (!token) { setAuthChecked(true); return; }
+    // Sprawdź token przez API
+    fetch(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(user => { if (user) setCurrentUser(user); else clearToken(); })
+      .catch(() => clearToken())
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  const handleLogin = (user, token) => {
+    setToken(token);
+    setCurrentUser(user);
+  };
+
+  const handleLogout = () => {
+    clearToken();
+    setCurrentUser(null);
+  };
+
+  // Ładowanie - sprawdzamy token
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-stone-900 flex items-center justify-center">
+        <div className="text-center">
+          <Package className="w-12 h-12 text-amber-400 mx-auto mb-3 animate-pulse" />
+          <p className="text-stone-400">Ładowanie...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Niezalogowany - pokaż ekran logowania
+  if (!currentUser) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  // Zalogowany - pokaż aplikację
+  return <AppShell currentUser={currentUser} onLogout={handleLogout} />;
+}
+
+
+// ============================================================
+// EKRAN LOGOWANIA
+// ============================================================
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!email.trim() || !password.trim()) { setError('Wypełnij email i hasło'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const data = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      if (!data.ok) {
+        const err = await data.json();
+        throw new Error(err.detail || 'Błąd logowania');
+      }
+      const result = await data.json();
+      onLogin(result.user, result.access_token);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-stone-900 via-stone-800 to-stone-900 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-amber-500 rounded-2xl mb-4 shadow-lg">
+            <Package className="w-8 h-8 text-stone-900" />
+          </div>
+          <h1 className="text-3xl font-bold text-white tracking-tight">
+            MAGAZYN<span className="text-amber-400">.</span>
+          </h1>
+          <p className="text-stone-400 mt-1 text-sm">System zarządzania magazynem</p>
+        </div>
+
+        {/* Formularz */}
+        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
+          <div className="bg-stone-900 px-6 py-4">
+            <h2 className="text-white font-bold text-lg">Logowanie</h2>
+            <p className="text-stone-400 text-xs mt-0.5">Zaloguj się żeby uzyskać dostęp</p>
+          </div>
+          <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                <span className="text-sm text-red-700">{error}</span>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">Email</label>
+              <input
+                type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                placeholder="twoj@email.com" autoFocus autoComplete="email"
+                className="w-full px-4 py-3 border-2 border-stone-200 rounded-lg focus:border-amber-500 focus:outline-none transition text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">Hasło</label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password} onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••" autoComplete="current-password"
+                  className="w-full px-4 py-3 border-2 border-stone-200 rounded-lg focus:border-amber-500 focus:outline-none transition text-sm pr-12"
+                />
+                <button type="button" onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 text-xs">
+                  {showPassword ? 'Ukryj' : 'Pokaż'}
+                </button>
+              </div>
+            </div>
+            <button type="submit" disabled={loading}
+              className="w-full py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-stone-900 rounded-lg font-bold transition flex items-center justify-center gap-2">
+              {loading ? <><RefreshCw className="w-4 h-4 animate-spin" />Logowanie...</> : 'Zaloguj się'}
+            </button>
+          </form>
+          <div className="px-6 pb-4 text-center text-xs text-stone-400">
+            Nie pamiętasz hasła? Poproś administratora o reset.
+          </div>
+        </div>
+
+        <p className="text-center text-stone-500 text-xs mt-6">
+          Dostęp tylko dla uprawnionych użytkowników
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// APP SHELL - otacza całą aplikację gdy zalogowany
+// ============================================================
+function AppShell({ currentUser, onLogout }) {
   const [view, setView] = useState('dashboard');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -70,7 +252,10 @@ export default function WarehouseApp() {
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showAutoSuggest, setShowAutoSuggest] = useState(false);
   const [showSimulator, setShowSimulator] = useState(false);
-  const [showOrderPdf, setShowOrderPdf] = useState(null);  // przechowuje grupę z shoppingList
+  const [showOrderPdf, setShowOrderPdf] = useState(null);
+  const [showUsersPanel, setShowUsersPanel] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showAuditLog, setShowAuditLog] = useState(false);
   const [stockHistory, setStockHistory] = useState(null);
   const [includeFilter, setIncludeFilter] = useState('ACTIVE,ACTIVE_NO_STOCK');
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -194,7 +379,7 @@ export default function WarehouseApp() {
             <NavBtn active={view === 'cashflow'} onClick={() => setView('cashflow')} icon={Wallet}>Cashflow</NavBtn>
             <NavBtn active={view === 'settings'} onClick={() => setView('settings')} icon={SettingsIcon}>Ustawienia</NavBtn>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 relative">
             <button onClick={() => setShowGlobalSearch(true)} 
               className="flex items-center gap-2 px-3 py-2 bg-stone-800 hover:bg-stone-700 rounded-lg text-stone-300 text-sm border border-stone-700 min-w-48"
               title="Globalna wyszukiwarka (Ctrl+K)">
@@ -208,6 +393,14 @@ export default function WarehouseApp() {
             <button onClick={loadAll} disabled={loading} className="px-3 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-stone-900 rounded-lg font-bold text-sm flex items-center gap-2">
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Odśwież
             </button>
+            <UserMenu 
+              user={currentUser} 
+              onLogout={onLogout}
+              onChangePassword={() => setShowChangePassword(true)}
+              onUsersPanel={currentUser.role === 'ADMIN' ? () => setShowUsersPanel(true) : null}
+              onAuditLog={currentUser.is_super_admin ? () => setShowAuditLog(true) : null}
+              isSuperAdmin={currentUser.role === 'ADMIN'}
+            />
           </div>
         </div>
       </header>
@@ -224,10 +417,11 @@ export default function WarehouseApp() {
           <DashboardView stats={stats} classification={classification} products={products}
             containers={containers} anomalies={anomalies} shoppingList={shoppingList}
             stockHistory={stockHistory}
+            canEdit={currentUser.role !== 'VIEWER'}
             onProductClick={setSelectedProduct} onContainerClick={setEditingContainer}
-            onShowAutoSuggest={() => setShowAutoSuggest(true)}
+            onShowAutoSuggest={currentUser.role !== 'VIEWER' ? () => setShowAutoSuggest(true) : null}
             onShowSimulator={() => setShowSimulator(true)}
-            onShowOrderPdf={(group) => setShowOrderPdf(group)}
+            onShowOrderPdf={currentUser.role !== 'VIEWER' ? (group) => setShowOrderPdf(group) : null}
             onToggleFavorite={async (sku) => {
               try { await api.put(`/products/${encodeURIComponent(sku)}/favorite`); await reloadProducts(); }
               catch (e) { alert(e.message); }
@@ -256,9 +450,11 @@ export default function WarehouseApp() {
                 <option value="INACTIVE">Nieaktywne ({classification?.counts?.INACTIVE || 0})</option>
                 <option value="ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE">Wszystkie ({classification?.total || 0})</option>
               </select>
-              <button onClick={() => setShowImport(true)} className="px-4 py-3 bg-white border-2 border-stone-200 hover:bg-stone-50 rounded-lg font-bold text-sm flex items-center gap-2">
-                <Upload className="w-4 h-4" />Import
-              </button>
+              {currentUser.role !== 'VIEWER' && (
+                <button onClick={() => setShowImport(true)} className="px-4 py-3 bg-white border-2 border-stone-200 hover:bg-stone-50 rounded-lg font-bold text-sm flex items-center gap-2">
+                  <Upload className="w-4 h-4" />Import
+                </button>
+              )}
               <button onClick={() => {
                 if (includeFilter === 'FAVORITES') {
                   api.download(`/products/export/csv?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE&favorites_only=true`);
@@ -270,6 +466,7 @@ export default function WarehouseApp() {
               </button>
             </div>
             <ListView products={filteredProducts} onProductClick={setSelectedProduct} 
+              canEdit={currentUser.role !== 'VIEWER'}
               onToggleFavorite={async (sku) => {
                 try { await api.put(`/products/${encodeURIComponent(sku)}/favorite`); await reloadProducts(); }
                 catch (e) { alert(e.message); }
@@ -280,16 +477,19 @@ export default function WarehouseApp() {
         {!loading && view === 'containers' && (
           <ContainersView containers={containers} containerTypes={containerTypes} manufacturers={manufacturers}
             products={products}
-            onNew={() => setShowNewContainer(true)} onEdit={setEditingContainer}
-            onAutoSuggest={() => setShowAutoSuggest(true)}
+            canEdit={currentUser.role !== 'VIEWER'}
+            onNew={currentUser.role !== 'VIEWER' ? () => setShowNewContainer(true) : null}
+            onEdit={(c) => { if (currentUser.role !== 'VIEWER') setEditingContainer(c); else setEditingContainer({...c, readOnly: true}); }}
+            onAutoSuggest={currentUser.role !== 'VIEWER' ? () => setShowAutoSuggest(true) : null}
             onExport={() => api.download('/containers/export/csv')}
-            onUpdateStatus={async (id, status) => { await api.patch(`/containers/${id}`, { status }); await reloadContainers(); }} />
+            onUpdateStatus={currentUser.role !== 'VIEWER' ? async (id, status) => { await api.patch(`/containers/${id}`, { status }); await reloadContainers(); } : null} />
         )}
 
         {!loading && view === 'cashflow' && cashflow && <CashflowView cashflow={cashflow} />}
 
         {!loading && view === 'settings' && (
           <SettingsView manufacturers={manufacturers} containerTypes={containerTypes}
+            canEdit={currentUser.role !== 'VIEWER'}
             onReloadManufacturers={async () => setManufacturers(await api.get('/manufacturers'))}
             onReloadTypes={async () => setContainerTypes(await api.get('/container-types'))} />
         )}
@@ -297,6 +497,7 @@ export default function WarehouseApp() {
 
       {selectedProduct && (
         <ProductModal product={selectedProduct} manufacturers={manufacturers}
+          canEdit={currentUser.role !== 'VIEWER'}
           onClose={() => setSelectedProduct(null)}
           onUpdate={async () => {
             const updated = await api.get(`/products/${encodeURIComponent(selectedProduct.sku)}`);
@@ -305,7 +506,7 @@ export default function WarehouseApp() {
           }} />
       )}
 
-      {showNewContainer && (
+      {showNewContainer && currentUser.role !== 'VIEWER' && (
         <ContainerForm products={products} manufacturers={manufacturers} containerTypes={containerTypes}
           onSave={async (data) => { await api.post('/containers', data); await reloadContainers(); setShowNewContainer(false); }}
           onClose={() => setShowNewContainer(false)} />
@@ -314,25 +515,26 @@ export default function WarehouseApp() {
       {editingContainer && (
         <ContainerForm products={products} manufacturers={manufacturers} containerTypes={containerTypes}
           initial={editingContainer}
-          onSave={async (data) => { await api.patch(`/containers/${editingContainer.id}`, data); await reloadContainers(); setEditingContainer(null); }}
+          readOnly={editingContainer.readOnly || currentUser.role === 'VIEWER'}
+          onSave={currentUser.role !== 'VIEWER' ? async (data) => { await api.patch(`/containers/${editingContainer.id}`, data); await reloadContainers(); setEditingContainer(null); } : null}
           onClose={() => setEditingContainer(null)}
-          onDelete={async () => {
+          onDelete={currentUser.role !== 'VIEWER' ? async () => {
             if (window.confirm('Usunąć ten kontener?')) {
               await api.del(`/containers/${editingContainer.id}`);
               await reloadContainers();
               setEditingContainer(null);
             }
-          }}
-          onAddAttachment={async (data) => {
+          } : null}
+          onAddAttachment={currentUser.role !== 'VIEWER' ? async (data) => {
             await api.post(`/containers/${editingContainer.id}/attachments`, data);
             const updated = await api.get(`/containers/${editingContainer.id}`);
             setEditingContainer(updated);
-          }}
-          onDeleteAttachment={async (aid) => {
+          } : null}
+          onDeleteAttachment={currentUser.role !== 'VIEWER' ? async (aid) => {
             await api.del(`/attachments/${aid}`);
             const updated = await api.get(`/containers/${editingContainer.id}`);
             setEditingContainer(updated);
-          }} />
+          } : null} />
       )}
 
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImported={reloadProducts} />}
@@ -368,6 +570,9 @@ export default function WarehouseApp() {
       {showOrderPdf && <OrderPdfModal 
         group={showOrderPdf} 
         onClose={() => setShowOrderPdf(null)} />}
+      {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
+      {showUsersPanel && <UsersPanelModal onClose={() => setShowUsersPanel(false)} />}
+      {showAuditLog && <AuditLogModal onClose={() => setShowAuditLog(false)} />}
     </div>
   );
 }
@@ -454,19 +659,23 @@ function DashboardView({ stats, classification, products, containers, anomalies,
         </div>
       )}
 
-      {/* Akcje WOW */}
-      <div className="grid md:grid-cols-2 gap-3">
-        <button onClick={onShowAutoSuggest} className="group bg-gradient-to-br from-amber-400 to-amber-600 text-stone-900 rounded-xl p-5 text-left hover:scale-[1.02] transition transform shadow">
-          <Wand2 className="w-7 h-7 mb-2" />
-          <div className="font-bold text-lg">Auto-sugestia kontenera</div>
-          <div className="text-sm opacity-80">Aplikacja zaplanuje optymalny skład</div>
-        </button>
-        <button onClick={onShowSimulator} className="group bg-gradient-to-br from-purple-500 to-purple-700 text-white rounded-xl p-5 text-left hover:scale-[1.02] transition transform shadow">
-          <FlaskConical className="w-7 h-7 mb-2" />
-          <div className="font-bold text-lg">Symulator scenariuszy</div>
-          <div className="text-sm opacity-80">Co jeśli sprzedaż +30% albo dostawa +30 dni</div>
-        </button>
-      </div>
+      {/* Akcje WOW - tylko dla non-VIEWER */}
+      {(onShowAutoSuggest || onShowSimulator) && (
+        <div className="grid md:grid-cols-2 gap-3">
+          {onShowAutoSuggest && (
+            <button onClick={onShowAutoSuggest} className="group bg-gradient-to-br from-amber-400 to-amber-600 text-stone-900 rounded-xl p-5 text-left hover:scale-[1.02] transition transform shadow">
+              <Wand2 className="w-7 h-7 mb-2" />
+              <div className="font-bold text-lg">Auto-sugestia kontenera</div>
+              <div className="text-sm opacity-80">Aplikacja zaplanuje optymalny skład</div>
+            </button>
+          )}
+          <button onClick={onShowSimulator} className="group bg-gradient-to-br from-purple-500 to-purple-700 text-white rounded-xl p-5 text-left hover:scale-[1.02] transition transform shadow">
+            <FlaskConical className="w-7 h-7 mb-2" />
+            <div className="font-bold text-lg">Symulator scenariuszy</div>
+            <div className="text-sm opacity-80">Co jeśli sprzedaż +30% albo dostawa +30 dni</div>
+          </button>
+        </div>
+      )}
 
       {/* Ulubione produkty */}
       {favorites.length > 0 && (
@@ -533,9 +742,11 @@ function DashboardView({ stats, classification, products, containers, anomalies,
               <h3 className="font-bold">Lista zakupów (per producent)</h3>
               <span className="text-xs text-stone-400 ml-2">💡 zamówić razem = oszczędność na frachcie</span>
             </div>
-            <button onClick={onShowAutoSuggest} className="text-xs px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-stone-900 rounded-lg font-bold flex items-center gap-1">
-              <Wand2 className="w-3 h-3" />Auto-sugestia kontenera
-            </button>
+            {onShowAutoSuggest && (
+              <button onClick={onShowAutoSuggest} className="text-xs px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-stone-900 rounded-lg font-bold flex items-center gap-1">
+                <Wand2 className="w-3 h-3" />Auto-sugestia kontenera
+              </button>
+            )}
           </div>
           <div className="divide-y divide-stone-100 max-h-96 overflow-y-auto">
             {shoppingList.map((g, idx) => (
@@ -547,7 +758,7 @@ function DashboardView({ stats, classification, products, containers, anomalies,
                     ) : <span className="text-stone-400 text-xs">brak producenta</span>}
                     <span className="text-sm text-stone-600">{g.total_skus} produktów wymaga zamówienia</span>
                   </div>
-                  {g.manufacturer_id && (
+                  {g.manufacturer_id && onShowOrderPdf && (
                     <button onClick={() => onShowOrderPdf(g)} className="text-xs px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-stone-900 rounded-lg font-bold flex items-center gap-1">
                       <FileText className="w-3 h-3" />Generuj PO
                     </button>
@@ -937,7 +1148,7 @@ function ListView({ products, onProductClick, onToggleFavorite }) {
   );
 }
 
-function ContainersView({ containers, containerTypes, manufacturers, products, onNew, onEdit, onAutoSuggest, onExport, onUpdateStatus }) {
+function ContainersView({ containers, containerTypes, manufacturers, products, onNew, onEdit, onAutoSuggest, onExport, onUpdateStatus, canEdit = true }) {
   const [filter, setFilter] = useState('ALL');
   const [expandedIds, setExpandedIds] = useState(new Set());
   const filtered = filter === 'ALL' ? containers : containers.filter(c => c.status === filter);
@@ -965,15 +1176,15 @@ function ContainersView({ containers, containerTypes, manufacturers, products, o
             className="flex items-center gap-2 bg-white border-2 border-stone-200 hover:bg-stone-50 px-3 py-2 rounded-lg font-bold text-sm">
             {expandedIds.size > 0 ? <><ChevronUp className="w-4 h-4" />Zwiń wszystkie</> : <><ChevronDown className="w-4 h-4" />Rozwiń wszystkie</>}
           </button>
-          <button onClick={onAutoSuggest} className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white px-4 py-2 rounded-lg font-bold">
+          {canEdit && onAutoSuggest && <button onClick={onAutoSuggest} className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white px-4 py-2 rounded-lg font-bold">
             <Wand2 className="w-4 h-4" />Auto-sugestia
-          </button>
+          </button>}
           <button onClick={onExport} className="flex items-center gap-2 bg-white border-2 border-stone-200 hover:bg-stone-50 px-4 py-2 rounded-lg font-bold">
             <Download className="w-4 h-4" />Eksport XLSX
           </button>
-          <button onClick={onNew} className="flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-stone-900 px-4 py-2 rounded-lg font-bold">
+          {canEdit && onNew && <button onClick={onNew} className="flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-stone-900 px-4 py-2 rounded-lg font-bold">
             <Plus className="w-4 h-4" />Nowy
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -1025,7 +1236,7 @@ function ContainersView({ containers, containerTypes, manufacturers, products, o
                   </div>
                 </div>
                 
-                <div className="px-5 py-2 bg-stone-50 border-b border-stone-100 flex items-center justify-between flex-wrap gap-2 text-xs text-stone-600">
+                <div className="px-5 py-2 bg-stone-50 border-b border-stone-100 flex items-center justify-between flex-wrap gap-2 text-xs text-stone-800 font-medium">
                   <span>Zamówiony: {new Date(c.order_date).toLocaleDateString('pl-PL')} · Razem: <strong>{c.total_units} szt</strong> · Wartość: <strong>{fmtPLN(c.total_value)}</strong></span>
                   {nextStatus && (
                     <button onClick={(e) => { e.stopPropagation(); onUpdateStatus(c.id, nextStatus); }}
@@ -1137,16 +1348,16 @@ function CashflowView({ cashflow }) {
   );
 }
 
-function SettingsView({ manufacturers, containerTypes, onReloadManufacturers, onReloadTypes }) {
+function SettingsView({ manufacturers, containerTypes, onReloadManufacturers, onReloadTypes, canEdit = true }) {
   return (
     <div className="grid md:grid-cols-2 gap-6">
-      <ManufacturersPanel manufacturers={manufacturers} onReload={onReloadManufacturers} />
-      <ContainerTypesPanel containerTypes={containerTypes} onReload={onReloadTypes} />
+      <ManufacturersPanel manufacturers={manufacturers} canEdit={canEdit} onReload={onReloadManufacturers} />
+      <ContainerTypesPanel containerTypes={containerTypes} canEdit={canEdit} onReload={onReloadTypes} />
     </div>
   );
 }
 
-function ManufacturersPanel({ manufacturers, onReload }) {
+function ManufacturersPanel({ manufacturers, onReload, canEdit = true }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', color: '#6b7280', notes: '', email: '' });
   const startNew = () => { setEditing('new'); setForm({ name: '', color: '#6b7280', notes: '', email: '' }); };
@@ -1168,7 +1379,7 @@ function ManufacturersPanel({ manufacturers, onReload }) {
     <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
       <div className="bg-stone-900 text-white px-5 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2"><Building2 className="w-5 h-5 text-amber-400" /><h3 className="font-bold">Producenci</h3></div>
-        <button onClick={startNew} className="text-xs bg-amber-500 text-stone-900 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1"><Plus className="w-3 h-3" />Nowy</button>
+        {canEdit && <button onClick={startNew} className="text-xs bg-amber-500 text-stone-900 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1"><Plus className="w-3 h-3" />Nowy</button>}
       </div>
       <div className="p-4 space-y-2 max-h-96 overflow-y-auto">
         {editing === 'new' && <ManufacturerEditRow form={form} setForm={setForm} onSave={save} onCancel={() => setEditing(null)} />}
@@ -1181,7 +1392,7 @@ function ManufacturersPanel({ manufacturers, onReload }) {
               <div className="font-bold">{m.name}</div>
               <div className="text-xs text-stone-500 truncate">{m.email || m.notes || '—'}</div>
             </div>
-            <button onClick={() => startEdit(m)} className="p-2 hover:bg-stone-200 rounded"><Edit2 className="w-4 h-4 text-stone-600" /></button>
+            {canEdit && <button onClick={() => startEdit(m)} className="p-2 hover:bg-stone-200 rounded"><Edit2 className="w-4 h-4 text-stone-600" /></button>}
           </div>
         ))}
         {manufacturers.length === 0 && editing !== 'new' && (
@@ -1210,7 +1421,7 @@ function ManufacturerEditRow({ form, setForm, onSave, onCancel, onDelete }) {
   );
 }
 
-function ContainerTypesPanel({ containerTypes, onReload }) {
+function ContainerTypesPanel({ containerTypes, onReload, canEdit = true }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', capacity_cbm: '', sort_order: 0 });
   const startNew = () => { setEditing('new'); setForm({ name: '', capacity_cbm: '', sort_order: containerTypes.length + 1 }); };
@@ -1235,7 +1446,7 @@ function ContainerTypesPanel({ containerTypes, onReload }) {
     <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
       <div className="bg-stone-900 text-white px-5 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2"><Box className="w-5 h-5 text-amber-400" /><h3 className="font-bold">Typy kontenerów</h3></div>
-        <button onClick={startNew} className="text-xs bg-amber-500 text-stone-900 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1"><Plus className="w-3 h-3" />Nowy</button>
+        {canEdit && <button onClick={startNew} className="text-xs bg-amber-500 text-stone-900 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1"><Plus className="w-3 h-3" />Nowy</button>}
       </div>
       <div className="p-4 space-y-2">
         {editing === 'new' && <TypeEditRow form={form} setForm={setForm} onSave={save} onCancel={() => setEditing(null)} />}
@@ -1248,7 +1459,7 @@ function ContainerTypesPanel({ containerTypes, onReload }) {
               <div className="font-bold">{t.name}</div>
               <div className="text-xs text-stone-500">Pojemność: <strong>{t.capacity_cbm} m³</strong></div>
             </div>
-            <button onClick={() => startEdit(t)} className="p-2 hover:bg-stone-200 rounded"><Edit2 className="w-4 h-4 text-stone-600" /></button>
+            {canEdit && <button onClick={() => startEdit(t)} className="p-2 hover:bg-stone-200 rounded"><Edit2 className="w-4 h-4 text-stone-600" /></button>}
           </div>
         ))}
       </div>
@@ -1272,7 +1483,7 @@ function TypeEditRow({ form, setForm, onSave, onCancel, onDelete }) {
   );
 }
 
-function ProductModal({ product, manufacturers, onClose, onUpdate }) {
+function ProductModal({ product, manufacturers, canEdit = true, onClose, onUpdate }) {
   const [editingLT, setEditingLT] = useState(false);
   const [tempLT, setTempLT] = useState(product.lead_time_days.toString());
   const [editingAttrs, setEditingAttrs] = useState(false);
@@ -1358,7 +1569,7 @@ function ProductModal({ product, manufacturers, onClose, onUpdate }) {
           <div className="bg-stone-50 border-2 border-stone-200 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold uppercase tracking-wider text-stone-700">Atrybuty produktu</h3>
-              {!editingAttrs && <button onClick={() => setEditingAttrs(true)} className="text-xs font-bold text-amber-700 flex items-center gap-1"><Edit2 className="w-3 h-3" />Edytuj</button>}
+            {!editingAttrs && <button onClick={() => canEdit && setEditingAttrs(true)} className={`text-xs font-bold flex items-center gap-1 ${canEdit ? 'text-amber-700' : 'text-stone-300 cursor-not-allowed'}`} title={!canEdit ? 'Tylko podgląd' : ''}><Edit2 className="w-3 h-3" />{canEdit ? 'Edytuj' : '🔒 Tylko podgląd'}</button>}
             </div>
             {editingAttrs ? (
               <div className="space-y-3">
@@ -1446,7 +1657,7 @@ function ProductModal({ product, manufacturers, onClose, onUpdate }) {
           <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold uppercase tracking-wider text-amber-900">Lead time</h3>
-              {!editingLT && <button onClick={() => setEditingLT(true)} className="text-xs font-bold text-amber-700 flex items-center gap-1"><Edit2 className="w-3 h-3" />Edytuj</button>}
+              {!editingLT && canEdit && <button onClick={() => setEditingLT(true)} className="text-xs font-bold text-amber-700 flex items-center gap-1"><Edit2 className="w-3 h-3" />Edytuj</button>}
             </div>
             {editingLT ? (
               <div className="flex items-center gap-2">
@@ -2785,6 +2996,405 @@ function OrderPdfModal({ group, onClose }) {
             {generating ? 'Generuję...' : 'Generuj PDF'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// USER MENU - avatar + dropdown w headerze
+// ============================================================
+function UserMenu({ user, onLogout, onChangePassword, onUsersPanel, onAuditLog }) {
+  const [open, setOpen] = useState(false);
+  const roleColors = { ADMIN: 'bg-red-600', IMPORT: 'bg-blue-600', VIEWER: 'bg-stone-500' };
+  const roleLabels = { ADMIN: 'Admin', IMPORT: 'Import', VIEWER: 'Viewer' };
+  const initials = (user.full_name || user.email).substring(0, 2).toUpperCase();
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(!open)} 
+        className="flex items-center gap-2 px-2 py-1.5 bg-stone-800 hover:bg-stone-700 rounded-lg transition">
+        <div className={`w-7 h-7 rounded-full ${roleColors[user.role] || 'bg-stone-600'} flex items-center justify-center text-white text-xs font-bold`}>
+          {initials}
+        </div>
+        <div className="hidden md:block text-left">
+          <div className="text-white text-xs font-bold leading-tight">{user.full_name || user.email}</div>
+          <div className="text-stone-400 text-[10px]">{roleLabels[user.role]}</div>
+        </div>
+        <ChevronDown className="w-3 h-3 text-stone-400 hidden md:block" />
+      </button>
+      {open && (
+        <>
+          {/* Klik poza menu = zamknij */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          {/* Dropdown - fixed żeby nie dziedziczyć koloru z headera */}
+          <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-2xl border border-stone-200 z-50 overflow-hidden">
+            <div className="bg-stone-900 px-4 py-3">
+              <div className="text-white text-sm font-bold truncate">{user.full_name || '—'}</div>
+              <div className="text-stone-400 text-xs truncate">{user.email}</div>
+              <span className={`inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-bold text-white ${roleColors[user.role]}`}>{roleLabels[user.role]}</span>
+            </div>
+            <div className="p-1 bg-white">
+              <button onClick={() => { setOpen(false); onChangePassword(); }} 
+                className="w-full text-left px-3 py-2.5 text-sm text-stone-800 hover:bg-stone-100 rounded-lg flex items-center gap-2 font-medium">
+                🔑 Zmień hasło
+              </button>
+              {onUsersPanel && (
+                <button onClick={() => { setOpen(false); onUsersPanel(); }} 
+                  className="w-full text-left px-3 py-2.5 text-sm text-stone-800 hover:bg-stone-100 rounded-lg flex items-center gap-2 font-medium">
+                  👥 Zarządzaj użytkownikami
+                </button>
+              )}
+              {onAuditLog && (
+                <button onClick={() => { setOpen(false); onAuditLog(); }} 
+                  className="w-full text-left px-3 py-2.5 text-sm text-stone-800 hover:bg-stone-100 rounded-lg flex items-center gap-2 font-medium">
+                  📜 Audit log
+                </button>
+              )}
+              <div className="border-t border-stone-100 my-1"></div>
+              <button onClick={() => { setOpen(false); onLogout(); }}
+                className="w-full text-left px-3 py-2.5 text-sm text-red-600 hover:bg-red-50 rounded-lg flex items-center gap-2 font-bold">
+                🚪 Wyloguj się
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+// ============================================================
+// ZMIANA HASŁA
+// ============================================================
+function ChangePasswordModal({ onClose }) {
+  const [current, setCurrent] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleSave = async () => {
+    if (!current || !newPwd || !confirm) { setError('Wypełnij wszystkie pola'); return; }
+    if (newPwd !== confirm) { setError('Nowe hasła nie są identyczne'); return; }
+    if (newPwd.length < 8) { setError('Hasło musi mieć min. 8 znaków'); return; }
+    if (!/[A-Z]/.test(newPwd)) { setError('Hasło musi zawierać dużą literę'); return; }
+    if (!/[0-9]/.test(newPwd)) { setError('Hasło musi zawierać cyfrę'); return; }
+    
+    setLoading(true); setError('');
+    try {
+      await api.put('/auth/me/password', { current_password: current, new_password: newPwd });
+      setSuccess(true);
+      setTimeout(onClose, 2000);
+    } catch (e) {
+      setError(e.message.includes('400') ? 'Aktualne hasło jest nieprawidłowe' : e.message);
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-stone-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-stone-900 text-white p-5 flex items-center justify-between">
+          <h2 className="font-bold text-lg">🔑 Zmień hasło</h2>
+          <button onClick={onClose} className="p-1 hover:bg-stone-800 rounded"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          {success ? (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 text-center">
+              <div className="text-2xl mb-1">✅</div>
+              <div className="font-bold text-emerald-900">Hasło zmienione!</div>
+            </div>
+          ) : (
+            <>
+              {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>}
+              <div>
+                <label className="block text-xs font-bold text-stone-600 uppercase mb-1">Obecne hasło</label>
+                <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-stone-200 rounded-lg focus:border-amber-500 outline-none" autoFocus />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-stone-600 uppercase mb-1">Nowe hasło</label>
+                <input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-stone-200 rounded-lg focus:border-amber-500 outline-none" />
+                <p className="text-[11px] text-stone-500 mt-1">Min. 8 znaków, 1 duża litera, 1 cyfra</p>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-stone-600 uppercase mb-1">Powtórz nowe hasło</label>
+                <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-stone-200 rounded-lg focus:border-amber-500 outline-none" />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button onClick={onClose} className="flex-1 py-2 bg-stone-200 rounded-lg font-bold">Anuluj</button>
+                <button onClick={handleSave} disabled={loading} className="flex-1 py-2 bg-amber-500 text-stone-900 rounded-lg font-bold disabled:opacity-50">
+                  {loading ? 'Zapisuję...' : 'Zmień hasło'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// PANEL UŻYTKOWNIKÓW (tylko admin)
+// ============================================================
+function UsersPanelModal({ onClose }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [newUser, setNewUser] = useState({ email: '', password: '', full_name: '', role: 'VIEWER' });
+  const [resetTarget, setResetTarget] = useState(null);
+  const [resetPwd, setResetPwd] = useState('');
+  const [error, setError] = useState('');
+
+  const roleColors = { ADMIN: 'bg-red-600', IMPORT: 'bg-blue-600', VIEWER: 'bg-stone-500' };
+  const roleLabels = { ADMIN: 'Admin', IMPORT: 'Import', VIEWER: 'Viewer' };
+
+  const load = async () => {
+    try { setUsers(await api.get('/users')); } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Parsuje surowy błąd API na czytelny komunikat po polsku
+  const parseApiError = (message) => {
+    // Błąd Pydantic 422 - walidacja pól
+    if (message.includes('string_too_short') || message.includes('at least 8')) return 'Hasło musi mieć minimum 8 znaków';
+    if (message.includes('string_too_long')) return 'Wartość jest za długa';
+    if (message.includes('value_error') && message.includes('email')) return 'Nieprawidłowy format email';
+    if (message.includes('422')) return 'Sprawdź poprawność danych (hasło min. 8 znaków, 1 duża litera, 1 cyfra)';
+    // Błędy backendu
+    if (message.includes('409')) return 'Użytkownik z tym emailem już istnieje';
+    if (message.includes('400') && message.includes('hasło')) return message.split(' - ')[1] || 'Nieprawidłowe hasło';
+    if (message.includes('400')) {
+      const match = message.match(/400 - (.+)/);
+      return match ? match[1] : 'Błąd walidacji danych';
+    }
+    return message;
+  };
+
+  const validatePassword = (pwd) => {
+    if (pwd.length < 8) return 'Hasło musi mieć minimum 8 znaków';
+    if (!/[A-Z]/.test(pwd)) return 'Hasło musi zawierać przynajmniej jedną dużą literę (A-Z)';
+    if (!/[0-9]/.test(pwd)) return 'Hasło musi zawierać przynajmniej jedną cyfrę (0-9)';
+    return null;
+  };
+
+  const createUser = async () => {
+    if (!newUser.email || !newUser.password || !newUser.full_name) { setError('Wypełnij wszystkie pola'); return; }
+    // Walidacja hasła po stronie frontendu - przed wysłaniem do API
+    const pwdErr = validatePassword(newUser.password);
+    if (pwdErr) { setError(pwdErr); return; }
+    setError('');
+    try {
+      await api.post('/users', newUser);
+      setShowForm(false);
+      setNewUser({ email: '', password: '', full_name: '', role: 'VIEWER' });
+      await load();
+    } catch (e) { setError(parseApiError(e.message)); }
+  };
+
+  const toggleActive = async (u) => {
+    try { await api.patch(`/users/${u.id}`, { is_active: !u.is_active }); await load(); }
+    catch (e) { setError(e.message); }
+  };
+
+  const changeRole = async (u, role) => {
+    try { await api.patch(`/users/${u.id}`, { role }); await load(); }
+    catch (e) { setError(e.message); }
+  };
+
+  const doResetPwd = async () => {
+    if (!resetPwd) return;
+    const pwdErr = validatePassword(resetPwd);
+    if (pwdErr) { setError(pwdErr); return; }
+    try {
+      await api.put(`/users/${resetTarget.id}/password`, { new_password: resetPwd });
+      setResetTarget(null); setResetPwd('');
+    } catch (e) { setError(parseApiError(e.message)); }
+  };
+
+  const deleteUser = async (u) => {
+    if (!window.confirm(`Usunąć użytkownika ${u.email}?`)) return;
+    try { await api.del(`/users/${u.id}`); await load(); }
+    catch (e) { setError(e.message); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-stone-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-stone-900 text-white p-5 flex items-center justify-between">
+          <h2 className="font-bold text-lg">👥 Zarządzaj użytkownikami</h2>
+          <button onClick={onClose} className="p-1 hover:bg-stone-800 rounded"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}<button onClick={() => setError('')} className="ml-2 text-red-400">✕</button></div>}
+          
+          <div className="flex justify-between items-center">
+            <div className="text-sm text-stone-600">{users.length} użytkowników</div>
+            <button onClick={() => { setShowForm(true); setError(''); }} className="flex items-center gap-1 px-3 py-1.5 bg-amber-500 text-stone-900 rounded-lg font-bold text-sm">
+              <Plus className="w-4 h-4" />Dodaj
+            </button>
+          </div>
+
+          {showForm && (
+            <div className="border-2 border-amber-500 rounded-xl p-4 space-y-3">
+              <h3 className="font-bold text-sm">Nowy użytkownik</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <input type="text" value={newUser.full_name} onChange={(e) => setNewUser({...newUser, full_name: e.target.value})}
+                  placeholder="Imię i Nazwisko" className="px-3 py-2 border-2 border-stone-200 rounded-lg text-sm" />
+                <input type="email" value={newUser.email} onChange={(e) => setNewUser({...newUser, email: e.target.value})}
+                  placeholder="email@firma.pl" className="px-3 py-2 border-2 border-stone-200 rounded-lg text-sm" />
+                <div className="col-span-2">
+                  <input type="password" value={newUser.password} onChange={(e) => setNewUser({...newUser, password: e.target.value})}
+                    placeholder="Hasło" className={`w-full px-3 py-2 border-2 rounded-lg text-sm ${newUser.password && validatePassword(newUser.password) ? 'border-red-400' : newUser.password && !validatePassword(newUser.password) ? 'border-emerald-500' : 'border-stone-200'}`} />
+                  <div className="mt-1.5 flex gap-3 text-[11px]">
+                    <span className={`flex items-center gap-0.5 ${!newUser.password ? 'text-stone-400' : newUser.password.length >= 8 ? 'text-emerald-600 font-bold' : 'text-red-500'}`}>
+                      {newUser.password.length >= 8 ? '✓' : '✗'} min. 8 znaków
+                    </span>
+                    <span className={`flex items-center gap-0.5 ${!newUser.password ? 'text-stone-400' : /[A-Z]/.test(newUser.password) ? 'text-emerald-600 font-bold' : 'text-red-500'}`}>
+                      {/[A-Z]/.test(newUser.password) ? '✓' : '✗'} duża litera
+                    </span>
+                    <span className={`flex items-center gap-0.5 ${!newUser.password ? 'text-stone-400' : /[0-9]/.test(newUser.password) ? 'text-emerald-600 font-bold' : 'text-red-500'}`}>
+                      {/[0-9]/.test(newUser.password) ? '✓' : '✗'} cyfra
+                    </span>
+                  </div>
+                </div>
+                <select value={newUser.role} onChange={(e) => setNewUser({...newUser, role: e.target.value})}
+                  className="px-3 py-2 border-2 border-stone-200 rounded-lg text-sm bg-white">
+                  <option value="VIEWER">Viewer (tylko czytanie)</option>
+                  <option value="IMPORT">Import (wszystko oprócz userów)</option>
+                  <option value="ADMIN">Admin (pełny dostęp)</option>
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setShowForm(false)} className="flex-1 py-2 bg-stone-200 rounded-lg font-bold text-sm">Anuluj</button>
+                <button onClick={createUser} className="flex-1 py-2 bg-emerald-600 text-white rounded-lg font-bold text-sm">Utwórz</button>
+              </div>
+            </div>
+          )}
+
+          {resetTarget && (
+            <div className="border-2 border-blue-500 rounded-xl p-4 space-y-3">
+              <h3 className="font-bold text-sm">Reset hasła: <span className="text-blue-700">{resetTarget.email}</span></h3>
+              <input type="password" value={resetPwd} onChange={(e) => setResetPwd(e.target.value)}
+                placeholder="Nowe hasło (min. 8 znaków, A, 1)" className="w-full px-3 py-2 border-2 border-stone-200 rounded-lg text-sm" autoFocus />
+              <div className="flex gap-2">
+                <button onClick={() => { setResetTarget(null); setResetPwd(''); }} className="flex-1 py-2 bg-stone-200 rounded-lg font-bold text-sm">Anuluj</button>
+                <button onClick={doResetPwd} className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm">Ustaw hasło</button>
+              </div>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="text-center py-8 text-stone-400"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />Ładowanie...</div>
+          ) : (
+            <div className="space-y-2">
+              {users.map(u => (
+                <div key={u.id} className={`flex items-center gap-3 p-3 rounded-xl border ${u.is_active ? 'bg-stone-50 border-stone-200' : 'bg-red-50 border-red-200 opacity-60'}`}>
+                  <div className={`w-8 h-8 rounded-full ${roleColors[u.role]} flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}>
+                    {(u.full_name || u.email).substring(0, 2).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-sm truncate">{u.full_name || '—'}</div>
+                    <div className="text-xs text-stone-500 truncate">{u.email}</div>
+                    {u.last_login && <div className="text-[10px] text-stone-400">Ostatnie logowanie: {new Date(u.last_login).toLocaleString('pl-PL')}</div>}
+                  </div>
+                  <select value={u.role} onChange={(e) => changeRole(u, e.target.value)}
+                    className={`text-xs px-2 py-1 rounded-lg font-bold text-white border-0 outline-none cursor-pointer ${roleColors[u.role]}`}>
+                    <option value="VIEWER" className="bg-stone-700">Viewer</option>
+                    <option value="IMPORT" className="bg-stone-700">Import</option>
+                    <option value="ADMIN" className="bg-stone-700">Admin</option>
+                  </select>
+                  <div className="flex gap-1">
+                    <button onClick={() => { setResetTarget(u); setResetPwd(''); }} className="p-1.5 hover:bg-blue-100 text-blue-700 rounded text-xs" title="Reset hasła">🔑</button>
+                    <button onClick={() => toggleActive(u)} className="p-1.5 hover:bg-stone-200 rounded text-xs" title={u.is_active ? 'Deaktywuj' : 'Aktywuj'}>
+                      {u.is_active ? '⏸' : '▶️'}
+                    </button>
+                    <button onClick={() => deleteUser(u)} className="p-1.5 hover:bg-red-100 text-red-600 rounded text-xs" title="Usuń">🗑</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// AUDIT LOG (tylko admin)
+// ============================================================
+function AuditLogModal({ onClose }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterAction, setFilterAction] = useState('');
+
+  useEffect(() => {
+    api.get('/audit-log?limit=200')
+      .then(setEntries)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  const actionColors = {
+    LOGIN: 'bg-emerald-100 text-emerald-800',
+    LOGIN_FAILED: 'bg-red-100 text-red-800',
+    LOGIN_BLOCKED: 'bg-red-200 text-red-900',
+    USER_CREATED: 'bg-blue-100 text-blue-800',
+    USER_UPDATED: 'bg-amber-100 text-amber-800',
+    USER_DELETED: 'bg-red-100 text-red-800',
+    PASSWORD_CHANGED: 'bg-purple-100 text-purple-800',
+    PASSWORD_RESET_BY_ADMIN: 'bg-purple-200 text-purple-900',
+  };
+
+  const filtered = filterAction ? entries.filter(e => e.action === filterAction) : entries;
+  const uniqueActions = [...new Set(entries.map(e => e.action))].sort();
+
+  return (
+    <div className="fixed inset-0 bg-stone-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-stone-900 text-white p-5 flex items-center justify-between">
+          <h2 className="font-bold text-lg">📜 Audit log</h2>
+          <button onClick={onClose} className="p-1 hover:bg-stone-800 rounded"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-4 border-b border-stone-200 flex items-center gap-3">
+          <select value={filterAction} onChange={(e) => setFilterAction(e.target.value)} className="px-3 py-2 border-2 border-stone-200 rounded-lg text-sm bg-white flex-1">
+            <option value="">Wszystkie akcje ({entries.length})</option>
+            {uniqueActions.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <span className="text-xs text-stone-500">{filtered.length} wpisów</span>
+        </div>
+        {loading ? (
+          <div className="text-center py-12 text-stone-400"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />Ładowanie...</div>
+        ) : (
+          <div className="divide-y divide-stone-100 max-h-[500px] overflow-y-auto">
+            {filtered.length === 0 && <div className="p-8 text-center text-stone-400">Brak wpisów</div>}
+            {filtered.map(e => (
+              <div key={e.id} className="px-4 py-3 flex items-start gap-3 hover:bg-stone-50">
+                <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${actionColors[e.action] || 'bg-stone-100 text-stone-700'}`}>
+                  {e.action}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-stone-700 truncate">{e.user_email || '—'}</div>
+                  {e.details && <div className="text-[11px] text-stone-500 truncate">{e.details}</div>}
+                </div>
+                <div className="text-[10px] text-stone-400 whitespace-nowrap flex-shrink-0">
+                  {new Date(e.created_at).toLocaleString('pl-PL')}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

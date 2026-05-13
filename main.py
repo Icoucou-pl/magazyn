@@ -16,16 +16,21 @@ from datetime import date, timedelta, datetime
 from typing import List, Optional, Literal, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel, Field, EmailStr
 from pydantic_settings import BaseSettings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from passlib.context import CryptContext
+from jose import jwt, JWTError
 
 import io
 import csv
+import re
+import secrets
 
 
 class Settings(BaseSettings):
@@ -64,8 +69,21 @@ class Settings(BaseSettings):
     TABLE_CONTAINERS: str = "app_containers"
     TABLE_CONTAINER_ITEMS: str = "app_container_items"
     TABLE_ATTACHMENTS: str = "app_container_attachments"
+    TABLE_USERS: str = "app_users"
+    TABLE_AUDIT_LOG: str = "app_audit_log"
     
     DEFAULT_LEAD_TIME_DAYS: int = 90
+    
+    # Auth - WAŻNE: w produkcji ustaw silny SECRET_KEY w zmiennych środowiskowych Railway!
+    SECRET_KEY: str = ""
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_DAYS: int = 7
+    
+    # Domyślny admin - tworzy się automatycznie przy pierwszym uruchomieniu
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+    # Super-admin - tylko ten email widzi audit log (ustaw ten sam co ADMIN_EMAIL)
+    SUPER_ADMIN_EMAIL: str = ""
     
     class Config:
         env_file = ".env"
@@ -82,6 +100,48 @@ if not settings.DATABASE_URL and settings.DB_HOST:
 
 if not settings.DATABASE_URL:
     raise RuntimeError("Brak konfiguracji bazy. Ustaw DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD w .env")
+
+# Auth setup
+if not settings.SECRET_KEY:
+    # Generuje losowy klucz na czas pracy procesu (BEZPIECZNE LOKALNIE, ale w produkcji ustaw stały w env!)
+    settings.SECRET_KEY = secrets.token_urlsafe(48)
+    print("[WARNING] SECRET_KEY nie ustawiony w env - wygenerowano tymczasowy. W produkcji USTAW go w zmiennych środowiskowych Railway!")
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+
+def validate_password_strength(password: str) -> Optional[str]:
+    """Zwraca komunikat o błędzie lub None jeśli OK."""
+    if len(password) < 8:
+        return "Hasło musi mieć minimum 8 znaków"
+    if not re.search(r"[A-Z]", password):
+        return "Hasło musi zawierać przynajmniej jedną wielką literę"
+    if not re.search(r"[0-9]", password):
+        return "Hasło musi zawierać przynajmniej jedną cyfrę"
+    return None
+
+
+def create_jwt_token(user_id: int, email: str, role: str) -> str:
+    expire = datetime.utcnow() + timedelta(days=settings.JWT_EXPIRE_DAYS)
+    payload = {"sub": str(user_id), "email": email, "role": role, "exp": expire}
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_jwt_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        return payload
+    except JWTError:
+        return None
 
 
 def _excluded_status_clause(alias: str = "o") -> str:
@@ -221,6 +281,54 @@ async def lifespan(app: FastAPI):
             )
         """))
         
+        # Użytkownicy
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_USERS} (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                full_name VARCHAR(255),
+                role VARCHAR(20) NOT NULL DEFAULT 'VIEWER',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
+                CONSTRAINT chk_role CHECK (role IN ('ADMIN', 'IMPORT', 'VIEWER'))
+            )
+        """))
+        
+        # Audit log - kto co kiedy
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_AUDIT_LOG} (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES {settings.TABLE_USERS}(id) ON DELETE SET NULL,
+                user_email VARCHAR(255),
+                action VARCHAR(100) NOT NULL,
+                resource_type VARCHAR(50),
+                resource_id VARCHAR(255),
+                details TEXT,
+                ip_address VARCHAR(45),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_user ON {settings.TABLE_AUDIT_LOG}(user_id)"))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_created ON {settings.TABLE_AUDIT_LOG}(created_at DESC)"))
+        
+        # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
+        if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
+            count_result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_USERS}"))
+            user_count = count_result.scalar()
+            if user_count == 0:
+                pwd_err = validate_password_strength(settings.ADMIN_PASSWORD)
+                if pwd_err:
+                    print(f"[ERROR] ADMIN_PASSWORD słabe: {pwd_err}. Admin NIE utworzony.")
+                else:
+                    hashed = hash_password(settings.ADMIN_PASSWORD)
+                    await conn.execute(
+                        text(f"INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role) VALUES (:e, :h, :n, 'ADMIN')"),
+                        {"e": settings.ADMIN_EMAIL, "h": hashed, "n": "Administrator"}
+                    )
+                    print(f"[INFO] Utworzono domyślnego admina: {settings.ADMIN_EMAIL}")
+        
         # Indeksy
         try:
             await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sellasist_items_symbol_lower ON {settings.TABLE_ORDER_ITEMS} (LOWER(TRIM({settings.COL_ITEM_SKU})))"))
@@ -242,9 +350,128 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    """
+    Middleware który automatycznie loguje wszystkie mutacje (POST/PUT/PATCH/DELETE).
+    Nie blokuje żądań - logi zapisywane po odpowiedzi.
+    """
+    response = await call_next(request)
+    
+    # Loguj tylko mutacje które się udały (2xx)
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and 200 <= response.status_code < 300:
+        # Pomiń endpointy auth (logowanie itp. - mają swój log)
+        path = request.url.path
+        if any(skip in path for skip in ["/auth/login", "/auth/logout", "/auth/me/password"]):
+            return response
+        
+        # Pobierz token żeby zidentyfikować usera
+        token_str = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token_str = auth_header[7:]
+        # Fallback: token w query param (download)
+        if not token_str:
+            token_str = request.query_params.get("token")
+        
+        user_id = None
+        user_email = None
+        if token_str:
+            payload = decode_jwt_token(token_str)
+            if payload:
+                user_id = int(payload.get("sub", 0)) or None
+                user_email = payload.get("email")
+        
+        # Mapuj metodę + ścieżkę na czytelną akcję
+        method_labels = {"POST": "CREATED", "PUT": "UPDATED", "PATCH": "UPDATED", "DELETE": "DELETED"}
+        action_label = method_labels.get(request.method, request.method)
+        
+        # Wyciągnij typ zasobu ze ścieżki (/api/containers/5 → containers)
+        path_parts = [p for p in path.strip("/").split("/") if p and p != "api"]
+        resource_type = path_parts[0] if path_parts else "unknown"
+        resource_id = path_parts[1] if len(path_parts) > 1 else None
+        
+        action = f"{resource_type.upper()}_{action_label}"
+        
+        try:
+            async with SessionLocal() as db:
+                await db.execute(
+                    text(f"""
+                        INSERT INTO {settings.TABLE_AUDIT_LOG} (user_id, user_email, action, resource_type, resource_id, details)
+                        VALUES (:uid, :email, :action, :rtype, :rid, :details)
+                    """),
+                    {
+                        "uid": user_id,
+                        "email": user_email,
+                        "action": action,
+                        "rtype": resource_type,
+                        "rid": str(resource_id) if resource_id else None,
+                        "details": f"{request.method} {path}",
+                    }
+                )
+                await db.commit()
+        except Exception as e:
+            print(f"[audit_middleware] {e}")
+    
+    return response
+
+
 # ========== MODELE ==========
 ContainerStatus = Literal["ORDERED", "IN_PRODUCTION", "IN_TRANSIT", "DELIVERED"]
 ProductStatus = Literal["ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"]
+UserRole = Literal["ADMIN", "IMPORT", "VIEWER"]
+
+
+# ========== USER MODELS ==========
+class UserCreate(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8)
+    full_name: Optional[str] = None
+    role: UserRole = "VIEWER"
+
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+
+
+class PasswordChange(BaseModel):
+    current_password: Optional[str] = None  # opcjonalne - admin może zmieniać bez tego
+    new_password: str = Field(..., min_length=8)
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str]
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+    last_login: Optional[datetime]
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class AuditLogEntry(BaseModel):
+    id: int
+    user_id: Optional[int]
+    user_email: Optional[str]
+    action: str
+    resource_type: Optional[str]
+    resource_id: Optional[str]
+    details: Optional[str]
+    ip_address: Optional[str]
+    created_at: datetime
 
 
 class IncomingDelivery(BaseModel):
@@ -622,6 +849,345 @@ async def auto_deliver_containers(db: AsyncSession):
         WHERE status = 'IN_TRANSIT' AND eta_date <= CURRENT_DATE
     """))
     await db.commit()
+
+
+# ============================================================
+# AUTH - dependency, guards, endpointy
+# ============================================================
+
+class CurrentUser(BaseModel):
+    id: int
+    email: str
+    role: str
+    full_name: Optional[str] = None
+
+
+class UserCreate(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    password: str = Field(..., min_length=8)
+    full_name: str = Field(..., min_length=1, max_length=255)
+    role: Literal["ADMIN", "IMPORT", "VIEWER"] = "VIEWER"
+
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[Literal["ADMIN", "IMPORT", "VIEWER"]] = None
+    is_active: Optional[bool] = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(..., min_length=8)
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str]
+    role: str
+    is_active: bool
+    is_super_admin: bool = False  # tylko ten email widzi audit log
+    created_at: datetime
+    last_login: Optional[datetime]
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    user_id: Optional[int]
+    user_email: Optional[str]
+    action: str
+    resource_type: Optional[str]
+    resource_id: Optional[str]
+    details: Optional[str]
+    created_at: datetime
+
+
+async def get_current_user(token: Optional[str] = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> CurrentUser:
+    """Wymusza zalogowanego użytkownika - zwraca CurrentUser lub rzuca 401."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Wymagane logowanie", headers={"WWW-Authenticate": "Bearer"})
+    
+    payload = decode_jwt_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token wygasł lub nieprawidłowy", headers={"WWW-Authenticate": "Bearer"})
+    
+    user_id = int(payload.get("sub", 0))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Nieprawidłowy token")
+    
+    # Sprawdź czy user nadal istnieje i jest aktywny
+    r = await db.execute(text(f"SELECT id, email, role, full_name, is_active FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": user_id})
+    u = r.first()
+    if not u:
+        raise HTTPException(status_code=401, detail="Użytkownik nie istnieje")
+    if not u.is_active:
+        raise HTTPException(status_code=403, detail="Konto deaktywowane")
+    
+    return CurrentUser(id=u.id, email=u.email, role=u.role, full_name=u.full_name)
+
+
+def require_role(*allowed_roles):
+    """Dependency factory: wymusza określoną rolę."""
+    async def checker(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        if user.role not in allowed_roles:
+            raise HTTPException(403, f"Wymagana rola: {' lub '.join(allowed_roles)}. Twoja rola: {user.role}")
+        return user
+    return checker
+
+
+require_admin = require_role("ADMIN")
+require_import_or_admin = require_role("ADMIN", "IMPORT")
+
+
+async def log_audit(db: AsyncSession, user: Optional[CurrentUser], action: str, resource_type: Optional[str] = None, resource_id: Optional[str] = None, details: Optional[str] = None):
+    """Zapisuje wpis do audit log. Errory ignorowane (nie blokują głównej operacji)."""
+    try:
+        await db.execute(
+            text(f"""
+                INSERT INTO {settings.TABLE_AUDIT_LOG} (user_id, user_email, action, resource_type, resource_id, details)
+                VALUES (:uid, :email, :action, :rtype, :rid, :details)
+            """),
+            {
+                "uid": user.id if user else None,
+                "email": user.email if user else None,
+                "action": action,
+                "rtype": resource_type,
+                "rid": str(resource_id) if resource_id else None,
+                "details": details,
+            }
+        )
+        await db.commit()
+    except Exception as e:
+        print(f"[audit] {e}")
+
+
+# ===== ENDPOINTY AUTH =====
+@app.post("/api/auth/login", response_model=LoginResponse)
+async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Logowanie - zwraca JWT token + dane użytkownika."""
+    r = await db.execute(
+        text(f"SELECT id, email, password_hash, full_name, role, is_active, created_at, last_login FROM {settings.TABLE_USERS} WHERE LOWER(email) = LOWER(:email)"),
+        {"email": payload.email.strip()}
+    )
+    u = r.first()
+    if not u or not verify_password(payload.password, u.password_hash):
+        # Logujemy próbę
+        await log_audit(db, None, "LOGIN_FAILED", "user", payload.email, "Nieprawidłowy email lub hasło")
+        raise HTTPException(401, "Nieprawidłowy email lub hasło")
+    
+    if not u.is_active:
+        await log_audit(db, None, "LOGIN_BLOCKED", "user", payload.email, "Konto deaktywowane")
+        raise HTTPException(403, "Konto zostało deaktywowane")
+    
+    # Update last_login
+    await db.execute(
+        text(f"UPDATE {settings.TABLE_USERS} SET last_login = CURRENT_TIMESTAMP WHERE id = :id"),
+        {"id": u.id}
+    )
+    await db.commit()
+    
+    token = create_jwt_token(u.id, u.email, u.role)
+    
+    user_out = UserOut(
+        id=u.id, email=u.email, full_name=u.full_name, role=u.role,
+        is_active=u.is_active, created_at=u.created_at, last_login=datetime.now(),
+        is_super_admin=bool(settings.SUPER_ADMIN_EMAIL and u.email.lower() == settings.SUPER_ADMIN_EMAIL.strip().lower())
+    )
+    
+    # Audit log
+    fake_user = CurrentUser(id=u.id, email=u.email, role=u.role, full_name=u.full_name)
+    await log_audit(db, fake_user, "LOGIN", "user", str(u.id))
+    
+    return LoginResponse(access_token=token, user=user_out)
+
+
+@app.get("/api/auth/me", response_model=UserOut)
+async def get_me(user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Zwraca dane zalogowanego użytkownika."""
+    r = await db.execute(
+        text(f"SELECT id, email, full_name, role, is_active, created_at, last_login FROM {settings.TABLE_USERS} WHERE id = :id"),
+        {"id": user.id}
+    )
+    u = r.first()
+    if not u:
+        raise HTTPException(404, "Użytkownik nie istnieje")
+    
+    data = dict(u._mapping)
+    super_email = settings.SUPER_ADMIN_EMAIL.strip().lower()
+    data["is_super_admin"] = bool(super_email and data["email"].lower() == super_email)
+    return UserOut(**data)
+
+
+@app.put("/api/auth/me/password", status_code=204)
+async def change_my_password(payload: PasswordChange, user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Zmiana własnego hasła - wymaga obecnego hasła."""
+    err = validate_password_strength(payload.new_password)
+    if err:
+        raise HTTPException(400, err)
+    
+    r = await db.execute(text(f"SELECT password_hash FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": user.id})
+    u = r.first()
+    if not verify_password(payload.current_password, u.password_hash):
+        raise HTTPException(400, "Aktualne hasło jest nieprawidłowe")
+    
+    new_hash = hash_password(payload.new_password)
+    await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET password_hash = :h WHERE id = :id"), {"h": new_hash, "id": user.id})
+    await db.commit()
+    
+    await log_audit(db, user, "PASSWORD_CHANGED", "user", str(user.id))
+
+
+# ===== ENDPOINTY USERS (tylko admin) =====
+@app.get("/api/users", response_model=List[UserOut])
+async def list_users(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Lista wszystkich użytkowników - tylko admin."""
+    r = await db.execute(text(f"SELECT id, email, full_name, role, is_active, created_at, last_login FROM {settings.TABLE_USERS} ORDER BY created_at DESC"))
+    return [UserOut(**dict(row._mapping)) for row in r]
+
+
+@app.post("/api/users", response_model=UserOut, status_code=201)
+async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Tworzy nowego użytkownika - tylko admin."""
+    err = validate_password_strength(payload.password)
+    if err:
+        raise HTTPException(400, err)
+    
+    # Sprawdź czy email zajęty
+    r = await db.execute(text(f"SELECT id FROM {settings.TABLE_USERS} WHERE LOWER(email) = LOWER(:email)"), {"email": payload.email.strip()})
+    if r.first():
+        raise HTTPException(409, "Użytkownik z tym emailem już istnieje")
+    
+    pwd_hash = hash_password(payload.password)
+    r = await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role, is_active)
+            VALUES (:e, :h, :n, :r, TRUE) RETURNING id, email, full_name, role, is_active, created_at, last_login
+        """),
+        {"e": payload.email.strip(), "h": pwd_hash, "n": payload.full_name, "r": payload.role}
+    )
+    u = r.first()
+    await db.commit()
+    
+    await log_audit(db, admin, "USER_CREATED", "user", str(u.id), f"{payload.email} ({payload.role})")
+    return UserOut(**dict(u._mapping))
+
+
+@app.patch("/api/users/{uid}", response_model=UserOut)
+async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Aktualizuje użytkownika - tylko admin."""
+    if uid == admin.id and payload.role and payload.role != "ADMIN":
+        raise HTTPException(400, "Nie możesz odebrać sobie roli admina!")
+    if uid == admin.id and payload.is_active is False:
+        raise HTTPException(400, "Nie możesz deaktywować własnego konta!")
+    
+    updates = []
+    params = {"id": uid}
+    if payload.full_name is not None:
+        updates.append("full_name = :name")
+        params["name"] = payload.full_name
+    if payload.role is not None:
+        updates.append("role = :role")
+        params["role"] = payload.role
+    if payload.is_active is not None:
+        updates.append("is_active = :active")
+        params["active"] = payload.is_active
+    
+    if updates:
+        await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET {', '.join(updates)} WHERE id = :id"), params)
+        await db.commit()
+    
+    r = await db.execute(text(f"SELECT id, email, full_name, role, is_active, created_at, last_login FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
+    u = r.first()
+    if not u:
+        raise HTTPException(404, "Użytkownik nie znaleziony")
+    
+    await log_audit(db, admin, "USER_UPDATED", "user", str(uid), str(payload.model_dump(exclude_none=True)))
+    return UserOut(**dict(u._mapping))
+
+
+@app.put("/api/users/{uid}/password", status_code=204)
+async def reset_user_password(uid: int, payload: AdminPasswordReset, admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Reset hasła użytkownika przez admina - bez wymagania starego hasła."""
+    err = validate_password_strength(payload.new_password)
+    if err:
+        raise HTTPException(400, err)
+    
+    new_hash = hash_password(payload.new_password)
+    r = await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET password_hash = :h WHERE id = :id RETURNING email"), {"h": new_hash, "id": uid})
+    u = r.first()
+    await db.commit()
+    if not u:
+        raise HTTPException(404, "Użytkownik nie znaleziony")
+    
+    await log_audit(db, admin, "PASSWORD_RESET_BY_ADMIN", "user", str(uid), f"reset hasła dla: {u.email}")
+
+
+@app.delete("/api/users/{uid}", status_code=204)
+async def delete_user(uid: int, admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Usuwa użytkownika - tylko admin (nie może usunąć siebie)."""
+    if uid == admin.id:
+        raise HTTPException(400, "Nie możesz usunąć własnego konta!")
+    
+    r = await db.execute(text(f"DELETE FROM {settings.TABLE_USERS} WHERE id = :id RETURNING email"), {"id": uid})
+    u = r.first()
+    await db.commit()
+    if not u:
+        raise HTTPException(404, "Użytkownik nie znaleziony")
+    
+    await log_audit(db, admin, "USER_DELETED", "user", str(uid), f"usunięto: {u.email}")
+
+
+# ===== AUDIT LOG (tylko admin) =====
+@app.get("/api/audit-log", response_model=List[AuditLogOut])
+async def get_audit_log(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user_id: Optional[int] = None,
+    action: Optional[str] = None,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Audit log - tylko super-admin (konkretny email z SUPER_ADMIN_EMAIL)."""
+    # Sprawdź czy to super-admin
+    super_email = settings.SUPER_ADMIN_EMAIL.strip().lower()
+    if super_email and admin.email.lower() != super_email:
+        raise HTTPException(403, "Audit log dostępny tylko dla super-administratora")
+    
+    where = []
+    params = {"limit": limit, "offset": offset}
+    if user_id:
+        where.append("user_id = :uid")
+        params["uid"] = user_id
+    if action:
+        where.append("action = :action")
+        params["action"] = action
+    
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    
+    r = await db.execute(text(f"""
+        SELECT id, user_id, user_email, action, resource_type, resource_id, details, created_at
+        FROM {settings.TABLE_AUDIT_LOG}
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """), params)
+    
+    return [AuditLogOut(**dict(row._mapping)) for row in r]
 
 
 # ========== ENDPOINTY: META ==========
