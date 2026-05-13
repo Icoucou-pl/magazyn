@@ -87,9 +87,19 @@ class Settings(BaseSettings):
     
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+        # Na Railway plik .env nie istnieje - czyta z env variables bezpośrednio
+        extra = "ignore"
 
 
 settings = Settings()
+
+# DEBUG - pokaż co Railway widzi (usuniemy po naprawieniu)
+import os
+print(f"[DEBUG] DB_HOST from env: '{os.environ.get('DB_HOST', 'NOT SET')}'")
+print(f"[DEBUG] DB_HOST from settings: '{settings.DB_HOST}'")
+print(f"[DEBUG] All env keys with DB: {[k for k in os.environ.keys() if 'DB' in k]}")
 
 
 if not settings.DATABASE_URL and settings.DB_HOST:
