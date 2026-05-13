@@ -64,7 +64,8 @@ const api = {
   put: async (path, body) => {
     const r = await fetch(`${API_BASE}${path}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) }, body: JSON.stringify(body) });
     if (r.status === 401) { clearToken(); window.location.reload(); throw new Error('Sesja wygasła'); }
-    if (!r.ok) throw new Error(`PUT ${path}: ${r.status}`);
+    if (!r.ok) { const txt = await r.text(); throw new Error(`PUT ${path}: ${r.status} - ${txt}`); }
+    if (r.status === 204 || r.headers.get('content-length') === '0') return null;
     return r.json();
   },
   del: async (path) => {
