@@ -95,12 +95,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# DEBUG - pokaż co Railway widzi (usuniemy po naprawieniu)
-import os
-print(f"[DEBUG] DB_HOST from env: '{os.environ.get('DB_HOST', 'NOT SET')}'")
-print(f"[DEBUG] DB_HOST from settings: '{settings.DB_HOST}'")
-print(f"[DEBUG] All env keys with DB: {[k for k in os.environ.keys() if 'DB' in k]}")
-
 
 if not settings.DATABASE_URL and settings.DB_HOST:
     from urllib.parse import quote_plus
@@ -169,11 +163,16 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_size=2,           # MAX 2 jednoczesne połączenia (home.pl ma limit)
-    max_overflow=1,        # +1 awaryjnie = max 3 jednocześnie
-    pool_timeout=30,       # czekaj max 30s na wolne połączenie
-    pool_recycle=300,      # zamknij połączenia starsze niż 5 min
-    connect_args={"timeout": 30, "command_timeout": 30},
+    pool_size=5,
+    max_overflow=5,
+    pool_timeout=30,
+    pool_recycle=300,
+    connect_args={
+        "timeout": 30,
+        "command_timeout": 30,
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    },
 )
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
