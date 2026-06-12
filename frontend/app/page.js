@@ -265,19 +265,34 @@ function AppShell({ currentUser, onLogout }) {
     setLoading(true);
     setError(null);
     try {
-      // Ładujemy SEKWENCYJNIE żeby nie przeciążać home.pl (limit połączeń)
-      setStats(await api.get('/stats'));
-      setClassification(await api.get('/classification'));
-      setManufacturers(await api.get('/manufacturers'));
-      setContainerTypes(await api.get('/container-types'));
-      setContainers(await api.get('/containers'));
+      // Ładujemy RÓWNOLEGLE — Supabase spokojnie to wytrzyma (home.pl już nie ma)
       // Przy filtrze "FAVORITES" pobieramy wszystkie produkty (może być ulubiony z dead stock itp.)
       const apiInclude = includeFilter === 'FAVORITES' ? 'ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE' : includeFilter;
-      setProducts(await api.get(`/products?include=${apiInclude}`));
-      setCalendarEvents(await api.get('/calendar'));
-      setCashflow(await api.get('/cashflow'));
-      setAnomalies(await api.get('/anomalies'));
-      setShoppingList(await api.get('/shopping-list'));
+      const [
+        statsData, classificationData, manufacturersData, containerTypesData,
+        containersData, productsData, calendarData, cashflowData, anomaliesData, shoppingListData,
+      ] = await Promise.all([
+        api.get('/stats'),
+        api.get('/classification'),
+        api.get('/manufacturers'),
+        api.get('/container-types'),
+        api.get('/containers'),
+        api.get(`/products?include=${apiInclude}`),
+        api.get('/calendar'),
+        api.get('/cashflow'),
+        api.get('/anomalies'),
+        api.get('/shopping-list'),
+      ]);
+      setStats(statsData);
+      setClassification(classificationData);
+      setManufacturers(manufacturersData);
+      setContainerTypes(containerTypesData);
+      setContainers(containersData);
+      setProducts(productsData);
+      setCalendarEvents(calendarData);
+      setCashflow(cashflowData);
+      setAnomalies(anomaliesData);
+      setShoppingList(shoppingListData);
     } catch (e) {
       setError(e.message); console.error(e);
     } finally {
@@ -288,21 +303,34 @@ function AppShell({ currentUser, onLogout }) {
   const reloadProducts = async () => {
     try {
       const apiInclude = includeFilter === 'FAVORITES' ? 'ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE' : includeFilter;
-      setProducts(await api.get(`/products?include=${apiInclude}`));
-      setAnomalies(await api.get('/anomalies'));
-      setShoppingList(await api.get('/shopping-list'));
-      setClassification(await api.get('/classification'));
+      const [productsData, anomaliesData, shoppingListData, classificationData] = await Promise.all([
+        api.get(`/products?include=${apiInclude}`),
+        api.get('/anomalies'),
+        api.get('/shopping-list'),
+        api.get('/classification'),
+      ]);
+      setProducts(productsData);
+      setAnomalies(anomaliesData);
+      setShoppingList(shoppingListData);
+      setClassification(classificationData);
     } catch (e) { console.error(e); }
   };
 
   const reloadContainers = async () => {
     try {
       const apiInclude = includeFilter === 'FAVORITES' ? 'ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE' : includeFilter;
-      setContainers(await api.get('/containers'));
-      setProducts(await api.get(`/products?include=${apiInclude}`));
-      setCalendarEvents(await api.get('/calendar'));
-      setCashflow(await api.get('/cashflow'));
-      setShoppingList(await api.get('/shopping-list'));
+      const [containersData, productsData, calendarData, cashflowData, shoppingListData] = await Promise.all([
+        api.get('/containers'),
+        api.get(`/products?include=${apiInclude}`),
+        api.get('/calendar'),
+        api.get('/cashflow'),
+        api.get('/shopping-list'),
+      ]);
+      setContainers(containersData);
+      setProducts(productsData);
+      setCalendarEvents(calendarData);
+      setCashflow(cashflowData);
+      setShoppingList(shoppingListData);
     } catch (e) { console.error(e); }
   };
 
