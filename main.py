@@ -224,11 +224,14 @@ async def lifespan(app: FastAPI):
             )
         """))
         
-        await conn.execute(text(f"""
-            INSERT INTO {settings.TABLE_CONTAINER_TYPES} (name, capacity_cbm, sort_order) 
-            VALUES ('20''', 33.0, 1), ('40''', 67.0, 2), ('40''HQ', 76.0, 3)
-            ON CONFLICT (name) DO NOTHING
-        """))
+        # Domyślne typy kontenerów - tylko jeśli tabela jest pusta
+        result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_CONTAINER_TYPES}"))
+        if result.scalar() == 0:
+            await conn.execute(text(f"""
+                INSERT INTO {settings.TABLE_CONTAINER_TYPES} (name, capacity_cbm, sort_order) 
+                VALUES ('20'' GP', 33.0, 1), ('40'' GP', 67.0, 2), ('40'' HC', 76.0, 3),
+                       ('45'' HC', 86.0, 4), ('20'' REEFER', 28.0, 5)
+            """))
         
         # Atrybuty produktów
         await conn.execute(text(f"""
