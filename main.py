@@ -112,6 +112,12 @@ if not settings.SECRET_KEY:
     print("[WARNING] SECRET_KEY nie ustawiony w env - wygenerowano tymczasowy. W produkcji USTAW go w zmiennych środowiskowych Railway!")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def to_float(v, default=0.0) -> float:
+    """Konwertuje Decimal/None/str na float - Supabase zwraca Decimal zamiast float."""
+    if v is None: return default
+    try: return float(v)
+    except: return default
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
@@ -818,12 +824,12 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
     
     total_available = row["stock"] + stock_in_transit
     months_of_stock = (total_available / avg_monthly) if avg_monthly > 0 else 999.0
-    price = row.get("price", 0)
+    price = float(row.get("price") or 0)
     
     return ProductSummary(
         sku=row["sku"],
         name=row["name"] or "",
-        stock=row["stock"],
+        stock=float(row["stock"] or 0),
         stock_value=round(row["stock"] * price, 2),
         purchase_price=round(price, 2),
         stock_in_transit=stock_in_transit,
@@ -1760,14 +1766,14 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
     for r in sales_result:
         sku_norm = r._mapping["sku_norm"]
         sale_date = r._mapping["sale_date"]
-        qty = r._mapping["qty"]
+        qty = float(r._mapping["qty"] or 0)
         if sku_norm not in sales_by_sku:
             sales_by_sku[sku_norm] = {}
         sales_by_sku[sku_norm][sale_date] = qty
     
     # Mapa SKU → cena
-    price_map = {p.sku.strip().lower(): p.purchase_price for p in products}
-    stock_map = {p.sku.strip().lower(): p.stock for p in products}
+    price_map = {p.sku.strip().lower(): float(p.purchase_price or 0) for p in products}
+    stock_map = {p.sku.strip().lower(): float(p.stock or 0) for p in products}
     
     # Obliczamy wartość dla każdego dnia
     points = []
