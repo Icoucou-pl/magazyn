@@ -100,7 +100,7 @@ if not settings.DATABASE_URL and settings.DB_HOST:
     from urllib.parse import quote_plus
     pw = quote_plus(settings.DB_PASSWORD)
     user = quote_plus(settings.DB_USER)
-    settings.DATABASE_URL = f"postgresql+asyncpg://{user}:{pw}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
+    settings.DATABASE_URL = f"postgresql+asyncpg://{user}:{pw}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}?prepared_statement_cache_size=0"
 
 if not settings.DATABASE_URL:
     raise RuntimeError("Brak konfiguracji bazy. Ustaw DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD w .env")
