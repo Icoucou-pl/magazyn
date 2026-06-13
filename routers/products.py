@@ -1,0 +1,255 @@
+"""Produkty: lista z prognozą, edycja lead-time/atrybutów, projekcja stanu,
+import atrybutów, eksport do XLSX, ulubione."""
+
+import io
+from datetime import date, timedelta
+from typing import List
+
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from config import settings
+from database import get_db
+from models import (
+    ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
+    StockProjectionPoint, ImportRow, ImportResult,
+)
+from services.products import fetch_products, get_product
+
+router = APIRouter(prefix="/api", tags=["products"])
+
+
+@router.get("/products", response_model=List[ProductSummary])
+async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), db: AsyncSession = Depends(get_db)):
+    allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
+    return await fetch_products(db, allowed)
+
+
+@router.get("/products/{sku}", response_model=ProductSummary)
+async def get_product_endpoint(sku: str, db: AsyncSession = Depends(get_db)):
+    return await get_product(db, sku)
+
+
+@router.put("/products/{sku}/lead-time", response_model=ProductSummary)
+async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession = Depends(get_db)):
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_LEAD_TIMES} (sku, lead_time_days, updated_at)
+            VALUES (:sku, :lt, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET lead_time_days = EXCLUDED.lead_time_days, updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "lt": payload.lead_time_days}
+    )
+    await db.commit()
+    return await get_product(db, sku)
+
+
+@router.put("/products/{sku}/attrs", response_model=ProductSummary)
+async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db)):
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, seasonality_enabled, ean, forced_status FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    e = existing.first()
+    cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
+    mfr = payload.manufacturer_id if payload.manufacturer_id is not None else (e.manufacturer_id if e else None)
+    seas = payload.seasonality_enabled if payload.seasonality_enabled is not None else (e.seasonality_enabled if e else False)
+    ean = payload.ean if payload.ean is not None else (e.ean if e else None)
+    if ean is not None and not ean.strip():
+        ean = None
+
+    # Forced status: "AUTO" lub "" lub null = wyczyść
+    forced = payload.forced_status if payload.forced_status is not None else (e.forced_status if e else None)
+    if forced in ("", "AUTO", "auto", None):
+        forced = None
+    elif forced not in ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"):
+        raise HTTPException(400, f"Niepoprawny status: {forced}. Dozwolone: ACTIVE, ACTIVE_NO_STOCK, DEAD_STOCK, INACTIVE, AUTO")
+
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, seasonality_enabled, ean, forced_status, updated_at)
+            VALUES (:sku, :cbm, :mfr, :seas, :ean, :forced, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET
+                cbm_per_unit = EXCLUDED.cbm_per_unit,
+                manufacturer_id = EXCLUDED.manufacturer_id,
+                seasonality_enabled = EXCLUDED.seasonality_enabled,
+                ean = EXCLUDED.ean,
+                forced_status = EXCLUDED.forced_status,
+                updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "cbm": cbm, "mfr": mfr, "seas": seas, "ean": ean, "forced": forced}
+    )
+    await db.commit()
+    return await get_product(db, sku)
+
+
+@router.get("/products/{sku}/projection", response_model=List[StockProjectionPoint])
+async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_db)):
+    product = await get_product(db, sku)
+    today = date.today()
+    base_daily = product.avg_monthly_weighted / 30
+    eta_map = {d.eta_date: d.quantity for d in product.incoming_deliveries}
+    eta_names = {d.eta_date: f"#{d.container_number} +{d.quantity}" for d in product.incoming_deliveries}
+    points = []
+    current = float(product.stock)
+    for offset in range(0, days + 1):
+        cd = today + timedelta(days=offset)
+        ev = None
+        if cd in eta_map:
+            current += eta_map[cd]
+            ev = eta_names[cd]
+        if offset > 0:
+            current -= base_daily
+        points.append(StockProjectionPoint(date=cd, stock=max(0, int(current)), event=ev))
+    return points
+
+
+@router.post("/products/import", response_model=ImportResult)
+async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_db)):
+    """Import atrybutów dla produktów - z UI lub bezpośrednio JSON-em."""
+    products_result = await db.execute(text(f"SELECT {settings.COL_PRODUCT_SKU} as sku FROM {settings.TABLE_PRODUCTS}"))
+    valid_skus = {r._mapping["sku"].strip().lower(): r._mapping["sku"] for r in products_result}
+
+    mfr_result = await db.execute(text(f"SELECT id, name FROM {settings.TABLE_MANUFACTURERS}"))
+    mfr_map = {r._mapping["name"].strip().lower(): r._mapping["id"] for r in mfr_result}
+
+    updated = 0
+    skipped = 0
+    errors = []
+
+    for row in rows:
+        sku_key = row.sku.strip().lower()
+        if sku_key not in valid_skus:
+            skipped += 1
+            errors.append(f"{row.sku}: nie znaleziono w bazie")
+            continue
+        real_sku = valid_skus[sku_key]
+
+        mfr_id = None
+        if row.manufacturer_name:
+            mfr_id = mfr_map.get(row.manufacturer_name.strip().lower())
+            if mfr_id is None and row.manufacturer_name.strip():
+                r = await db.execute(
+                    text(f"INSERT INTO {settings.TABLE_MANUFACTURERS} (name, color) VALUES (:n, :c) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id"),
+                    {"n": row.manufacturer_name.strip(), "c": "#6b7280"}
+                )
+                mfr_id = r.scalar_one()
+                mfr_map[row.manufacturer_name.strip().lower()] = mfr_id
+
+        try:
+            existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, seasonality_enabled FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": real_sku})
+            e = existing.first()
+            cbm = row.cbm if row.cbm is not None else (float(e.cbm_per_unit) if e else 0)
+            new_mfr = mfr_id if mfr_id is not None else (e.manufacturer_id if e else None)
+            new_seas = row.seasonality_enabled if row.seasonality_enabled is not None else (e.seasonality_enabled if e else False)
+
+            await db.execute(text(f"""
+                INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, seasonality_enabled, updated_at)
+                VALUES (:sku, :cbm, :mfr, :seas, CURRENT_TIMESTAMP)
+                ON CONFLICT (sku) DO UPDATE SET cbm_per_unit=EXCLUDED.cbm_per_unit, manufacturer_id=EXCLUDED.manufacturer_id, seasonality_enabled=EXCLUDED.seasonality_enabled, updated_at=CURRENT_TIMESTAMP
+            """), {"sku": real_sku, "cbm": cbm, "mfr": new_mfr, "seas": new_seas})
+
+            if row.lead_time_days is not None and 1 <= row.lead_time_days <= 365:
+                await db.execute(text(f"""
+                    INSERT INTO {settings.TABLE_LEAD_TIMES} (sku, lead_time_days, updated_at)
+                    VALUES (:sku, :lt, CURRENT_TIMESTAMP)
+                    ON CONFLICT (sku) DO UPDATE SET lead_time_days=EXCLUDED.lead_time_days, updated_at=CURRENT_TIMESTAMP
+                """), {"sku": real_sku, "lt": row.lead_time_days})
+
+            updated += 1
+        except Exception as ex:
+            errors.append(f"{row.sku}: {str(ex)[:100]}")
+            skipped += 1
+
+    await db.commit()
+    return ImportResult(total=len(rows), updated=updated, skipped=skipped, errors=errors[:20])
+
+
+@router.get("/products/export/csv")
+async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_only: bool = Query(False), db: AsyncSession = Depends(get_db)):
+    """Eksport produktów do Excela (XLSX) - polskie znaki zawsze działają."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
+    products = await fetch_products(db, allowed)
+
+    if favorites_only:
+        products = [p for p in products if p.is_favorite]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Produkty"
+
+    headers = [
+        "SKU", "Nazwa", "EAN", "Producent", "Stan", "Cena zakupu", "Wartość PLN",
+        "W drodze", "CBM", "Lead time (dni)",
+        "Sprzedaż 1m", "Sprzedaż 2m", "Sprzedaż 3m", "Sprzedaż 4m",
+        "YoY 30d", "YoY +30d", "Średnia miesięczna", "Miesiące zapasu",
+        "Status prognozy", "Status produktu", "Sezonowy", "Obserwowany",
+        "Data zamówienia", "Data końca zapasu",
+    ]
+    ws.append(headers)
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1c1917", end_color="1c1917", fill_type="solid")
+    for col_idx, _ in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for p in products:
+        ws.append([
+            p.sku, p.name, p.ean or "", p.manufacturer_name or "", p.stock,
+            p.purchase_price, p.stock_value, p.stock_in_transit, p.cbm_per_unit, p.lead_time_days,
+            p.sales_1m, p.sales_2m, p.sales_3m, p.sales_4m,
+            p.sales_yoy_30d, p.sales_yoy_next_30d,
+            p.avg_monthly_weighted, p.months_of_stock,
+            p.status, p.product_status,
+            "tak" if p.seasonality_enabled else "nie",
+            "tak" if p.is_favorite else "nie",
+            p.order_date.isoformat(), p.empty_date.isoformat(),
+        ])
+
+    column_widths = [12, 35, 16, 15, 8, 12, 14, 10, 8, 8, 10, 10, 10, 10, 10, 10, 12, 10, 14, 14, 8, 10, 12, 12]
+    for i, width in enumerate(column_widths, 1):
+        ws.column_dimensions[chr(64 + i) if i <= 26 else 'A' + chr(64 + i - 26)].width = width
+
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"produkty_{date.today().isoformat()}.xlsx"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.put("/products/{sku}/favorite", response_model=ProductSummary)
+async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
+    """Przełącza status ulubione - jeśli był true, robi false i odwrotnie."""
+    existing = await db.execute(text(f"SELECT is_favorite FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    e = existing.first()
+    new_val = not e.is_favorite if e else True
+
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, is_favorite, updated_at)
+            VALUES (:sku, :fav, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET is_favorite = EXCLUDED.is_favorite, updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "fav": new_val}
+    )
+    await db.commit()
+    return await get_product(db, sku)
+
+
+@router.get("/favorites", response_model=List[ProductSummary])
+async def list_favorites(db: AsyncSession = Depends(get_db)):
+    """Zwraca tylko ulubione produkty."""
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"})
+    return [p for p in products if p.is_favorite]

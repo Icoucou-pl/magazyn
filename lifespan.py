@@ -1,0 +1,176 @@
+"""
+Lifespan aplikacji: przy starcie tworzy brakujące tabele, dokłada brakujące kolumny
+(migracje ALTER TABLE), wstawia domyślne typy kontenerów, tworzy domyślnego admina
+(jeśli baza userów pusta) i zakłada indeksy. Przy zamknięciu zwalnia pulę połączeń.
+"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from sqlalchemy import text
+
+from config import settings
+from database import engine, add_column_if_missing
+from security import hash_password, validate_password_strength
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with engine.begin() as conn:
+        # Lead times
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_LEAD_TIMES} (
+                sku VARCHAR(255) PRIMARY KEY,
+                lead_time_days INTEGER NOT NULL DEFAULT {settings.DEFAULT_LEAD_TIME_DAYS},
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+        # Producenci
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_MANUFACTURERS} (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                color VARCHAR(20) DEFAULT '#6b7280',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        await add_column_if_missing(conn, settings.TABLE_MANUFACTURERS, "email", "VARCHAR(255)")
+
+        # Typy kontenerów
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_TYPES} (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                capacity_cbm DECIMAL(8,2) NOT NULL,
+                sort_order INTEGER DEFAULT 0
+            )
+        """))
+
+        # Domyślne typy kontenerów - tylko jeśli tabela jest pusta
+        result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_CONTAINER_TYPES}"))
+        if result.scalar() == 0:
+            await conn.execute(text(f"""
+                INSERT INTO {settings.TABLE_CONTAINER_TYPES} (name, capacity_cbm, sort_order)
+                VALUES ('20'' GP', 33.0, 1), ('40'' GP', 67.0, 2), ('40'' HC', 76.0, 3),
+                       ('45'' HC', 86.0, 4), ('20'' REEFER', 28.0, 5)
+            """))
+
+        # Atrybuty produktów
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_PRODUCT_ATTRS} (
+                sku VARCHAR(255) PRIMARY KEY,
+                cbm_per_unit DECIMAL(8,4) DEFAULT 0,
+                manufacturer_id INTEGER REFERENCES {settings.TABLE_MANUFACTURERS}(id) ON DELETE SET NULL,
+                seasonality_enabled BOOLEAN DEFAULT FALSE,
+                force_visible BOOLEAN DEFAULT FALSE,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        # Migracja: ulubione
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "is_favorite", "BOOLEAN DEFAULT FALSE")
+        # Migracja: EAN
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "ean", "VARCHAR(50)")
+        # Migracja: ręczne wymuszenie statusu
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "forced_status", "VARCHAR(30)")
+
+        # Kontenery
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINERS} (
+                id SERIAL PRIMARY KEY,
+                container_number VARCHAR(100) NOT NULL,
+                container_type_id INTEGER REFERENCES {settings.TABLE_CONTAINER_TYPES}(id),
+                manufacturer_id INTEGER REFERENCES {settings.TABLE_MANUFACTURERS}(id),
+                supplier VARCHAR(255),
+                order_date DATE NOT NULL,
+                eta_date DATE NOT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'ORDERED',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT chk_status CHECK (status IN ('ORDERED','IN_PRODUCTION','IN_TRANSIT','DELIVERED'))
+            )
+        """))
+        # Migracja: order_number
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "order_number", "VARCHAR(100)")
+
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_ITEMS} (
+                id SERIAL PRIMARY KEY,
+                container_id INTEGER NOT NULL REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE CASCADE,
+                sku VARCHAR(255) NOT NULL,
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                unit_cost DECIMAL(10,2)
+            )
+        """))
+
+        # Załączniki kontenerów (mock - tylko metadane bo plik storage to inny temat)
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_ATTACHMENTS} (
+                id SERIAL PRIMARY KEY,
+                container_id INTEGER NOT NULL REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE CASCADE,
+                filename VARCHAR(255) NOT NULL,
+                file_type VARCHAR(50),
+                file_size VARCHAR(50),
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+        # Użytkownicy
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_USERS} (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                full_name VARCHAR(255),
+                role VARCHAR(20) NOT NULL DEFAULT 'VIEWER',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
+                CONSTRAINT chk_role CHECK (role IN ('ADMIN', 'IMPORT', 'VIEWER'))
+            )
+        """))
+
+        # Audit log - kto co kiedy
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_AUDIT_LOG} (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES {settings.TABLE_USERS}(id) ON DELETE SET NULL,
+                user_email VARCHAR(255),
+                action VARCHAR(100) NOT NULL,
+                resource_type VARCHAR(50),
+                resource_id VARCHAR(255),
+                details TEXT,
+                ip_address VARCHAR(45),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_user ON {settings.TABLE_AUDIT_LOG}(user_id)"))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_created ON {settings.TABLE_AUDIT_LOG}(created_at DESC)"))
+
+        # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
+        if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
+            count_result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_USERS}"))
+            user_count = count_result.scalar()
+            if user_count == 0:
+                pwd_err = validate_password_strength(settings.ADMIN_PASSWORD)
+                if pwd_err:
+                    print(f"[ERROR] ADMIN_PASSWORD słabe: {pwd_err}. Admin NIE utworzony.")
+                else:
+                    hashed = hash_password(settings.ADMIN_PASSWORD)
+                    await conn.execute(
+                        text(f"INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role) VALUES (:e, :h, :n, 'ADMIN')"),
+                        {"e": settings.ADMIN_EMAIL, "h": hashed, "n": "Administrator"}
+                    )
+                    print(f"[INFO] Utworzono domyślnego admina: {settings.ADMIN_EMAIL}")
+
+        # Indeksy
+        try:
+            await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sellasist_items_symbol_lower ON {settings.TABLE_ORDER_ITEMS} (LOWER(TRIM({settings.COL_ITEM_SKU})))"))
+            await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_subiekt_towary_symbol_lower ON {settings.TABLE_PRODUCTS} (LOWER(TRIM({settings.COL_PRODUCT_SKU})))"))
+        except Exception as e:
+            print(f"[indexes] {e}")
+
+    yield
+    await engine.dispose()
