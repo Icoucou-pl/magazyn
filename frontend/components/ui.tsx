@@ -19,14 +19,15 @@ export type IconProps = {
   fill?: string;
   children?: React.ReactNode;
   d?: string;
+  style?: React.CSSProperties;
 };
 
 type Size = "sm" | "md";
 
 // ── Icon base (stroke-based, hand-tuned for dark mode) ───────
-const Icon = ({ d, size = 16, stroke = 1.6, fill = "none", children }: IconProps) => (
+const Icon = ({ d, size = 16, stroke = 1.6, fill = "none", children, style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
-       strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+       strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, ...style }}>
     {d ? <path d={d} /> : children}
   </svg>
 );

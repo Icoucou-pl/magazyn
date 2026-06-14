@@ -1,0 +1,138 @@
+"use client";
+// ============================================================
+// MAGAZYN — App shell (app/page.tsx). Zastępuje mockowy App z app.jsx.
+//   - auth gate przez getUser()/logout() z lib/api; nasłuch 'magazyn:unauthorized'
+//   - UserContext.Provider (lib/permissions) — widoki czytają usera/uprawnienia
+//   - motyw: useTweaks + applyTweaks; Sun/Moon w headerze ↔ AppearancePanel (sync przez wspólny stan)
+//   - density → padding main (prop poleci do widoków w kolejnych etapach)
+//   - widoki = ComingSoon (Dashboard powstaje w etapie 1)
+// ============================================================
+
+import React, { useEffect, useState } from "react";
+import { getUser, logout } from "@/lib/api";
+import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
+import LoginScreen from "@/components/login";
+import Header, { NAV_ITEMS, type User } from "@/components/header";
+import { ToastHost, toast } from "@/components/toast";
+import { I } from "@/components/ui";
+import {
+  AppearancePanel, useTweaks, applyTweaks, TWEAK_DEFAULTS, type TweakValues,
+} from "@/components/tweaks-panel";
+
+// lib/permissions.js jest w JS (createContext(null)) — dotypowujemy kontekst pod User.
+const UserContext = RawUserContext as unknown as React.Context<User | null>;
+
+function ComingSoon({ view }: { view: string }) {
+  const meta = NAV_ITEMS.find((n) => n.id === view);
+  return (
+    <div className="fade-in" style={{
+      padding: 60, textAlign: "center",
+      background: "var(--surface-1)",
+      border: "1px dashed var(--border)",
+      borderRadius: "var(--r-lg)",
+    }}>
+      <div style={{
+        width: 56, height: 56, margin: "0 auto 16px",
+        borderRadius: 14,
+        background: "var(--accent-soft)",
+        color: "var(--accent)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>{meta && <meta.icon size={24}/>}</div>
+      <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{meta?.label}</h2>
+      <p style={{ color: "var(--text-lo)", fontSize: 13, marginTop: 6 }}>
+        Ten widok zostanie zaprojektowany w kolejnym etapie.
+      </p>
+    </div>
+  );
+}
+
+function ReadOnlyBanner() {
+  return (
+    <div style={{
+      background: "color-mix(in oklch, var(--warning) 12%, var(--bg))",
+      borderBottom: "1px solid color-mix(in oklch, var(--warning) 35%, var(--border))",
+      padding: "7px 24px",
+      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      fontSize: 11, color: "var(--warning)", fontWeight: 600,
+      letterSpacing: "0.04em", textTransform: "uppercase",
+    }}>
+      <I.Alert size={12}/>
+      Tryb tylko do odczytu — Twoja rola nie pozwala na zmiany
+    </div>
+  );
+}
+
+export default function Page() {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [ready, setReady] = useState(false);
+  const [view, setView] = useState("dashboard");
+  const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
+
+  // Motyw (akcent/warmth/theme/density) → na <html>
+  useEffect(() => { applyTweaks(t); }, [t]);
+
+  // Sesja z localStorage + nasłuch wygaśnięcia (401)
+  useEffect(() => {
+    setCurrentUser(getUser() as User | null);
+    setReady(true);
+    const onUnauth = () => { setCurrentUser(null); setView("dashboard"); };
+    window.addEventListener("magazyn:unauthorized", onUnauth);
+    return () => window.removeEventListener("magazyn:unauthorized", onUnauth);
+  }, []);
+
+  // Ctrl+K — wyszukiwarka globalna (modal w kolejnym etapie)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        toast("Wyszukiwarka globalna — wkrótce", "info");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Unikamy migotania ekranu logowania przy hydratacji (sesja czytana po montażu)
+  if (!ready) return null;
+
+  if (!currentUser) {
+    return <LoginScreen onLogin={(u) => setCurrentUser(u)} />;
+  }
+
+  const handleLogout = () => {
+    logout();
+    setCurrentUser(null);
+    setView("dashboard");
+  };
+
+  return (
+    <UserContext.Provider value={currentUser}>
+      <Header
+        view={view}
+        setView={setView}
+        user={currentUser}
+        theme={t.theme}
+        onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
+        onLogout={handleLogout}
+        onOpenSearch={() => toast("Wyszukiwarka globalna — wkrótce", "info")}
+        onOpenScan={() => toast("Skaner EAN — wkrótce", "info")}
+        onRefresh={() => toast("Odświeżanie danych — wkrótce", "info")}
+        onChangePassword={() => toast("Zmiana hasła — wkrótce", "info")}
+      />
+
+      {!canEdit(currentUser) && <ReadOnlyBanner/>}
+
+      <main className="app-main" style={{
+        maxWidth: 1480, margin: "0 auto",
+        width: "100%",
+        padding: t.density === "compact" ? "16px 20px" : "24px 24px",
+      }}>
+        <ComingSoon view={view}/>
+      </main>
+
+      {/* Pływający panel wyglądu (⚙ w prawym dolnym rogu) — stan wspólny z headerem */}
+      <AppearancePanel t={t} setTweak={setTweak}/>
+      <ToastHost/>
+    </UserContext.Provider>
+  );
+}

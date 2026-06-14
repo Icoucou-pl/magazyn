@@ -1,0 +1,323 @@
+"use client";
+// ============================================================
+// MAGAZYN — Header (+ NavBtn, UserMenuPopover, MenuItem). Port z app.jsx.
+//   - nawigacja gate'owana can(user, perm) z lib/permissions
+//   - Sun/Moon → onToggleTheme (shell zmienia t.theme)
+//   - menu usera: Zmień hasło / Dziennik audytu (super) / Wyloguj
+//   - search/scan/refresh/changePassword/auditLog = opcjonalne (modale w kolejnych etapach)
+//   - logo z /public/assets (logo-white.png / logo-black.png)
+// Pominięte do etapu 5: PresenceIndicator, NotificationsBell. Badge kontenerów: realny licznik później.
+// ============================================================
+
+import React, { useEffect, useState } from "react";
+import { I, Avatar, Pill, type IconProps } from "./ui";
+import { can } from "@/lib/permissions";
+
+export type User = {
+  id?: number | string;
+  email: string;
+  name?: string;
+  initials?: string;
+  role: string; // 'ADMIN' | 'IMPORT' | 'VIEWER'
+  isSuper?: boolean;
+  perms?: Record<string, boolean>;
+};
+
+type IconCmp = (props: IconProps) => React.ReactElement;
+
+type NavItem = { id: string; label: string; icon: IconCmp; perm?: string };
+
+export const NAV_ITEMS: NavItem[] = [
+  { id: "dashboard",  label: "Dashboard",  icon: I.Dashboard },
+  { id: "calendar",   label: "Kalendarz",  icon: I.Calendar },
+  { id: "products",   label: "Produkty",   icon: I.Box },
+  { id: "containers", label: "Kontenery",  icon: I.Ship },
+  { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
+  { id: "finance",    label: "Finanse",    icon: I.TrendUp, perm: "viewFinancials" },
+  { id: "cashflow",   label: "Cashflow",   icon: I.Wallet, perm: "viewFinancials" },
+  { id: "settings",   label: "Ustawienia", icon: I.Settings },
+];
+
+const iconBtn: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", justifyContent: "center",
+  width: 34, height: 34,
+  background: "var(--surface-1)",
+  border: "1px solid var(--border-soft)",
+  borderRadius: 8,
+  color: "var(--text-mid)",
+  transition: "all 0.12s",
+};
+
+type HeaderProps = {
+  view: string;
+  setView: (v: string) => void;
+  user: User;
+  theme: string;
+  onToggleTheme: () => void;
+  onLogout: () => void;
+  onOpenSearch?: () => void;
+  onOpenScan?: () => void;
+  onRefresh?: () => void;
+  onChangePassword?: () => void;
+  onAuditLog?: () => void;
+};
+
+export default function Header({
+  view, setView, user, theme, onToggleTheme, onLogout,
+  onOpenSearch, onOpenScan, onRefresh, onChangePassword, onAuditLog,
+}: HeaderProps) {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // Zamknij menu usera po kliknięciu poza nim
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-user-menu]")) setUserMenuOpen(false);
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [userMenuOpen]);
+
+  const navItems = NAV_ITEMS.filter((item) => !item.perm || can(user, item.perm));
+  const displayName = user.name || user.email;
+  const firstName = displayName.split(" ")[0];
+  const initials = user.initials || displayName.slice(0, 2).toUpperCase();
+
+  return (
+    <>
+      <header style={{
+        position: "sticky", top: 0, zIndex: 40,
+        background: "color-mix(in oklch, var(--bg) 80%, transparent)",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+        borderBottom: "1px solid var(--border-soft)",
+      }}>
+        <div style={{
+          maxWidth: 1480, margin: "0 auto",
+          padding: "0 24px",
+          display: "flex", alignItems: "center", gap: 24,
+          height: 60,
+        }}>
+          {/* Logo */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 26, width: "auto", display: "block" }}/>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
+            <span className="mono hide-tablet" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
+              MAGAZYN
+            </span>
+          </div>
+
+          {/* Nav — desktop */}
+          <nav style={{
+            display: "flex", gap: 2,
+            padding: 4, background: "var(--surface-1)", borderRadius: 10,
+            border: "1px solid var(--border-soft)",
+          }} className="hide-mobile">
+            {navItems.map((item) => (
+              <NavBtn key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)}/>
+            ))}
+          </nav>
+
+          {/* Mobile nav toggle */}
+          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={{
+            ...iconBtn, marginLeft: "auto",
+          }}>
+            <I.Menu size={18}/>
+          </button>
+
+          <div style={{ flex: 1 }} className="hide-mobile"/>
+
+          {/* Search bar */}
+          <button onClick={onOpenSearch} style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "8px 12px",
+            background: "var(--surface-1)",
+            border: "1px solid var(--border-soft)",
+            borderRadius: 8,
+            color: "var(--text-lo)",
+            fontSize: 12,
+            minWidth: 240, maxWidth: 320,
+            transition: "all 0.12s",
+          }} className="hide-mobile search-bar-btn">
+            <I.Search size={14}/>
+            <span style={{ flex: 1, textAlign: "left" }}>Szukaj wszędzie...</span>
+            <kbd>Ctrl+K</kbd>
+          </button>
+
+          {/* Actions */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
+              <I.Scan size={16}/>
+            </button>
+            <button onClick={onToggleTheme} style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
+              {theme === "light" ? <I.Moon size={16}/> : <I.Sun size={16}/>}
+            </button>
+            <button onClick={onRefresh} style={iconBtn} title="Odśwież dane">
+              <I.Refresh size={16}/>
+            </button>
+
+            {/* User menu */}
+            <div data-user-menu style={{ position: "relative" }}>
+              <button onClick={() => setUserMenuOpen(!userMenuOpen)} style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "4px 10px 4px 4px",
+                background: "var(--surface-1)",
+                border: "1px solid var(--border-soft)",
+                borderRadius: 999,
+                color: "var(--text-hi)",
+                marginLeft: 4,
+              }}>
+                <Avatar initials={initials} size={26}/>
+                <span style={{ fontSize: 12, fontWeight: 500 }} className="hide-tablet">{firstName}</span>
+                <I.ChevronD size={12} style={{ color: "var(--text-lo)" }}/>
+              </button>
+              {userMenuOpen && (
+                <UserMenuPopover
+                  user={user} initials={initials} displayName={displayName}
+                  onLogout={onLogout} onChangePassword={onChangePassword} onAuditLog={onAuditLog}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile nav drawer */}
+        {mobileNavOpen && (
+          <div className="show-mobile" style={{
+            borderTop: "1px solid var(--border-soft)",
+            padding: 8,
+            display: "flex", flexDirection: "column", gap: 2,
+            background: "var(--bg-elevated)",
+          }}>
+            {navItems.map((item) => (
+              <button key={item.id} onClick={() => { setView(item.id); setMobileNavOpen(false); }} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px",
+                background: view === item.id ? "var(--accent-soft)" : "transparent",
+                color: view === item.id ? "var(--accent)" : "var(--text-hi)",
+                border: "none", borderRadius: 8,
+                fontSize: 13, fontWeight: 500,
+                textAlign: "left", width: "100%",
+              }}>
+                <item.icon size={16}/>
+                {item.label}
+              </button>
+            ))}
+            <button onClick={() => { onOpenSearch?.(); setMobileNavOpen(false); }} style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "10px 12px", marginTop: 6,
+              border: "1px dashed var(--border)", borderRadius: 8,
+              background: "transparent", color: "var(--text-mid)",
+              fontSize: 12,
+            }}>
+              <I.Search size={14}/> Szukaj wszędzie...
+            </button>
+          </div>
+        )}
+      </header>
+
+      <style>{`
+        @media (max-width: 980px) {
+          .hide-mobile { display: none !important; }
+        }
+        @media (min-width: 981px) {
+          .show-mobile { display: none !important; }
+        }
+        @media (max-width: 760px) {
+          .hide-tablet { display: none !important; }
+        }
+        .search-bar-btn:hover { background: var(--surface-2); border-color: var(--border); color: var(--text-mid); }
+      `}</style>
+    </>
+  );
+}
+
+function NavBtn({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} style={{
+      display: "flex", alignItems: "center", gap: 6,
+      padding: "7px 12px",
+      background: active ? "var(--surface-3)" : "transparent",
+      color: active ? "var(--text-hi)" : "var(--text-mid)",
+      border: "none", borderRadius: 7,
+      fontSize: 12, fontWeight: 500,
+      transition: "all 0.12s",
+      position: "relative",
+    }}
+      onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--text-hi)"; }}
+      onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--text-mid)"; }}>
+      <item.icon size={14}/>
+      {item.label}
+    </button>
+  );
+}
+
+function UserMenuPopover({
+  user, initials, displayName, onLogout, onChangePassword, onAuditLog,
+}: {
+  user: User;
+  initials: string;
+  displayName: string;
+  onLogout: () => void;
+  onChangePassword?: () => void;
+  onAuditLog?: () => void;
+}) {
+  const isSuper = !!user.isSuper;
+  return (
+    <div style={{
+      position: "absolute", right: 0, top: "calc(100% + 8px)",
+      width: 260,
+      background: "var(--bg-elevated)",
+      border: "1px solid var(--border)",
+      borderRadius: 12,
+      padding: 6,
+      boxShadow: "0 16px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)",
+      zIndex: 50,
+    }} className="fade-in">
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px 12px", borderBottom: "1px solid var(--border-soft)" }}>
+        <Avatar initials={initials} size={36}/>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{displayName}</div>
+          <div style={{ fontSize: 11, color: "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</div>
+        </div>
+      </div>
+      <div style={{ padding: "8px 10px 4px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Rola</span>
+        <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">{user.role}</Pill>
+      </div>
+      <div style={{ marginTop: 6, display: "flex", flexDirection: "column" }}>
+        <MenuItem onClick={onChangePassword}>Zmień hasło</MenuItem>
+        {isSuper && onAuditLog && <MenuItem onClick={onAuditLog}>Dziennik audytu</MenuItem>}
+        <div style={{ height: 1, background: "var(--border-soft)", margin: "4px 0" }}/>
+        <MenuItem danger icon={<I.Logout size={13}/>} onClick={onLogout}>Wyloguj</MenuItem>
+      </div>
+    </div>
+  );
+}
+
+function MenuItem({
+  children, danger, icon, onClick,
+}: {
+  children: React.ReactNode;
+  danger?: boolean;
+  icon?: React.ReactNode;
+  onClick?: () => void;
+}) {
+  return (
+    <button onClick={onClick} style={{
+      display: "flex", alignItems: "center", gap: 8,
+      padding: "8px 10px",
+      background: "transparent", border: "none",
+      color: danger ? "var(--critical)" : "var(--text-mid)",
+      fontSize: 12, textAlign: "left",
+      borderRadius: 6,
+    }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+      {icon}{children}
+    </button>
+  );
+}
