@@ -68,6 +68,7 @@ export default function Page() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [view, setView] = useState("dashboard");
+  const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
 
   // Motyw (akcent/warmth/theme/density) → na <html>
@@ -132,14 +133,18 @@ export default function Page() {
         {view === "dashboard" ? (
           <Dashboard
             density={t.density}
-            onProductClick={() => toast("Szczegóły produktu — wkrótce (etap 2)", "info")}
+            onProductClick={(p) => { setPendingProductSku(p.sku); setView("products"); }}
             onContainerClick={() => toast("Edycja kontenera — wkrótce (etap 3)", "info")}
             onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
             onSimulator={() => toast("Symulator — wkrótce (etap 6)", "info")}
             onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
           />
         ) : view === "products" ? (
-          <ProductsView density={t.density} />
+          <ProductsView
+            density={t.density}
+            openSku={pendingProductSku}
+            onOpenedSku={() => setPendingProductSku(null)}
+          />
         ) : (
           <ComingSoon view={view} />
         )}

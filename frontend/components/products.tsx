@@ -29,9 +29,11 @@ const sortVal = (p: Product, key: keyof Product): number | string => {
 };
 
 export default function ProductsView({
-  density,
+  density, openSku, onOpenedSku,
 }: {
   density?: string;
+  openSku?: string | null;
+  onOpenedSku?: () => void;
 }) {
   const gap = density === "compact" ? 10 : 12;
 
@@ -63,6 +65,15 @@ export default function ProductsView({
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Drill-down z Dashboardu: po załadowaniu otwórz modal wskazanego SKU
+  useEffect(() => {
+    if (!openSku || loading) return;
+    const p = products.find((x) => x.sku === openSku);
+    if (p) setSelectedProduct(p);
+    else toast(`Nie znaleziono produktu ${openSku}`, "info");
+    onOpenedSku?.();
+  }, [openSku, loading, products, onOpenedSku]);
 
   const toggleRow = (sku: string) => setSelected((prev) => {
     const n = new Set(prev);
