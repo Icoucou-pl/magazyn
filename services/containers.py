@@ -32,6 +32,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost,
             p.{settings.COL_PRODUCT_NAME} AS product_name,
+            COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0) AS purchase_price,
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit
         FROM {settings.TABLE_CONTAINERS} c
         LEFT JOIN {settings.TABLE_CONTAINER_TYPES} ct ON ct.id = c.container_type_id
@@ -66,15 +67,18 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         if row["item_id"] is not None:
             cbm_pu = float(row["cbm_per_unit"]) if row["cbm_per_unit"] else 0
             tcb = cbm_pu * row["quantity"]
-            cost = float(row["unit_cost"]) if row["unit_cost"] else 0
+            # Koszt jednostkowy: jeśli pozycja nie ma własnego unit_cost,
+            # podstaw cenę zakupu produktu (cena_zakupu_netto) — tak jak liczona jest wartość magazynu.
+            unit = float(row["unit_cost"]) if row["unit_cost"] else 0
+            eff_cost = unit if unit else float(row["purchase_price"] or 0)
             containers_dict[cid]["items"].append(ContainerItemOut(
                 id=row["item_id"], sku=row["sku"], quantity=row["quantity"],
-                unit_cost=cost if cost else None, product_name=row["product_name"],
+                unit_cost=unit if unit else None, product_name=row["product_name"],
                 cbm_per_unit=cbm_pu, total_cbm=round(tcb, 3),
             ))
             containers_dict[cid]["total_units"] += row["quantity"]
             containers_dict[cid]["total_cbm"] += tcb
-            containers_dict[cid]["total_value"] += cost * row["quantity"]
+            containers_dict[cid]["total_value"] += eff_cost * row["quantity"]
 
     # Załączniki dla każdego kontenera
     for cid in containers_dict:
