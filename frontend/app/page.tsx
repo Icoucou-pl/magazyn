@@ -14,6 +14,7 @@ import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
 import Header, { NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
+import ProductsView from "@/components/products";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -136,6 +137,11 @@ export default function Page() {
             onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
             onSimulator={() => toast("Symulator — wkrótce (etap 6)", "info")}
             onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
+          />
+        ) : view === "products" ? (
+          <ProductsView
+            density={t.density}
+            onProductClick={() => toast("Szczegóły produktu — wkrótce (etap 2c)", "info")}
           />
         ) : (
           <ComingSoon view={view} />
