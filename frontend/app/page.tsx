@@ -13,6 +13,7 @@ import { getUser, logout } from "@/lib/api";
 import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
 import Header, { NAV_ITEMS, type User } from "@/components/header";
+import Dashboard from "@/components/dashboard";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -127,7 +128,18 @@ export default function Page() {
         width: "100%",
         padding: t.density === "compact" ? "16px 20px" : "24px 24px",
       }}>
-        <ComingSoon view={view}/>
+        {view === "dashboard" ? (
+          <Dashboard
+            density={t.density}
+            onProductClick={() => toast("Szczegóły produktu — wkrótce (etap 2)", "info")}
+            onContainerClick={() => toast("Edycja kontenera — wkrótce (etap 3)", "info")}
+            onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
+            onSimulator={() => toast("Symulator — wkrótce (etap 6)", "info")}
+            onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
+          />
+        ) : (
+          <ComingSoon view={view} />
+        )}
       </main>
 
       {/* Pływający panel wyglądu (⚙ w prawym dolnym rogu) — stan wspólny z headerem */}
