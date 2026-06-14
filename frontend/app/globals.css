@@ -1,26 +1,208 @@
 @import "tailwindcss";
 
+/* ============================================================
+   MAGAZYN — Dark Mode Design System
+   Scalone: Tailwind v4 (CSS-first) + design system z mocka (index.html, 1:1).
+   Fonty wpięte przez next/font (layout.tsx → --font-geist-sans / --font-jetbrains-mono).
+   ============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* App header height — używane przez sticky nagłówki tabel w widokach */
+  --app-header-h: 60px;
+
+  /* Surfaces — ciepły neutralny dark, nigdy czysta czerń */
+  --bg:            oklch(0.155 0.006 60);
+  --bg-elevated:   oklch(0.180 0.006 60);
+  --surface-1:     oklch(0.205 0.006 60);
+  --surface-2:     oklch(0.240 0.006 60);
+  --surface-3:     oklch(0.285 0.006 60);
+  --border:        oklch(0.285 0.006 60);
+  --border-soft:   oklch(0.230 0.006 60);
+  --border-strong: oklch(0.360 0.008 60);
+
+  /* Text */
+  --text-hi:       oklch(0.965 0.004 60);
+  --text-mid:      oklch(0.760 0.008 60);
+  --text-lo:       oklch(0.560 0.010 60);
+  --text-disabled: oklch(0.420 0.008 60);
+
+  /* Accent — amber (brand). Panel ustawień (Tweaks) nadpisuje --accent/--accent-ink. */
+  --accent:        oklch(0.820 0.160 75);
+  --accent-soft:   oklch(0.820 0.160 75 / 0.14);
+  --accent-strong: oklch(0.870 0.170 78);
+  --accent-ink:    oklch(0.205 0.020 60);
+
+  /* Status palette — jednolite L+C, zmienia się tylko odcień */
+  --critical:      oklch(0.640 0.190 25);
+  --critical-soft: oklch(0.640 0.190 25 / 0.14);
+  --warning:       oklch(0.740 0.165 55);
+  --warning-soft:  oklch(0.740 0.165 55 / 0.14);
+  --pending:       oklch(0.820 0.160 90);
+  --pending-soft:  oklch(0.820 0.160 90 / 0.14);
+  --ok:            oklch(0.730 0.150 155);
+  --ok-soft:       oklch(0.730 0.150 155 / 0.14);
+  --info:          oklch(0.700 0.140 240);
+  --info-soft:     oklch(0.700 0.140 240 / 0.14);
+  --anomaly:       oklch(0.700 0.165 305);
+  --anomaly-soft:  oklch(0.700 0.165 305 / 0.14);
+
+  /* Type scale — spięte z next/font (layout.tsx) */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Radii */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+
+  /* Most do tokenów Tailwinda z boilerplate'u (bg-background / text-foreground) */
+  --background: var(--bg);
+  --foreground: var(--text-hi);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-jetbrains-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* ── Base ──────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* Subtelna tekstura tła — ledwo widoczne plamy światła */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 20% 0%, oklch(0.820 0.16 75 / 0.05), transparent 50%),
+    radial-gradient(circle at 90% 100%, oklch(0.700 0.14 240 / 0.04), transparent 50%);
+  z-index: 0;
+}
+
+/* #app — odpowiednik #root z mocka: treść nad teksturą */
+#app {
+  position: relative;
+  z-index: 1;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border-radius: 10px;
+  border: 2px solid var(--bg);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--surface-3); }
+
+/* Selection */
+::selection { background: var(--accent); color: var(--accent-ink); }
+
+/* Typografia pomocnicza */
+.mono { font-family: var(--font-mono); font-feature-settings: "zero" 1; }
+.tabular { font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--text-mid);
+}
+
+button { font-family: inherit; cursor: pointer; }
+input, select { font-family: inherit; }
+
+/* ── Animacje ──────────────────────────────────────────────── */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.pulse-soft { animation: pulse-soft 2.4s ease-in-out infinite; }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.fade-in { animation: fade-in 0.32s ease-out both; }
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Focus rings — widoczne, ale eleganckie */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ============================================================
+   Responsywność
+   ============================================================ */
+/* Podmiana logo wg motywu (light theme: kolory do dodania później) */
+html[data-theme="light"] .brand-logo-dark { display: none !important; }
+html[data-theme="light"] .brand-logo-light { display: block !important; }
+
+@media (max-width: 760px) {
+  .app-main { padding: 18px 14px !important; }
+}
+@media (max-width: 980px) {
+  :root { --app-header-h: 56px; }
+}
+@media (max-width: 640px) {
+  body { font-size: 13px; }
+  :root { --app-header-h: 54px; }
+
+  /* Modale prawie na cały ekran */
+  [data-modal-backdrop] { padding: 6px !important; }
+  [data-modal-card]    { max-height: calc(100dvh - 12px) !important; border-radius: 12px !important; }
+  [data-modal-card] [data-modal-section] { padding: 14px !important; }
+
+  /* Mniejszy padding kafelków KPI */
+  [data-kpi] { min-height: 100px !important; padding: 12px 13px !important; }
+  [data-kpi-value] { font-size: 22px !important; }
+
+  /* Kompaktowy toolbar */
+  [data-toolbar] { gap: 6px !important; padding: 10px !important; }
+  [data-toolbar] [data-label-md]:not([data-keep]) { display: none !important; }
+
+  main { padding: 14px !important; }
+}
+@media (max-width: 480px) {
+  [data-kpi-value] { font-size: 19px !important; }
+  [data-carrier-link] { display: none !important; }
+  .pill-sm { padding: 1px 5px !important; font-size: 9px !important; }
+}
+@media (max-width: 400px) {
+  .container-body-grid > div { grid-template-columns: 1fr 1fr !important; }
+}
+/* Szerokie tabele scrollują się w poziomie na wąskich ekranach */
+@media (max-width: 720px) {
+  .responsive-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .responsive-scroll > div { min-width: 720px; }
 }
