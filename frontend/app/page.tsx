@@ -139,10 +139,7 @@ export default function Page() {
             onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
           />
         ) : view === "products" ? (
-          <ProductsView
-            density={t.density}
-            onProductClick={() => toast("Szczegóły produktu — wkrótce (etap 2c)", "info")}
-          />
+          <ProductsView density={t.density} />
         ) : (
           <ComingSoon view={view} />
         )}

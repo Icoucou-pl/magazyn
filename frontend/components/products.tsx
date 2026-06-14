@@ -15,6 +15,7 @@ import {
   type Product, type Manufacturer,
 } from "./products-ui";
 import ImportModal from "./import-modal";
+import ProductModal from "./product-modal";
 
 type SortState = { key: keyof Product | null; dir: "asc" | "desc" | null };
 
@@ -28,16 +29,16 @@ const sortVal = (p: Product, key: keyof Product): number | string => {
 };
 
 export default function ProductsView({
-  density, onProductClick,
+  density,
 }: {
   density?: string;
-  onProductClick?: (p: Product) => void;
 }) {
   const gap = density === "compact" ? 10 : 12;
 
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("active");
@@ -81,6 +82,11 @@ export default function ProductsView({
     } catch {
       toast("Nie udało się zmienić obserwowania", "warning");
     }
+  };
+
+  const onProductUpdated = (u: Product) => {
+    setProducts((prev) => prev.map((x) => (x.sku === u.sku ? u : x)));
+    setSelectedProduct(u);
   };
 
   const filtered = useMemo(() => {
@@ -167,7 +173,7 @@ export default function ProductsView({
         rows={filtered}
         cols={PRODUCT_COLS.filter((c) => visibleCols.includes(c.id))}
         sort={sort} toggleSort={toggleSort}
-        onProductClick={(p) => onProductClick?.(p)}
+        onProductClick={(p) => setSelectedProduct(p)}
         selected={selected}
         onToggleRow={toggleRow}
         onToggleAll={toggleAll}
@@ -196,6 +202,14 @@ export default function ProductsView({
           onClose={() => setShowImport(false)}
           existingSkus={existingSkus}
           onImported={reload}
+        />
+      )}
+      {selectedProduct && (
+        <ProductModal
+          product={selectedProduct}
+          manufacturers={manufacturers}
+          onClose={() => setSelectedProduct(null)}
+          onUpdated={onProductUpdated}
         />
       )}
     </div>
