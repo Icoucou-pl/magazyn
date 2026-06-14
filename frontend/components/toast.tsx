@@ -103,7 +103,7 @@ const CP1250: Record<string, number> = {
 // Nieznany unicode → fallback ASCII
 const ASCII_FALLBACK: Record<string, string> = { "³":"3","²":"2","→":"->","←":"<-","·":"-","•":"-","\u2019":"'","\u2018":"'" };
 
-function toCp1250(str: string): Uint8Array {
+function toCp1250(str: string): Uint8Array<ArrayBuffer> {
   const bytes: number[] = [];
   for (const ch of str) {
     const code = ch.charCodeAt(0);
