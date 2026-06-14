@@ -532,53 +532,128 @@ export function TweakButton({
 }
 
 // ============================================================
-// <Tweaks/> — gotowy panel apki: motyw / akcent / gęstość
+// MAGAZYN — system motywu (1:1 z app.jsx → applyTweaks)
+// Stan trzyma shell (page.tsx): useTweaks + applyTweaks(t); density leci propsem do widoków.
 // ============================================================
 
-type MagazynTweaks = { dark: boolean; accent: string; density: string };
+export type TweakValues = {
+  accent: string;   // klucz ACCENT_PRESETS (oklch string)
+  warmth: string;   // 'warm' | 'neutral' | 'cool'
+  theme: string;    // 'dark' | 'light'
+  density: string;  // 'comfortable' | 'compact'
+};
 
-const TWEAK_DEFAULTS: MagazynTweaks = { dark: true, accent: "#f59e0b", density: "regular" };
+export const TWEAK_DEFAULTS: TweakValues = {
+  accent: "oklch(0.82 0.16 75)",
+  density: "comfortable",
+  warmth: "neutral",
+  theme: "dark",
+};
 
-// Akcenty (edytuj dowolnie). Amber = domyślny design-systemu, drugi = brand i-coucou.
-const ACCENTS = ["#f59e0b", "#e50a77", "#3b82f6", "#22c55e", "#8b5cf6"];
+export const ACCENT_PRESETS: Record<string, { a: string; s: string; i: string }> = {
+  "oklch(0.82 0.16 75)":  { a: "oklch(0.820 0.160 75)",  s: "oklch(0.820 0.160 75 / 0.14)",  i: "oklch(0.205 0.020 60)" },
+  "oklch(0.78 0.14 200)": { a: "oklch(0.780 0.140 200)", s: "oklch(0.780 0.140 200 / 0.14)", i: "oklch(0.205 0.020 200)" },
+  "oklch(0.74 0.16 155)": { a: "oklch(0.740 0.160 155)", s: "oklch(0.740 0.160 155 / 0.14)", i: "oklch(0.180 0.020 155)" },
+  "oklch(0.73 0.18 290)": { a: "oklch(0.730 0.180 290)", s: "oklch(0.730 0.180 290 / 0.14)", i: "oklch(0.205 0.020 290)" },
+};
 
-const DENSITY: SegOption[] = [
-  { value: "compact", label: "Zwarty" },
-  { value: "regular", label: "Zwykły" },
-  { value: "comfy",   label: "Luźny" },
-];
+export const WARMTH_HUE: Record<string, number> = { warm: 60, neutral: 280, cool: 240 };
 
-// Nakłada motyw na <html>. Reguły [data-theme="light"] i [data-density="..."]
-// definiujemy w globals.css (scalenie 0.4).
-function applyTheme(v: MagazynTweaks) {
+type Ramp = {
+  bg: number; elevated: number; s1: number; s2: number; s3: number;
+  border: number; borderSoft: number; borderStrong: number;
+  textHi: number; textMid: number; textLo: number; textDisabled: number;
+  chroma: number;
+};
+
+// Rampy jasności per motyw — zmienia się tylko L, odcień/chroma idą z warmth.
+export const THEME_RAMP: Record<"dark" | "light", Ramp> = {
+  dark: {
+    bg: 0.155, elevated: 0.180, s1: 0.205, s2: 0.240, s3: 0.285,
+    border: 0.285, borderSoft: 0.230, borderStrong: 0.360,
+    textHi: 0.965, textMid: 0.760, textLo: 0.560, textDisabled: 0.420,
+    chroma: 0.006,
+  },
+  light: {
+    bg: 0.970, elevated: 0.995, s1: 0.985, s2: 0.950, s3: 0.918,
+    border: 0.880, borderSoft: 0.928, borderStrong: 0.780,
+    textHi: 0.240, textMid: 0.440, textLo: 0.560, textDisabled: 0.720,
+    chroma: 0.005,
+  },
+};
+
+// Nakłada motyw na <html> (1:1 z mocka). Liczy wszystkie zmienne surface/text/border
+// z THEME_RAMP × WARMTH_HUE × chroma + akcent z ACCENT_PRESETS.
+export function applyTweaks(t: TweakValues): void {
   const root = document.documentElement;
-  // motyw: dark = domyślny; light = atrybut data-theme="light"
-  if (v.dark) root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", "light");
-  // akcent
-  root.style.setProperty("--accent", v.accent);
-  root.style.setProperty("--accent-ink", __twkIsLight(v.accent) ? "#1a1a1a" : "#ffffff");
-  // gęstość
-  root.setAttribute("data-density", v.density || "regular");
+
+  const preset = ACCENT_PRESETS[t.accent] || Object.values(ACCENT_PRESETS)[0];
+  root.style.setProperty("--accent", preset.a);
+  root.style.setProperty("--accent-soft", preset.s);
+  root.style.setProperty("--accent-ink", preset.i);
+  root.style.setProperty("--accent-strong", preset.a);
+
+  const hue = WARMTH_HUE[t.warmth] ?? 60;
+  const r = THEME_RAMP[t.theme === "light" ? "light" : "dark"];
+  const c = r.chroma;
+  root.setAttribute("data-theme", t.theme === "light" ? "light" : "dark");
+  root.style.setProperty("--bg",            `oklch(${r.bg} ${c} ${hue})`);
+  root.style.setProperty("--bg-elevated",   `oklch(${r.elevated} ${c} ${hue})`);
+  root.style.setProperty("--surface-1",     `oklch(${r.s1} ${c} ${hue})`);
+  root.style.setProperty("--surface-2",     `oklch(${r.s2} ${c} ${hue})`);
+  root.style.setProperty("--surface-3",     `oklch(${r.s3} ${c} ${hue})`);
+  root.style.setProperty("--border",        `oklch(${r.border} ${c} ${hue})`);
+  root.style.setProperty("--border-soft",   `oklch(${r.borderSoft} ${c} ${hue})`);
+  root.style.setProperty("--border-strong", `oklch(${r.borderStrong} ${c} ${hue})`);
+  root.style.setProperty("--text-hi",       `oklch(${r.textHi} ${c} ${hue})`);
+  root.style.setProperty("--text-mid",      `oklch(${r.textMid} ${c} ${hue})`);
+  root.style.setProperty("--text-lo",       `oklch(${r.textLo} ${c} ${hue})`);
+  root.style.setProperty("--text-disabled", `oklch(${r.textDisabled} ${c} ${hue})`);
 }
 
-export default function Tweaks({
-  open, onClose,
-}: { open?: boolean; onClose?: () => void } = {}) {
-  const [t, setTweak] = useTweaks<MagazynTweaks>(TWEAK_DEFAULTS, "magazyn_tweaks");
+const ACCENT_OPTIONS: string[] = Object.keys(ACCENT_PRESETS);
+const THEME_OPTIONS: SegOption[] = [
+  { value: "dark",  label: "Ciemny" },
+  { value: "light", label: "Jasny" },
+];
+const WARMTH_OPTIONS: SegOption[] = [
+  { value: "warm",    label: "Ciepło" },
+  { value: "neutral", label: "Neutral" },
+  { value: "cool",    label: "Chłodno" },
+];
+const DENSITY_OPTIONS: SegOption[] = [
+  { value: "comfortable", label: "Komfort" },
+  { value: "compact",     label: "Gęsto" },
+];
 
-  React.useEffect(() => { applyTheme(t); }, [t]);
-
+// Panel STEROWANY — stan trzyma shell (page.tsx). 1:1 z <TweaksPanel> z app.jsx.
+export function AppearancePanel({
+  t, setTweak, open, onClose,
+}: {
+  t: TweakValues;
+  setTweak: (keyOrEdits: keyof TweakValues | Partial<TweakValues>, val?: unknown) => void;
+  open?: boolean;
+  onClose?: () => void;
+}) {
   return (
     <TweaksPanel title="Wygląd" open={open} onClose={onClose}>
-      <TweakSection label="Motyw" />
-      <TweakToggle label="Tryb ciemny" value={t.dark}
-                   onChange={(v) => setTweak("dark", v)} />
-      <TweakColor label="Akcent" value={t.accent} options={ACCENTS}
-                  onChange={(v) => setTweak("accent", Array.isArray(v) ? v[0] : v)} />
-      <TweakSection label="Układ" />
-      <TweakRadio label="Gęstość" value={t.density} options={DENSITY}
-                  onChange={(v) => setTweak("density", String(v))} />
+      <TweakSection label="Wygląd">
+        <TweakRadio label="Motyw" value={t.theme} options={THEME_OPTIONS}
+                    onChange={(v) => setTweak("theme", String(v))} />
+        <TweakColor label="Akcent" value={t.accent} options={ACCENT_OPTIONS}
+                    onChange={(v) => setTweak("accent", Array.isArray(v) ? v[0] : v)} />
+        <TweakRadio label="Temperatura tła" value={t.warmth} options={WARMTH_OPTIONS}
+                    onChange={(v) => setTweak("warmth", String(v))} />
+        <TweakRadio label="Gęstość" value={t.density} options={DENSITY_OPTIONS}
+                    onChange={(v) => setTweak("density", String(v))} />
+      </TweakSection>
     </TweaksPanel>
   );
+}
+
+// Wariant SAMODZIELNY (sam trzyma stan + zapis) — gdy density nie jest potrzebne poza panelem.
+export default function Tweaks({ open, onClose }: { open?: boolean; onClose?: () => void }) {
+  const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
+  React.useEffect(() => { applyTweaks(t); }, [t]);
+  return <AppearancePanel t={t} setTweak={setTweak} open={open} onClose={onClose} />;
 }
