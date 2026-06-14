@@ -333,7 +333,7 @@ export function TweakRadio({
   valueRef.current = value;
 
   const labelLen = (o: SegOption) => String(typeof o === "object" ? o.label : o).length;
-  const maxLen = options.reduce((m, o) => Math.max(m, labelLen(o)), 0);
+  const maxLen = options.reduce<number>((m, o) => Math.max(m, labelLen(o)), 0);
   const limits: Record<number, number> = { 2: 16, 3: 10 };
   const fitsAsSegments = maxLen <= (limits[options.length] ?? 0);
 
