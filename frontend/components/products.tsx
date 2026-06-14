@@ -14,6 +14,7 @@ import {
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
   type Product, type Manufacturer,
 } from "./products-ui";
+import ImportModal from "./import-modal";
 
 type SortState = { key: keyof Product | null; dir: "asc" | "desc" | null };
 
@@ -43,7 +44,10 @@ export default function ProductsView({
   const [sort, setSort] = useState<SortState>({ key: "status", dir: "asc" });
   const [visibleCols, setVisibleCols] = useState(DEFAULT_COLS);
   const [showColPicker, setShowColPicker] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+
+  const existingSkus = useMemo(() => new Set(products.map((p) => p.sku.trim().toLowerCase())), [products]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -155,7 +159,7 @@ export default function ProductsView({
         counts={counts}
         resultCount={filtered.length}
         onPickCols={() => setShowColPicker(true)}
-        onImport={() => toast("Import produktów — wkrótce (etap 2b)", "info")}
+        onImport={() => setShowImport(true)}
         onExport={onExport}
         visibleColsCount={visibleCols.length}
       />
@@ -185,6 +189,13 @@ export default function ProductsView({
           visible={visibleCols}
           setVisible={setVisibleCols}
           onClose={() => setShowColPicker(false)}
+        />
+      )}
+      {showImport && (
+        <ImportModal
+          onClose={() => setShowImport(false)}
+          existingSkus={existingSkus}
+          onImported={reload}
         />
       )}
     </div>
