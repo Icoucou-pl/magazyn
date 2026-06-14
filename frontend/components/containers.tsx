@@ -15,6 +15,8 @@ import {
   ContainersToolbar, ContainerCard, MiniStat,
   STATUS_FLOW, type Container,
 } from "./containers-ui";
+import ContainerFormModal, { type ContainerType } from "./container-form";
+import type { Product, Manufacturer } from "./products-ui";
 
 export default function ContainersView({ density }: { density?: string }) {
   const gap = density === "compact" ? 10 : 14;
@@ -24,6 +26,13 @@ export default function ContainersView({ density }: { density?: string }) {
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
+
+  // Dane pomocnicze do formularza
+  const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
+  const [containerTypes, setContainerTypes] = useState<ContainerType[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<Container | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -38,6 +47,23 @@ export default function ContainersView({ density }: { density?: string }) {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Dane do formularza (raz) — producenci, typy, produkty
+  useEffect(() => {
+    (async () => {
+      const [m, t, p] = await Promise.allSettled([
+        api.get("/manufacturers"),
+        api.get("/container-types"),
+        api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
+      ]);
+      if (m.status === "fulfilled") setManufacturers((m.value as Manufacturer[]) || []);
+      if (t.status === "fulfilled") setContainerTypes((t.value as ContainerType[]) || []);
+      if (p.status === "fulfilled") setProducts((p.value as Product[]) || []);
+    })();
+  }, []);
+
+  const openNew = () => { setEditing(null); setShowForm(true); };
+  const openEdit = (c: Container) => { setEditing(c); setShowForm(true); };
 
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: containers.length };
@@ -116,7 +142,7 @@ export default function ContainersView({ density }: { density?: string }) {
         expandedAny={expandedIds.size > 0}
         onToggleAll={toggleAll}
         onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
-        onNew={() => toast("Formularz kontenera — wkrótce (etap 3b)", "info")}
+        onNew={openNew}
         rows={containers}
       />
 
@@ -133,12 +159,23 @@ export default function ContainersView({ density }: { density?: string }) {
               key={c.id} container={c}
               expanded={expandedIds.has(c.id)}
               onToggle={() => toggleExpand(c.id)}
-              onEdit={() => toast("Formularz kontenera — wkrótce (etap 3b)", "info")}
+              onEdit={() => openEdit(c)}
               onAdvance={() => advance(c)}
               onGeneratePO={() => toast("Generator PO — wkrótce (etap 6)", "info")}
             />
           ))}
         </div>
+      )}
+      {showForm && (
+        <ContainerFormModal
+          initial={editing}
+          manufacturers={manufacturers}
+          containerTypes={containerTypes}
+          products={products}
+          onClose={() => setShowForm(false)}
+          onSaved={reload}
+          onDeleted={reload}
+        />
       )}
     </div>
   );

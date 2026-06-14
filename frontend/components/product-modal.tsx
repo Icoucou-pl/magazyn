@@ -379,7 +379,7 @@ function AttributesCard({
     try {
       const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/attrs`, {
         cbm_per_unit: draft.cbm,
-        manufacturer_id: draft.mfrId === "" ? null : Number(draft.mfrId),
+        manufacturer_id: draft.mfrId === "" ? 0 : Number(draft.mfrId),
         ean: draft.ean,
         seasonality_enabled: draft.seasonality,
         forced_status: draft.classification,
