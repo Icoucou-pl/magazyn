@@ -51,7 +51,11 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, seasonality_enabled, ean, forced_status FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
-    mfr = payload.manufacturer_id if payload.manufacturer_id is not None else (e.manufacturer_id if e else None)
+    # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
+    if payload.manufacturer_id is not None:
+        mfr = None if payload.manufacturer_id == 0 else payload.manufacturer_id
+    else:
+        mfr = e.manufacturer_id if e else None
     seas = payload.seasonality_enabled if payload.seasonality_enabled is not None else (e.seasonality_enabled if e else False)
     ean = payload.ean if payload.ean is not None else (e.ean if e else None)
     if ean is not None and not ean.strip():
