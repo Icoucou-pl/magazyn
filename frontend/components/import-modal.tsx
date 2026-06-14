@@ -10,7 +10,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { I, Pill } from "./ui";
-import { Checkbox, modalBackdrop, modalCard } from "./products-ui";
+import { Checkbox, modalBackdrop, modalCard, Portal } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 
@@ -146,8 +146,9 @@ export default function ImportModal({
   const reset = () => { setStep(1); setCsvText(""); setParsedRows([]); setParseError(null); setResult(null); };
 
   return (
-    <div onClick={onClose} style={modalBackdrop}>
-      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 760 }}>
+    <Portal>
+      <div onClick={onClose} style={modalBackdrop}>
+        <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 760 }}>
         <div style={{ padding: "14px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--accent-soft)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}><I.ArrowDown size={16} /></div>
@@ -170,8 +171,9 @@ export default function ImportModal({
           )}
           {step === 3 && result && <ImportStep3 result={result} onClose={onClose} onReset={reset} />}
         </div>
+        </div>
       </div>
-    </div>
+    </Portal>
   );
 }
 

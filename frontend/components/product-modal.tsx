@@ -10,7 +10,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I, Pill, MfrChip, STATUS_META } from "./ui";
 import {
   StatusPillExt, displayStatus, monthsDisplay,
-  modalBackdrop, modalCard, btnPrimary, btnSecondary,
+  modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
   type Product, type Manufacturer,
 } from "./products-ui";
 import { api } from "@/lib/api";
@@ -103,8 +103,9 @@ export default function ProductModal({
   const monthsTone = monthsStr === "∞" ? "neutral" : product.months_of_stock < 1 ? "critical" : product.months_of_stock < 2 ? "warning" : "neutral";
 
   return (
-    <div onClick={onClose} style={modalBackdrop}>
-      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
+    <Portal>
+      <div onClick={onClose} style={modalBackdrop}>
+        <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
         {/* Header */}
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
@@ -160,8 +161,9 @@ export default function ProductModal({
             )}
           </div>
         </div>
+        </div>
       </div>
-    </div>
+    </Portal>
   );
 }
 

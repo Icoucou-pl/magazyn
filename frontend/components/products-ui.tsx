@@ -7,6 +7,7 @@
 // ============================================================
 
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { I, Pill, MfrChip, STATUS_META } from "./ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { api } from "@/lib/api";
@@ -98,6 +99,15 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
 // ── Helpery wyświetlania ─────────────────────────────────────
 export const displayStatus = (p: Product): string => (p.product_status === "DEAD_STOCK" ? "DEAD_STOCK" : p.status);
 export const monthsDisplay = (v: number): string => (!isFinite(v) || v > 99 ? "∞" : v.toFixed(1));
+
+// ── Portal — renderuje modale w document.body (ponad nagłówkiem,
+//    poza stacking-context #app / main / .fade-in) ─────────────
+export function Portal({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted || typeof document === "undefined") return null;
+  return createPortal(children, document.body);
+}
 
 // ── Toolbar ──────────────────────────────────────────────────
 export function ProductsToolbar({
@@ -334,8 +344,9 @@ export function ColPickerModal({
   }, [onClose]);
 
   return (
-    <div onClick={onClose} style={modalBackdrop}>
-      <div onClick={(e) => e.stopPropagation()} style={{ ...modalCard, maxWidth: 420 }} className="fade-in">
+    <Portal>
+      <div onClick={onClose} style={modalBackdrop}>
+        <div onClick={(e) => e.stopPropagation()} style={{ ...modalCard, maxWidth: 420 }} className="fade-in">
         <div style={modalHeader}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <I.Dashboard size={15} />
@@ -363,8 +374,9 @@ export function ColPickerModal({
           <button onClick={reset} style={btnSecondary}>Resetuj</button>
           <button onClick={onClose} style={btnPrimary}>Gotowe</button>
         </div>
+        </div>
       </div>
-    </div>
+    </Portal>
   );
 }
 
@@ -477,7 +489,7 @@ export function BulkBar({
 
 // ── Wspólne style (eksport dla 2b/2c) ────────────────────────
 export const modalBackdrop: React.CSSProperties = {
-  position: "fixed", inset: 0, zIndex: 100, background: "color-mix(in oklch, var(--bg) 50%, black)",
+  position: "fixed", inset: 0, zIndex: 1000, background: "color-mix(in oklch, var(--bg) 50%, black)",
   backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
 };
 export const modalCard: React.CSSProperties = {
