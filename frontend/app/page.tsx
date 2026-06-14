@@ -15,6 +15,7 @@ import LoginScreen from "@/components/login";
 import Header, { NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
 import ProductsView from "@/components/products";
+import ContainersView from "@/components/containers";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -145,6 +146,8 @@ export default function Page() {
             openSku={pendingProductSku}
             onOpenedSku={() => setPendingProductSku(null)}
           />
+        ) : view === "containers" ? (
+          <ContainersView density={t.density} />
         ) : (
           <ComingSoon view={view} />
         )}
