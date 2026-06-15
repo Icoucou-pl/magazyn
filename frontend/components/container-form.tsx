@@ -6,11 +6,11 @@
 //   z reconcyliacją przy zapisie. Podgląd wypełnienia z CBM produktów.
 // ============================================================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I } from "./ui";
 import { modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal, type Product, type Manufacturer } from "./products-ui";
 import { STATUS_FLOW, STATUS_FULL_META, type Container, type Attachment } from "./containers-ui";
-import { api } from "@/lib/api";
+import { api, download } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
@@ -18,7 +18,7 @@ import { fmtPLN, fmtNum } from "@/lib/format";
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
 type ItemDraft = { sku: string; quantity: string; unit_cost: string };
-type AttDraft = Attachment & { _isNew?: boolean };
+type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
 const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
@@ -50,7 +50,8 @@ export default function ContainerFormModal({
     initial?.items?.map((i) => ({ sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "" })) || [{ sku: "", quantity: "", unit_cost: "" }],
   );
   const [attachments, setAttachments] = useState<AttDraft[]>(initial?.attachments || []);
-  const [attName, setAttName] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -107,15 +108,25 @@ export default function ContainerFormModal({
     setItems(next);
   };
 
-  const addAttachment = () => {
-    const name = attName.trim();
-    if (!name) return;
-    const ext = name.split(".").pop()?.toLowerCase() || "";
-    const type = ext === "pdf" ? "pdf" : (ext === "xlsx" || ext === "xls") ? "excel" : "other";
-    setAttachments([...attachments, { id: Date.now() + Math.floor(Math.random() * 1000), filename: name, file_type: type, file_size: null, uploaded_at: new Date().toISOString(), _isNew: true }]);
-    setAttName("");
+  const guessType = (name: string) => {
+    const e = name.split(".").pop()?.toLowerCase() || "";
+    return e === "pdf" ? "pdf" : (e === "xlsx" || e === "xls") ? "excel" : (["png", "jpg", "jpeg", "webp", "gif"].includes(e) ? "image" : (e || "other"));
+  };
+  const humanSize = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
+  const MAX = 10 * 1024 * 1024;
+
+  const onFiles = (files: File[]) => {
+    const ok = files.filter((f) => f && f.size <= MAX);
+    if (ok.length < files.length) toast("Pominięto plik(i) > 10 MB", "warning");
+    const additions: AttDraft[] = ok.map((f) => ({
+      id: Date.now() + Math.floor(Math.random() * 1e6),
+      filename: f.name, file_type: guessType(f.name), file_size: humanSize(f.size),
+      uploaded_at: new Date().toISOString(), _isNew: true, _file: f,
+    }));
+    if (additions.length) setAttachments((prev) => [...prev, ...additions]);
   };
   const removeAttachment = (id: number) => setAttachments(attachments.filter((a) => a.id !== id));
+  const downloadAttachment = (a: AttDraft) => { download(`/attachments/${a.id}/download`, a.filename).catch(() => toast("Nie udało się pobrać pliku", "warning")); };
 
   const save = async () => {
     if (busy) return;
@@ -145,12 +156,12 @@ export default function ContainerFormModal({
       // Reconcyliacja załączników (błąd tu nie unieważnia zapisu kontenera)
       let attOk = true;
       try {
-        const toAdd = attachments.filter((a) => a._isNew);
+        const toAdd = attachments.filter((a) => a._isNew && a._file);
         const initialIds = new Set((initial?.attachments || []).map((a) => a.id));
         const keptRealIds = new Set(attachments.filter((a) => !a._isNew).map((a) => a.id));
         const toDelete = [...initialIds].filter((id) => !keptRealIds.has(id));
         await Promise.all([
-          ...toAdd.map((a) => api.post(`/containers/${cid}/attachments`, { filename: a.filename, file_type: a.file_type, file_size: a.file_size })),
+          ...toAdd.map((a) => { const fd = new FormData(); fd.append("file", a._file as File); return api.post(`/containers/${cid}/attachments`, fd); }),
           ...toDelete.map((id) => api.del(`/attachments/${id}`)),
         ]);
       } catch {
@@ -250,24 +261,36 @@ export default function ContainerFormModal({
             </Section>
 
             <Section title={`Załączniki (${attachments.length})`}>
-              <div style={{ padding: 8, background: "var(--surface-2)", border: "1px dashed var(--border-soft)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 4, minHeight: 50 }}>
+              <input ref={fileRef} type="file" multiple style={{ display: "none" }}
+                onChange={(e) => { onFiles(Array.from(e.target.files || [])); if (fileRef.current) fileRef.current.value = ""; }} />
+              <div
+                onDragOver={(e) => { if (showEdit) { e.preventDefault(); setDragging(true); } }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => { if (!showEdit) return; e.preventDefault(); setDragging(false); onFiles(Array.from(e.dataTransfer.files || [])); }}
+                style={{ padding: 8, background: dragging ? "var(--accent-soft)" : "var(--surface-2)", border: `1px dashed ${dragging ? "var(--accent)" : "var(--border-soft)"}`, borderRadius: 8, display: "flex", flexDirection: "column", gap: 4, minHeight: 50, transition: "all 0.12s" }}>
                 {showEdit && (
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <input value={attName} onChange={(e) => setAttName(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addAttachment(); } }}
-                      placeholder="nazwa pliku, np. proforma_2026.pdf" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
-                    <button onClick={addAttachment} disabled={!attName.trim()} style={{ ...btnGhostMini, whiteSpace: "nowrap", opacity: attName.trim() ? 1 : 0.5 }}><I.Plus size={11} /> Dodaj</button>
-                  </div>
+                  <button type="button" onClick={() => fileRef.current?.click()} style={{ ...btnGhostMini, justifyContent: "center", padding: "8px 10px", whiteSpace: "nowrap" }}>
+                    <I.ArrowDown size={12} /> Wybierz plik(i) lub przeciągnij tutaj
+                  </button>
                 )}
                 {attachments.length === 0 ? (
-                  <div style={{ padding: 10, textAlign: "center", fontSize: 11, color: "var(--text-lo)" }}>Brak załączników (proforma, packing list, BL...)</div>
-                ) : attachments.map((att) => (
-                  <div key={att.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 6 }}>
-                    <span className="mono" style={{ padding: "1px 5px", fontSize: 9, fontWeight: 700, background: att.file_type === "pdf" ? "var(--critical-soft)" : "var(--ok-soft)", color: att.file_type === "pdf" ? "var(--critical)" : "var(--ok)", borderRadius: 3 }}>{(att.file_type || "?").toUpperCase()}</span>
-                    <span className="mono" style={{ flex: 1, fontSize: 12, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>
-                    {showEdit && <button onClick={() => removeAttachment(att.id)} style={{ background: "transparent", border: "none", color: "var(--critical)", padding: 4, display: "flex" }}><I.Close size={12} /></button>}
-                  </div>
-                ))}
+                  <div style={{ padding: 8, textAlign: "center", fontSize: 11, color: "var(--text-lo)" }}>Brak załączników (faktura, proforma, packing list, BL...)</div>
+                ) : attachments.map((att) => {
+                  const tint = att.file_type === "pdf" ? ["var(--critical-soft)", "var(--critical)"] : att.file_type === "image" ? ["var(--info-soft)", "var(--info)"] : ["var(--ok-soft)", "var(--ok)"];
+                  return (
+                    <div key={att.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 6 }}>
+                      <span className="mono" style={{ padding: "1px 5px", fontSize: 9, fontWeight: 700, background: tint[0], color: tint[1], borderRadius: 3, flexShrink: 0 }}>{(att.file_type || "?").toUpperCase()}</span>
+                      {att._isNew ? (
+                        <span className="mono" style={{ flex: 1, fontSize: 12, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>
+                      ) : (
+                        <button type="button" onClick={() => downloadAttachment(att)} title="Pobierz plik" className="mono" style={{ flex: 1, textAlign: "left", background: "transparent", border: "none", padding: 0, fontSize: 12, color: "var(--accent)", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "underline" }}>{att.filename}</button>
+                      )}
+                      {att.file_size && <span className="num" style={{ fontSize: 10, color: "var(--text-lo)", flexShrink: 0 }}>{att.file_size}</span>}
+                      {att._isNew && <span style={{ fontSize: 9, fontWeight: 700, color: "var(--accent)", background: "var(--accent-soft)", padding: "1px 5px", borderRadius: 3, flexShrink: 0 }}>DO WGRANIA</span>}
+                      {showEdit && <button type="button" onClick={() => removeAttachment(att.id)} style={{ background: "transparent", border: "none", color: "var(--critical)", padding: 4, display: "flex" }}><I.Close size={12} /></button>}
+                    </div>
+                  );
+                })}
               </div>
             </Section>
 

@@ -9,7 +9,8 @@
 import React from "react";
 import { I, Pill, MfrChip } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
-import { exportCsv, type CsvColumn } from "./toast";
+import { exportCsv, toast, type CsvColumn } from "./toast";
+import { download } from "@/lib/api";
 import { canEdit, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 
@@ -265,10 +266,11 @@ function ContainerCardBody({
             {c.attachments.map((att) => {
               const isPdf = att.file_type === "pdf";
               return (
-                <span key={att.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 6, fontSize: 11, color: "var(--text-mid)" }}>
+                <button key={att.id} type="button" onClick={() => download(`/attachments/${att.id}/download`, att.filename).catch(() => toast("Nie udało się pobrać pliku", "warning"))}
+                  title="Pobierz plik" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 6, fontSize: 11, color: "var(--text-mid)", cursor: "pointer" }}>
                   <span className="mono" style={{ padding: "0 4px", fontSize: 9, fontWeight: 700, background: isPdf ? "var(--critical-soft)" : "var(--ok-soft)", color: isPdf ? "var(--critical)" : "var(--ok)", borderRadius: 3 }}>{(att.file_type || "?").toUpperCase()}</span>
-                  {att.filename}
-                </span>
+                  <span style={{ textDecoration: "underline" }}>{att.filename}</span>
+                </button>
               );
             })}
           </div>

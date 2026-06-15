@@ -4,7 +4,7 @@ import io
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,16 +159,59 @@ async def deliver_container(cid: int, db: AsyncSession = Depends(get_db)):
     return await get_container_by_id(db, cid)
 
 
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _human_size(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} B"
+
+
+def _guess_type(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == "pdf":
+        return "pdf"
+    if ext in ("xlsx", "xls"):
+        return "excel"
+    if ext in ("png", "jpg", "jpeg", "webp", "gif"):
+        return "image"
+    return ext or "other"
+
+
 @router.post("/containers/{cid}/attachments", response_model=AttachmentOut, status_code=201)
-async def add_attachment(cid: int, payload: AttachmentCreate, db: AsyncSession = Depends(get_db)):
-    """Dodaje metadane załącznika - bez prawdziwego uploadu pliku (lokalnie nie ma sensu)."""
+async def add_attachment(cid: int, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    """Wgrywa plik (zawartość trzymana w bazie jako BYTEA)."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Pusty plik")
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(413, "Plik za duży (max 10 MB)")
+    fname = file.filename or "plik"
+    ftype = _guess_type(fname)
+    fsize = _human_size(len(data))
+    ctype = file.content_type or "application/octet-stream"
     r = await db.execute(text(f"""
-        INSERT INTO {settings.TABLE_ATTACHMENTS} (container_id, filename, file_type, file_size)
-        VALUES (:c, :n, :t, :s) RETURNING id, uploaded_at
-    """), {"c": cid, "n": payload.filename, "t": payload.file_type, "s": payload.file_size})
+        INSERT INTO {settings.TABLE_ATTACHMENTS} (container_id, filename, file_type, file_size, content_type, file_data)
+        VALUES (:c, :n, :t, :s, :ct, :d) RETURNING id, uploaded_at
+    """), {"c": cid, "n": fname, "t": ftype, "s": fsize, "ct": ctype, "d": data})
     row = r.first()
     await db.commit()
-    return AttachmentOut(id=row.id, filename=payload.filename, file_type=payload.file_type, file_size=payload.file_size, uploaded_at=row.uploaded_at)
+    return AttachmentOut(id=row.id, filename=fname, file_type=ftype, file_size=fsize, uploaded_at=row.uploaded_at)
+
+
+@router.get("/attachments/{aid}/download")
+async def download_attachment(aid: int, db: AsyncSession = Depends(get_db)):
+    """Zwraca zawartość pliku załącznika."""
+    r = await db.execute(text(f"SELECT filename, content_type, file_data FROM {settings.TABLE_ATTACHMENTS} WHERE id = :id"), {"id": aid})
+    row = r.first()
+    if not row or row.file_data is None:
+        raise HTTPException(404, "Plik nie znaleziony (mógł być dodany przed włączeniem przechowywania)")
+    data = bytes(row.file_data)
+    ctype = row.content_type or "application/octet-stream"
+    return StreamingResponse(io.BytesIO(data), media_type=ctype, headers={"Content-Disposition": f'attachment; filename="{row.filename}"'})
 
 
 @router.delete("/attachments/{aid}", status_code=204)

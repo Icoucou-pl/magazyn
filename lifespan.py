@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
             )
         """))
 
-        # Załączniki kontenerów (mock - tylko metadane bo plik storage to inny temat)
+        # Załączniki kontenerów (plik trzymany w bazie jako BYTEA)
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_ATTACHMENTS} (
                 id SERIAL PRIMARY KEY,
@@ -113,9 +113,14 @@ async def lifespan(app: FastAPI):
                 filename VARCHAR(255) NOT NULL,
                 file_type VARCHAR(50),
                 file_size VARCHAR(50),
+                content_type VARCHAR(120),
+                file_data BYTEA,
                 uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # Doklejenie kolumn na zawartość pliku dla istniejących baz
+        await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS content_type VARCHAR(120)"))
+        await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS file_data BYTEA"))
 
         # Użytkownicy
         await conn.execute(text(f"""
