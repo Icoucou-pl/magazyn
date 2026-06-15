@@ -50,6 +50,7 @@ export default function ContainerFormModal({
     initial?.items?.map((i) => ({ sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "" })) || [{ sku: "", quantity: "", unit_cost: "" }],
   );
   const [attachments, setAttachments] = useState<AttDraft[]>(initial?.attachments || []);
+  const [attName, setAttName] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -107,11 +108,12 @@ export default function ContainerFormModal({
   };
 
   const addAttachment = () => {
-    const name = window.prompt("Nazwa pliku (np. proforma_2026.pdf):");
+    const name = attName.trim();
     if (!name) return;
     const ext = name.split(".").pop()?.toLowerCase() || "";
     const type = ext === "pdf" ? "pdf" : (ext === "xlsx" || ext === "xls") ? "excel" : "other";
-    setAttachments([...attachments, { id: Date.now(), filename: name, file_type: type, file_size: null, uploaded_at: new Date().toISOString(), _isNew: true }]);
+    setAttachments([...attachments, { id: Date.now() + Math.floor(Math.random() * 1000), filename: name, file_type: type, file_size: null, uploaded_at: new Date().toISOString(), _isNew: true }]);
+    setAttName("");
   };
   const removeAttachment = (id: number) => setAttachments(attachments.filter((a) => a.id !== id));
 
@@ -140,17 +142,22 @@ export default function ContainerFormModal({
         : ((await api.patch(`/containers/${initial!.id}`, payload)) as Container);
       const cid = saved.id;
 
-      // Reconcyliacja załączników
-      const toAdd = attachments.filter((a) => a._isNew);
-      const initialIds = new Set((initial?.attachments || []).map((a) => a.id));
-      const keptRealIds = new Set(attachments.filter((a) => !a._isNew).map((a) => a.id));
-      const toDelete = [...initialIds].filter((id) => !keptRealIds.has(id));
-      await Promise.all([
-        ...toAdd.map((a) => api.post(`/containers/${cid}/attachments`, { filename: a.filename, file_type: a.file_type, file_size: a.file_size })),
-        ...toDelete.map((id) => api.del(`/attachments/${id}`)),
-      ]);
+      // Reconcyliacja załączników (błąd tu nie unieważnia zapisu kontenera)
+      let attOk = true;
+      try {
+        const toAdd = attachments.filter((a) => a._isNew);
+        const initialIds = new Set((initial?.attachments || []).map((a) => a.id));
+        const keptRealIds = new Set(attachments.filter((a) => !a._isNew).map((a) => a.id));
+        const toDelete = [...initialIds].filter((id) => !keptRealIds.has(id));
+        await Promise.all([
+          ...toAdd.map((a) => api.post(`/containers/${cid}/attachments`, { filename: a.filename, file_type: a.file_type, file_size: a.file_size })),
+          ...toDelete.map((id) => api.del(`/attachments/${id}`)),
+        ]);
+      } catch {
+        attOk = false;
+      }
 
-      toast(isNew ? `Utworzono kontener #${payload.container_number}` : "Zapisano zmiany w kontenerze", "ok");
+      toast(attOk ? (isNew ? `Utworzono kontener #${payload.container_number}` : "Zapisano zmiany w kontenerze") : "Kontener zapisany, ale część załączników się nie zapisała", attOk ? "ok" : "warning");
       onSaved();
       onClose();
     } catch {
@@ -242,8 +249,16 @@ export default function ContainerFormModal({
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} disabled={!showEdit} placeholder="Opcjonalne komentarze (np. statek, dodatkowe info)" style={{ ...inputStyle, resize: "vertical", minHeight: 60 }} />
             </Section>
 
-            <Section title={`Załączniki (${attachments.length})`} action={showEdit ? <button onClick={addAttachment} style={btnGhostMini}><I.Plus size={11} /> Dodaj plik</button> : undefined}>
+            <Section title={`Załączniki (${attachments.length})`}>
               <div style={{ padding: 8, background: "var(--surface-2)", border: "1px dashed var(--border-soft)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 4, minHeight: 50 }}>
+                {showEdit && (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input value={attName} onChange={(e) => setAttName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addAttachment(); } }}
+                      placeholder="nazwa pliku, np. proforma_2026.pdf" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
+                    <button onClick={addAttachment} disabled={!attName.trim()} style={{ ...btnGhostMini, whiteSpace: "nowrap", opacity: attName.trim() ? 1 : 0.5 }}><I.Plus size={11} /> Dodaj</button>
+                  </div>
+                )}
                 {attachments.length === 0 ? (
                   <div style={{ padding: 10, textAlign: "center", fontSize: 11, color: "var(--text-lo)" }}>Brak załączników (proforma, packing list, BL...)</div>
                 ) : attachments.map((att) => (
@@ -321,16 +336,22 @@ function ItemRow({
           <option value="">— wybierz produkt —</option>
           {sortedProducts.map((p) => (
             <option key={p.sku} value={p.sku}>
-              {p.sku} — {p.name.length > 40 ? p.name.slice(0, 40) + "…" : p.name}
-              {p.manufacturer_id && manufacturerId && p.manufacturer_id !== Number(manufacturerId) ? " [inny producent]" : ""}
+              {p.sku} — {p.name.length > 34 ? p.name.slice(0, 34) + "…" : p.name}
+              {p.manufacturer_name ? ` · ${p.manufacturer_name}` : ""}
               {p.cbm_per_unit > 0 ? ` · ${p.cbm_per_unit.toFixed(3)}m³` : ""}
             </option>
           ))}
         </select>
-        {item.isMixed && (
-          <div style={{ fontSize: 10, color: "var(--warning)", fontWeight: 600, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
-            <I.Alert size={10} /> Inny producent niż kontener{mixedMfrName ? ` (${mixedMfrName})` : ""}
-          </div>
+        {item.product && (
+          item.isMixed ? (
+            <div style={{ fontSize: 10, color: "var(--warning)", fontWeight: 600, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+              <I.Alert size={10} /> Inny dostawca niż kontener{mixedMfrName ? ` (${mixedMfrName})` : ""}
+            </div>
+          ) : (
+            <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>
+              Dostawca: <span style={{ color: "var(--text-mid)" }}>{item.product.manufacturer_name || "— brak —"}</span>
+            </div>
+          )
         )}
         {item.qty > 0 && item.cbm > 0 && (
           <div className="num" style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>
