@@ -5,6 +5,7 @@ Session pooler port 5432 + statement_cache_size=0 (PgBouncer nie lubi prepared s
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import NullPool
 
 from config import settings
 
@@ -12,11 +13,9 @@ from config import settings
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=5,
-    pool_timeout=30,
-    pool_recycle=300,
+    # Pulowanie oddajemy poolерowi Supabase — własna pula SQLAlchemy na wierzchu
+    # PgBouncera oddawała losowo „nieświeże" połączenia (upload działał dopiero za którymś razem).
+    poolclass=NullPool,
     connect_args={
         "timeout": 30,
         "command_timeout": 30,
