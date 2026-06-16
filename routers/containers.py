@@ -1,6 +1,7 @@
 """Kontenery: CRUD, oznaczanie dostarczenia, załączniki (metadane), eksport do XLSX."""
 
 import io
+import asyncio
 from datetime import date
 from typing import List, Optional
 
@@ -8,9 +9,10 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import OperationalError, InterfaceError
 
 from config import settings
-from database import get_db
+from database import get_db, SessionLocal
 from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
     AttachmentOut, AttachmentCreate,
@@ -182,8 +184,9 @@ def _guess_type(filename: str) -> str:
 
 
 @router.post("/containers/{cid}/attachments", response_model=AttachmentOut, status_code=201)
-async def add_attachment(cid: int, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
-    """Wgrywa plik (zawartość trzymana w bazie jako BYTEA)."""
+async def add_attachment(cid: int, file: UploadFile = File(...)):
+    """Wgrywa plik (zawartość w bazie jako BYTEA). Ponawia zapis na świeżym
+    połączeniu przy chwilowych błędach poolера Supabase (działa za 1. razem)."""
     data = await file.read()
     if not data:
         raise HTTPException(400, "Pusty plik")
@@ -193,13 +196,23 @@ async def add_attachment(cid: int, file: UploadFile = File(...), db: AsyncSessio
     ftype = _guess_type(fname)
     fsize = _human_size(len(data))
     ctype = file.content_type or "application/octet-stream"
-    r = await db.execute(text(f"""
+    params = {"c": cid, "n": fname, "t": ftype, "s": fsize, "ct": ctype, "d": data}
+    sql = text(f"""
         INSERT INTO {settings.TABLE_ATTACHMENTS} (container_id, filename, file_type, file_size, content_type, file_data)
         VALUES (:c, :n, :t, :s, :ct, :d) RETURNING id, uploaded_at
-    """), {"c": cid, "n": fname, "t": ftype, "s": fsize, "ct": ctype, "d": data})
-    row = r.first()
-    await db.commit()
-    return AttachmentOut(id=row.id, filename=fname, file_type=ftype, file_size=fsize, uploaded_at=row.uploaded_at)
+    """)
+    last_err: Exception | None = None
+    for attempt in range(4):
+        try:
+            async with SessionLocal() as db:
+                r = await db.execute(sql, params)
+                row = r.first()
+                await db.commit()
+                return AttachmentOut(id=row.id, filename=fname, file_type=ftype, file_size=fsize, uploaded_at=row.uploaded_at)
+        except (OperationalError, InterfaceError) as e:
+            last_err = e
+            await asyncio.sleep(0.4 * (attempt + 1))
+    raise HTTPException(503, f"Zapis załącznika nieudany po kilku próbach: {last_err}")
 
 
 @router.get("/attachments/{aid}/download")
