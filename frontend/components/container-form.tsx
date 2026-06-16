@@ -155,6 +155,7 @@ export default function ContainerFormModal({
 
       // Reconcyliacja załączników (błąd tu nie unieważnia zapisu kontenera)
       let attOk = true;
+      let attErr = "";
       try {
         const toAdd = attachments.filter((a) => a._isNew && a._file);
         const initialIds = new Set((initial?.attachments || []).map((a) => a.id));
@@ -164,13 +165,18 @@ export default function ContainerFormModal({
           ...toAdd.map((a) => { const fd = new FormData(); fd.append("file", a._file as File); return api.post(`/containers/${cid}/attachments`, fd); }),
           ...toDelete.map((id) => api.del(`/attachments/${id}`)),
         ]);
-      } catch {
+      } catch (e) {
         attOk = false;
+        const st = (e as { status?: number })?.status;
+        attErr = st === 422 || st === 405
+          ? "backend nieaktualny — przedeployuj serwis web (routers/containers.py + lifespan.py)"
+          : st === 413 ? "plik za duży (max 10 MB)"
+          : ((e as Error)?.message || "błąd uploadu");
       }
 
-      toast(attOk ? (isNew ? `Utworzono kontener #${payload.container_number}` : "Zapisano zmiany w kontenerze") : "Kontener zapisany, ale część załączników się nie zapisała", attOk ? "ok" : "warning");
+      toast(attOk ? (isNew ? `Utworzono kontener #${payload.container_number}` : "Zapisano zmiany w kontenerze") : `Plik nie wgrany: ${attErr}`, attOk ? "ok" : "warning");
       onSaved();
-      onClose();
+      if (attOk) onClose();
     } catch {
       toast(isNew ? "Nie udało się utworzyć kontenera" : "Nie udało się zapisać zmian", "warning");
     } finally {
