@@ -11,7 +11,7 @@ import { I, Pill, MfrChip } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { download } from "@/lib/api";
-import { canEdit, useUser } from "@/lib/permissions";
+import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 
 // ── Typy ─────────────────────────────────────────────────────
@@ -78,6 +78,7 @@ export function ContainersToolbar({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  const showFin = can(user, "viewFinancials");
   const exportAll = () => {
     const cols: CsvColumn<Container>[] = [
       { key: "container_number", label: "Nr kontenera" },
@@ -88,7 +89,7 @@ export function ContainersToolbar({
       { key: "order_date", label: "Data zamowienia" },
       { key: "eta_date", label: "ETA" },
       { key: "total_units", label: "Sztuk" },
-      { key: "total_value", label: "Wartosc" },
+      ...(showFin ? [{ key: "total_value", label: "Wartosc" } as CsvColumn<Container>] : []),
       { key: "total_cbm", label: "CBM" },
       { key: "fill_percentage", label: "Wypelnienie %" },
     ];
@@ -148,6 +149,7 @@ export function ContainerCard({
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
 }) {
   const meta = STATUS_FULL_META[c.status] || STATUS_FULL_META.ORDERED;
+  const showFin = can(useUser(), "viewFinancials");
   const Icon = meta.icon;
   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
   const isOverdue = days < 0 && c.status !== "DELIVERED";
@@ -175,7 +177,7 @@ export function ContainerCard({
             <span>·</span>
             <span><span className="num" style={{ color: "var(--text-mid)" }}>{c.items.length}</span> pozycji · <span className="num" style={{ color: "var(--text-mid)" }}>{c.total_units}</span> szt</span>
             <span>·</span>
-            <span className="num" style={{ color: "var(--text-mid)" }}>{fmtPLNk(c.total_value)}</span>
+            <span className="num" style={{ color: "var(--text-mid)" }}>{showFin ? fmtPLNk(c.total_value) : "•••"}</span>
           </div>
         </div>
 
@@ -212,6 +214,7 @@ function ContainerCardBody({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  const showFin = can(user, "viewFinancials");
   const cap = c.container_capacity_cbm ?? 0;
   const fill = c.fill_percentage ?? 0;
   return (
@@ -221,7 +224,7 @@ function ContainerCardBody({
           <DataCell label="Zamówiony" value={new Date(c.order_date).toLocaleDateString("pl-PL")} />
           <DataCell label="Pozycji" value={c.items.length} />
           <DataCell label="Sztuk" value={fmtNum(c.total_units)} />
-          <DataCell label="Wartość" value={fmtPLN(c.total_value)} />
+          <DataCell label="Wartość" value={showFin ? fmtPLN(c.total_value) : "•••••"} />
           {cap > 0 && <DataCell label="CBM" value={`${c.total_cbm} / ${cap}`} sub={`${fill}% wypełnienia`} />}
         </div>
         <StatusTimeline current={c.status} />
@@ -252,7 +255,7 @@ function ContainerCardBody({
                 <span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product_name}</span>
                 <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600, textAlign: "right" }}>×{item.quantity}</span>
                 <span className="num" style={{ color: "var(--text-lo)", textAlign: "right" }}>{itemCbm.toFixed(3)} m³</span>
-                <span className="num" style={{ color: "var(--text-mid)", textAlign: "right" }}>{fmtPLN(itemValue)}</span>
+                <span className="num" style={{ color: "var(--text-mid)", textAlign: "right" }}>{showFin ? fmtPLN(itemValue) : "•••••"}</span>
               </div>
             );
           })}

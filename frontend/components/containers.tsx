@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { fmtPLNk } from "@/lib/format";
+import { useUser, can } from "@/lib/permissions";
 import { I } from "./ui";
 import {
   ContainersToolbar, ContainerCard, MiniStat,
@@ -20,6 +21,7 @@ import type { Product, Manufacturer } from "./products-ui";
 
 export default function ContainersView({ density }: { density?: string }) {
   const gap = density === "compact" ? 10 : 14;
+  const showFin = can(useUser(), "viewFinancials");
 
   const [containers, setContainers] = useState<Container[]>([]);
   const [loading, setLoading] = useState(true);
@@ -131,7 +133,7 @@ export default function ContainersView({ density }: { density?: string }) {
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
         <MiniStat label="Aktywne kontenery" value={summary.inFlight} sub="nie dostarczone" icon={<I.Ship size={14} />} />
-        <MiniStat label="Wartość w drodze" value={fmtPLNk(summary.inFlightValue)} sub={`${summary.totalUnits} szt łącznie`} icon={<I.ArrowDown size={14} />} />
+        <MiniStat label="Wartość w drodze" value={showFin ? fmtPLNk(summary.inFlightValue) : "•••••"} sub={`${summary.totalUnits} szt łącznie`} icon={<I.ArrowDown size={14} />} />
         <MiniStat label="Średnie wypełnienie" value={`${summary.avgFill}%`} sub="CBM / pojemność" icon={<I.Activity size={14} />} />
         <MiniStat label="Załączniki" value={summary.attachments} sub="proforma, BL, PL" icon={<I.External size={14} />} />
       </div>

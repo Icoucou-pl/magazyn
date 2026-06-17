@@ -342,6 +342,7 @@ function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProd
 
 // ── Najbliższe dostawy ───────────────────────────────────────
 function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: ContainerOut[]; onContainerClick?: (c: ContainerOut) => void }) {
+  const showFin = can(useUser(), "viewFinancials");
   return (
     <Card>
       <CardHeader icon={<I.Ship size={16} />} title="Najbliższe dostawy" hint={`${deliveries.length} kontenerów`} accent="var(--info)"
@@ -359,7 +360,7 @@ function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: Containe
                   {c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />}
                 </div>
                 <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
-                  {c.items.length} pozycji · {fmtNum(c.total_units)} szt · {fmtPLNk(c.total_value)}
+                  {c.items.length} pozycji · {fmtNum(c.total_units)} szt · {showFin ? fmtPLNk(c.total_value) : "•••"}
                 </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
