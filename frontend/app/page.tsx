@@ -18,6 +18,7 @@ import ProductsView from "@/components/products";
 import ContainersView from "@/components/containers";
 import Calendar from "@/components/calendar";
 import CashflowView from "@/components/cashflow";
+import SettingsView from "@/components/settings";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -123,7 +124,7 @@ export default function Page() {
         onOpenSearch={() => toast("Wyszukiwarka globalna — wkrótce", "info")}
         onOpenScan={() => toast("Skaner EAN — wkrótce", "info")}
         onRefresh={() => toast("Odświeżanie danych — wkrótce", "info")}
-        onChangePassword={() => toast("Zmiana hasła — wkrótce", "info")}
+        onChangePassword={() => setView("settings")}
       />
 
       {!canEdit(currentUser) && <ReadOnlyBanner/>}
@@ -154,6 +155,8 @@ export default function Page() {
           <Calendar density={t.density} />
         ) : view === "cashflow" ? (
           <CashflowView onContainerClick={() => setView("containers")} />
+        ) : view === "settings" ? (
+          <SettingsView />
         ) : (
           <ComingSoon view={view} />
         )}
