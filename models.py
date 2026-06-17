@@ -60,6 +60,7 @@ class UserOut(BaseModel):
     show_onboarding: bool = False
     created_at: datetime
     last_login: Optional[datetime]
+    updated_at: Optional[datetime] = None
 
 
 class LoginRequest(BaseModel):

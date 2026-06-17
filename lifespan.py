@@ -141,6 +141,7 @@ async def lifespan(app: FastAPI):
         # Doklejenie kolumn dla istniejących baz: uprawnienia per-user + onboarding
         await add_column_if_missing(conn, settings.TABLE_USERS, "permissions", "TEXT")
         await add_column_if_missing(conn, settings.TABLE_USERS, "show_onboarding", "BOOLEAN DEFAULT FALSE")
+        await add_column_if_missing(conn, settings.TABLE_USERS, "updated_at", "TIMESTAMP")
 
         # Sesje logowania (urządzenie/IP/czas) - podgląd aktywnych sesji
         await conn.execute(text(f"""

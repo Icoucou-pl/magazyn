@@ -24,6 +24,7 @@ type ContainerType = { id: number; name: string; capacity_cbm: number; sort_orde
 type UserRowT = {
   id: number; email: string; full_name?: string | null; role: string;
   is_active: boolean; is_super_admin: boolean; created_at: string; last_login?: string | null;
+  updated_at?: string | null;
   perms?: Record<string, boolean> | null; show_onboarding?: boolean;
 };
 type AuditRow = {
@@ -602,7 +603,9 @@ function UserRow({ u, isSelf, permsOpen, onChangeRole, onToggleActive, onResetPa
         </div>
         <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
         <div className="num" style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2 }}>
-          Ostatnie logowanie: {u.last_login ? fmtDate(u.last_login) : "nigdy"}
+          Ostatnie logowanie: {u.last_login ? fmtDateTime(u.last_login) : "nigdy"}
+          {"   ·   "}
+          Ostatnie zmiany: {u.updated_at ? fmtDateTime(u.updated_at) : "—"}
         </div>
       </div>
 
@@ -661,10 +664,10 @@ function NewUserForm({ onSaved, onCancel }: { onSaved: () => void; onCancel: () 
     <div style={{ padding: 16, background: "var(--surface-2)", border: "1px solid var(--accent)", borderRadius: "var(--r-lg)" }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <SettingsField label="Email">
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="user@firma.pl" style={inputStyle}/>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="user@firma.pl" style={inputStyle} autoComplete="off" name="nu-email"/>
         </SettingsField>
         <SettingsField label="Imię i nazwisko">
-          <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Jan Kowalski" style={inputStyle}/>
+          <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Jan Kowalski" style={inputStyle} autoComplete="off" name="nu-fullname"/>
         </SettingsField>
         <SettingsField label="Rola">
           <select value={role} onChange={(e) => setRole(e.target.value)} style={inputStyle}>
@@ -674,7 +677,7 @@ function NewUserForm({ onSaved, onCancel }: { onSaved: () => void; onCancel: () 
           </select>
         </SettingsField>
         <SettingsField label="Hasło startowe">
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="min. 8 znaków" style={inputStyle}/>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="min. 8 znaków" style={inputStyle} autoComplete="new-password" name="nu-password"/>
         </SettingsField>
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
