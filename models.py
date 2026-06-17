@@ -36,6 +36,8 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
+    perms: Optional[dict] = None            # override uprawnień per-user (None = nie zmieniaj)
+    show_onboarding: Optional[bool] = None
 
 
 class PasswordChange(BaseModel):
@@ -54,6 +56,8 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     is_super_admin: bool = False  # tylko ten email widzi audit log
+    perms: Optional[dict] = None  # override uprawnień (None = domyślne z roli)
+    show_onboarding: bool = False
     created_at: datetime
     last_login: Optional[datetime]
 
@@ -67,6 +71,14 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+
+
+class SessionOut(BaseModel):
+    id: int
+    device: Optional[str] = None
+    ip: Optional[str] = None
+    created_at: datetime
+    current: bool = False
 
 
 class AuditLogOut(BaseModel):
@@ -140,10 +152,13 @@ class ManufacturerIn(BaseModel):
     color: str = "#6b7280"
     notes: Optional[str] = None
     email: Optional[str] = None
+    contact: Optional[str] = None
 
 
 class ManufacturerOut(ManufacturerIn):
     id: int
+    sku_count: int = 0
+    open_orders: int = 0
 
 
 # ===== TYPY KONTENERÓW =====

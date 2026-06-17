@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     TABLE_ATTACHMENTS: str = "app_container_attachments"
     TABLE_USERS: str = "app_users"
     TABLE_AUDIT_LOG: str = "app_audit_log"
+    TABLE_SESSIONS: str = "app_sessions"
 
     DEFAULT_LEAD_TIME_DAYS: int = 90
 

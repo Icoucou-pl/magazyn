@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
             )
         """))
         await add_column_if_missing(conn, settings.TABLE_MANUFACTURERS, "email", "VARCHAR(255)")
+        await add_column_if_missing(conn, settings.TABLE_MANUFACTURERS, "contact", "VARCHAR(255)")
 
         # Typy kontenerów
         await conn.execute(text(f"""
@@ -136,6 +137,22 @@ async def lifespan(app: FastAPI):
                 CONSTRAINT chk_role CHECK (role IN ('ADMIN', 'IMPORT', 'VIEWER'))
             )
         """))
+
+        # Doklejenie kolumn dla istniejących baz: uprawnienia per-user + onboarding
+        await add_column_if_missing(conn, settings.TABLE_USERS, "permissions", "TEXT")
+        await add_column_if_missing(conn, settings.TABLE_USERS, "show_onboarding", "BOOLEAN DEFAULT FALSE")
+
+        # Sesje logowania (urządzenie/IP/czas) - podgląd aktywnych sesji
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_SESSIONS} (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES {settings.TABLE_USERS}(id) ON DELETE CASCADE,
+                device TEXT,
+                ip VARCHAR(45),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sessions_user ON {settings.TABLE_SESSIONS}(user_id)"))
 
         # Audit log - kto co kiedy
         await conn.execute(text(f"""

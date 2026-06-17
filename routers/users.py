@@ -1,5 +1,6 @@
 """Zarządzanie użytkownikami - wszystkie endpointy tylko dla ADMIN."""
 
+import json
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -14,12 +15,33 @@ from audit import log_audit
 
 router = APIRouter(prefix="/api", tags=["users"])
 
+# Kolumny wspólne dla odczytu użytkownika
+USER_COLS = "id, email, full_name, role, is_active, created_at, last_login, permissions, show_onboarding"
+
+
+def _row_to_user_out(m: dict) -> UserOut:
+    """Buduje UserOut z wiersza: parsuje permissions (TEXT→dict) i wylicza is_super_admin."""
+    super_email = settings.SUPER_ADMIN_EMAIL.strip().lower()
+    raw_perms = m.get("permissions")
+    perms = None
+    if raw_perms:
+        try:
+            perms = json.loads(raw_perms)
+        except (ValueError, TypeError):
+            perms = None
+    return UserOut(
+        id=m["id"], email=m["email"], full_name=m.get("full_name"), role=m["role"],
+        is_active=m["is_active"], created_at=m["created_at"], last_login=m.get("last_login"),
+        perms=perms, show_onboarding=bool(m.get("show_onboarding")),
+        is_super_admin=bool(super_email and m["email"].lower() == super_email),
+    )
+
 
 @router.get("/users", response_model=List[UserOut])
 async def list_users(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Lista wszystkich użytkowników - tylko admin."""
-    r = await db.execute(text(f"SELECT id, email, full_name, role, is_active, created_at, last_login FROM {settings.TABLE_USERS} ORDER BY created_at DESC"))
-    return [UserOut(**dict(row._mapping)) for row in r]
+    r = await db.execute(text(f"SELECT {USER_COLS} FROM {settings.TABLE_USERS} ORDER BY created_at DESC"))
+    return [_row_to_user_out(dict(row._mapping)) for row in r]
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
@@ -37,7 +59,7 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
     r = await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role, is_active)
-            VALUES (:e, :h, :n, :r, TRUE) RETURNING id, email, full_name, role, is_active, created_at, last_login
+            VALUES (:e, :h, :n, :r, TRUE) RETURNING {USER_COLS}
         """),
         {"e": payload.email.strip(), "h": pwd_hash, "n": payload.full_name, "r": payload.role}
     )
@@ -45,7 +67,7 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
     await db.commit()
 
     await log_audit(db, admin, "USER_CREATED", "user", str(u.id), f"{payload.email} ({payload.role})")
-    return UserOut(**dict(u._mapping))
+    return _row_to_user_out(dict(u._mapping))
 
 
 @router.patch("/users/{uid}", response_model=UserOut)
@@ -67,18 +89,25 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     if payload.is_active is not None:
         updates.append("is_active = :active")
         params["active"] = payload.is_active
+    if payload.perms is not None:
+        # pusty słownik = brak wyjątków (czyść override → NULL)
+        updates.append("permissions = :perms")
+        params["perms"] = json.dumps(payload.perms) if payload.perms else None
+    if payload.show_onboarding is not None:
+        updates.append("show_onboarding = :onb")
+        params["onb"] = payload.show_onboarding
 
     if updates:
         await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET {', '.join(updates)} WHERE id = :id"), params)
         await db.commit()
 
-    r = await db.execute(text(f"SELECT id, email, full_name, role, is_active, created_at, last_login FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
+    r = await db.execute(text(f"SELECT {USER_COLS} FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
     u = r.first()
     if not u:
         raise HTTPException(404, "Użytkownik nie znaleziony")
 
     await log_audit(db, admin, "USER_UPDATED", "user", str(uid), str(payload.model_dump(exclude_none=True)))
-    return UserOut(**dict(u._mapping))
+    return _row_to_user_out(dict(u._mapping))
 
 
 @router.put("/users/{uid}/password", status_code=204)
