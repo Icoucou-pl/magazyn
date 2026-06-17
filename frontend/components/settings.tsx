@@ -74,10 +74,23 @@ const initialsOf = (name?: string | null, email?: string) => {
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return src.slice(0, 2).toUpperCase();
 };
-const fmtDate = (s?: string | null) =>
-  s ? new Date(s).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" }) : "—";
-const fmtDateTime = (s?: string | null) =>
-  s ? new Date(s).toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+// Parsuje znacznik czasu z backendu. Czas bez strefy traktujemy jako UTC
+// (Postgres zapisuje CURRENT_TIMESTAMP w UTC bez offsetu), żeby toLocale* pokazało lokalnie.
+const parseTs = (s?: string | null): Date | null => {
+  if (!s) return null;
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
+  const iso = hasTz ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+};
+const fmtDate = (s?: string | null) => {
+  const d = parseTs(s);
+  return d ? d.toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" }) : "—";
+};
+const fmtDateTime = (s?: string | null) => {
+  const d = parseTs(s);
+  return d ? d.toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+};
 
 // Parsuje User-Agent → „Chrome · macOS"
 const parseDevice = (ua?: string | null) => {
@@ -498,7 +511,13 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
     } catch { toast("Nie udało się pobrać użytkowników", "error"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  const [, setNowTick] = useState(0); // tick wymusza re-render → przeliczenie koloru kropki „na żywo"
+  useEffect(() => {
+    load();
+    const dataTimer = setInterval(load, 60000);          // odśwież dane co 60 s
+    const tickTimer = setInterval(() => setNowTick(t => t + 1), 20000); // przelicz kolor co 20 s
+    return () => { clearInterval(dataTimer); clearInterval(tickTimer); };
+  }, []);
 
   const counts = useMemo(() => items.reduce<Record<string, number>>((a, u) => { a[u.role] = (a[u.role] || 0) + 1; return a; }, {}), [items]);
 
@@ -613,13 +632,19 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActi
           {overrideCount > 0 && <Pill bg="var(--anomaly-soft)" fg="var(--anomaly)" size="sm">{overrideCount} wyjątki</Pill>}
         </div>
         <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
-        {viewerSuper && (
-          <div className="num" style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2 }}>
-            Ostatnie logowanie: {u.last_login ? fmtDateTime(u.last_login) : "nigdy"}
-            {"   ·   "}
-            Ostatnia zmiana: {u.last_activity ? fmtDateTime(u.last_activity) : "—"}
-          </div>
-        )}
+        {viewerSuper && (() => {
+          const actTs = parseTs(u.last_activity);
+          const actMins = actTs ? (Date.now() - actTs.getTime()) / 60000 : null;
+          const dotColor = actMins === null ? "var(--text-disabled)" : (actMins <= 20 ? "var(--ok)" : "var(--critical)");
+          return (
+            <div className="num" style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2 }}>
+              Ostatnie logowanie: {u.last_login ? fmtDateTime(u.last_login) : "nigdy"}
+              {"   ·   "}
+              <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 99, background: dotColor, marginRight: 5, verticalAlign: "middle" }}/>
+              Ostatnia zmiana: {u.last_activity ? fmtDateTime(u.last_activity) : "—"}
+            </div>
+          );
+        })()}
       </div>
 
       <select value={u.role} onChange={(e) => onChangeRole(e.target.value)} disabled={lockRole} style={{
