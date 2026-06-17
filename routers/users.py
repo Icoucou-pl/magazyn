@@ -46,8 +46,11 @@ def _row_to_user_out(m: dict, reveal_super: bool = False) -> UserOut:
             perms = None
     return UserOut(
         id=m["id"], email=m["email"], full_name=m.get("full_name"), role=m["role"],
-        is_active=m["is_active"], created_at=m["created_at"], last_login=m.get("last_login"),
-        updated_at=m.get("updated_at"), last_activity=m.get("last_activity"),
+        is_active=m["is_active"], created_at=m["created_at"],
+        # znaczniki aktywności (logowanie/zmiany) widzi tylko super-admin
+        last_login=m.get("last_login") if reveal_super else None,
+        updated_at=m.get("updated_at") if reveal_super else None,
+        last_activity=m.get("last_activity") if reveal_super else None,
         perms=perms, show_onboarding=bool(m.get("show_onboarding")),
         is_super_admin=bool(reveal_super and _is_super(m["email"])),
     )

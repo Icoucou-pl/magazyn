@@ -613,11 +613,13 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActi
           {overrideCount > 0 && <Pill bg="var(--anomaly-soft)" fg="var(--anomaly)" size="sm">{overrideCount} wyjątki</Pill>}
         </div>
         <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
-        <div className="num" style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2 }}>
-          Ostatnie logowanie: {u.last_login ? fmtDateTime(u.last_login) : "nigdy"}
-          {"   ·   "}
-          Ostatnia zmiana: {u.last_activity ? fmtDateTime(u.last_activity) : "—"}
-        </div>
+        {viewerSuper && (
+          <div className="num" style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2 }}>
+            Ostatnie logowanie: {u.last_login ? fmtDateTime(u.last_login) : "nigdy"}
+            {"   ·   "}
+            Ostatnia zmiana: {u.last_activity ? fmtDateTime(u.last_activity) : "—"}
+          </div>
+        )}
       </div>
 
       <select value={u.role} onChange={(e) => onChangeRole(e.target.value)} disabled={lockRole} style={{
