@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
+import { useUser, can } from "@/lib/permissions";
 import {
   ProductsToolbar, ProductsTable, ColPickerModal, BulkBar,
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
@@ -36,6 +37,7 @@ export default function ProductsView({
   onOpenedSku?: () => void;
 }) {
   const gap = density === "compact" ? 10 : 12;
+  const showFin = can(useUser(), "viewFinancials");
 
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
@@ -150,8 +152,10 @@ export default function ProductsView({
       { label: "Sprzedaz/mies", get: (p) => Math.round(p.avg_monthly_weighted) },
       { key: "sales_1m", label: "Sprzedaz 30d" },
       { label: "Miesiecy zapasu", get: (p) => monthsDisplay(p.months_of_stock) },
-      { key: "purchase_price", label: "Cena zakupu" },
-      { key: "stock_value", label: "Wartosc stanu" },
+      ...(showFin ? [
+        { key: "purchase_price", label: "Cena zakupu" },
+        { key: "stock_value", label: "Wartosc stanu" },
+      ] as CsvColumn<Product>[] : []),
       { key: "lead_time_days", label: "Lead time (dni)" },
       { key: "cbm_per_unit", label: "CBM" },
       { label: "Status", get: (p) => displayStatus(p) },

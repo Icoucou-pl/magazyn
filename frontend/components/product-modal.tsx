@@ -15,7 +15,7 @@ import {
 } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
-import { canEdit, useUser } from "@/lib/permissions";
+import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
 type ApiProjPoint = { date: string; stock: number; event: string | null };
@@ -64,6 +64,7 @@ export default function ProductModal({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  const showFin = can(user, "viewFinancials");
   const [product, setProduct] = useState<Product>(initialProduct);
   const [editingAttrs, setEditingAttrs] = useState(false);
   const [editingLT, setEditingLT] = useState(false);
@@ -131,7 +132,7 @@ export default function ProductModal({
         {/* Body */}
         <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
-            <MetricBox label="Stan" value={product.stock} sub={fmtPLN(product.stock_value)} tone={product.stock === 0 ? "critical" : "neutral"} />
+            <MetricBox label="Stan" value={product.stock} sub={showFin ? fmtPLN(product.stock_value) : "•••••"} tone={product.stock === 0 ? "critical" : "neutral"} />
             <MetricBox label="W drodze" value={product.stock_in_transit > 0 ? `+${product.stock_in_transit}` : "—"} sub={product.stock_in_transit > 0 ? "oczekuje na dostawę" : "brak dostaw"} tone="info" />
             <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
             <MetricBox label="Mies. zapasu" value={monthsStr === "∞" ? "∞" : monthsStr + "m"} sub={product.days_until_empty < 365 ? `${product.days_until_empty}d do końca` : "brak ruchu"} tone={monthsTone} />
@@ -360,6 +361,7 @@ function AttributesCard({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  const showFin = can(user, "viewFinancials");
   const init = () => ({
     cbm: product.cbm_per_unit ?? 0,
     ean: product.ean ?? "",
@@ -407,7 +409,7 @@ function AttributesCard({
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>Cena zakupu</span>
-          <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>{fmtNum(product.purchase_price)} zł <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>(Subiekt)</span></span>
+          <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>{showFin ? (<>{fmtNum(product.purchase_price)} zł <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>(Subiekt)</span></>) : "•••••"}</span>
         </div>
         <AttrSelect label="Producent (dostawca)" value={draft.mfrId} editing={editing} onChange={(v) => setDraft({ ...draft, mfrId: v })} options={mfrOptions}
           renderDisplay={() => (curMfr ? <MfrChip name={curMfr.name} color={curMfr.color} size="sm" /> : <span style={{ color: "var(--text-disabled)" }}>—</span>)} />
@@ -476,6 +478,7 @@ function LeadTimeCard({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  const showFin = can(user, "viewFinancials");
   const [draft, setDraft] = useState(product.lead_time_days);
   const [busy, setBusy] = useState(false);
 

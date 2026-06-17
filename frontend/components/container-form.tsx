@@ -12,7 +12,7 @@ import { modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal, type Produc
 import { STATUS_FLOW, STATUS_FULL_META, type Container, type Attachment } from "./containers-ui";
 import { api, download } from "@/lib/api";
 import { toast } from "./toast";
-import { canEdit, useUser } from "@/lib/permissions";
+import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
@@ -36,6 +36,7 @@ export default function ContainerFormModal({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  const showFin = can(user, "viewFinancials");
   const isNew = !initial;
 
   const [containerNumber, setContainerNumber] = useState(initial?.container_number || "");
@@ -303,13 +304,15 @@ export default function ContainerFormModal({
             <Section title={`Produkty (${items.length})`} required action={showEdit ? <button onClick={addItem} style={btnGhostMini}><I.Plus size={11} /> Dodaj pozycję</button> : undefined}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {itemDetails.map((item, idx) => (
-                  <ItemRow key={idx} item={item} sortedProducts={sortedProducts} manufacturers={manufacturers} manufacturerId={manufacturerId} disabled={!showEdit}
+                  <ItemRow key={idx} item={item} sortedProducts={sortedProducts} manufacturers={manufacturers} manufacturerId={manufacturerId} disabled={!showEdit} showFin={showFin}
                     onChange={(field, val) => updateItem(idx, field, val)} onRemove={() => removeItem(idx)} />
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                <I.Wand size={11} style={{ color: "var(--accent)" }} /> Cena auto-wypełnia się z bazy produktów. Można nadpisać.
-              </div>
+              {showFin && (
+                <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                  <I.Wand size={11} style={{ color: "var(--accent)" }} /> Cena auto-wypełnia się z bazy produktów. Można nadpisać.
+                </div>
+              )}
             </Section>
 
             {capacity > 0 && (
@@ -317,7 +320,7 @@ export default function ContainerFormModal({
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Wypełnienie {containerType?.name}</span>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-                    <span className="num" style={{ fontSize: 13, color: "var(--text-lo)" }}>{totalUnits} szt · {fmtPLN(totalValue)}</span>
+                    <span className="num" style={{ fontSize: 13, color: "var(--text-lo)" }}>{totalUnits} szt{showFin && <> · {fmtPLN(totalValue)}</>}</span>
                     <span className="num" style={{ fontSize: 18, fontWeight: 600, color: fillColor }}>{totalCbm.toFixed(3)} <span style={{ color: "var(--text-lo)", fontSize: 11 }}>/ {capacity} m³ ·</span> <span style={{ color: "var(--text-hi)" }}>{fillPct.toFixed(0)}%</span></span>
                   </div>
                 </div>
@@ -351,10 +354,10 @@ export default function ContainerFormModal({
 
 // ── Wiersz pozycji ───────────────────────────────────────────
 function ItemRow({
-  item, sortedProducts, manufacturers, manufacturerId, disabled, onChange, onRemove,
+  item, sortedProducts, manufacturers, manufacturerId, disabled, showFin, onChange, onRemove,
 }: {
   item: { sku: string; quantity: string; unit_cost: string; product?: Product; qty: number; cbm: number; value: number; isMixed: boolean };
-  sortedProducts: Product[]; manufacturers: Manufacturer[]; manufacturerId: string; disabled: boolean;
+  sortedProducts: Product[]; manufacturers: Manufacturer[]; manufacturerId: string; disabled: boolean; showFin: boolean;
   onChange: (field: "sku" | "quantity" | "unit_cost", val: string) => void; onRemove: () => void;
 }) {
   const mixedMfrName = item.product?.manufacturer_id ? manufacturers.find((m) => m.id === item.product!.manufacturer_id)?.name : undefined;
@@ -384,12 +387,16 @@ function ItemRow({
         )}
         {item.qty > 0 && item.cbm > 0 && (
           <div className="num" style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>
-            Zajmie: <strong style={{ color: "var(--text-mid)" }}>{item.cbm.toFixed(3)} m³</strong>{item.value > 0 && <span> · {fmtPLN(item.value)}</span>}
+            Zajmie: <strong style={{ color: "var(--text-mid)" }}>{item.cbm.toFixed(3)} m³</strong>{showFin && item.value > 0 && <span> · {fmtPLN(item.value)}</span>}
           </div>
         )}
       </div>
       <input type="number" value={item.quantity} onChange={(e) => onChange("quantity", e.target.value)} placeholder="szt" min="1" disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right" }} />
-      <input type="number" value={item.unit_cost} onChange={(e) => onChange("unit_cost", e.target.value)} placeholder="cena" step="0.01" disabled={disabled} title={item.product ? `Z bazy: ${item.product.purchase_price} zł` : ""} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right" }} />
+      {showFin ? (
+        <input type="number" value={item.unit_cost} onChange={(e) => onChange("unit_cost", e.target.value)} placeholder="cena" step="0.01" disabled={disabled} title={item.product ? `Z bazy: ${item.product.purchase_price} zł` : ""} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right" }} />
+      ) : (
+        <div style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--text-disabled)", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>•••</div>
+      )}
       <button onClick={onRemove} disabled={disabled} style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, height: 32 }}><I.Close size={12} /></button>
     </div>
   );

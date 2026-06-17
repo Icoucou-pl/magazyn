@@ -11,7 +11,7 @@ import { createPortal } from "react-dom";
 import { I, Pill, MfrChip, STATUS_META } from "./ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { api } from "@/lib/api";
-import { canEdit, useUser } from "@/lib/permissions";
+import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtNum, fmtPLNk } from "@/lib/format";
 
 // ── Typ produktu (z /api/products) ───────────────────────────
@@ -184,6 +184,7 @@ export function ProductsTable({
   const baseTemplate = cols.map((c) => (typeof c.w === "number" ? c.w + "px" : c.w)).join(" ");
   const gridTemplate = `36px ${baseTemplate}`;
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.sku));
+  const showFin = can(useUser(), "viewFinancials");
 
   return (
     <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflowX: "auto", overflowY: "clip" }}>
@@ -222,7 +223,7 @@ export function ProductsTable({
           <div>
             {rows.map((p, idx) => (
               <ProductRow key={p.sku} product={p} cols={cols} gridTemplate={gridTemplate}
-                isLast={idx === rows.length - 1} selected={selected.has(p.sku)}
+                isLast={idx === rows.length - 1} selected={selected.has(p.sku)} showFin={showFin}
                 onToggleRow={() => onToggleRow(p.sku)} onClick={() => onProductClick(p)} onToggleFav={onToggleFav} />
             ))}
           </div>
@@ -233,11 +234,11 @@ export function ProductsTable({
 }
 
 function ProductRow({
-  product, cols, gridTemplate, onClick, isLast, selected, onToggleRow, onToggleFav,
+  product, cols, gridTemplate, onClick, isLast, selected, onToggleRow, onToggleFav, showFin,
 }: {
   product: Product; cols: ColDef[]; gridTemplate: string;
   onClick: () => void; isLast: boolean; selected: boolean;
-  onToggleRow: () => void; onToggleFav: (p: Product) => void;
+  onToggleRow: () => void; onToggleFav: (p: Product) => void; showFin: boolean;
 }) {
   return (
     <div onClick={onClick} style={{ display: "grid", gridTemplateColumns: gridTemplate, cursor: "pointer", borderBottom: isLast ? "none" : "1px solid var(--border-soft)", transition: "background 0.1s", background: selected ? "color-mix(in oklch, var(--accent) 8%, transparent)" : "transparent" }}
@@ -247,13 +248,13 @@ function ProductRow({
         <Checkbox checked={selected} onChange={() => {}} />
       </div>
       {cols.map((col) => (
-        <Cell key={col.id} col={col} product={product} onToggleFav={onToggleFav} />
+        <Cell key={col.id} col={col} product={product} onToggleFav={onToggleFav} showFin={showFin} />
       ))}
     </div>
   );
 }
 
-function Cell({ col, product: p, onToggleFav }: { col: ColDef; product: Product; onToggleFav: (p: Product) => void }) {
+function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product: Product; onToggleFav: (p: Product) => void; showFin: boolean }) {
   const isYoy = col.highlight === "yoy";
   const baseStyle: React.CSSProperties = {
     padding: "11px 12px", fontSize: 12, display: "flex", alignItems: "center", minWidth: 0, overflow: "hidden",
@@ -301,9 +302,9 @@ function Cell({ col, product: p, onToggleFav }: { col: ColDef; product: Product;
       return <div style={baseStyle}><span className="num" style={{ color: mColor, fontWeight: 500 }}>{disp === "∞" ? "∞" : disp + "m"}</span></div>;
     }
     case "price":
-      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{fmtNum(p.purchase_price)}</span></div>;
+      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{showFin ? fmtNum(p.purchase_price) : "•••"}</span></div>;
     case "value":
-      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-hi)", fontWeight: 500 }}>{fmtPLNk(p.stock_value)}</span></div>;
+      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-hi)", fontWeight: 500 }}>{showFin ? fmtPLNk(p.stock_value) : "•••"}</span></div>;
     case "lt":
       return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{p.lead_time_days}d</span></div>;
     case "cbm":
@@ -402,6 +403,7 @@ export function BulkBar({
 }) {
   const [mfrOpen, setMfrOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const showFin = can(useUser(), "viewFinancials");
 
   const selectedRows = () => rows.filter((p) => selectedSkus.includes(p.sku));
 
@@ -411,7 +413,7 @@ export function BulkBar({
       { key: "name", label: "Nazwa" },
       { label: "Producent", get: (p) => p.manufacturer_name || "" },
       { key: "stock", label: "Stan" },
-      { key: "purchase_price", label: "Cena zakupu" },
+      ...(showFin ? [{ key: "purchase_price", label: "Cena zakupu" } as CsvColumn<Product>] : []),
       { label: "Status", get: (p) => displayStatus(p) },
     ];
     exportCsv("produkty-zaznaczone", cols, selectedRows());
