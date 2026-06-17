@@ -16,6 +16,7 @@ import Header, { NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
 import ProductsView from "@/components/products";
 import ContainersView from "@/components/containers";
+import Calendar from "@/components/calendar";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -148,6 +149,8 @@ export default function Page() {
           />
         ) : view === "containers" ? (
           <ContainersView density={t.density} />
+        ) : view === "calendar" ? (
+          <Calendar density={t.density} />
         ) : (
           <ComingSoon view={view} />
         )}
