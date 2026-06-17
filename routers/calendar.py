@@ -22,8 +22,22 @@ async def calendar_events(db: AsyncSession = Depends(get_db)):
     events = []
     for p in products:
         if p.status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and p.avg_monthly_weighted >= 1:
-            events.append({"date": p.order_date.isoformat(), "type": "ORDER", "sku": p.sku, "name": p.name, "status": p.status})
-            events.append({"date": p.empty_date.isoformat(), "type": "EMPTY", "sku": p.sku, "name": p.name, "status": p.status})
+            # Sugerowana ilość zamówienia — ta sama reguła co /shopping-list
+            # (pokrycie na 6 miesięcy minus stan i to, co już w drodze).
+            recommended = max(1, int(p.avg_monthly_weighted * 6 - p.stock - p.stock_in_transit))
+            events.append({
+                "date": p.order_date.isoformat(), "type": "ORDER",
+                "sku": p.sku, "name": p.name, "status": p.status,
+                "manufacturer_name": p.manufacturer_name,
+                "manufacturer_color": p.manufacturer_color,
+                "qty": recommended,
+            })
+            events.append({
+                "date": p.empty_date.isoformat(), "type": "EMPTY",
+                "sku": p.sku, "name": p.name, "status": p.status,
+                "manufacturer_name": p.manufacturer_name,
+                "manufacturer_color": p.manufacturer_color,
+            })
 
     for c in containers:
         if c.status != "DELIVERED":
