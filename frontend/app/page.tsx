@@ -17,6 +17,7 @@ import Dashboard from "@/components/dashboard";
 import ProductsView from "@/components/products";
 import ContainersView from "@/components/containers";
 import Calendar from "@/components/calendar";
+import CashflowView from "@/components/cashflow";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -151,6 +152,8 @@ export default function Page() {
           <ContainersView density={t.density} />
         ) : view === "calendar" ? (
           <Calendar density={t.density} />
+        ) : view === "cashflow" ? (
+          <CashflowView onContainerClick={() => setView("containers")} />
         ) : (
           <ComingSoon view={view} />
         )}
