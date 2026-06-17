@@ -2,6 +2,7 @@
 // ============================================================
 // MAGAZYN — Kalendarz (etap 4A). Port calendar.jsx → .tsx.
 //   Wygląd 1:1 z mocka, dane z realnego API: GET /calendar.
+//   Tryby: Miesiąc (siatka 6 tyg.) / Tydzień (7 kolumn) / Dzień (szczegół).
 //   Mapowanie pól mocka → kontrakt backendu:
 //     DELIVERY: event.container → container_number, event.units → total_units,
 //               event.carrier (nie istnieje) → manufacturer_name,
@@ -18,6 +19,7 @@ import { fmtNum } from "@/lib/format";
 
 // ── Typy ─────────────────────────────────────────────────────
 type EventType = "ORDER" | "EMPTY" | "DELIVERY";
+type Mode = "month" | "week" | "day";
 
 type CalEvent = {
   date: string;
@@ -57,6 +59,8 @@ const EVENT_META: Record<EventType, EventMeta> = {
   DELIVERY: { label: "Dostawa",       fg: "var(--info)",     bg: "var(--info-soft)",     dot: "var(--info)" },
 };
 
+const MODE_LABEL: Record<Mode, string> = { month: "Mies", week: "Tydz", day: "Dzień" };
+
 const MONTH_NAMES = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAY_NAMES   = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
 
@@ -64,6 +68,8 @@ const DAY_NAMES   = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
 const dKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 // Parse 'YYYY-MM-DD' as LOCAL midnight (default constructor would parse it as UTC)
 const parseLocal = (s: string) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+// Poniedziałek tygodnia zawierającego d
+const mondayOf = (d: Date) => { const x = new Date(d); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); x.setHours(0, 0, 0, 0); return x; };
 
 // Etykieta zdarzenia: dostawa pokazuje numer kontenera, reszta SKU
 const eventLabel = (e: CalEvent) => (e.type === "DELIVERY" ? e.container_number ?? "" : e.sku ?? "");
@@ -80,6 +86,7 @@ function Calendar({ density }: { density?: string }) {
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [mode, setMode] = useState<Mode>("month");
   const [cursor, setCursor] = useState(new Date());
   const [selected, setSelected] = useState(dKey(new Date()));
   const [filters, setFilters] = useState<Filters>({ ORDER: true, EMPTY: true, DELIVERY: true });
@@ -103,7 +110,7 @@ function Calendar({ density }: { density?: string }) {
   const month = cursor.getMonth();
   const todayKey = dKey(new Date());
 
-  // Build 6-week grid (always 42 cells) — fills with prev/next month
+  // Siatka miesiąca: 6 tygodni (42 komórki) — dopełniona poprzednim/następnym miesiącem
   const cells = useMemo<DayCellData[]>(() => {
     const firstDay = new Date(year, month, 1);
     const startWeekday = (firstDay.getDay() + 6) % 7; // Mon=0
@@ -113,15 +120,19 @@ function Calendar({ density }: { density?: string }) {
       const d = new Date(start);
       d.setDate(start.getDate() + i);
       result.push({
-        date: d,
-        key: dKey(d),
-        day: d.getDate(),
+        date: d, key: dKey(d), day: d.getDate(),
         outMonth: d.getMonth() !== month,
         weekend: d.getDay() === 0 || d.getDay() === 6,
       });
     }
     return result;
   }, [year, month]);
+
+  // Dni bieżącego tygodnia (Pn–Nd)
+  const weekDays = useMemo<Date[]>(() => {
+    const mon = mondayOf(cursor);
+    return Array.from({ length: 7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return d; });
+  }, [cursor]);
 
   const eventsByDate = useMemo<Record<string, CalEvent[]>>(() => {
     const map: Record<string, CalEvent[]> = {};
@@ -130,7 +141,7 @@ function Calendar({ density }: { density?: string }) {
       if (!map[e.date]) map[e.date] = [];
       map[e.date].push(e);
     });
-    // Stable order: EMPTY > ORDER > DELIVERY within a day
+    // Stała kolejność w dniu: EMPTY > ORDER > DELIVERY
     const rank: Record<EventType, number> = { EMPTY: 0, ORDER: 1, DELIVERY: 2 };
     Object.keys(map).forEach(k => map[k].sort((a, b) => rank[a.type] - rank[b.type]));
     return map;
@@ -144,11 +155,45 @@ function Calendar({ density }: { density?: string }) {
   }, [events, year, month, filters]);
 
   const selectedEvents = (eventsByDate[selected] || []).slice();
-  const selectedDate = parseLocal(selected);
 
-  const goPrev  = () => setCursor(new Date(year, month - 1, 1));
-  const goNext  = () => setCursor(new Date(year, month + 1, 1));
+  // Liczba wydarzeń w widocznym zakresie (zależnie od trybu)
+  const visibleCount = useMemo(() => {
+    if (mode === "day") return (eventsByDate[selected] || []).length;
+    if (mode === "week") {
+      const keys = new Set(weekDays.map(dKey));
+      return events.filter(e => filters[e.type] && keys.has(e.date)).length;
+    }
+    return monthEventCount;
+  }, [mode, eventsByDate, selected, weekDays, events, filters, monthEventCount]);
+
+  // Etykieta nagłówka zależnie od trybu
+  const label = useMemo(() => {
+    if (mode === "month") return `${MONTH_NAMES[month]} ${year}`;
+    if (mode === "week") {
+      const a = weekDays[0], b = weekDays[6];
+      const mon = (d: Date) => d.toLocaleDateString("pl-PL", { month: "short" });
+      return a.getMonth() === b.getMonth()
+        ? `${a.getDate()}–${b.getDate()} ${mon(b)} ${b.getFullYear()}`
+        : `${a.getDate()} ${mon(a)} – ${b.getDate()} ${mon(b)} ${b.getFullYear()}`;
+    }
+    return parseLocal(selected).toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  }, [mode, month, year, weekDays, selected]);
+
+  // Nawigacja zależna od trybu
+  const goPrev = () => {
+    if (mode === "month") { setCursor(new Date(year, month - 1, 1)); return; }
+    if (mode === "week")  { const c = new Date(cursor); c.setDate(c.getDate() - 7); setCursor(c); setSelected(dKey(mondayOf(c))); return; }
+    const c = new Date(parseLocal(selected)); c.setDate(c.getDate() - 1); setCursor(c); setSelected(dKey(c));
+  };
+  const goNext = () => {
+    if (mode === "month") { setCursor(new Date(year, month + 1, 1)); return; }
+    if (mode === "week")  { const c = new Date(cursor); c.setDate(c.getDate() + 7); setCursor(c); setSelected(dKey(mondayOf(c))); return; }
+    const c = new Date(parseLocal(selected)); c.setDate(c.getDate() + 1); setCursor(c); setSelected(dKey(c));
+  };
   const goToday = () => { const t = new Date(); setCursor(t); setSelected(dKey(t)); };
+
+  // Zmiana trybu — wyśrodkuj widok na aktualnie wybranym dniu
+  const changeMode = (m: Mode) => { setMode(m); setCursor(parseLocal(selected)); };
 
   // Agenda — najbliższe 3 tygodnie
   const agenda = useMemo(() => {
@@ -156,10 +201,7 @@ function Calendar({ density }: { density?: string }) {
     const end = new Date(today); end.setDate(end.getDate() + 21);
     return events
       .filter(e => filters[e.type])
-      .filter(e => {
-        const ed = parseLocal(e.date);
-        return ed >= today && ed <= end;
-      })
+      .filter(e => { const ed = parseLocal(e.date); return ed >= today && ed <= end; })
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [events, filters]);
 
@@ -167,83 +209,41 @@ function Calendar({ density }: { density?: string }) {
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 }}>
       {/* Toolbar */}
       <CalendarToolbar
-        monthLabel={`${MONTH_NAMES[month]} ${year}`}
-        eventCount={monthEventCount}
+        label={label}
+        eventCount={visibleCount}
+        mode={mode} onMode={changeMode}
         filters={filters} setFilters={setFilters}
         onPrev={goPrev} onNext={goNext} onToday={goToday}
       />
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: 14 }} className="calendar-layout">
-        {/* Main grid */}
-        <Card>
-          <div style={{
-            display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
-            borderBottom: "1px solid var(--border-soft)",
-          }}>
-            {DAY_NAMES.map((d, i) => (
-              <div key={d} style={{
-                padding: "10px 12px", fontSize: 10, fontWeight: 600,
-                textTransform: "uppercase", letterSpacing: "0.08em",
-                color: i >= 5 ? "var(--text-disabled)" : "var(--text-lo)",
-                background: "var(--surface-1)",
-              }}>{d}</div>
-            ))}
-          </div>
-          <div style={{
-            display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
-            gridAutoRows: "minmax(108px, 1fr)",
-            background: "var(--border-soft)",
-            gap: 1,
-          }}>
-            {cells.map(c => (
-              <DayCell
-                key={c.key}
-                cell={c}
-                events={eventsByDate[c.key] || []}
-                isToday={c.key === todayKey}
-                isSelected={c.key === selected}
-                onSelect={() => setSelected(c.key)}
-              />
-            ))}
-          </div>
-        </Card>
+        {/* Główny obszar — zależny od trybu */}
+        <div style={{ minWidth: 0 }}>
+          {mode === "month" && (
+            <MonthGrid cells={cells} eventsByDate={eventsByDate} todayKey={todayKey} selected={selected} onSelect={setSelected}/>
+          )}
+          {mode === "week" && (
+            <WeekGrid weekDays={weekDays} eventsByDate={eventsByDate} todayKey={todayKey} selected={selected} onSelect={setSelected}/>
+          )}
+          {mode === "day" && (
+            <Card>
+              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}/>
+            </Card>
+          )}
+        </div>
 
-        {/* Side panel */}
+        {/* Panel boczny */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* Selected day */}
-          <Card>
-            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-soft)" }}>
-              <div style={{ fontSize: 11, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>
-                {selectedDate.toLocaleDateString("pl-PL", { weekday: "long" })}
-              </div>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
-                <span className="num" style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>
-                  {selectedDate.getDate()}
-                </span>
-                <span style={{ fontSize: 13, color: "var(--text-mid)" }}>
-                  {MONTH_NAMES[selectedDate.getMonth()]} {selectedDate.getFullYear()}
-                </span>
-                {selected === todayKey && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">DZIŚ</Pill>}
-              </div>
-            </div>
-            <div>
-              {selectedEvents.length === 0 ? (
-                <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
-                  {loading ? "Ładowanie…" : "Brak wydarzeń tego dnia"}
-                </div>
-              ) : selectedEvents.map((e, i) => (
-                <EventRow key={i} event={e} isLast={i === selectedEvents.length - 1}/>
-              ))}
-            </div>
-          </Card>
+          {/* Wybrany dzień — w trybie „Dzień" główny obszar to już ten dzień, więc tu pomijamy */}
+          {mode !== "day" && (
+            <Card>
+              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}/>
+            </Card>
+          )}
 
           {/* Agenda */}
           <Card>
-            <CardHeader
-              icon={<I.Activity size={14}/>}
-              title="Najbliższe 3 tygodnie"
-              hint={`${agenda.length} wydarzeń`}
-            />
+            <CardHeader icon={<I.Activity size={14}/>} title="Najbliższe 3 tygodnie" hint={`${agenda.length} wydarzeń`}/>
             <div style={{ maxHeight: 360, overflowY: "auto" }}>
               {agenda.length === 0 ? (
                 <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
@@ -275,8 +275,10 @@ function Calendar({ density }: { density?: string }) {
 
 // --- Toolbar ------------------------------------------------
 type ToolbarProps = {
-  monthLabel: string;
+  label: string;
   eventCount: number;
+  mode: Mode;
+  onMode: (m: Mode) => void;
   filters: Filters;
   setFilters: (f: Filters) => void;
   onPrev: () => void;
@@ -284,7 +286,7 @@ type ToolbarProps = {
   onToday: () => void;
 };
 
-function CalendarToolbar({ monthLabel, eventCount, filters, setFilters, onPrev, onNext, onToday }: ToolbarProps) {
+function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters, onPrev, onNext, onToday }: ToolbarProps) {
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
@@ -298,7 +300,7 @@ function CalendarToolbar({ monthLabel, eventCount, filters, setFilters, onPrev, 
         <button onClick={onNext} style={iconBtnSmall}><I.ChevronR size={14}/></button>
       </div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
-        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em" }}>{monthLabel}</h2>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", textTransform: "capitalize" }}>{label}</h2>
         <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{eventCount} wydarzeń</span>
       </div>
       <button onClick={onToday} style={{
@@ -332,22 +334,60 @@ function CalendarToolbar({ monthLabel, eventCount, filters, setFilters, onPrev, 
         })}
       </div>
 
+      {/* Przełącznik trybu */}
       <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 7 }}>
-        {["Mies", "Tydz", "Dzień"].map((v, i) => (
-          <button key={v} disabled={i > 0} style={{
-            padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 5,
-            background: i === 0 ? "var(--surface-3)" : "transparent",
-            color: i === 0 ? "var(--text-hi)" : "var(--text-disabled)",
-            border: "none",
-            cursor: i === 0 ? "pointer" : "not-allowed",
-          }}>{v}</button>
-        ))}
+        {(["month", "week", "day"] as Mode[]).map((m) => {
+          const active = mode === m;
+          return (
+            <button key={m} onClick={() => onMode(m)} style={{
+              padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 5,
+              background: active ? "var(--surface-3)" : "transparent",
+              color: active ? "var(--text-hi)" : "var(--text-disabled)",
+              border: "none", cursor: "pointer",
+            }}>{MODE_LABEL[m]}</button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-// --- Day cell -----------------------------------------------
+// --- Siatka miesiąca ----------------------------------------
+function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect }: {
+  cells: DayCellData[]; eventsByDate: Record<string, CalEvent[]>; todayKey: string; selected: string; onSelect: (k: string) => void;
+}) {
+  return (
+    <Card>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: "1px solid var(--border-soft)" }}>
+        {DAY_NAMES.map((d, i) => (
+          <div key={d} style={{
+            padding: "10px 12px", fontSize: 10, fontWeight: 600,
+            textTransform: "uppercase", letterSpacing: "0.08em",
+            color: i >= 5 ? "var(--text-disabled)" : "var(--text-lo)",
+            background: "var(--surface-1)",
+          }}>{d}</div>
+        ))}
+      </div>
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
+        gridAutoRows: "minmax(108px, 1fr)", background: "var(--border-soft)", gap: 1,
+      }}>
+        {cells.map(c => (
+          <DayCell
+            key={c.key}
+            cell={c}
+            events={eventsByDate[c.key] || []}
+            isToday={c.key === todayKey}
+            isSelected={c.key === selected}
+            onSelect={() => onSelect(c.key)}
+          />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// --- Komórka dnia (miesiąc) ---------------------------------
 function DayCell({ cell, events, isToday, isSelected, onSelect }: {
   cell: DayCellData; events: CalEvent[]; isToday: boolean; isSelected: boolean; onSelect: () => void;
 }) {
@@ -356,28 +396,17 @@ function DayCell({ cell, events, isToday, isSelected, onSelect }: {
   return (
     <div onClick={onSelect} style={{
       background: cell.outMonth ? "var(--bg)" : (isSelected ? "var(--surface-2)" : "var(--surface-1)"),
-      padding: 6,
-      cursor: "pointer",
-      position: "relative",
-      transition: "background 0.12s",
-      display: "flex", flexDirection: "column", gap: 3,
-      minHeight: 0,
+      padding: 6, cursor: "pointer", position: "relative", transition: "background 0.12s",
+      display: "flex", flexDirection: "column", gap: 3, minHeight: 0,
     }}
       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface-2)"; }}
       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = cell.outMonth ? "var(--bg)" : "var(--surface-1)"; }}>
 
-      {/* Selected ring */}
       {isSelected && (
-        <span style={{
-          position: "absolute", inset: 0, pointerEvents: "none",
-          boxShadow: "inset 0 0 0 1px var(--accent)",
-        }}/>
+        <span style={{ position: "absolute", inset: 0, pointerEvents: "none", boxShadow: "inset 0 0 0 1px var(--accent)" }}/>
       )}
 
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "2px 4px 0",
-      }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 4px 0" }}>
         <span className="num" style={{
           fontSize: 12, fontWeight: 600,
           display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -392,37 +421,118 @@ function DayCell({ cell, events, isToday, isSelected, onSelect }: {
       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
         {visible.map((e, i) => <EventChip key={i} event={e}/>)}
         {extra > 0 && (
-          <span style={{
-            fontSize: 10, color: "var(--text-lo)",
-            padding: "0 4px",
-          }}>+{extra} więcej</span>
+          <span style={{ fontSize: 10, color: "var(--text-lo)", padding: "0 4px" }}>+{extra} więcej</span>
         )}
       </div>
     </div>
   );
 }
 
+// --- Siatka tygodnia ----------------------------------------
+function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect }: {
+  weekDays: Date[]; eventsByDate: Record<string, CalEvent[]>; todayKey: string; selected: string; onSelect: (k: string) => void;
+}) {
+  return (
+    <Card>
+      {/* Nagłówek: nazwa dnia + numer */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: "1px solid var(--border-soft)" }}>
+        {weekDays.map((d, i) => {
+          const isToday = dKey(d) === todayKey;
+          return (
+            <div key={i} style={{
+              padding: "8px 10px", display: "flex", alignItems: "center", gap: 6,
+              background: "var(--surface-1)",
+            }}>
+              <span style={{
+                fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em",
+                color: i >= 5 ? "var(--text-disabled)" : "var(--text-lo)",
+              }}>{DAY_NAMES[i]}</span>
+              <span className="num" style={{
+                fontSize: 12, fontWeight: 600,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 20, height: 20, borderRadius: 99,
+                background: isToday ? "var(--accent)" : "transparent",
+                color: isToday ? "var(--accent-ink)" : "var(--text-hi)",
+              }}>{d.getDate()}</span>
+            </div>
+          );
+        })}
+      </div>
+      {/* Kolumny dni — pełna lista zdarzeń, przewijalna */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: "var(--border-soft)", gap: 1 }}>
+        {weekDays.map((d, i) => {
+          const key = dKey(d);
+          const evs = eventsByDate[key] || [];
+          const isSelected = key === selected;
+          return (
+            <div key={i} onClick={() => onSelect(key)} style={{
+              background: isSelected ? "var(--surface-2)" : "var(--surface-1)",
+              minHeight: 440, maxHeight: 560, overflowY: "auto",
+              padding: 8, cursor: "pointer", position: "relative",
+              display: "flex", flexDirection: "column", gap: 4,
+            }}
+              onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface-2)"; }}
+              onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface-1)"; }}>
+              {isSelected && (
+                <span style={{ position: "absolute", inset: 0, pointerEvents: "none", boxShadow: "inset 0 0 0 1px var(--accent)" }}/>
+              )}
+              {evs.length === 0
+                ? <span style={{ fontSize: 10, color: "var(--text-disabled)", padding: "2px 4px" }}>—</span>
+                : evs.map((e, j) => <EventChip key={j} event={e}/>)}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// --- Szczegół dnia (panel boczny / tryb Dzień) --------------
+function DayDetail({ dateKey, events, todayKey, loading }: {
+  dateKey: string; events: CalEvent[]; todayKey: string; loading: boolean;
+}) {
+  const d = parseLocal(dateKey);
+  return (
+    <>
+      <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-soft)" }}>
+        <div style={{ fontSize: 11, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>
+          {d.toLocaleDateString("pl-PL", { weekday: "long" })}
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+          <span className="num" style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{d.getDate()}</span>
+          <span style={{ fontSize: 13, color: "var(--text-mid)" }}>
+            {MONTH_NAMES[d.getMonth()]} {d.getFullYear()}
+          </span>
+          {dateKey === todayKey && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">DZIŚ</Pill>}
+        </div>
+      </div>
+      <div>
+        {events.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
+            {loading ? "Ładowanie…" : "Brak wydarzeń tego dnia"}
+          </div>
+        ) : events.map((e, i) => <EventRow key={i} event={e} isLast={i === events.length - 1}/>)}
+      </div>
+    </>
+  );
+}
+
+// --- Chip zdarzenia (komórka) -------------------------------
 function EventChip({ event }: { event: CalEvent }) {
   const meta = EVENT_META[event.type];
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 4,
       padding: "2px 5px",
-      background: meta.bg,
-      borderLeft: `2px solid ${meta.fg}`,
-      borderRadius: 3,
-      fontSize: 10, fontWeight: 500,
-      color: meta.fg,
-      overflow: "hidden",
+      background: meta.bg, borderLeft: `2px solid ${meta.fg}`, borderRadius: 3,
+      fontSize: 10, fontWeight: 500, color: meta.fg, overflow: "hidden",
     }} className="mono">
-      <span style={{
-        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-      }}>{eventLabel(event)}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{eventLabel(event)}</span>
     </div>
   );
 }
 
-// --- Selected day event row --------------------------------
+// --- Wiersz zdarzenia (szczegół dnia) -----------------------
 function EventRow({ event, isLast }: { event: CalEvent; isLast: boolean }) {
   const meta = EVENT_META[event.type];
   return (
@@ -452,7 +562,7 @@ function EventRow({ event, isLast }: { event: CalEvent; isLast: boolean }) {
   );
 }
 
-// --- Agenda items ---------------------------------------------
+// --- Agenda --------------------------------------------------
 function AgendaDateHeader({ date, todayKey }: { date: Date; todayKey: string }) {
   const key = dKey(date);
   const isToday = key === todayKey;
@@ -470,10 +580,9 @@ function AgendaDateHeader({ date, todayKey }: { date: Date; todayKey: string }) 
       <span className="num" style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)" }}>
         {date.toLocaleDateString("pl-PL", { weekday: "short", day: "numeric", month: "short" })}
       </span>
-      <span className="num" style={{
-        fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
-        color: isToday ? "var(--accent)" : "var(--text-lo)",
-      }}>{relLabel}</span>
+      <span className="num" style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", color: isToday ? "var(--accent)" : "var(--text-lo)" }}>
+        {relLabel}
+      </span>
     </div>
   );
 }
@@ -482,8 +591,7 @@ function AgendaRow({ event, onClick }: { event: CalEvent; onClick: () => void })
   const meta = EVENT_META[event.type];
   return (
     <div onClick={onClick} style={{
-      display: "flex", alignItems: "center", gap: 10,
-      padding: "8px 18px", cursor: "pointer",
+      display: "flex", alignItems: "center", gap: 10, padding: "8px 18px", cursor: "pointer",
     }}
       onMouseEnter={(e) => e.currentTarget.style.background = "var(--surface-2)"}
       onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
