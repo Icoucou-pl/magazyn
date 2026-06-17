@@ -61,6 +61,7 @@ class UserOut(BaseModel):
     created_at: datetime
     last_login: Optional[datetime]
     updated_at: Optional[datetime] = None
+    last_activity: Optional[datetime] = None  # ostatnia zmiana dokonana przez usera (z audytu)
 
 
 class LoginRequest(BaseModel):

@@ -24,7 +24,7 @@ type ContainerType = { id: number; name: string; capacity_cbm: number; sort_orde
 type UserRowT = {
   id: number; email: string; full_name?: string | null; role: string;
   is_active: boolean; is_super_admin: boolean; created_at: string; last_login?: string | null;
-  updated_at?: string | null;
+  updated_at?: string | null; last_activity?: string | null;
   perms?: Record<string, boolean> | null; show_onboarding?: boolean;
 };
 type AuditRow = {
@@ -485,6 +485,7 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
 // UŻYTKOWNICY (tylko ADMIN)
 // ============================================================
 function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
+  const viewerSuper = isSuperUser(useUser() as CtxUser);
   const [items, setItems] = useState<UserRowT[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -530,7 +531,7 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
         <button onClick={() => setCreating(true)} style={btnPrimary}><I.Plus size={12}/> Dodaj użytkownika</button>
       </div>
 
-      {creating && <NewUserForm onSaved={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)}/>}
+      {creating && <NewUserForm viewerSuper={viewerSuper} onSaved={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)}/>}
 
       <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "hidden" }}>
         {loading && !items.length ? (
@@ -540,7 +541,7 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
           const exp = expanded?.id === u.id ? expanded.mode : null;
           return (
             <div key={u.id} style={{ borderBottom: i === items.length - 1 ? "none" : "1px solid var(--border-soft)" }}>
-              <UserRow u={u} isSelf={isSelf} permsOpen={exp === "perms"}
+              <UserRow u={u} isSelf={isSelf} viewerSuper={viewerSuper} permsOpen={exp === "perms"}
                 onChangeRole={(r) => changeRole(u, r)}
                 onToggleActive={() => toggleActive(u)}
                 onResetPassword={() => toggleMode(u.id, "reset")}
@@ -573,14 +574,24 @@ function RoleStat({ label, count, color }: { label: string; count: number; color
   );
 }
 
-function UserRow({ u, isSelf, permsOpen, onChangeRole, onToggleActive, onResetPassword, onDelete, onPerms }: {
-  u: UserRowT; isSelf: boolean; permsOpen: boolean;
+function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActive, onResetPassword, onDelete, onPerms }: {
+  u: UserRowT; isSelf: boolean; viewerSuper: boolean; permsOpen: boolean;
   onChangeRole: (r: string) => void; onToggleActive: () => void;
   onResetPassword: () => void; onDelete: () => void; onPerms: () => void;
 }) {
   const meta = ROLE_META[u.role] || ROLE_META.VIEWER;
   const overrideCount = u.perms ? Object.keys(u.perms).length : 0;
-  const locked = u.is_super_admin || isSelf; // nie ruszamy roli/statusu/usuwania super-admina ani siebie
+
+  // Reguła: kontami ADMIN zarządza tylko super-admin. Zwykły admin nie tknie żadnego admina.
+  // (super-admin jest dla innych "zwykłym" ADMINEM, więc i tak wpada w tę blokadę.)
+  const lockedBase = viewerSuper ? false : (u.role === "ADMIN");
+  const lockRole = lockedBase || isSelf;
+  const lockActive = lockedBase || isSelf;
+  const lockDelete = lockedBase || isSelf;
+  const lockManage = lockedBase; // uprawnienia + reset hasła
+
+  // Opcje roli: rolę ADMIN może nadawać wyłącznie super-admin
+  const roleOptions = viewerSuper ? ["ADMIN", "IMPORT", "VIEWER"] : ["IMPORT", "VIEWER"];
 
   return (
     <div style={{
@@ -605,27 +616,27 @@ function UserRow({ u, isSelf, permsOpen, onChangeRole, onToggleActive, onResetPa
         <div className="num" style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2 }}>
           Ostatnie logowanie: {u.last_login ? fmtDateTime(u.last_login) : "nigdy"}
           {"   ·   "}
-          Ostatnie zmiany: {u.updated_at ? fmtDateTime(u.updated_at) : "—"}
+          Ostatnia zmiana: {u.last_activity ? fmtDateTime(u.last_activity) : "—"}
         </div>
       </div>
 
-      <select value={u.role} onChange={(e) => onChangeRole(e.target.value)} disabled={locked} style={{
+      <select value={u.role} onChange={(e) => onChangeRole(e.target.value)} disabled={lockRole} style={{
         padding: "5px 9px", fontSize: 11, fontWeight: 600, background: meta.soft, color: meta.color,
         border: `1px solid ${meta.color}`, borderRadius: 6, outline: "none",
-        cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.6 : 1,
+        cursor: lockRole ? "not-allowed" : "pointer", opacity: lockRole ? 0.6 : 1,
       }}>
-        <option value="ADMIN">Admin</option>
-        <option value="IMPORT">Import</option>
-        <option value="VIEWER">Viewer</option>
+        {/* gdy bieżąca rola spoza dozwolonych opcji (np. ADMIN u nie-super) — pokaż ją, ale select i tak zablokowany */}
+        {!roleOptions.includes(u.role) && <option value={u.role}>{ROLE_META[u.role]?.label || u.role}</option>}
+        {roleOptions.map(r => <option key={r} value={r}>{ROLE_META[r]?.label || r}</option>)}
       </select>
 
       <div style={{ display: "flex", gap: 4 }}>
-        <button onClick={onPerms} title="Uprawnienia" style={userActionBtn("var(--accent)", permsOpen)}><ShieldIcon size={13}/></button>
-        <button onClick={onResetPassword} title="Reset hasła" style={userActionBtn("var(--info)")}><PasswordIcon size={12}/></button>
-        <button onClick={onToggleActive} title={u.is_active ? "Dezaktywuj" : "Aktywuj"} disabled={locked} style={userActionBtn(u.is_active ? "var(--warning)" : "var(--ok)", false, locked)}>
+        <button onClick={() => !lockManage && onPerms()} title={lockManage ? "Brak uprawnień" : "Uprawnienia"} disabled={lockManage} style={userActionBtn("var(--accent)", permsOpen, lockManage)}><ShieldIcon size={13}/></button>
+        <button onClick={() => !lockManage && onResetPassword()} title={lockManage ? "Brak uprawnień" : "Reset hasła"} disabled={lockManage} style={userActionBtn("var(--info)", false, lockManage)}><PasswordIcon size={12}/></button>
+        <button onClick={() => !lockActive && onToggleActive()} title={u.is_active ? "Dezaktywuj" : "Aktywuj"} disabled={lockActive} style={userActionBtn(u.is_active ? "var(--warning)" : "var(--ok)", false, lockActive)}>
           {u.is_active ? <PauseIcon size={12}/> : <PlayIcon size={12}/>}
         </button>
-        <button onClick={onDelete} title="Usuń" disabled={locked} style={userActionBtn("var(--critical)", false, locked)}><TrashIcon size={12}/></button>
+        <button onClick={() => !lockDelete && onDelete()} title="Usuń" disabled={lockDelete} style={userActionBtn("var(--critical)", false, lockDelete)}><TrashIcon size={12}/></button>
       </div>
     </div>
   );
@@ -642,7 +653,7 @@ function userActionBtn(color: string, active?: boolean, disabled?: boolean): Rea
 }
 
 // ── Nowy użytkownik ─────────────────────────────────────────
-function NewUserForm({ onSaved, onCancel }: { onSaved: () => void; onCancel: () => void }) {
+function NewUserForm({ viewerSuper, onSaved, onCancel }: { viewerSuper: boolean; onSaved: () => void; onCancel: () => void }) {
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
   const [role, setRole] = useState("VIEWER");
@@ -671,7 +682,7 @@ function NewUserForm({ onSaved, onCancel }: { onSaved: () => void; onCancel: () 
         </SettingsField>
         <SettingsField label="Rola">
           <select value={role} onChange={(e) => setRole(e.target.value)} style={inputStyle}>
-            <option value="ADMIN">Admin</option>
+            {viewerSuper && <option value="ADMIN">Admin</option>}
             <option value="IMPORT">Import</option>
             <option value="VIEWER">Viewer</option>
           </select>
@@ -951,6 +962,57 @@ function SessionsPanel() {
 // ============================================================
 // DZIENNIK AUDYTU (tylko super-admin)
 // ============================================================
+// Zamiana surowego wpisu audytu na opis po polsku
+const RES_LABELS: Record<string, string> = {
+  products: "produkt", containers: "kontener", "container-types": "typ kontenera",
+  manufacturers: "producent", users: "użytkownik", auth: "konto", attachments: "załącznik",
+};
+function parsePyDict(s?: string | null): Record<string, unknown> | null {
+  if (!s) return null;
+  try {
+    const j = s.replace(/'/g, '"').replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false").replace(/\bNone\b/g, "null");
+    const v = JSON.parse(j);
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  } catch { return null; }
+}
+const permLabel = (k: string) => PERMS.find(p => p.key === k)?.label || k;
+
+function humanizeAudit(r: AuditRow): string {
+  const a = r.action || "";
+  switch (a) {
+    case "LOGIN": return "Zalogowanie do systemu";
+    case "LOGIN_FAILED": return "Nieudane logowanie";
+    case "LOGIN_BLOCKED": return "Logowanie zablokowane (konto nieaktywne)";
+    case "PASSWORD_CHANGED": return "Zmiana własnego hasła";
+    case "PASSWORD_RESET_BY_ADMIN": return "Reset hasła użytkownika";
+    case "USER_CREATED": return "Utworzenie użytkownika";
+    case "USER_DELETED": return "Usunięcie użytkownika";
+    case "USER_UPDATED": {
+      const d = parsePyDict(r.details);
+      if (!d) return "Zmiana ustawień użytkownika";
+      const parts: string[] = [];
+      if (typeof d.role === "string") parts.push(`nadano rolę ${ROLE_META[d.role]?.label || d.role}`);
+      if (typeof d.is_active === "boolean") parts.push(d.is_active ? "aktywacja konta" : "dezaktywacja konta");
+      if (typeof d.full_name === "string") parts.push("zmiana nazwy");
+      if (d.perms && typeof d.perms === "object") {
+        const pd = d.perms as Record<string, unknown>;
+        const keys = Object.keys(pd);
+        if (!keys.length) parts.push("przywrócono domyślne uprawnienia roli");
+        else keys.forEach(k => parts.push(`${pd[k] ? "włączono" : "wyłączono"} „${permLabel(k)}"`));
+      }
+      if (typeof d.show_onboarding === "boolean") parts.push(d.show_onboarding ? "włączono onboarding" : "wyłączono onboarding");
+      return parts.length ? `Zmiana ustawień: ${parts.join("; ")}` : "Zmiana ustawień użytkownika";
+    }
+  }
+  const m = a.match(/^([A-Z-]+)_(CREATED|UPDATED|DELETED)$/);
+  if (m) {
+    const verb = m[2] === "CREATED" ? "Dodano" : m[2] === "DELETED" ? "Usunięto" : "Zmieniono";
+    const res = RES_LABELS[m[1].toLowerCase()] || m[1].toLowerCase();
+    return `${verb}: ${res}`;
+  }
+  return "";
+}
+
 function AuditLogPanel() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -974,6 +1036,7 @@ function AuditLogPanel() {
       { label: "Czas", get: (r) => fmtDateTime(r.created_at) },
       { label: "Uzytkownik", get: (r) => r.user_email || "" },
       { key: "action", label: "Akcja" },
+      { label: "Opis", get: (r) => humanizeAudit(r) },
       { label: "Obiekt", get: (r) => target(r) },
     ];
     exportCsv("audyt", cols, rows);
@@ -1000,6 +1063,7 @@ function AuditLogPanel() {
             <div style={{ fontSize: 12 }}>
               <span style={{ fontWeight: 600, color: "var(--text-hi)" }}>{r.user_email || "system"}</span>
               <span style={{ color: "var(--text-mid)" }}> · {r.action}</span>
+              {humanizeAudit(r) && <span style={{ color: "var(--text-mid)" }}> — {humanizeAudit(r)}</span>}
             </div>
             <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{target(r)}</span>
           </div>

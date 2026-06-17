@@ -1,4 +1,10 @@
-"""Zarządzanie użytkownikami - wszystkie endpointy tylko dla ADMIN."""
+"""Zarządzanie użytkownikami - wszystkie endpointy tylko dla ADMIN.
+
+Reguły dostępu:
+  • Kontami ADMIN (w tym super-adminem) może zarządzać WYŁĄCZNIE super-admin.
+  • Zwykły admin zarządza tylko kontami IMPORT/VIEWER i nie może nadać roli ADMIN.
+  • Konto super-admina jest niewidoczne dla innych adminów i niemożliwe do usunięcia.
+"""
 
 import json
 from typing import List, Optional
@@ -41,38 +47,53 @@ def _row_to_user_out(m: dict, reveal_super: bool = False) -> UserOut:
     return UserOut(
         id=m["id"], email=m["email"], full_name=m.get("full_name"), role=m["role"],
         is_active=m["is_active"], created_at=m["created_at"], last_login=m.get("last_login"),
-        updated_at=m.get("updated_at"),
+        updated_at=m.get("updated_at"), last_activity=m.get("last_activity"),
         perms=perms, show_onboarding=bool(m.get("show_onboarding")),
         is_super_admin=bool(reveal_super and _is_super(m["email"])),
     )
 
 
-async def _guard_super_target(db: AsyncSession, uid: int, admin: CurrentUser, *, allow_self_super: bool):
-    """Zwraca email celu i blokuje modyfikacje konta super-admina przez nie-super-adminów.
-    allow_self_super=True pozwala super-adminowi modyfikować własne konto (poza usunięciem)."""
-    r = await db.execute(text(f"SELECT email FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
+async def _guard_target(db: AsyncSession, uid: int, admin: CurrentUser, *, for_delete: bool = False):
+    """Pobiera (email, role) celu i egzekwuje reguły dostępu. Zwraca (email, role)."""
+    r = await db.execute(text(f"SELECT email, role FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
     row = r.first()
     if not row:
         raise HTTPException(404, "Użytkownik nie znaleziony")
-    target_email = row.email
+    target_email, target_role = row.email, row.role
+    requester_super = _is_super(admin.email)
+
     if _is_super(target_email):
-        requester_is_super = _is_super(admin.email)
-        if not requester_is_super or not allow_self_super:
+        if for_delete:
             raise HTTPException(403, "Konto super-administratora jest chronione")
-    return target_email
+        if not requester_super:
+            raise HTTPException(403, "Konto super-administratora jest chronione")
+        # super-admin może edytować własne konto (poza usunięciem)
+    elif target_role == "ADMIN" and not requester_super:
+        raise HTTPException(403, "Tylko super-administrator może zarządzać kontami administratorów")
+
+    return target_email, target_role
 
 
 @router.get("/users", response_model=List[UserOut])
 async def list_users(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Lista wszystkich użytkowników - tylko admin."""
+    """Lista wszystkich użytkowników - tylko admin.
+    last_activity = czas ostatniej zmiany dokonanej przez tego użytkownika (z audytu)."""
     reveal = _is_super(admin.email)
-    r = await db.execute(text(f"SELECT {USER_COLS} FROM {settings.TABLE_USERS} ORDER BY created_at DESC"))
+    r = await db.execute(text(f"""
+        SELECT {", ".join("u." + c for c in USER_COLS.split(", "))},
+            (SELECT MAX(a.created_at) FROM {settings.TABLE_AUDIT_LOG} a WHERE a.user_id = u.id) AS last_activity
+        FROM {settings.TABLE_USERS} u
+        ORDER BY u.created_at DESC
+    """))
     return [_row_to_user_out(dict(row._mapping), reveal_super=reveal) for row in r]
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
 async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Tworzy nowego użytkownika - tylko admin."""
+    """Tworzy nowego użytkownika - tylko admin (rolę ADMIN nadaje wyłącznie super-admin)."""
+    if payload.role == "ADMIN" and not _is_super(admin.email):
+        raise HTTPException(403, "Tylko super-administrator może nadać rolę administratora")
+
     err = validate_password_strength(payload.password)
     if err:
         raise HTTPException(400, err)
@@ -104,8 +125,10 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     if uid == admin.id and payload.is_active is False:
         raise HTTPException(400, "Nie możesz deaktywować własnego konta!")
 
-    # Ochrona konta super-administratora (tylko super-admin może edytować swoje konto)
-    await _guard_super_target(db, uid, admin, allow_self_super=True)
+    # Reguły dostępu (super-admin / konta ADMIN)
+    await _guard_target(db, uid, admin)
+    if payload.role == "ADMIN" and not _is_super(admin.email):
+        raise HTTPException(403, "Tylko super-administrator może nadać rolę administratora")
 
     updates = []
     params = {"id": uid}
@@ -147,8 +170,7 @@ async def reset_user_password(uid: int, payload: AdminPasswordReset, admin: Curr
     if err:
         raise HTTPException(400, err)
 
-    # Ochrona konta super-administratora
-    target_email = await _guard_super_target(db, uid, admin, allow_self_super=True)
+    target_email, _ = await _guard_target(db, uid, admin)
 
     new_hash = hash_password(payload.new_password)
     await db.execute(
@@ -166,13 +188,9 @@ async def delete_user(uid: int, admin: CurrentUser = Depends(require_admin), db:
     if uid == admin.id:
         raise HTTPException(400, "Nie możesz usunąć własnego konta!")
 
-    # Konta super-administratora nie można usunąć (przez nikogo)
-    await _guard_super_target(db, uid, admin, allow_self_super=False)
+    target_email, _ = await _guard_target(db, uid, admin, for_delete=True)
 
-    r = await db.execute(text(f"DELETE FROM {settings.TABLE_USERS} WHERE id = :id RETURNING email"), {"id": uid})
-    u = r.first()
+    await db.execute(text(f"DELETE FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
     await db.commit()
-    if not u:
-        raise HTTPException(404, "Użytkownik nie znaleziony")
 
-    await log_audit(db, admin, "USER_DELETED", "user", str(uid), f"usunięto: {u.email}")
+    await log_audit(db, admin, "USER_DELETED", "user", str(uid), f"usunięto: {target_email}")
