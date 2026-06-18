@@ -27,38 +27,53 @@ async def list_manufacturers(db: AsyncSession = Depends(get_db)):
 
 @router.get("/manufacturers/{mid}/sales-season", response_model=List[SeasonPoint])
 async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)):
-    """Sprzedaż miesięczna SKU producenta: od 1 stycznia ZESZŁEGO roku do dziś
-    (pokrywa cały zeszły rok + bieżący rok do teraz — pod wykres kalendarzowy Sty–Gru).
-    Zwraca po jednym punkcie na miesiąc z danymi (qty + przychód netto).
-    value = SUM(quantity × price_netto) z pozycji zamówień (rzeczywista cena sprzedaży).
-    Uwaga: kwoty sumowane w wartości nominalnej waluty pozycji (głównie PLN) — przeliczenie
+    """Sprzedaż miesięczna wszystkich SKU producenta (qty + przychód netto/brutto),
+    od 1 stycznia zeszłego roku do dziś — pod wykres kalendarzowy Sty–Gru."""
+    where = f"""LOWER(TRIM(i.{settings.COL_ITEM_SKU})) IN (
+                SELECT LOWER(TRIM(pa.sku))
+                FROM {settings.TABLE_PRODUCT_ATTRS} pa
+                WHERE pa.manufacturer_id = :mid)"""
+    return await _sales_season(db, where, {"mid": mid})
+
+
+@router.get("/products/{sku}/sales-season", response_model=List[SeasonPoint])
+async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db)):
+    """Sprzedaż miesięczna pojedynczego SKU (qty + przychód netto/brutto),
+    od 1 stycznia zeszłego roku do dziś — pod wykres w karcie produktu."""
+    where = f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sku))"
+    return await _sales_season(db, where, {"sku": sku})
+
+
+async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> List[SeasonPoint]:
+    """Wspólne zapytanie sezonowe. Zakres: od 1 stycznia ZESZŁEGO roku do dziś
+    (pokrywa cały zeszły rok + bieżący rok do teraz). Po jednym punkcie na miesiąc
+    z danymi. value_net = SUM(qty × price_netto), value_gross = SUM(qty × price).
+    Kwoty w wartości nominalnej waluty pozycji (głównie PLN) — przewalutowanie
     EUR/CZK→PLN (NBP) to osobny krok. month 0-11. Dopasowanie SKU LOWER(TRIM(...))."""
     sql = f"""
         SELECT
-            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                      AS yr,
-            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                      AS mo,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int                                           AS qty,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0)), 0)::float AS val
+            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                                AS yr,
+            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                                AS mo,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int                                                     AS qty,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0)), 0)::float  AS val_net,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE}, 0)), 0)::float        AS val_gross
         FROM {settings.TABLE_ORDER_ITEMS} i
         JOIN {settings.TABLE_ORDERS} o
             ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
-        WHERE LOWER(TRIM(i.{settings.COL_ITEM_SKU})) IN (
-                SELECT LOWER(TRIM(pa.sku))
-                FROM {settings.TABLE_PRODUCT_ATTRS} pa
-                WHERE pa.manufacturer_id = :mid
-            )
+        WHERE {where_clause}
             AND o.{settings.COL_ORDER_DATE} >= (date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
             {EXCLUDED_STATUS_FILTER}
         GROUP BY EXTRACT(YEAR FROM o.{settings.COL_ORDER_DATE}), EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})
         ORDER BY yr, mo
     """
-    r = await db.execute(text(sql), {"mid": mid})
+    r = await db.execute(text(sql), params)
     return [
         SeasonPoint(
             year=int(row._mapping["yr"]),
             month=int(row._mapping["mo"]) - 1,  # 0-based dla frontu
             qty=int(row._mapping["qty"] or 0),
-            value=float(row._mapping["val"] or 0.0),
+            value_net=float(row._mapping["val_net"] or 0.0),
+            value_gross=float(row._mapping["val_gross"] or 0.0),
         )
         for row in r
     ]

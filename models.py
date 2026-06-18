@@ -258,12 +258,14 @@ class StockProjectionPoint(BaseModel):
 class SeasonPoint(BaseModel):
     """Punkt szeregu sezonowego dla jednego miesiąca.
     month: indeks 0-11 (0=styczeń) — zgodnie z frontendowym SeasonChart.
-    qty: liczba sprzedanych sztuk. value: przychód NETTO (qty × price_netto)
+    qty: liczba sprzedanych sztuk.
+    value_net / value_gross: przychód netto/brutto (qty × price_netto / price)
     z rzeczywistych cen sprzedaży w pozycjach zamówień."""
     year: int
     month: int
     qty: int
-    value: float
+    value_net: float
+    value_gross: float
 
 
 class Anomaly(BaseModel):

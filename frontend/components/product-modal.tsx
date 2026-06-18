@@ -17,6 +17,7 @@ import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
+import { SeasonChart, type SeasonPoint } from "./season-chart";
 
 type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
@@ -69,6 +70,7 @@ export default function ProductModal({
   const [editingAttrs, setEditingAttrs] = useState(false);
   const [editingLT, setEditingLT] = useState(false);
   const [proj, setProj] = useState<Projection | null>(null);
+  const [season, setSeason] = useState<SeasonPoint[] | null>(null);
 
   useEffect(() => setProduct(initialProduct), [initialProduct]);
 
@@ -85,6 +87,15 @@ export default function ProductModal({
       .catch(() => { if (alive) setProj(null); });
     return () => { alive = false; };
   }, [product]);
+
+  useEffect(() => {
+    let alive = true;
+    setSeason(null);
+    api.get(`/products/${encodeURIComponent(product.sku)}/sales-season`)
+      .then((d) => { if (alive) setSeason((d as SeasonPoint[]) || []); })
+      .catch(() => { if (alive) setSeason([]); });
+    return () => { alive = false; };
+  }, [product.sku]);
 
   const applyUpdate = (updated: Product) => { setProduct(updated); onUpdated?.(updated); };
 
@@ -137,6 +148,14 @@ export default function ProductModal({
             <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
             <MetricBox label="Mies. zapasu" value={monthsStr === "∞" ? "∞" : monthsStr + "m"} sub={product.days_until_empty < 365 ? `${product.days_until_empty}d do końca` : "brak ruchu"} tone={monthsTone} />
           </div>
+
+          <Section title="Sprzedaż — sezon do sezonu">
+            {season ? (
+              <SeasonChart data={season} showFin={showFin} accent="var(--accent)" />
+            ) : (
+              <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />
+            )}
+          </Section>
 
           <Section title="Prognoza stanu — 180 dni" hint={proj ? `${proj.deliveries.length} planowanych dostaw · sprzedaż ${Math.round(product.avg_monthly_weighted)}/mies` : "ładowanie…"}>
             {proj ? <StockProjectionChart projection={proj} product={product} /> : <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />}
