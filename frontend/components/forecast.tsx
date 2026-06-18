@@ -18,6 +18,7 @@ import { I, MfrChip } from "./ui";
 import { MiniStat } from "./containers-ui";
 import {
   Checkbox, modalBackdrop, modalCard, iconBtnGhost,
+  StatusPillExt, displayStatus, monthsDisplay,
   type Product, type Manufacturer,
 } from "./products-ui";
 
@@ -114,10 +115,10 @@ const fcMetaCell: React.CSSProperties = {
 };
 
 export default function ForecastView({
-  density, onShowMfr,
+  density, onProductClick,
 }: {
   density?: string;
-  onShowMfr?: (mfrId: number) => void;
+  onProductClick?: (sku: string) => void;
 }) {
   const gap = density === "compact" ? 12 : 14;
 
@@ -127,12 +128,13 @@ export default function ForecastView({
 
   const [mfrId, setMfrId] = useState<MfrId>("ALL");
   const [horizon, setHorizon] = useState(14);
-  const [sortKey, setSortKey] = useState<"sales" | "stock" | "sku">("sales");
+  const [sortKey, setSortKey] = useState<"sales30" | "sales90" | "stock" | "sku">("sales30");
   const [seasonality, setSeasonality] = useState(false);
   const [statusFilter, setStatusFilter] = useState("active");
   const [colVis, setColVis] = useState<{ sales60: boolean; sales90: boolean }>({ sales60: true, sales90: true });
   const [showColMenu, setShowColMenu] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [detailMfrId, setDetailMfrId] = useState<number | null>(null);
   // Ręczne nadpisania — SKU wymuszone do usunięcia / dodania
   const [hiddenSkus, setHiddenSkus] = useState<Set<string>>(() => new Set());
   const [extraSkus, setExtraSkus] = useState<Set<string>>(() => new Set());
@@ -177,8 +179,10 @@ export default function ForecastView({
       return passFilter(p) || extraSkus.has(p.sku);
     });
     const mapped: FcRow[] = arr.map((p) => ({ p, cells: projectProduct(p, monthCols, seasonality) }));
+    const sales90 = (p: Product) => p.sales_1m + p.sales_2m + p.sales_3m;
     mapped.sort((a, b) => {
-      if (sortKey === "sales") return b.p.avg_monthly_weighted - a.p.avg_monthly_weighted;
+      if (sortKey === "sales30") return b.p.sales_1m - a.p.sales_1m;
+      if (sortKey === "sales90") return sales90(b.p) - sales90(a.p);
       if (sortKey === "stock") return b.p.stock - a.p.stock;
       return a.p.sku.localeCompare(b.p.sku);
     });
@@ -296,8 +300,9 @@ export default function ForecastView({
           </span>
           <I.Activity size={13} /> Sezonowość
         </button>
-        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as "sales" | "stock" | "sku")} style={fcSelect}>
-          <option value="sales">Sortuj: sprzedaż ↓</option>
+        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as "sales30" | "sales90" | "stock" | "sku")} style={fcSelect}>
+          <option value="sales30">Sortuj: sprzedaż 30d ↓</option>
+          <option value="sales90">Sortuj: sprzedaż 90d ↓</option>
           <option value="stock">Sortuj: stan ↓</option>
           <option value="sku">Sortuj: SKU A-Z</option>
         </select>
@@ -334,8 +339,8 @@ export default function ForecastView({
           {hasOverrides && <span style={{ color: "var(--anomaly)" }}> · ręczne zmiany</span>}
         </span>
 
-        {mfrId !== "ALL" && onShowMfr && (
-          <button onClick={() => onShowMfr(mfrId as number)} style={{ ...fcGhostBtn, color: mfr?.color, borderColor: `color-mix(in oklch, ${mfr?.color} 40%, var(--border))` }}>
+        {mfrId !== "ALL" && (
+          <button onClick={() => setDetailMfrId(mfrId as number)} style={{ ...fcGhostBtn, color: mfr?.color, borderColor: `color-mix(in oklch, ${mfr?.color} 40%, var(--border))` }}>
             <I.Factory size={12} /> Szczegóły producenta
           </button>
         )}
@@ -513,6 +518,15 @@ export default function ForecastView({
 
       {showAdd && <AddProductModal addable={addable} onAdd={addRow} onClose={() => setShowAdd(false)} />}
 
+      {detailMfrId != null && (
+        <ManufacturerModal
+          mfr={manufacturers.find((m) => m.id === detailMfrId) || null}
+          products={products.filter((p) => p.manufacturer_id === detailMfrId)}
+          onClose={() => setDetailMfrId(null)}
+          onProductClick={(sku) => { setDetailMfrId(null); onProductClick?.(sku); }}
+        />
+      )}
+
       <style>{`
         .fc-rm-btn { opacity: 0; transition: opacity 0.12s; }
         .fc-row:hover .fc-rm-btn { opacity: 1; }
@@ -583,6 +597,93 @@ function AddProductModal({
             </button>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Szczegóły producenta ─────────────────────────────────────
+function ManufacturerModal({
+  mfr, products, onClose, onProductClick,
+}: {
+  mfr: Manufacturer | null;
+  products: Product[];
+  onClose: () => void;
+  onProductClick?: (sku: string) => void;
+}) {
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [onClose]);
+
+  if (!mfr) return null;
+
+  const active = products.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK");
+  const totalStock = products.reduce((s, p) => s + p.stock, 0);
+  const toOrder = products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ").length;
+  const noStock = products.filter((p) => p.stock === 0).length;
+  const sorted = [...products].sort((a, b) => b.avg_monthly_weighted - a.avg_monthly_weighted);
+
+  return (
+    <div onClick={onClose} style={modalBackdrop}>
+      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 680 }}>
+        <div style={{
+          padding: "14px 18px", borderBottom: "1px solid var(--border-soft)",
+          display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <span style={{ width: 12, height: 12, borderRadius: 99, background: mfr.color, flexShrink: 0 }} />
+          <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>{mfr.name}</span>
+          <button onClick={onClose} style={iconBtnGhost}><I.Close size={14} /></button>
+        </div>
+
+        {(mfr.email || mfr.notes) && (
+          <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 4 }}>
+            {mfr.email && <div style={{ fontSize: 12, color: "var(--text-mid)" }}>Kontakt: <span style={{ color: "var(--text-hi)" }}>{mfr.email}</span></div>}
+            {mfr.notes && <div style={{ fontSize: 12, color: "var(--text-lo)" }}>{mfr.notes}</div>}
+          </div>
+        )}
+
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-soft)", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10 }}>
+          <MfrStat label="Produkty (aktywne)" value={`${active.length} / ${products.length}`} />
+          <MfrStat label="Stan łącznie" value={totalStock.toLocaleString("pl-PL")} sub="szt" />
+          <MfrStat label="Do zamówienia" value={toOrder} tone={toOrder > 0 ? "var(--critical)" : undefined} />
+          <MfrStat label="Bez stanu" value={noStock} tone={noStock > 0 ? "var(--warning)" : undefined} />
+        </div>
+
+        <div style={{ maxHeight: "52vh", overflowY: "auto" }}>
+          {sorted.length === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>
+              Ten producent nie ma przypisanych produktów.
+            </div>
+          ) : sorted.map((p) => (
+            <button key={p.sku} onClick={() => onProductClick?.(p.sku)} style={{
+              display: "flex", alignItems: "center", gap: 10, width: "100%",
+              padding: "9px 18px", background: "transparent", border: "none",
+              borderTop: "1px solid var(--border-soft)", cursor: onProductClick ? "pointer" : "default", textAlign: "left",
+            }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+              <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", minWidth: 120 }}>{p.sku}</span>
+              <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+              <span className="num" title="Stan" style={{ fontSize: 12, color: p.stock === 0 ? "var(--critical)" : "var(--text-hi)", fontWeight: 600, minWidth: 48, textAlign: "right" }}>{p.stock}</span>
+              <span className="num" title="Sprzedaż / mies" style={{ fontSize: 12, color: "var(--text-lo)", minWidth: 52, textAlign: "right" }}>{Math.round(p.avg_monthly_weighted)}/m</span>
+              <span className="num" title="Miesięcy zapasu" style={{ fontSize: 12, color: "var(--text-lo)", minWidth: 44, textAlign: "right" }}>{monthsDisplay(p.months_of_stock)}</span>
+              <span style={{ minWidth: 96, display: "flex", justifyContent: "flex-end" }}><StatusPillExt status={displayStatus(p)} size="sm" /></span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MfrStat({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub?: string; tone?: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div className="num" style={{ fontSize: 18, fontWeight: 600, color: tone || "var(--text-hi)", marginTop: 3 }}>
+        {value}{sub && <span style={{ fontSize: 11, color: "var(--text-lo)", fontWeight: 400, marginLeft: 3 }}>{sub}</span>}
       </div>
     </div>
   );

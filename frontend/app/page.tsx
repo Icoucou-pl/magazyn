@@ -159,7 +159,7 @@ export default function Page() {
         ) : view === "forecast" ? (
           <ForecastView
             density={t.density}
-            onShowMfr={() => toast("Szczegóły producenta — wkrótce", "info")}
+            onProductClick={(sku) => { setPendingProductSku(sku); setView("products"); }}
           />
         ) : view === "settings" ? (
           <SettingsView />
