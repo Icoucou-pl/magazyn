@@ -18,6 +18,7 @@ import ProductsView from "@/components/products";
 import ContainersView from "@/components/containers";
 import Calendar from "@/components/calendar";
 import CashflowView from "@/components/cashflow";
+import ForecastView from "@/components/forecast";
 import SettingsView from "@/components/settings";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
@@ -155,6 +156,11 @@ export default function Page() {
           <Calendar density={t.density} />
         ) : view === "cashflow" ? (
           <CashflowView onContainerClick={() => setView("containers")} />
+        ) : view === "forecast" ? (
+          <ForecastView
+            density={t.density}
+            onShowMfr={() => toast("Szczegóły producenta — wkrótce", "info")}
+          />
         ) : view === "settings" ? (
           <SettingsView />
         ) : (
