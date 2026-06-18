@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     COL_ITEM_SKU: str = "symbol"
     COL_ITEM_QTY: str = "quantity"
     COL_ITEM_EAN: str = "ean"
+    COL_ITEM_PRICE: str = "price"            # cena jednostkowa brutto
+    COL_ITEM_PRICE_NETTO: str = "price_netto"  # cena jednostkowa netto
+    COL_ITEM_CURRENCY: str = "currency"
 
     EXCLUDED_ORDER_STATUSES: str = ""
 

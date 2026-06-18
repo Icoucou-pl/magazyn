@@ -27,15 +27,18 @@ async def list_manufacturers(db: AsyncSession = Depends(get_db)):
 
 @router.get("/manufacturers/{mid}/sales-season", response_model=List[SeasonPoint])
 async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)):
-    """Szereg sezonowy 24 miesięcy (sprzedaż ilościowa wszystkich SKU producenta).
-    Zwraca dokładnie 24 punkty (najstarszy→najnowszy), bieżący miesiąc jako ostatni;
-    brakujące miesiące wypełnione zerami. Dopasowanie SKU jak w kalendarzu —
-    LOWER(TRIM(...)) po obu stronach. Uwzględnia wykluczone statusy zamówień."""
+    """Sprzedaż miesięczna SKU producenta: od 1 stycznia ZESZŁEGO roku do dziś
+    (pokrywa cały zeszły rok + bieżący rok do teraz — pod wykres kalendarzowy Sty–Gru).
+    Zwraca po jednym punkcie na miesiąc z danymi (qty + przychód netto).
+    value = SUM(quantity × price_netto) z pozycji zamówień (rzeczywista cena sprzedaży).
+    Uwaga: kwoty sumowane w wartości nominalnej waluty pozycji (głównie PLN) — przeliczenie
+    EUR/CZK→PLN (NBP) to osobny krok. month 0-11. Dopasowanie SKU LOWER(TRIM(...))."""
     sql = f"""
         SELECT
-            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int AS yr,
-            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int AS mo,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int       AS qty
+            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                      AS yr,
+            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                      AS mo,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int                                           AS qty,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0)), 0)::float AS val
         FROM {settings.TABLE_ORDER_ITEMS} i
         JOIN {settings.TABLE_ORDERS} o
             ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
@@ -44,25 +47,21 @@ async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)
                 FROM {settings.TABLE_PRODUCT_ATTRS} pa
                 WHERE pa.manufacturer_id = :mid
             )
-            AND o.{settings.COL_ORDER_DATE} >= (date_trunc('month', CURRENT_DATE) - INTERVAL '23 months')
+            AND o.{settings.COL_ORDER_DATE} >= (date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
             {EXCLUDED_STATUS_FILTER}
         GROUP BY EXTRACT(YEAR FROM o.{settings.COL_ORDER_DATE}), EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})
+        ORDER BY yr, mo
     """
     r = await db.execute(text(sql), {"mid": mid})
-    by_key = {(row._mapping["yr"], row._mapping["mo"]): row._mapping["qty"] for row in r}
-
-    # Stała oś 24 miesięcy kończąca się na bieżącym miesiącu (month 0-11 dla frontu)
-    from datetime import date as _date
-    today = _date.today()
-    base_year, base_month0 = today.year, today.month - 1  # 0-based
-    points: List[SeasonPoint] = []
-    for off in range(23, -1, -1):
-        total_m = base_year * 12 + base_month0 - off
-        y = total_m // 12
-        m0 = total_m % 12
-        qty = by_key.get((y, m0 + 1), 0)  # klucz z bazy: miesiąc 1-12
-        points.append(SeasonPoint(year=y, month=m0, value=int(qty or 0)))
-    return points
+    return [
+        SeasonPoint(
+            year=int(row._mapping["yr"]),
+            month=int(row._mapping["mo"]) - 1,  # 0-based dla frontu
+            qty=int(row._mapping["qty"] or 0),
+            value=float(row._mapping["val"] or 0.0),
+        )
+        for row in r
+    ]
 
 
 @router.post("/manufacturers", response_model=ManufacturerOut, status_code=201)
