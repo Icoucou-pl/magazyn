@@ -255,6 +255,14 @@ class StockProjectionPoint(BaseModel):
     event: Optional[str] = None
 
 
+class SeasonPoint(BaseModel):
+    """Punkt szeregu sezonowego (sprzedaż ilościowa w danym miesiącu).
+    month: indeks 0-11 (0=styczeń) — zgodnie z oczekiwaniem frontendowego SeasonChart."""
+    year: int
+    month: int
+    value: int
+
+
 class Anomaly(BaseModel):
     sku: str
     name: str

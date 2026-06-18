@@ -6,9 +6,9 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
+from config import settings, EXCLUDED_STATUS_FILTER
 from database import get_db
-from models import ManufacturerIn, ManufacturerOut
+from models import ManufacturerIn, ManufacturerOut, SeasonPoint
 
 router = APIRouter(prefix="/api", tags=["manufacturers"])
 
@@ -23,6 +23,46 @@ async def list_manufacturers(db: AsyncSession = Depends(get_db)):
         ORDER BY m.name
     """))
     return [ManufacturerOut(**dict(row._mapping)) for row in r]
+
+
+@router.get("/manufacturers/{mid}/sales-season", response_model=List[SeasonPoint])
+async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)):
+    """Szereg sezonowy 24 miesięcy (sprzedaż ilościowa wszystkich SKU producenta).
+    Zwraca dokładnie 24 punkty (najstarszy→najnowszy), bieżący miesiąc jako ostatni;
+    brakujące miesiące wypełnione zerami. Dopasowanie SKU jak w kalendarzu —
+    LOWER(TRIM(...)) po obu stronach. Uwzględnia wykluczone statusy zamówień."""
+    sql = f"""
+        SELECT
+            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int AS yr,
+            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int AS mo,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int       AS qty
+        FROM {settings.TABLE_ORDER_ITEMS} i
+        JOIN {settings.TABLE_ORDERS} o
+            ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
+        WHERE LOWER(TRIM(i.{settings.COL_ITEM_SKU})) IN (
+                SELECT LOWER(TRIM(pa.sku))
+                FROM {settings.TABLE_PRODUCT_ATTRS} pa
+                WHERE pa.manufacturer_id = :mid
+            )
+            AND o.{settings.COL_ORDER_DATE} >= (date_trunc('month', CURRENT_DATE) - INTERVAL '23 months')
+            {EXCLUDED_STATUS_FILTER}
+        GROUP BY EXTRACT(YEAR FROM o.{settings.COL_ORDER_DATE}), EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})
+    """
+    r = await db.execute(text(sql), {"mid": mid})
+    by_key = {(row._mapping["yr"], row._mapping["mo"]): row._mapping["qty"] for row in r}
+
+    # Stała oś 24 miesięcy kończąca się na bieżącym miesiącu (month 0-11 dla frontu)
+    from datetime import date as _date
+    today = _date.today()
+    base_year, base_month0 = today.year, today.month - 1  # 0-based
+    points: List[SeasonPoint] = []
+    for off in range(23, -1, -1):
+        total_m = base_year * 12 + base_month0 - off
+        y = total_m // 12
+        m0 = total_m % 12
+        qty = by_key.get((y, m0 + 1), 0)  # klucz z bazy: miesiąc 1-12
+        points.append(SeasonPoint(year=y, month=m0, value=int(qty or 0)))
+    return points
 
 
 @router.post("/manufacturers", response_model=ManufacturerOut, status_code=201)

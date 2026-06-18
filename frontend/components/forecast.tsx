@@ -13,9 +13,11 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { fmtPLNk, fmtNum } from "@/lib/format";
+import { useUser, can } from "@/lib/permissions";
 import { toast, exportCsv, type CsvColumn } from "./toast";
-import { I, MfrChip } from "./ui";
-import { MiniStat } from "./containers-ui";
+import { I, Pill, MfrChip } from "./ui";
+import { MiniStat, STATUS_FULL_META, type Container } from "./containers-ui";
 import {
   Checkbox, modalBackdrop, modalCard, iconBtnGhost,
   StatusPillExt, displayStatus, monthsDisplay,
@@ -121,9 +123,11 @@ export default function ForecastView({
   onProductClick?: (sku: string) => void;
 }) {
   const gap = density === "compact" ? 12 : 14;
+  const showFin = can(useUser(), "viewFinancials");
 
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
+  const [containers, setContainers] = useState<Container[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [mfrId, setMfrId] = useState<MfrId>("ALL");
@@ -145,11 +149,13 @@ export default function ForecastView({
     Promise.allSettled([
       api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
       api.get("/manufacturers"),
-    ]).then(([prod, mfr]) => {
+      api.get("/containers"),
+    ]).then(([prod, mfr, cont]) => {
       if (!alive) return;
       if (prod.status === "fulfilled") setProducts((prod.value as Product[]) || []);
       else toast("Nie udało się wczytać produktów", "warning");
       if (mfr.status === "fulfilled") setManufacturers((mfr.value as Manufacturer[]) || []);
+      if (cont.status === "fulfilled") setContainers((cont.value as Container[]) || []);
       setLoading(false);
     });
     return () => { alive = false; };
@@ -522,6 +528,8 @@ export default function ForecastView({
         <ManufacturerModal
           mfr={manufacturers.find((m) => m.id === detailMfrId) || null}
           products={products.filter((p) => p.manufacturer_id === detailMfrId)}
+          containers={containers.filter((c) => c.manufacturer_id === detailMfrId)}
+          showFin={showFin}
           onClose={() => setDetailMfrId(null)}
           onProductClick={(sku) => { setDetailMfrId(null); onProductClick?.(sku); }}
         />
@@ -602,89 +610,253 @@ function AddProductModal({
   );
 }
 
-// ── Szczegóły producenta ─────────────────────────────────────
+// ── Analityka producenta (port analytics.jsx) ────────────────
+const AN_MONTHS = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
+
+type SeasonPoint = { year: number; month: number; value: number };
+
+// Wykres sezon-do-sezonu (ten rok vs rok temu). Przyjmuje 24 mies. (najstarszy→najnowszy).
+function SeasonChart({ series, height = 200, accent = "var(--accent)" }: { series: SeasonPoint[]; height?: number; accent?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(680);
+  const [hover, setHover] = useState<number | null>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver((e) => setW(e[0].contentRect.width));
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const cur = series.slice(12);
+  const prev = series.slice(0, 12);
+  const curVals = cur.map((s) => s.value);
+  const prevVals = prev.map((s) => s.value);
+  const labels = cur.map((s) => AN_MONTHS[s.month]);
+  const max = Math.max(...curVals, ...prevVals, 1);
+
+  const pad = { t: 16, r: 12, b: 26, l: 32 };
+  const iw = w - pad.l - pad.r, ih = height - pad.t - pad.b;
+  const x = (i: number) => pad.l + (i / 11) * iw;
+  const y = (v: number) => pad.t + ih - (v / max) * ih;
+  const line = (vals: number[]) => vals.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+
+  const curTotal = curVals.reduce((a, b) => a + b, 0);
+  const prevTotal = prevVals.reduce((a, b) => a + b, 0);
+  const pct = prevTotal > 0 ? ((curTotal - prevTotal) / prevTotal) * 100 : 0;
+
+  const onMove = (e: React.MouseEvent) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const i = Math.round(((e.clientX - r.left - pad.l) / iw) * 11);
+    if (i >= 0 && i <= 11) setHover(i);
+  };
+
+  return (
+    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", gap: 14 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-mid)" }}>
+            <span style={{ width: 14, height: 2, background: accent, borderRadius: 2 }} /> Ten rok
+          </span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-mid)" }}>
+            <span style={{ width: 14, height: 0, borderTop: "2px dashed var(--text-lo)" }} /> Rok temu
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{fmtNum(prevTotal)} → {fmtNum(curTotal)} szt</span>
+          <span className="num" style={{ fontSize: 12, fontWeight: 700, color: pct >= 0 ? "var(--ok)" : "var(--critical)" }}>
+            {pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
+          </span>
+        </div>
+      </div>
+      <div ref={ref} style={{ position: "relative" }}>
+        <svg width={w} height={height} onMouseMove={onMove} onMouseLeave={() => setHover(null)} style={{ display: "block" }}>
+          {[0.25, 0.5, 0.75, 1].map((f) => (
+            <line key={f} x1={pad.l} x2={w - pad.r} y1={y(max * f)} y2={y(max * f)} stroke="var(--border-soft)" strokeDasharray="2,4" />
+          ))}
+          {[0.5, 1].map((f) => (
+            <text key={f} x={pad.l - 6} y={y(max * f) + 3} fill="var(--text-lo)" fontSize="9" textAnchor="end" fontFamily="var(--font-mono)">{Math.round(max * f)}</text>
+          ))}
+          <path d={line(prevVals)} stroke="var(--text-lo)" strokeWidth="1.5" fill="none" strokeDasharray="4,3" opacity="0.7" />
+          <path d={line(curVals)} stroke={accent} strokeWidth="2.4" fill="none" strokeLinejoin="round" />
+          {curVals.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r={hover === i ? 4 : 2.5} fill={accent} />)}
+          {hover != null && (
+            <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + ih} stroke="var(--text-lo)" strokeDasharray="2,3" />
+          )}
+          {labels.map((l, i) => (
+            <text key={i} x={x(i)} y={height - 8} fill={hover === i ? "var(--text-hi)" : "var(--text-lo)"} fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">{l}</text>
+          ))}
+        </svg>
+        {hover != null && (
+          <div style={{
+            position: "absolute", left: Math.min(Math.max(x(hover) - 70, 4), w - 144), top: 6,
+            background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 7,
+            padding: "7px 10px", fontSize: 11, pointerEvents: "none", minWidth: 130,
+          }}>
+            <div style={{ fontSize: 10, color: "var(--text-lo)", fontWeight: 600 }}>{labels[hover]}</div>
+            <div className="num" style={{ color: accent, fontWeight: 600 }}>ten rok: {curVals[hover]}</div>
+            <div className="num" style={{ color: "var(--text-lo)" }}>rok temu: {prevVals[hover]}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Szczegóły producenta (port ManufacturerModal) ────────────
 function ManufacturerModal({
-  mfr, products, onClose, onProductClick,
+  mfr, products, containers, showFin, onClose, onProductClick,
 }: {
   mfr: Manufacturer | null;
   products: Product[];
+  containers: Container[];
+  showFin: boolean;
   onClose: () => void;
   onProductClick?: (sku: string) => void;
 }) {
+  const [season, setSeason] = useState<SeasonPoint[] | null>(null);
+  const [seasonErr, setSeasonErr] = useState(false);
+
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
   }, [onClose]);
 
+  const mfrId = mfr?.id;
+  useEffect(() => {
+    if (mfrId == null) return;
+    let alive = true;
+    setSeason(null); setSeasonErr(false);
+    api.get(`/manufacturers/${mfrId}/sales-season`)
+      .then((d) => { if (alive) setSeason((d as SeasonPoint[]) || []); })
+      .catch(() => { if (alive) setSeasonErr(true); });
+    return () => { alive = false; };
+  }, [mfrId]);
+
   if (!mfr) return null;
 
-  const active = products.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK");
-  const totalStock = products.reduce((s, p) => s + p.stock, 0);
-  const toOrder = products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ").length;
-  const noStock = products.filter((p) => p.stock === 0).length;
-  const sorted = [...products].sort((a, b) => b.avg_monthly_weighted - a.avg_monthly_weighted);
+  const mfrExt = mfr as Manufacturer & { contact?: string | null };
+  const inFlight = containers.filter((c) => c.status !== "DELIVERED");
+  const delivered = containers.filter((c) => c.status === "DELIVERED").length;
+  const stockValue = products.reduce((s, p) => s + (p.stock_value || 0), 0);
+  const inTransitValue = inFlight.reduce((s, c) => s + (c.total_value || 0), 0);
+  const needOrder = products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
 
   return (
     <div onClick={onClose} style={modalBackdrop}>
-      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 680 }}>
-        <div style={{
-          padding: "14px 18px", borderBottom: "1px solid var(--border-soft)",
-          display: "flex", alignItems: "center", gap: 10,
-        }}>
-          <span style={{ width: 12, height: 12, borderRadius: 99, background: mfr.color, flexShrink: 0 }} />
-          <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>{mfr.name}</span>
-          <button onClick={onClose} style={iconBtnGhost}><I.Close size={14} /></button>
-        </div>
-
-        {(mfr.email || mfr.notes) && (
-          <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 4 }}>
-            {mfr.email && <div style={{ fontSize: 12, color: "var(--text-mid)" }}>Kontakt: <span style={{ color: "var(--text-hi)" }}>{mfr.email}</span></div>}
-            {mfr.notes && <div style={{ fontSize: 12, color: "var(--text-lo)" }}>{mfr.notes}</div>}
-          </div>
-        )}
-
-        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-soft)", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10 }}>
-          <MfrStat label="Produkty (aktywne)" value={`${active.length} / ${products.length}`} />
-          <MfrStat label="Stan łącznie" value={totalStock.toLocaleString("pl-PL")} sub="szt" />
-          <MfrStat label="Do zamówienia" value={toOrder} tone={toOrder > 0 ? "var(--critical)" : undefined} />
-          <MfrStat label="Bez stanu" value={noStock} tone={noStock > 0 ? "var(--warning)" : undefined} />
-        </div>
-
-        <div style={{ maxHeight: "52vh", overflowY: "auto" }}>
-          {sorted.length === 0 ? (
-            <div style={{ padding: 30, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>
-              Ten producent nie ma przypisanych produktów.
+      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 820, maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+        {/* Nagłówek */}
+        <div style={{ padding: "16px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative", flexShrink: 0 }}>
+          <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: mfr.color }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 44, height: 44, borderRadius: 10, background: `color-mix(in oklch, ${mfr.color} 20%, var(--bg))`, border: `1px solid ${mfr.color}`, color: mfr.color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <I.Factory size={22} />
             </div>
-          ) : sorted.map((p) => (
-            <button key={p.sku} onClick={() => onProductClick?.(p.sku)} style={{
-              display: "flex", alignItems: "center", gap: 10, width: "100%",
-              padding: "9px 18px", background: "transparent", border: "none",
-              borderTop: "1px solid var(--border-soft)", cursor: onProductClick ? "pointer" : "default", textAlign: "left",
-            }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-              <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", minWidth: 120 }}>{p.sku}</span>
-              <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-              <span className="num" title="Stan" style={{ fontSize: 12, color: p.stock === 0 ? "var(--critical)" : "var(--text-hi)", fontWeight: 600, minWidth: 48, textAlign: "right" }}>{p.stock}</span>
-              <span className="num" title="Sprzedaż / mies" style={{ fontSize: 12, color: "var(--text-lo)", minWidth: 52, textAlign: "right" }}>{Math.round(p.avg_monthly_weighted)}/m</span>
-              <span className="num" title="Miesięcy zapasu" style={{ fontSize: 12, color: "var(--text-lo)", minWidth: 44, textAlign: "right" }}>{monthsDisplay(p.months_of_stock)}</span>
-              <span style={{ minWidth: 96, display: "flex", justifyContent: "flex-end" }}><StatusPillExt status={displayStatus(p)} size="sm" /></span>
-            </button>
-          ))}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-hi)" }}>{mfr.name}</div>
+              <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 2 }}>
+                {mfrExt.contact ? `${mfrExt.contact} · ` : ""}<span className="mono">{mfr.email || "—"}</span>
+              </div>
+            </div>
+            <button onClick={onClose} style={fcIconBtnHeader}><I.Close size={14} /></button>
+          </div>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* KPI */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+            <FcMetricBox label="Produktów (SKU)" value={products.length} sub={`${needOrder.length} do zamówienia`} tone={needOrder.length ? "warning" : "neutral"} />
+            <FcMetricBox label="Wartość magazynu" value={showFin ? fmtPLNk(stockValue) : "•••"} sub="bieżący stan" />
+            <FcMetricBox label="W drodze" value={showFin ? fmtPLNk(inTransitValue) : "•••"} sub={`${inFlight.length} kontenerów`} tone="info" />
+            <FcMetricBox label="Kontenery łącznie" value={containers.length} sub={`${delivered} dostarczonych`} />
+          </div>
+
+          {/* Sezon do sezonu */}
+          <FcSection title="Sprzedaż wszystkich SKU — sezon do sezonu">
+            {season ? (
+              <SeasonChart series={season} accent={mfr.color} />
+            ) : seasonErr ? (
+              <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+                Brak danych historycznych sprzedaży dla tego producenta.
+              </div>
+            ) : (
+              <div className="pulse-soft" style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} />
+            )}
+          </FcSection>
+
+          {/* Wymaga zamówienia */}
+          {needOrder.length > 0 && (
+            <FcSection title={`Wymaga zamówienia (${needOrder.length})`}>
+              <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
+                {needOrder.map((p, i) => (
+                  <div key={p.sku} onClick={() => onProductClick?.(p.sku)} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", cursor: onProductClick ? "pointer" : "default",
+                    borderBottom: i === needOrder.length - 1 ? "none" : "1px solid var(--border-soft)",
+                  }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                    <StatusPillExt status={displayStatus(p)} size="sm" />
+                    <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{p.sku}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                    <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>stan {p.stock} · {Math.round(p.avg_monthly_weighted)}/mies</span>
+                  </div>
+                ))}
+              </div>
+            </FcSection>
+          )}
+
+          {/* Kontenery w drodze */}
+          {inFlight.length > 0 && (
+            <FcSection title={`Kontenery w drodze (${inFlight.length})`}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {inFlight.map((c) => {
+                  const m = STATUS_FULL_META[c.status] || STATUS_FULL_META.ORDERED;
+                  const Icon = m.icon;
+                  const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
+                  return (
+                    <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                      <span style={{ color: m.fg, display: "flex" }}><Icon size={14} /></span>
+                      <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{c.container_number}</span>
+                      <Pill bg={m.bg} fg={m.fg} size="sm">{m.label}</Pill>
+                      <span style={{ flex: 1 }} />
+                      <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{c.total_units} szt · {showFin ? fmtPLNk(c.total_value) : "•••"} · za {days}d</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </FcSection>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function MfrStat({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub?: string; tone?: string }) {
+// ── Pomocnicze (lokalne odpowiedniki Section/MetricBox z mocka) ──
+function FcSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
-      <div className="num" style={{ fontSize: 18, fontWeight: 600, color: tone || "var(--text-hi)", marginTop: 3 }}>
-        {value}{sub && <span style={{ fontSize: 11, color: "var(--text-lo)", fontWeight: 400, marginLeft: 3 }}>{sub}</span>}
-      </div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{title}</div>
+      {children}
     </div>
   );
 }
+
+const FC_TONE_COLOR: Record<string, string> = {
+  neutral: "var(--text-hi)", warning: "var(--warning)", info: "var(--info)", critical: "var(--critical)", ok: "var(--ok)",
+};
+
+function FcMetricBox({ label, value, sub, tone = "neutral" }: { label: string; value: React.ReactNode; sub?: string; tone?: "neutral" | "warning" | "info" | "critical" | "ok" }) {
+  return (
+    <div style={{ padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div className="num" style={{ fontSize: 22, fontWeight: 700, color: FC_TONE_COLOR[tone] || "var(--text-hi)", marginTop: 5, letterSpacing: "-0.02em" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+const fcIconBtnHeader: React.CSSProperties = {
+  width: 30, height: 30, borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border-soft)",
+  color: "var(--text-mid)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+};
