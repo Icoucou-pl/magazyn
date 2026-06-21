@@ -53,7 +53,7 @@ def _ssl_context() -> Optional[ssl.SSLContext]:
         return None
 
 
-def _fetch_range_sync(code: str, start: date, end: date) -> List[Tuple[str, float]]:
+def _fetch_range_sync(code: str, start: date, end: date) -> List[Tuple[date, float]]:
     """Synchroniczny strzał do NBP po zakres kursów tabeli A.
     Zwraca [(effectiveDate 'YYYY-MM-DD', mid)]. HTTP 404 (brak danych w oknie,
     np. same weekendy) → pusta lista. Inne błędy → RuntimeError z czytelnym detalem."""
@@ -87,16 +87,17 @@ def _fetch_range_sync(code: str, start: date, end: date) -> List[Tuple[str, floa
     except json.JSONDecodeError as e:
         raise RuntimeError(f"NBP JSON parse fail ({code} {start}..{end}): {e}; head={raw[:120]!r}") from e
 
-    out: List[Tuple[str, float]] = []
+    out: List[Tuple[date, float]] = []
     for row in data.get("rates", []):
         ed = row.get("effectiveDate")
         mid = row.get("mid")
         if ed and mid is not None:
-            out.append((ed, float(mid)))
+            # asyncpg dla kolumny DATE wymaga obiektu datetime.date, nie stringa
+            out.append((date.fromisoformat(ed), float(mid)))
     return out
 
 
-async def _fetch_range(code: str, start: date, end: date) -> List[Tuple[str, float]]:
+async def _fetch_range(code: str, start: date, end: date) -> List[Tuple[date, float]]:
     """Asynchroniczna otoczka — blokujący urllib idzie do threadpoola."""
     return await asyncio.to_thread(_fetch_range_sync, code, start, end)
 
@@ -110,7 +111,7 @@ def _chunk_ranges(start: date, end: date, max_days: int = NBP_MAX_RANGE_DAYS):
         cur = chunk_end + timedelta(days=1)
 
 
-async def _upsert_rates(session: AsyncSession, currency: str, rows: List[Tuple[str, float]]) -> int:
+async def _upsert_rates(session: AsyncSession, currency: str, rows: List[Tuple[date, float]]) -> int:
     """Idempotentny zapis kursów. ON CONFLICT DO NOTHING — kursy historyczne się nie zmieniają."""
     if not rows:
         return 0
