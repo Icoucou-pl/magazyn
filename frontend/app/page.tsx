@@ -76,6 +76,8 @@ export default function Page() {
   const [ready, setReady] = useState(false);
   const [view, setView] = useState("dashboard");
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
+  const [pendingContainerId, setPendingContainerId] = useState<number | null>(null);
+  const [pendingManufacturerId, setPendingManufacturerId] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
@@ -106,8 +108,8 @@ export default function Page() {
 
   // Routing wyników wyszukiwarki (logika widoków siedzi tutaj)
   const goProduct = (sku: string) => { setPendingProductSku(sku); setView("products"); setSearchOpen(false); setScanOpen(false); };
-  const goContainers = () => { setView("containers"); setSearchOpen(false); };
-  const goManufacturer = () => { setView("forecast"); setSearchOpen(false); };
+  const goContainers = (id: number) => { setPendingContainerId(id); setView("containers"); setSearchOpen(false); };
+  const goManufacturer = (id: number) => { setPendingManufacturerId(id); setView("settings"); setSearchOpen(false); };
 
   // Unikamy migotania ekranu logowania przy hydratacji (sesja czytana po montażu)
   if (!ready) return null;
@@ -160,7 +162,11 @@ export default function Page() {
             onOpenedSku={() => setPendingProductSku(null)}
           />
         ) : view === "containers" ? (
-          <ContainersView density={t.density} />
+          <ContainersView
+            density={t.density}
+            openId={pendingContainerId}
+            onOpenedId={() => setPendingContainerId(null)}
+          />
         ) : view === "calendar" ? (
           <Calendar density={t.density} />
         ) : view === "cashflow" ? (
@@ -171,7 +177,11 @@ export default function Page() {
             onProductClick={(sku) => { setPendingProductSku(sku); setView("products"); }}
           />
         ) : view === "settings" ? (
-          <SettingsView />
+          <SettingsView
+            initialSection={pendingManufacturerId != null ? "manufacturers" : undefined}
+            openManufacturerId={pendingManufacturerId}
+            onOpenedManufacturer={() => setPendingManufacturerId(null)}
+          />
         ) : (
           <ComingSoon view={view} />
         )}

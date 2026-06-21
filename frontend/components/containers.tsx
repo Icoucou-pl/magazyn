@@ -19,7 +19,7 @@ import {
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import type { Product, Manufacturer } from "./products-ui";
 
-export default function ContainersView({ density }: { density?: string }) {
+export default function ContainersView({ density, openId, onOpenedId }: { density?: string; openId?: number | null; onOpenedId?: () => void }) {
   const gap = density === "compact" ? 10 : 14;
   const showFin = can(useUser(), "viewFinancials");
 
@@ -66,6 +66,13 @@ export default function ContainersView({ density }: { density?: string }) {
 
   const openNew = () => { setEditing(null); setShowForm(true); };
   const openEdit = (c: Container) => { setEditing(c); setShowForm(true); };
+
+  // Deep-link z globalnej wyszukiwarki: otwórz konkretny kontener po id
+  useEffect(() => {
+    if (openId == null || !containers.length) return;
+    const c = containers.find((x) => x.id === openId);
+    if (c) { openEdit(c); onOpenedId?.(); }
+  }, [openId, containers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: containers.length };

@@ -25,15 +25,15 @@ const EMPTY: GlobalSearchResponse = { products: [], ean: [], manufacturers: [], 
 // Płaska, indeksowalna pozycja (pod nawigację klawiaturą)
 type FlatItem =
   | { kind: "product"; sku: string; label: string; sub: string; dot?: string }
-  | { kind: "manufacturer"; label: string; sub: string; dot?: string }
-  | { kind: "container"; label: string; sub: string; dot?: string };
+  | { kind: "manufacturer"; id: number; label: string; sub: string; dot?: string }
+  | { kind: "container"; id: number; label: string; sub: string; dot?: string };
 
 type Props = {
   open: boolean;
   onClose: () => void;
   onProduct: (sku: string) => void;
-  onContainer: () => void;
-  onManufacturer: () => void;
+  onContainer: (id: number) => void;
+  onManufacturer: (id: number) => void;
 };
 
 export default function CommandPalette({ open, onClose, onProduct, onContainer, onManufacturer }: Props) {
@@ -92,18 +92,18 @@ export default function CommandPalette({ open, onClose, onProduct, onContainer, 
       out.push({ kind: "product", sku: e.sku, label: e.sku, sub: e.ean ? `EAN ${e.ean}` : (e.name || "—") });
     }
     for (const m of res.manufacturers) {
-      out.push({ kind: "manufacturer", label: m.name, sub: "Producent", dot: m.color || undefined });
+      out.push({ kind: "manufacturer", id: m.id, label: m.name, sub: "Producent", dot: m.color || undefined });
     }
     for (const c of res.containers) {
-      out.push({ kind: "container", label: c.container_number, sub: c.manufacturer_name || c.order_number || c.status, dot: c.manufacturer_color || undefined });
+      out.push({ kind: "container", id: c.id, label: c.container_number, sub: c.manufacturer_name || c.order_number || c.status, dot: c.manufacturer_color || undefined });
     }
     return out;
   }, [res]);
 
   const fire = (it: FlatItem) => {
     if (it.kind === "product") onProduct(it.sku);
-    else if (it.kind === "manufacturer") onManufacturer();
-    else onContainer();
+    else if (it.kind === "manufacturer") onManufacturer(it.id);
+    else onContainer(it.id);
   };
 
   // Przewijanie aktywnej pozycji do widoku

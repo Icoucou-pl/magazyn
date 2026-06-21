@@ -110,7 +110,11 @@ const parseDevice = (ua?: string | null) => {
 };
 
 // ── Widok główny ─────────────────────────────────────────────
-function SettingsView() {
+function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer }: {
+  initialSection?: SectionId;
+  openManufacturerId?: number | null;
+  onOpenedManufacturer?: () => void;
+} = {}) {
   const user = useUser() as CtxUser;
   const admin = isAdmin(user);
   const superUser = isSuperUser(user);
@@ -120,7 +124,17 @@ function SettingsView() {
     if (s.id === "audit") return superUser;
     return true;
   });
-  const [section, setSection] = useState<SectionId>(visibleSections[0]?.id || "account");
+  const [section, setSection] = useState<SectionId>(
+    initialSection && visibleSections.some(s => s.id === initialSection)
+      ? initialSection
+      : (visibleSections[0]?.id || "account")
+  );
+
+  // Deep-link producenta z wyszukiwarki: gdy przyjdzie id, przełącz na panel producentów
+  useEffect(() => {
+    if (openManufacturerId != null) setSection("manufacturers");
+  }, [openManufacturerId]);
+
   const activeSection = SETTINGS_SECTIONS.find(s => s.id === section);
 
   return (
@@ -161,7 +175,7 @@ function SettingsView() {
               <p style={{ margin: "4px 0 0 28px", fontSize: 12, color: "var(--text-lo)" }}>{activeSection.desc}</p>
             </div>
           )}
-          {section === "manufacturers"   && <ManufacturersPanel/>}
+          {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer}/>}
           {section === "container_types" && <ContainerTypesPanel/>}
           {section === "users"           && <UsersPanel currentUserId={user?.id}/>}
           {section === "account"         && <AccountPanel/>}
@@ -203,7 +217,7 @@ function Toggle({ on, disabled, onClick }: { on: boolean; disabled?: boolean; on
 // ============================================================
 // PRODUCENCI
 // ============================================================
-function ManufacturersPanel() {
+function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOpened?: () => void } = {}) {
   const user = useUser() as CtxUser;
   const showEdit = canEdit(user);
   const [items, setItems] = useState<Manufacturer[]>([]);
@@ -219,6 +233,15 @@ function ManufacturersPanel() {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
+
+  // Deep-link z wyszukiwarki: po wczytaniu listy otwórz edycję wskazanego producenta
+  useEffect(() => {
+    if (openId == null || !items.length) return;
+    if (items.some((m) => m.id === openId)) {
+      setEditingId(openId);
+      onOpened?.();
+    }
+  }, [openId, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalSku = items.reduce((s, m) => s + (m.sku_count || 0), 0);
 
