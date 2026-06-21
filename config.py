@@ -41,6 +41,15 @@ class Settings(BaseSettings):
 
     EXCLUDED_ORDER_STATUSES: str = ""
 
+    # --- Kursy walut NBP (tabela A) → przewalutowanie na PLN ---
+    # app_fx_rates trzyma kurs średni (mid) per 1 jednostka waluty, per dzień roboczy.
+    # EUR/CZK/HUF są wszystkie w tabeli A NBP, mid jest znormalizowany per 1 jednostkę
+    # (HUF ~0.0126, CZK ~0.176, EUR ~4.48), więc wartość_PLN = wartość_waluty × mid.
+    TABLE_FX_RATES: str = "app_fx_rates"
+    FX_BASE_CURRENCY: str = "PLN"           # waluta bazowa - mnożnik 1, bez przewalutowania
+    FX_CURRENCIES: str = "EUR,CZK,HUF"      # waluty obce do pobierania z NBP (lista po przecinku)
+    NBP_API_BASE: str = "https://api.nbp.pl/api"
+
     TABLE_LEAD_TIMES: str = "app_lead_times"
     TABLE_PRODUCT_ATTRS: str = "app_product_attrs"
     TABLE_MANUFACTURERS: str = "app_manufacturers"

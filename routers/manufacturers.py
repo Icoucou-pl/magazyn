@@ -27,7 +27,7 @@ async def list_manufacturers(db: AsyncSession = Depends(get_db)):
 
 @router.get("/manufacturers/{mid}/sales-season", response_model=List[SeasonPoint])
 async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)):
-    """Sprzedaż miesięczna wszystkich SKU producenta (qty + przychód netto/brutto),
+    """Sprzedaż miesięczna wszystkich SKU producenta (qty + przychód netto/brutto w PLN),
     od 1 stycznia zeszłego roku do dziś — pod wykres kalendarzowy Sty–Gru."""
     where = f"""LOWER(TRIM(i.{settings.COL_ITEM_SKU})) IN (
                 SELECT LOWER(TRIM(pa.sku))
@@ -38,7 +38,7 @@ async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)
 
 @router.get("/products/{sku}/sales-season", response_model=List[SeasonPoint])
 async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db)):
-    """Sprzedaż miesięczna pojedynczego SKU (qty + przychód netto/brutto),
+    """Sprzedaż miesięczna pojedynczego SKU (qty + przychód netto/brutto w PLN),
     od 1 stycznia zeszłego roku do dziś — pod wykres w karcie produktu."""
     where = f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sku))"
     return await _sales_season(db, where, {"sku": sku})
@@ -46,20 +46,40 @@ async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db)):
 
 async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> List[SeasonPoint]:
     """Wspólne zapytanie sezonowe. Zakres: od 1 stycznia ZESZŁEGO roku do dziś
-    (pokrywa cały zeszły rok + bieżący rok do teraz). Po jednym punkcie na miesiąc
-    z danymi. value_net = SUM(qty × price_netto), value_gross = SUM(qty × price).
-    Kwoty w wartości nominalnej waluty pozycji (głównie PLN) — przewalutowanie
-    EUR/CZK→PLN (NBP) to osobny krok. month 0-11. Dopasowanie SKU LOWER(TRIM(...))."""
+    (pokrywa cały zeszły rok + bieżący rok do teraz). Po jednym punkcie na miesiąc.
+
+    Przewalutowanie na PLN w SQL: dla każdej pozycji bierzemy kurs średni NBP z
+    ostatniego dnia roboczego PRZED datą zamówienia (rate_date < order_date::date —
+    konwencja księgowa; weekend/święto „cofa się" samo, bo w tabeli są tylko dni robocze).
+    PLN (oraz puste/NULL) → mnożnik 1.0. Waluta obca bez kursu w bazie → mnożnik NULL →
+    pozycja wypada z sumy (lepsze niż zawyżanie sumą nominalną; luki widać w /api/admin/fx/status).
+
+    value_net = SUM(qty × price_netto × kurs), value_gross = SUM(qty × price × kurs).
+    month 0-11. Dopasowanie SKU LOWER(TRIM(...))."""
     sql = f"""
         SELECT
-            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                                AS yr,
-            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                                AS mo,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int                                                     AS qty,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0)), 0)::float  AS val_net,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE}, 0)), 0)::float        AS val_gross
+            EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                                           AS yr,
+            EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                                           AS mo,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int                                                               AS qty,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0) * fx.mult), 0)::float  AS val_net,
+            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE},       0) * fx.mult), 0)::float  AS val_gross
         FROM {settings.TABLE_ORDER_ITEMS} i
         JOIN {settings.TABLE_ORDERS} o
             ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
+        LEFT JOIN LATERAL (
+            SELECT CASE
+                WHEN UPPER(TRIM(COALESCE(i.{settings.COL_ITEM_CURRENCY}, '{settings.FX_BASE_CURRENCY}'))) IN ('{settings.FX_BASE_CURRENCY}', '')
+                    THEN 1.0
+                ELSE (
+                    SELECT r.mid
+                    FROM {settings.TABLE_FX_RATES} r
+                    WHERE r.currency = UPPER(TRIM(i.{settings.COL_ITEM_CURRENCY}))
+                      AND r.rate_date < o.{settings.COL_ORDER_DATE}::date
+                    ORDER BY r.rate_date DESC
+                    LIMIT 1
+                )
+            END AS mult
+        ) fx ON TRUE
         WHERE {where_clause}
             AND o.{settings.COL_ORDER_DATE} >= (date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
             {EXCLUDED_STATUS_FILTER}

@@ -1,7 +1,8 @@
 """
 Lifespan aplikacji: przy starcie tworzy brakujące tabele, dokłada brakujące kolumny
 (migracje ALTER TABLE), wstawia domyślne typy kontenerów, tworzy domyślnego admina
-(jeśli baza userów pusta) i zakłada indeksy. Przy zamknięciu zwalnia pulę połączeń.
+(jeśli baza userów pusta), zakłada indeksy i dociąga świeże kursy walut NBP.
+Przy zamknięciu zwalnia pulę połączeń.
 """
 
 from contextlib import asynccontextmanager
@@ -172,6 +173,17 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_user ON {settings.TABLE_AUDIT_LOG}(user_id)"))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_created ON {settings.TABLE_AUDIT_LOG}(created_at DESC)"))
 
+        # Kursy walut NBP (tabela A) → PLN. Composite PK (currency, rate_date) służy też
+        # jako indeks pod zapytanie sezonowe: WHERE currency=X AND rate_date<D ORDER BY rate_date DESC.
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_FX_RATES} (
+                currency  VARCHAR(3)     NOT NULL,
+                rate_date DATE           NOT NULL,
+                mid       NUMERIC(18,8)  NOT NULL,
+                PRIMARY KEY (currency, rate_date)
+            )
+        """))
+
         # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
         if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
             count_result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_USERS}"))
@@ -194,6 +206,18 @@ async def lifespan(app: FastAPI):
             await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_subiekt_towary_symbol_lower ON {settings.TABLE_PRODUCTS} (LOWER(TRIM({settings.COL_PRODUCT_SKU})))"))
         except Exception as e:
             print(f"[indexes] {e}")
+
+    # Top-up kursów walut NBP — idempotentny, NIE blokuje startu jeśli NBP jest niedostępne.
+    # Łapie nowe dni robocze od ostatniego uruchomienia. Pełną historię backfillujesz raz
+    # przez POST /api/admin/fx/backfill.
+    try:
+        from database import SessionLocal
+        from services.fx import topup_recent
+        async with SessionLocal() as session:
+            res = await topup_recent(session)
+        print(f"[fx] top-up kursów NBP: {res}")
+    except Exception as e:
+        print(f"[fx] top-up pominięty (start aplikacji nie jest blokowany): {e}")
 
     yield
     await engine.dispose()
