@@ -187,9 +187,9 @@ export function ProductsTable({
   const showFin = can(useUser(), "viewFinancials");
 
   return (
-    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflowX: "auto", overflowY: "clip" }}>
+    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "auto", maxHeight: "calc(100dvh - var(--app-header-h, 60px) - 160px)" }}>
       <div style={{ minWidth: "min-content" }}>
-        <div style={{ display: "grid", gridTemplateColumns: gridTemplate, background: "var(--bg-elevated)", borderBottom: "1px solid var(--border)", position: "sticky", top: "var(--app-header-h, 60px)", zIndex: 5, borderTopLeftRadius: "var(--r-lg)", borderTopRightRadius: "var(--r-lg)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: gridTemplate, background: "var(--bg-elevated)", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 5, borderTopLeftRadius: "var(--r-lg)", borderTopRightRadius: "var(--r-lg)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 0" }} onClick={(e) => e.stopPropagation()}>
             <Checkbox checked={allSelected} onChange={() => onToggleAll(rows)} />
           </div>
