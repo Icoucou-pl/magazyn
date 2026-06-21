@@ -15,12 +15,16 @@ Fakty NBP (potwierdzone):
 
 Bez zewnętrznych zależności: urllib (stdlib) + asyncio.to_thread, żeby nie dokładać
 httpx do requirements i nie blokować pętli zdarzeń. Ruch jest śladowy.
+
+Odporność: każdy chunk łapany osobno — jeden błędny strzał do NBP nie wywala całego
+backfillu, a komunikat błędu trafia do odpowiedzi (pole "errors"), nie do gołego 500.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
@@ -40,10 +44,19 @@ def _fx_currencies() -> List[str]:
     return [c.strip().upper() for c in settings.FX_CURRENCIES.split(",") if c.strip()]
 
 
+def _ssl_context() -> Optional[ssl.SSLContext]:
+    """Domyślny kontekst SSL (weryfikacja certyfikatu). Jeśli w środowisku brak
+    bundla CA i weryfikacja się sypie, łapiemy to wyżej i raportujemy w 'errors'."""
+    try:
+        return ssl.create_default_context()
+    except Exception:
+        return None
+
+
 def _fetch_range_sync(code: str, start: date, end: date) -> List[Tuple[str, float]]:
     """Synchroniczny strzał do NBP po zakres kursów tabeli A.
     Zwraca [(effectiveDate 'YYYY-MM-DD', mid)]. HTTP 404 (brak danych w oknie,
-    np. same weekendy) → pusta lista. Inne błędy → wyjątek."""
+    np. same weekendy) → pusta lista. Inne błędy → RuntimeError z czytelnym detalem."""
     url = (
         f"{settings.NBP_API_BASE.rstrip('/')}"
         f"/exchangerates/rates/a/{code.lower()}/{start.isoformat()}/{end.isoformat()}/?format=json"
@@ -53,12 +66,27 @@ def _fetch_range_sync(code: str, start: date, end: date) -> List[Tuple[str, floa
         "User-Agent": "magazyn-fx/1.0",
     })
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT, context=_ssl_context()) as resp:
+            raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return []
-        raise
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "ignore")[:200]
+        except Exception:
+            pass
+        raise RuntimeError(f"NBP HTTP {e.code} ({code} {start}..{end}): {body}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"NBP URLError ({code} {start}..{end}): {e.reason}") from e
+    except Exception as e:  # noqa: BLE001 — chcemy czytelny komunikat zamiast gołego 500
+        raise RuntimeError(f"NBP fetch fail ({code} {start}..{end}): {type(e).__name__}: {e}") from e
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"NBP JSON parse fail ({code} {start}..{end}): {e}; head={raw[:120]!r}") from e
+
     out: List[Tuple[str, float]] = []
     for row in data.get("rates", []):
         ed = row.get("effectiveDate")
@@ -113,7 +141,8 @@ async def _orders_date_span(session: AsyncSession) -> Tuple[Optional[date], Opti
 async def backfill_history(session: AsyncSession) -> dict:
     """Jednorazowo: pobiera kursy NBP dla całej historii zamówień (z buforem na dni
     robocze przed pierwszym zamówieniem) i zapisuje do app_fx_rates. Idempotentne —
-    można puszczać wielokrotnie, dołoży tylko brakujące dni."""
+    można puszczać wielokrotnie, dołoży tylko brakujące dni. Błędy poszczególnych okien
+    nie przerywają całości — lądują w 'errors'."""
     dmin, dmax = await _orders_date_span(session)
     if dmin is None:
         return {"status": "no_orders", "inserted": 0}
@@ -121,41 +150,58 @@ async def backfill_history(session: AsyncSession) -> dict:
     start = dmin - timedelta(days=7)          # bufor: kurs sprzed pierwszego zamówienia
     end = min(dmax, date.today())
     by_currency: dict = {}
+    errors: list = []
     total = 0
     for cur in _fx_currencies():
         cur_total = 0
         for cstart, cend in _chunk_ranges(start, end):
-            rows = await _fetch_range(cur, cstart, cend)
-            cur_total += await _upsert_rates(session, cur, rows)
+            try:
+                rows = await _fetch_range(cur, cstart, cend)
+                cur_total += await _upsert_rates(session, cur, rows)
+            except Exception as e:  # noqa: BLE001
+                errors.append({
+                    "currency": cur,
+                    "from": cstart.isoformat(),
+                    "to": cend.isoformat(),
+                    "error": str(e)[:300],
+                })
         by_currency[cur] = cur_total
         total += cur_total
     return {
-        "status": "ok",
+        "status": "ok" if not errors else "partial",
         "from": start.isoformat(),
         "to": end.isoformat(),
         "inserted": total,
         "by_currency": by_currency,
+        "errors": errors,
     }
 
 
 async def topup_recent(session: AsyncSession, lookback_days: int = 14) -> dict:
     """Idempotentnie dociąga kursy z ostatnich ~lookback_days dni (łapie nowe dni
-    robocze od ostatniego uruchomienia). Wołane przy starcie aplikacji."""
+    robocze od ostatniego uruchomienia). Wołane przy starcie aplikacji. Błędy nie
+    przerywają — lądują w 'errors' (start aplikacji i tak ich nie blokuje)."""
     end = date.today()
     start = end - timedelta(days=lookback_days)
     by_currency: dict = {}
+    errors: list = []
     total = 0
     for cur in _fx_currencies():
-        rows = await _fetch_range(cur, start, end)
-        n = await _upsert_rates(session, cur, rows)
+        try:
+            rows = await _fetch_range(cur, start, end)
+            n = await _upsert_rates(session, cur, rows)
+        except Exception as e:  # noqa: BLE001
+            errors.append({"currency": cur, "error": str(e)[:300]})
+            n = 0
         by_currency[cur] = n
         total += n
     return {
-        "status": "ok",
+        "status": "ok" if not errors else "partial",
         "from": start.isoformat(),
         "to": end.isoformat(),
         "inserted": total,
         "by_currency": by_currency,
+        "errors": errors,
     }
 
 
