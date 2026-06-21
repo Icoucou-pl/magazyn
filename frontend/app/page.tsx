@@ -5,7 +5,7 @@
 //   - UserContext.Provider (lib/permissions) — widoki czytają usera/uprawnienia
 //   - motyw: useTweaks + applyTweaks; Sun/Moon w headerze ↔ AppearancePanel (sync przez wspólny stan)
 //   - density → padding main (prop poleci do widoków w kolejnych etapach)
-//   - widoki = ComingSoon (Dashboard powstaje w etapie 1)
+//   - Ctrl+K / przycisk Szukaj → globalna wyszukiwarka (CommandPalette)
 // ============================================================
 
 import React, { useEffect, useState } from "react";
@@ -20,6 +20,7 @@ import Calendar from "@/components/calendar";
 import CashflowView from "@/components/cashflow";
 import ForecastView from "@/components/forecast";
 import SettingsView from "@/components/settings";
+import CommandPalette from "@/components/command-palette";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -74,6 +75,7 @@ export default function Page() {
   const [ready, setReady] = useState(false);
   const [view, setView] = useState("dashboard");
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
 
   // Motyw (akcent/warmth/theme/density) → na <html>
@@ -88,17 +90,22 @@ export default function Page() {
     return () => window.removeEventListener("magazyn:unauthorized", onUnauth);
   }, []);
 
-  // Ctrl+K — wyszukiwarka globalna (modal w kolejnym etapie)
+  // Ctrl+K — globalna wyszukiwarka
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
-        toast("Wyszukiwarka globalna — wkrótce", "info");
+        setSearchOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Routing wyników wyszukiwarki (logika widoków siedzi tutaj)
+  const goProduct = (sku: string) => { setPendingProductSku(sku); setView("products"); setSearchOpen(false); };
+  const goContainers = () => { setView("containers"); setSearchOpen(false); };
+  const goManufacturer = () => { setView("forecast"); setSearchOpen(false); };
 
   // Unikamy migotania ekranu logowania przy hydratacji (sesja czytana po montażu)
   if (!ready) return null;
@@ -122,7 +129,7 @@ export default function Page() {
         theme={t.theme}
         onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
         onLogout={handleLogout}
-        onOpenSearch={() => toast("Wyszukiwarka globalna — wkrótce", "info")}
+        onOpenSearch={() => setSearchOpen(true)}
         onOpenScan={() => toast("Skaner EAN — wkrótce", "info")}
         onRefresh={() => toast("Odświeżanie danych — wkrótce", "info")}
         onChangePassword={() => setView("settings")}
@@ -167,6 +174,15 @@ export default function Page() {
           <ComingSoon view={view} />
         )}
       </main>
+
+      {/* Globalna wyszukiwarka (Ctrl+K / przycisk Szukaj w headerze) */}
+      <CommandPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onProduct={goProduct}
+        onContainer={goContainers}
+        onManufacturer={goManufacturer}
+      />
 
       {/* Pływający panel wyglądu (⚙ w prawym dolnym rogu) — stan wspólny z headerem */}
       <AppearancePanel t={t} setTweak={setTweak}/>
