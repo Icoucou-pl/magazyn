@@ -21,6 +21,7 @@ import CashflowView from "@/components/cashflow";
 import ForecastView from "@/components/forecast";
 import SettingsView from "@/components/settings";
 import CommandPalette from "@/components/command-palette";
+import EanScanner from "@/components/ean-scanner";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -76,6 +77,7 @@ export default function Page() {
   const [view, setView] = useState("dashboard");
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
 
   // Motyw (akcent/warmth/theme/density) → na <html>
@@ -103,7 +105,7 @@ export default function Page() {
   }, []);
 
   // Routing wyników wyszukiwarki (logika widoków siedzi tutaj)
-  const goProduct = (sku: string) => { setPendingProductSku(sku); setView("products"); setSearchOpen(false); };
+  const goProduct = (sku: string) => { setPendingProductSku(sku); setView("products"); setSearchOpen(false); setScanOpen(false); };
   const goContainers = () => { setView("containers"); setSearchOpen(false); };
   const goManufacturer = () => { setView("forecast"); setSearchOpen(false); };
 
@@ -130,7 +132,7 @@ export default function Page() {
         onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
         onLogout={handleLogout}
         onOpenSearch={() => setSearchOpen(true)}
-        onOpenScan={() => toast("Skaner EAN — wkrótce", "info")}
+        onOpenScan={() => setScanOpen(true)}
         onRefresh={() => toast("Odświeżanie danych — wkrótce", "info")}
         onChangePassword={() => setView("settings")}
       />
@@ -182,6 +184,13 @@ export default function Page() {
         onProduct={goProduct}
         onContainer={goContainers}
         onManufacturer={goManufacturer}
+      />
+
+      {/* Skaner EAN (przycisk skanu w headerze) */}
+      <EanScanner
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onProduct={goProduct}
       />
 
       {/* Pływający panel wyglądu (⚙ w prawym dolnym rogu) — stan wspólny z headerem */}
