@@ -5,6 +5,7 @@ Lifespan aplikacji: przy starcie tworzy brakujące tabele, dokłada brakujące k
 Przy zamknięciu zwalnia pulę połączeń.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,6 +14,28 @@ from sqlalchemy import text
 from config import settings
 from database import engine, add_column_if_missing
 from security import hash_password, validate_password_strength
+
+
+# Co ile sekund tło odświeża kursy NBP. 6h = kursy zawsze świeże w ciągu kilku godzin
+# od publikacji (NBP wystawia tabelę A w dni robocze przed południem), niezależnie od
+# strefy czasowej i godziny startu serwera. Idempotentne (ON CONFLICT DO NOTHING).
+FX_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+async def _fx_refresh_loop():
+    """Wewnętrzny harmonogram: cyklicznie dociąga świeże kursy NBP. Nie wystawia
+    niczego na zewnątrz (woła funkcję bezpośrednio, nie endpoint), więc nie wymaga
+    auth. Każdy błąd jest łapany — pętla nigdy nie umiera przez chwilowy problem z NBP."""
+    from database import SessionLocal
+    from services.fx import topup_recent
+    while True:
+        await asyncio.sleep(FX_REFRESH_INTERVAL_SECONDS)
+        try:
+            async with SessionLocal() as session:
+                res = await topup_recent(session)
+            print(f"[fx] auto top-up: {res}")
+        except Exception as e:
+            print(f"[fx] auto top-up błąd (pomijam, pętla działa dalej): {e}")
 
 
 @asynccontextmanager
@@ -208,16 +231,27 @@ async def lifespan(app: FastAPI):
             print(f"[indexes] {e}")
 
     # Top-up kursów walut NBP — idempotentny, NIE blokuje startu jeśli NBP jest niedostępne.
-    # Łapie nowe dni robocze od ostatniego uruchomienia. Pełną historię backfillujesz raz
-    # przez POST /api/admin/fx/backfill.
+    # Jednorazowy strzał przy starcie: dane świeże już od pierwszego requestu.
+    # Pełną historię backfillujesz raz przez POST /api/admin/fx/backfill.
     try:
         from database import SessionLocal
         from services.fx import topup_recent
         async with SessionLocal() as session:
             res = await topup_recent(session)
-        print(f"[fx] top-up kursów NBP: {res}")
+        print(f"[fx] top-up kursów NBP (start): {res}")
     except Exception as e:
         print(f"[fx] top-up pominięty (start aplikacji nie jest blokowany): {e}")
 
+    # Harmonogram w tle: co FX_REFRESH_INTERVAL_SECONDS dociąga nowe kursy — kursy
+    # odświeżają się same, bez deployu i bez konfiguracji w Railway.
+    fx_task = asyncio.create_task(_fx_refresh_loop())
+
     yield
+
+    # Sprzątanie przy zamknięciu
+    fx_task.cancel()
+    try:
+        await fx_task
+    except asyncio.CancelledError:
+        pass
     await engine.dispose()
