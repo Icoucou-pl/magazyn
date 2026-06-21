@@ -49,15 +49,6 @@ export default function EanScanner({ open, onClose, onProduct }: Props) {
   const onProductRef = useRef(onProduct);
   useEffect(() => { onProductRef.current = onProduct; });
 
-  const stopCamera = useCallback(() => {
-    try { controlsRef.current?.stop(); } catch { /* noop */ }
-    controlsRef.current = null;
-    const v = videoRef.current;
-    const stream = v && (v.srcObject as MediaStream | null);
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    if (v) v.srcObject = null;
-  }, []);
-
   const doLookup = useCallback(async (codeRaw: string) => {
     const code = codeRaw.trim();
     if (code.length < 2) return;
@@ -81,26 +72,33 @@ export default function EanScanner({ open, onClose, onProduct }: Props) {
     }
   }, []);
 
-  // Start/stop kamery przy otwarciu
+  // Start/stop kamery przy otwarciu.
+  // Sami pobieramy strumień i ustawiamy video.muted = true JAKO WŁAŚCIWOŚĆ — ZXing/React
+  // ustawiają tylko atrybut, co przy polityce autoplay daje czarny obraz mimo działającej kamery.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    let localStream: MediaStream | null = null;
     setMode("scanning"); setErr(""); setResults([]); setLastCode(""); setManual("");
     busyRef.current = false;
 
     const reader = new BrowserMultiFormatReader(HINTS);
     (async () => {
       try {
-        const controls = await reader.decodeFromConstraints(
-          { video: { facingMode: "environment" } },
-          videoRef.current as HTMLVideoElement,
-          (result) => {
-            if (result && !busyRef.current) {
-              busyRef.current = true;
-              void doLookup(result.getText());
-            }
-          },
-        );
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false,
+        });
+        const video = videoRef.current;
+        if (cancelled || !video) { localStream?.getTracks().forEach((t) => t.stop()); return; }
+        video.muted = true;            // żywa właściwość — odblokowuje autoplay
+        video.setAttribute("playsinline", "true");
+        const controls = await reader.decodeFromStream(localStream, video, (result) => {
+          if (result && !busyRef.current) {
+            busyRef.current = true;
+            void doLookup(result.getText());
+          }
+        });
         if (cancelled) { controls.stop(); return; }
         controlsRef.current = controls;
       } catch {
@@ -111,8 +109,16 @@ export default function EanScanner({ open, onClose, onProduct }: Props) {
       }
     })();
 
-    return () => { cancelled = true; stopCamera(); };
-  }, [open, doLookup, stopCamera]);
+    return () => {
+      cancelled = true;
+      try { controlsRef.current?.stop(); } catch { /* noop */ }
+      controlsRef.current = null;
+      const v = videoRef.current;
+      const s = (v && (v.srcObject as MediaStream | null)) || localStream;
+      if (s) s.getTracks().forEach((t) => t.stop());
+      if (v) v.srcObject = null;
+    };
+  }, [open, doLookup]);
 
   if (!open) return null;
 
@@ -138,6 +144,7 @@ export default function EanScanner({ open, onClose, onProduct }: Props) {
             <div style={{ position: "relative", background: "#000", aspectRatio: "4 / 3", overflow: "hidden" }}>
               <video
                 ref={videoRef}
+                autoPlay
                 muted
                 playsInline
                 style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
