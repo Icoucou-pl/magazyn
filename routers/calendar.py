@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
+from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from services.products import fetch_products
 from services.containers import fetch_containers
@@ -104,6 +104,7 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
         FROM {settings.TABLE_ORDER_ITEMS} oi
         JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
         WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '{days} days'
+            {INCLUDED_STATUS_FILTER}
         GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU})), DATE(o.{settings.COL_ORDER_DATE})
     """
     sales_result = await db.execute(text(sales_query))
