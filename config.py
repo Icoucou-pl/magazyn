@@ -41,6 +41,17 @@ class Settings(BaseSettings):
 
     EXCLUDED_ORDER_STATUSES: str = ""
 
+    # Whitelist statusów liczonych jako ZREALIZOWANA sprzedaż (zgodnie z Power BI).
+    # Tylko te statusy wchodzą do przychodu/ilości/sprzedaży 30d-90d. Reszta (anulowane,
+    # zwroty, reklamacje, w toku, wysłane-niedoręczone, raty/leasing, błędy) NIE liczy się.
+    # Whitelist > blacklist: nowy status w Sellasiście sam z siebie nie zawyży sprzedaży.
+    # Nazwy MUSZĄ być 1:1 jak w bazie (status_name). Pusty string = brak filtra (liczy wszystko).
+    INCLUDED_ORDER_STATUSES: str = (
+        "Doręczone - allegro,Doręczone - drop,Doręczone - gratis,Doręczone - erli,"
+        "Doręczone - osobiście,Doręczone - reklamacje,Doręczone - sklep,"
+        "Doręczone - Studio Bay,Exchange - zakończony"
+    )
+
     # --- Kursy walut NBP (tabela A) → przewalutowanie na PLN ---
     # app_fx_rates trzyma kurs średni (mid) per 1 jednostka waluty, per dzień roboczy.
     # EUR/CZK/HUF są wszystkie w tabeli A NBP, mid jest znormalizowany per 1 jednostkę
@@ -120,4 +131,15 @@ def excluded_status_clause(alias: str = "o") -> str:
     return f"AND {alias}.{settings.COL_ORDER_STATUS} NOT IN ({quoted})"
 
 
+def included_status_clause(alias: str = "o") -> str:
+    """Buduje fragment SQL zawężający do whitelisty statusów = sprzedaż zrealizowana
+    (zgodnie z Power BI). Pusta whitelista → brak filtra (liczy wszystko)."""
+    if not settings.INCLUDED_ORDER_STATUSES.strip():
+        return ""
+    statuses = [s.strip() for s in settings.INCLUDED_ORDER_STATUSES.split(",") if s.strip()]
+    quoted = ",".join("'" + s.replace("'", "''") + "'" for s in statuses)
+    return f"AND {alias}.{settings.COL_ORDER_STATUS} IN ({quoted})"
+
+
 EXCLUDED_STATUS_FILTER = excluded_status_clause("o")
+INCLUDED_STATUS_FILTER = included_status_clause("o")
