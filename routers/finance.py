@@ -17,7 +17,7 @@ backendu to osobny temat. Na froncie zakładka jest pod uprawnieniem viewFinanci
 from datetime import date, timedelta
 from typing import List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,8 @@ from config import settings, INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, to_floa
 from database import get_db
 from models import (
     FinanceOverview, FinanceKpi, FinanceChannelRow, FinanceMfrRow, FinanceMonthlyPoint,
+    FinanceProduct, FinanceProductInfo, FinanceProductKpi, FinanceProductRotation,
+    FinanceProductChannelRow, FinanceProductMonthly,
 )
 
 router = APIRouter(prefix="/api", tags=["finance"])
@@ -53,12 +55,14 @@ def _period(period: str):
     return ("Ten rok", f"o.{d} >= date_trunc('year', CURRENT_DATE)", date(today.year, 1, 1), today)
 
 
-def _base_cte(period_clause: str) -> str:
+def _base_cte(period_clause: str, extra_where: str = "") -> str:
     """Wspólne CTE `base`: po jednej pozycji zamówienia z kanałem, przewalutowaniem i kosztem.
     Przewalutowanie: PLN/puste → 1.0; waluta obca → kurs NBP < order_date; brak kursu → mult NULL
     (pozycja wypada z przychodu I kosztu — spójnie, żeby nie psuć marży).
     cost liczony tylko gdy mult IS NOT NULL (ten sam zbiór wierszy co przychód).
-    cost_missing = brak dopasowania SKU w Subiekcie (koszt nieznany → marża zawyżona)."""
+    cost_missing = brak dopasowania SKU w Subiekcie (koszt nieznany → marża zawyżona).
+    extra_where — opcjonalny dodatkowy warunek WHERE (np. filtr po jednym symbolu),
+    musi zaczynać się od 'AND '."""
     return f"""
 WITH base AS (
     SELECT
@@ -101,6 +105,7 @@ WITH base AS (
         ON m.id = pa.manufacturer_id
     WHERE {period_clause}
         {INCLUDED_STATUS_FILTER}
+        {extra_where}
 )
 """
 
@@ -227,4 +232,159 @@ async def finance_overview(
         manufacturers=manufacturers,
         monthly=monthly,
         items_without_cost=items_without_cost,
+    )
+
+
+@router.get("/finance/product", response_model=FinanceProduct)
+async def finance_product(
+    symbol: str = Query(..., min_length=1),
+    period: str = Query("ytd"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Karta produktu: info + KPI finansowe + rotacja/pokrycie stanu + kanały + trend miesięczny.
+    Koszt = cena_zakupu_netto z Subiekta (bieżący, jednolity per szt.) → koszt całkowity = sztuki × koszt jedn."""
+    if period not in ALLOWED_PERIODS:
+        period = "ytd"
+    label, period_clause, date_from, date_to = _period(period)
+
+    # --- Info o produkcie (Subiekt + atrybuty + lead-time) ---
+    info_row = (await db.execute(text(f"""
+        SELECT
+            p.{settings.COL_PRODUCT_NAME}                          AS name,
+            COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0)            AS stock,
+            COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0)::float     AS unit_cost,
+            pa.cbm_per_unit                                        AS cbm_per_unit,
+            pa.ean                                                 AS ean,
+            pa.manufacturer_id                                     AS manufacturer_id,
+            m.name                                                 AS mfr_name,
+            m.color                                                AS mfr_color,
+            lt.lead_time_days                                      AS lead_time_days
+        FROM {settings.TABLE_PRODUCTS} p
+        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
+            ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+        LEFT JOIN {settings.TABLE_MANUFACTURERS} m
+            ON m.id = pa.manufacturer_id
+        LEFT JOIN {settings.TABLE_LEAD_TIMES} lt
+            ON LOWER(TRIM(lt.sku)) = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+        WHERE LOWER(TRIM(p.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(:symbol))
+        LIMIT 1
+    """), {"symbol": symbol})).mappings().first()
+
+    if info_row is None:
+        raise HTTPException(status_code=404, detail=f"Nie znaleziono produktu o symbolu '{symbol}'")
+
+    unit_cost = to_float(info_row["unit_cost"])
+    stock = int(info_row["stock"] or 0)
+
+    info = FinanceProductInfo(
+        symbol=symbol,
+        name=info_row["name"],
+        manufacturer_id=info_row["manufacturer_id"],
+        manufacturer_name=info_row["mfr_name"],
+        manufacturer_color=info_row["mfr_color"],
+        ean=info_row["ean"],
+        stock=stock,
+        unit_cost=unit_cost,
+        cbm_per_unit=to_float(info_row["cbm_per_unit"]) if info_row["cbm_per_unit"] is not None else None,
+        lead_time_days=info_row["lead_time_days"],
+    )
+
+    sym_where = f"AND LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:symbol))"
+    base = _base_cte(period_clause, sym_where)
+
+    # --- Sumy sprzedaży (KPI) ---
+    tot = (await db.execute(text(base + """
+        SELECT
+            COALESCE(SUM(net),   0)::float AS net,
+            COALESCE(SUM(gross), 0)::float AS gross,
+            COALESCE(SUM(qty),   0)::int   AS units,
+            COUNT(DISTINCT order_id)::int  AS orders
+        FROM base
+    """), {"symbol": symbol})).mappings().first()
+
+    units = int(tot["units"] or 0)
+    orders = int(tot["orders"] or 0)
+    revenue_net = to_float(tot["net"])
+    revenue_gross = to_float(tot["gross"])
+    cost = units * unit_cost
+    margin = revenue_net - cost
+    margin_pct = (margin / revenue_net * 100.0) if revenue_net > 0 else 0.0
+    avg_price_net = (revenue_net / units) if units > 0 else 0.0
+    unit_margin = avg_price_net - unit_cost
+
+    kpi = FinanceProductKpi(
+        revenue_net=revenue_net,
+        revenue_gross=revenue_gross,
+        cost=cost,
+        margin=margin,
+        margin_pct=margin_pct,
+        units=units,
+        orders=orders,
+        avg_price_net=avg_price_net,
+        unit_cost=unit_cost,
+        unit_margin=unit_margin,
+    )
+
+    # --- Rotacja / pokrycie stanu ---
+    days_in_period = max(1, (date_to - date_from).days + 1)
+    avg_daily = units / days_in_period
+    rotation = FinanceProductRotation(
+        days_in_period=days_in_period,
+        avg_daily_units=avg_daily,
+        avg_monthly_units=avg_daily * 30.0,
+        days_of_cover=(stock / avg_daily) if avg_daily > 0 else None,
+        stock=stock,
+    )
+
+    # --- Kanały (dla tego produktu) ---
+    ch_rows = (await db.execute(text(base + """
+        SELECT channel,
+            COALESCE(SUM(qty), 0)::int   AS units,
+            COALESCE(SUM(net), 0)::float AS net
+        FROM base
+        GROUP BY channel
+        ORDER BY net DESC
+    """), {"symbol": symbol})).mappings().all()
+
+    channels = [
+        FinanceProductChannelRow(
+            channel=r["channel"],
+            units=int(r["units"]),
+            revenue_net=to_float(r["net"]),
+            share_pct=(to_float(r["net"]) / revenue_net * 100.0) if revenue_net > 0 else 0.0,
+        )
+        for r in ch_rows
+    ]
+
+    # --- Trend miesięczny (sztuki + przychód netto) ---
+    mo_rows = (await db.execute(text(base + """
+        SELECT yr, mo,
+            COALESCE(SUM(qty), 0)::int   AS units,
+            COALESCE(SUM(net), 0)::float AS net
+        FROM base
+        GROUP BY yr, mo
+        ORDER BY yr, mo
+    """), {"symbol": symbol})).mappings().all()
+
+    monthly = [
+        FinanceProductMonthly(
+            year=int(r["yr"]),
+            month=int(r["mo"]) - 1,
+            units=int(r["units"]),
+            revenue_net=to_float(r["net"]),
+        )
+        for r in mo_rows
+    ]
+
+    return FinanceProduct(
+        period=period,
+        period_label=label,
+        date_from=date_from,
+        date_to=date_to,
+        currency=settings.FX_BASE_CURRENCY,
+        info=info,
+        kpi=kpi,
+        rotation=rotation,
+        channels=channels,
+        monthly=monthly,
     )
