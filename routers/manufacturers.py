@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings, EXCLUDED_STATUS_FILTER
+from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from models import ManufacturerIn, ManufacturerOut, SeasonPoint
 
@@ -82,7 +82,7 @@ async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> Li
         ) fx ON TRUE
         WHERE {where_clause}
             AND o.{settings.COL_ORDER_DATE} >= (date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
-            {EXCLUDED_STATUS_FILTER}
+            {INCLUDED_STATUS_FILTER}
         GROUP BY EXTRACT(YEAR FROM o.{settings.COL_ORDER_DATE}), EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})
         ORDER BY yr, mo
     """
