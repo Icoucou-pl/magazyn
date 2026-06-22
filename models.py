@@ -334,3 +334,62 @@ class OrderPdfRequest(BaseModel):
     items: List[dict]  # [{sku, name, quantity, unit_cost}]
     notes: Optional[str] = None
     custom_order_number: Optional[str] = None
+
+
+# ===== FINANSE =====
+class FinanceKpi(BaseModel):
+    """Zagregowane wskaźniki dla wybranego okresu (wszystko w PLN, po przewalutowaniu NBP).
+    margin = revenue_net - cost (koszt = ilość × cena_zakupu_netto z Subiekta, bieżący).
+    margin_pct = margin / revenue_net × 100 (0 gdy brak przychodu).
+    aov_net = revenue_net / orders (średnia wartość zamówienia netto)."""
+    revenue_net: float
+    revenue_gross: float
+    cost: float
+    margin: float
+    margin_pct: float
+    orders: int
+    units: int
+    aov_net: float
+
+
+class FinanceChannelRow(BaseModel):
+    channel: str
+    revenue_net: float
+    revenue_gross: float
+    cost: float
+    margin: float
+    margin_pct: float
+    orders: int
+    units: int
+    share_pct: float  # udział w przychodzie netto
+
+
+class FinanceMfrRow(BaseModel):
+    manufacturer_id: Optional[int] = None
+    name: str
+    color: Optional[str] = None
+    revenue_net: float
+    cost: float
+    margin: float
+    margin_pct: float
+    units: int
+
+
+class FinanceMonthlyPoint(BaseModel):
+    year: int
+    month: int  # 0-11 (0 = styczeń) — zgodnie z frontem
+    channel: str
+    revenue_net: float
+
+
+class FinanceOverview(BaseModel):
+    period: str
+    period_label: str
+    date_from: date
+    date_to: date
+    currency: str = "PLN"
+    kpi: FinanceKpi
+    channels: List[FinanceChannelRow]
+    manufacturers: List[FinanceMfrRow]
+    monthly: List[FinanceMonthlyPoint]
+    items_without_cost: int  # sztuki pozycji bez dopasowanego kosztu w Subiekcie (marża zawyżona dla nich)

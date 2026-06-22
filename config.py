@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     COL_ORDER_ID: str = "order_id"
     COL_ORDER_DATE: str = "order_date"
     COL_ORDER_STATUS: str = "status_name"
+    COL_ORDER_CREATOR: str = "creator"      # źródło kanału sprzedaży (Allegro/Erli/Studio-Bay/Klaudia/I-CC.PL)
 
     TABLE_ORDER_ITEMS: str = "sellasist_order_items"
     COL_ITEM_ORDER_ID: str = "order_id"
@@ -141,5 +142,22 @@ def included_status_clause(alias: str = "o") -> str:
     return f"AND {alias}.{settings.COL_ORDER_STATUS} IN ({quoted})"
 
 
+def sales_channel_case(alias: str = "o") -> str:
+    """Buduje wyrażenie CASE mapujące sellasist_orders.creator → kanał sprzedaży.
+    Reguła 1:1 z Power BI: case-insensitive, PIERWSZE trafienie wygrywa (jak if/else if),
+    kolejność WHEN ma znaczenie. creator NULL/puste → 'I-CC.PL'.
+    Kanały: Allegro, Erli, Studio-Bay, Klaudia (klaudia LUB api), I-CC.PL (reszta)."""
+    c = f"LOWER(COALESCE({alias}.{settings.COL_ORDER_CREATOR}, ''))"
+    return (
+        "CASE "
+        f"WHEN {c} LIKE '%allegro%' THEN 'Allegro' "
+        f"WHEN {c} LIKE '%erli%' THEN 'Erli' "
+        f"WHEN {c} LIKE '%studio%' THEN 'Studio-Bay' "
+        f"WHEN {c} LIKE '%klaudia%' OR {c} LIKE '%api%' THEN 'Klaudia' "
+        "ELSE 'I-CC.PL' END"
+    )
+
+
 EXCLUDED_STATUS_FILTER = excluded_status_clause("o")
 INCLUDED_STATUS_FILTER = included_status_clause("o")
+SALES_CHANNEL_CASE = sales_channel_case("o")
