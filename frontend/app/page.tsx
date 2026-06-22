@@ -19,6 +19,7 @@ import ContainersView from "@/components/containers";
 import Calendar from "@/components/calendar";
 import CashflowView from "@/components/cashflow";
 import ForecastView from "@/components/forecast";
+import FinanceView from "@/components/finance";
 import SettingsView from "@/components/settings";
 import CommandPalette from "@/components/command-palette";
 import EanScanner from "@/components/ean-scanner";
@@ -176,6 +177,8 @@ export default function Page() {
             density={t.density}
             onProductClick={(sku) => { setPendingProductSku(sku); setView("products"); }}
           />
+        ) : view === "finance" ? (
+          <FinanceView density={t.density} />
         ) : view === "settings" ? (
           <SettingsView
             initialSection={pendingManufacturerId != null ? "manufacturers" : undefined}
