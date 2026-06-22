@@ -3,7 +3,7 @@ Surowe zapytania SQL budowane z nazw tabel/kolumn z konfiguracji.
 SALES_QUERY liczy sprzedaż w oknach 1-4m, 12m oraz YoY (rok temu, te same 30 dni).
 """
 
-from config import settings, EXCLUDED_STATUS_FILTER
+from config import settings, INCLUDED_STATUS_FILTER
 
 
 SALES_QUERY = f"""
@@ -18,7 +18,7 @@ WITH sales_periods AS (
     FROM {settings.TABLE_ORDER_ITEMS} oi
     JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'
-      {EXCLUDED_STATUS_FILTER}
+      {INCLUDED_STATUS_FILTER}
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
 ),
 sales_yoy AS (
@@ -30,7 +30,7 @@ sales_yoy AS (
     JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '395 days'
       AND o.{settings.COL_ORDER_DATE} < NOW() - INTERVAL '335 days'
-      {EXCLUDED_STATUS_FILTER}
+      {INCLUDED_STATUS_FILTER}
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
 )
 SELECT
