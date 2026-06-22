@@ -393,3 +393,65 @@ class FinanceOverview(BaseModel):
     manufacturers: List[FinanceMfrRow]
     monthly: List[FinanceMonthlyPoint]
     items_without_cost: int  # sztuki pozycji bez dopasowanego kosztu w Subiekcie (marża zawyżona dla nich)
+
+
+# ===== FINANSE — KARTA PRODUKTU =====
+class FinanceProductInfo(BaseModel):
+    symbol: str
+    name: Optional[str] = None
+    manufacturer_id: Optional[int] = None
+    manufacturer_name: Optional[str] = None
+    manufacturer_color: Optional[str] = None
+    ean: Optional[str] = None
+    stock: int
+    unit_cost: float                       # cena_zakupu_netto (bieżąca, PLN)
+    cbm_per_unit: Optional[float] = None
+    lead_time_days: Optional[int] = None
+
+
+class FinanceProductKpi(BaseModel):
+    revenue_net: float
+    revenue_gross: float
+    cost: float                            # sztuki × unit_cost
+    margin: float
+    margin_pct: float
+    units: int
+    orders: int
+    avg_price_net: float                   # przychód netto / sztuki (efektywna cena jedn.)
+    unit_cost: float
+    unit_margin: float                     # avg_price_net − unit_cost
+
+
+class FinanceProductRotation(BaseModel):
+    days_in_period: int
+    avg_daily_units: float
+    avg_monthly_units: float
+    days_of_cover: Optional[float] = None  # stock / avg_daily; None = brak sprzedaży w okresie
+    stock: int
+
+
+class FinanceProductChannelRow(BaseModel):
+    channel: str
+    units: int
+    revenue_net: float
+    share_pct: float
+
+
+class FinanceProductMonthly(BaseModel):
+    year: int
+    month: int  # 0-11
+    units: int
+    revenue_net: float
+
+
+class FinanceProduct(BaseModel):
+    period: str
+    period_label: str
+    date_from: date
+    date_to: date
+    currency: str = "PLN"
+    info: FinanceProductInfo
+    kpi: FinanceProductKpi
+    rotation: FinanceProductRotation
+    channels: List[FinanceProductChannelRow]
+    monthly: List[FinanceProductMonthly]
