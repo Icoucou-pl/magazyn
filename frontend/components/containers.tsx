@@ -14,7 +14,7 @@ import { useUser, can } from "@/lib/permissions";
 import { I } from "./ui";
 import {
   ContainersToolbar, ContainerCard, MiniStat,
-  STATUS_FLOW, type Container,
+  STATUS_FLOW, FILTER_STATUSES, eff, type Container,
 } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import type { Product, Manufacturer } from "./products-ui";
@@ -76,13 +76,13 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
 
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: containers.length };
-    STATUS_FLOW.forEach((s) => { out[s] = containers.filter((c) => c.status === s).length; });
+    FILTER_STATUSES.forEach((s) => { out[s] = containers.filter((c) => eff(c) === s).length; });
     return out;
   }, [containers]);
 
   const filtered = useMemo(() => {
     let arr = containers;
-    if (filter !== "ALL") arr = arr.filter((c) => c.status === filter);
+    if (filter !== "ALL") arr = arr.filter((c) => eff(c) === filter);
     if (search) {
       const q = search.toLowerCase();
       arr = arr.filter((c) =>
@@ -95,7 +95,7 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
   }, [containers, filter, search]);
 
   const summary = useMemo(() => {
-    const inFlight = containers.filter((c) => c.status !== "DELIVERED");
+    const inFlight = containers.filter((c) => eff(c) !== "DELIVERED");
     return {
       inFlight: inFlight.length,
       inFlightValue: inFlight.reduce((s, c) => s + c.total_value, 0),

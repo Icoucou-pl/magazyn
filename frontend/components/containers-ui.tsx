@@ -32,7 +32,10 @@ export type Container = {
   manufacturer_color: string | null;
   order_date: string;
   eta_date: string;
-  status: string;
+  status: string;                       // status ręczny (z bazy)
+  effective_status?: string;            // status wyświetlany: ręczny lub auto (CUSTOMS/DELIVERED) z ETA
+  is_auto?: boolean;                    // status wynika z dat (odprawa / auto-dostawa)
+  customs_days_left?: number | null;    // w odprawie: dni do auto-dostawy
   notes: string | null;
   items: ContainerItem[];
   attachments: Attachment[];
@@ -44,13 +47,23 @@ export type Container = {
 
 type StatusMetaFull = { label: string; icon: React.ComponentType<{ size?: number }>; fg: string; bg: string; accent: string };
 
+// STATUS_FLOW = ręczny tok statusów (do przycisku „Przenieś do…" i kroków ręcznych).
 export const STATUS_FLOW = ["ORDERED", "IN_PRODUCTION", "IN_TRANSIT", "DELIVERED"];
+// TIMELINE_FLOW = pełna oś czasu z automatyczną odprawą celną (do wizualizacji postępu).
+export const TIMELINE_FLOW = ["ORDERED", "IN_PRODUCTION", "IN_TRANSIT", "CUSTOMS", "DELIVERED"];
+// FILTER_STATUSES = chipy filtra (na statusie efektywnym — z odprawą włącznie).
+export const FILTER_STATUSES = ["ORDERED", "IN_PRODUCTION", "IN_TRANSIT", "CUSTOMS", "DELIVERED"];
+
 export const STATUS_FULL_META: Record<string, StatusMetaFull> = {
   ORDERED: { label: "Zamówione", icon: I.Box, fg: "var(--text-mid)", bg: "var(--surface-2)", accent: "var(--text-mid)" },
   IN_PRODUCTION: { label: "W produkcji", icon: I.Factory, fg: "var(--anomaly)", bg: "var(--anomaly-soft)", accent: "var(--anomaly)" },
   IN_TRANSIT: { label: "W drodze", icon: I.Ship, fg: "var(--info)", bg: "var(--info-soft)", accent: "var(--info)" },
+  CUSTOMS: { label: "Odprawa celna", icon: I.Customs, fg: "var(--warning)", bg: "var(--warning-soft)", accent: "var(--warning)" },
   DELIVERED: { label: "Dostarczone", icon: I.Activity, fg: "var(--ok)", bg: "var(--ok-soft)", accent: "var(--ok)" },
 };
+
+// Status do wyświetlenia: efektywny z backendu, a gdy go brak — ręczny.
+export const eff = (c: { effective_status?: string; status: string }): string => c.effective_status || c.status;
 
 // ── Mini stat ────────────────────────────────────────────────
 export function MiniStat({ label, value, sub, icon }: { label: string; value: React.ReactNode; sub?: string; icon?: React.ReactNode }) {
@@ -85,7 +98,7 @@ export function ContainersToolbar({
       { key: "order_number", label: "Nr zamowienia" },
       { key: "container_type_name", label: "Typ" },
       { key: "manufacturer_name", label: "Producent" },
-      { label: "Status", get: (c) => STATUS_FULL_META[c.status]?.label || c.status },
+      { label: "Status", get: (c) => STATUS_FULL_META[eff(c)]?.label || eff(c) },
       { key: "order_date", label: "Data zamowienia" },
       { key: "eta_date", label: "ETA" },
       { key: "total_units", label: "Sztuk" },
@@ -105,7 +118,7 @@ export function ContainersToolbar({
 
       <div style={{ display: "flex", gap: 4, padding: 3, background: "var(--surface-2)", borderRadius: 8, flexWrap: "wrap" }}>
         <FilterChip active={filter === "ALL"} onClick={() => setFilter("ALL")} count={counts.ALL}>Wszystkie</FilterChip>
-        {STATUS_FLOW.map((s) => {
+        {FILTER_STATUSES.map((s) => {
           const m = STATUS_FULL_META[s];
           const Icon = m.icon;
           return (
@@ -148,11 +161,15 @@ export function ContainerCard({
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
 }) {
-  const meta = STATUS_FULL_META[c.status] || STATUS_FULL_META.ORDERED;
+  const eStatus = eff(c);
+  const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
   const showFin = can(useUser(), "viewFinancials");
   const Icon = meta.icon;
   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
-  const isOverdue = days < 0 && c.status !== "DELIVERED";
+  const isDelivered = eStatus === "DELIVERED";
+  const isCustoms = eStatus === "CUSTOMS";
+  const isOverdue = days < 0 && !isDelivered && !isCustoms;
+  // „Przenieś do…" działa na statusie RĘCZNYM (z bazy) — automat (odprawa/auto-dostawa) go nie dotyczy.
   const nextStatus = STATUS_FLOW[STATUS_FLOW.indexOf(c.status) + 1];
   const fill = c.fill_percentage ?? 0;
   const fillColor = fill > 100 ? "var(--critical)" : fill > 90 ? "var(--warning)" : fill > 70 ? "var(--ok)" : "var(--info)";
@@ -171,6 +188,7 @@ export function ContainerCard({
             <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>
             {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
             {c.manufacturer_id && c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />}
+            {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa · auto" : "auto"}</Pill>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 4, flexWrap: "wrap" }}>
             {c.order_number ? <span className="mono">PO: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez PO</span>}
@@ -184,8 +202,12 @@ export function ContainerCard({
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>ETA</div>
           <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>{new Date(c.eta_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "2-digit" })}</div>
-          <div className="num" style={{ fontSize: 11, color: isOverdue ? "var(--critical)" : "var(--text-lo)", fontWeight: isOverdue ? 600 : 400 }}>
-            {c.status === "DELIVERED" ? "dostarczony" : days < 0 ? `${Math.abs(days)}d temu` : days === 0 ? "dziś" : `za ${days}d`}
+          <div className="num" style={{ fontSize: 11, color: isOverdue ? "var(--critical)" : isCustoms ? "var(--warning)" : "var(--text-lo)", fontWeight: (isOverdue || isCustoms) ? 600 : 400 }}>
+            {isDelivered
+              ? (c.is_auto ? "auto-dostawa" : "dostarczony")
+              : isCustoms
+                ? `odprawa · ${c.customs_days_left ?? 0}d do dostawy`
+                : days < 0 ? `${Math.abs(days)}d temu` : days === 0 ? "dziś" : `za ${days}d`}
           </div>
         </div>
 
@@ -227,7 +249,7 @@ function ContainerCardBody({
           <DataCell label="Wartość" value={showFin ? fmtPLN(c.total_value) : "•••••"} />
           {cap > 0 && <DataCell label="CBM" value={`${c.total_cbm} / ${cap}`} sub={`${fill}% wypełnienia`} />}
         </div>
-        <StatusTimeline current={c.status} />
+        <StatusTimeline current={eff(c)} />
       </div>
 
       {cap > 0 && (
@@ -285,12 +307,19 @@ function ContainerCardBody({
       )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 12, borderTop: "1px solid var(--border-soft)" }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {showEdit && nextStatus && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          {c.is_auto ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-lo)" }}>
+              <I.Customs size={12} style={{ color: "var(--warning)" }} />
+              {eff(c) === "CUSTOMS"
+                ? `Status liczony automatycznie z ETA — auto-dostawa za ${c.customs_days_left ?? 0} dni`
+                : "Status liczony automatycznie z ETA (po oknie odprawy)"}
+            </span>
+          ) : (showEdit && nextStatus && (
             <button onClick={onAdvance} style={{ ...btnSecondary, color: STATUS_FULL_META[nextStatus].fg, borderColor: "color-mix(in oklch, " + STATUS_FULL_META[nextStatus].accent + " 40%, var(--border))" }}>
               <I.ArrowRight size={12} /> Przenieś do „{STATUS_FULL_META[nextStatus].label}"
             </button>
-          )}
+          ))}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {onGeneratePO && (
@@ -316,10 +345,10 @@ function DataCell({ label, value, sub }: { label: string; value: React.ReactNode
 }
 
 function StatusTimeline({ current }: { current: string }) {
-  const currentIdx = STATUS_FLOW.indexOf(current);
+  const currentIdx = TIMELINE_FLOW.indexOf(current);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-      {STATUS_FLOW.map((s, i) => {
+      {TIMELINE_FLOW.map((s, i) => {
         const meta = STATUS_FULL_META[s];
         const Icon = meta.icon;
         const reached = i <= currentIdx;
@@ -332,8 +361,8 @@ function StatusTimeline({ current }: { current: string }) {
               </div>
               <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", color: reached ? (active ? meta.fg : "var(--text-mid)") : "var(--text-disabled)", textAlign: "center", whiteSpace: "nowrap" }}>{meta.label}</span>
             </div>
-            {i < STATUS_FLOW.length - 1 && (
-              <div style={{ width: 24, height: 2, background: i < currentIdx ? STATUS_FULL_META[STATUS_FLOW[i + 1]].accent : "var(--surface-2)", marginTop: -14, transition: "background 0.2s" }} />
+            {i < TIMELINE_FLOW.length - 1 && (
+              <div style={{ width: 18, height: 2, background: i < currentIdx ? STATUS_FULL_META[TIMELINE_FLOW[i + 1]].accent : "var(--surface-2)", marginTop: -14, transition: "background 0.2s" }} />
             )}
           </React.Fragment>
         );

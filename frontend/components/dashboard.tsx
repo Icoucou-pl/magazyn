@@ -30,6 +30,9 @@ type ContainerOut = {
   manufacturer_color: string | null;
   eta_date: string;
   status: string;
+  effective_status?: string;
+  is_auto?: boolean;
+  customs_days_left?: number | null;
   items: unknown[];
   total_units: number;
   total_value: number;
@@ -350,7 +353,8 @@ function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: Containe
       <div>
         {deliveries.map((c, i) => {
           const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
-          const meta = CONTAINER_STATUS_META[c.status];
+          const eStatus = c.effective_status ?? c.status;
+          const meta = CONTAINER_STATUS_META[eStatus];
           return (
             <HoverRow key={c.id} onClick={() => onContainerClick?.(c)} style={i === deliveries.length - 1 ? { borderBottom: "none" } : undefined}>
               <div style={{ width: 4, height: 32, background: meta?.dot ?? "var(--text-lo)", borderRadius: 2, flexShrink: 0 }} />
@@ -365,7 +369,9 @@ function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: Containe
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div className="num" style={{ fontSize: 12, fontWeight: 600 }}>{new Date(c.eta_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}</div>
-                <div className="num" style={{ fontSize: 10, color: "var(--text-lo)" }}>za {days}d · {meta?.label ?? c.status}</div>
+                <div className="num" style={{ fontSize: 10, color: eStatus === "CUSTOMS" ? "var(--warning)" : "var(--text-lo)" }}>
+                  {eStatus === "CUSTOMS" ? `odprawa · ${c.customs_days_left ?? 0}d` : `za ${days}d`} · {meta?.label ?? eStatus}
+                </div>
               </div>
             </HoverRow>
           );
@@ -609,7 +615,7 @@ export default function Dashboard({
 
   // Nadchodzące dostawy: kontenery niedostarczone, najbliższe wg ETA
   const deliveries = useMemo(
-    () => containers.filter((c) => c.status !== "DELIVERED")
+    () => containers.filter((c) => (c.effective_status ?? c.status) !== "DELIVERED")
       .sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime())
       .slice(0, 6),
     [containers],
@@ -617,7 +623,7 @@ export default function Dashboard({
 
   // W drodze (KPI): suma wartości i liczba kontenerów IN_TRANSIT
   const inTransit = useMemo(() => {
-    const t = containers.filter((c) => c.status === "IN_TRANSIT");
+    const t = containers.filter((c) => (c.effective_status ?? c.status) === "IN_TRANSIT");
     return { value: t.reduce((s, c) => s + (c.total_value || 0), 0), count: t.length };
   }, [containers]);
 
