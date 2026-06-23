@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import ContainerOut, ContainerItemOut, AttachmentOut
+from models import ContainerOut, ContainerItemOut, ContainerLotOut, AttachmentOut
 
 # Strefa PL — żeby status liczony z ETA przeskakiwał o północy w Polsce, nie w UTC.
 try:
@@ -63,16 +63,38 @@ async def fetch_attachments(db: AsyncSession, container_id: int) -> List[Attachm
     return [AttachmentOut(**dict(row._mapping)) for row in r]
 
 
+async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> List[ContainerLotOut]:
+    r = await db.execute(text(f"""
+        SELECT l.id, l.manufacturer_id, l.order_number, l.position,
+               m.name AS manufacturer_name, m.color AS manufacturer_color
+        FROM {settings.TABLE_CONTAINER_LOTS} l
+        LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
+        WHERE l.container_id = :c
+        ORDER BY l.position ASC, l.id ASC
+    """), {"c": container_id})
+    out = []
+    for row in r:
+        d = dict(row._mapping)
+        t = lot_totals.get(d["id"], {"u": 0, "cbm": 0.0, "val": 0.0})
+        out.append(ContainerLotOut(
+            id=d["id"], manufacturer_id=d["manufacturer_id"],
+            manufacturer_name=d["manufacturer_name"], manufacturer_color=d["manufacturer_color"],
+            order_number=d["order_number"],
+            total_units=t["u"], total_cbm=round(t["cbm"], 3), total_value=round(t["val"], 2),
+        ))
+    return out
+
+
 async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> List[ContainerOut]:
     """Lista kontenerów z pozycjami + załącznikami + wyliczeniami wypełnienia/wartości."""
     where = "WHERE c.status = :status" if status else ""
     r = await db.execute(text(f"""
         SELECT
             c.id, c.container_number, c.order_number, c.container_type_id, c.manufacturer_id,
-            c.order_date, c.eta_date, c.status, c.notes,
+            c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
-            ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost,
+            ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
             p.{settings.COL_PRODUCT_NAME} AS product_name,
             COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0) AS purchase_price,
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit
@@ -104,6 +126,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "order_date": row["order_date"], "eta_date": row["eta_date"],
                 "status": row["status"],
                 "effective_status": row["status"], "is_auto": False, "customs_days_left": None,
+                "is_consolidated": bool(row["is_consolidated"]),
+                "lots": [], "_lot_totals": {},
                 "notes": row["notes"],
                 "items": [], "attachments": [],
                 "total_units": 0, "total_cbm": 0.0, "fill_percentage": None, "total_value": 0.0,
@@ -117,18 +141,26 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             eff_cost = unit if unit else float(row["purchase_price"] or 0)
             containers_dict[cid]["items"].append(ContainerItemOut(
                 id=row["item_id"], sku=row["sku"], quantity=row["quantity"],
-                unit_cost=unit if unit else None, product_name=row["product_name"],
+                unit_cost=unit if unit else None, lot_id=row["lot_id"], product_name=row["product_name"],
                 cbm_per_unit=cbm_pu, total_cbm=round(tcb, 3),
             ))
             containers_dict[cid]["total_units"] += row["quantity"]
             containers_dict[cid]["total_cbm"] += tcb
             containers_dict[cid]["total_value"] += eff_cost * row["quantity"]
+            lid = row["lot_id"]
+            if lid is not None:
+                lt = containers_dict[cid]["_lot_totals"].setdefault(lid, {"u": 0, "cbm": 0.0, "val": 0.0})
+                lt["u"] += row["quantity"]
+                lt["cbm"] += tcb
+                lt["val"] += eff_cost * row["quantity"]
 
-    # Załączniki dla każdego kontenera
+    # Załączniki + loty dla każdego kontenera
     for cid in containers_dict:
         containers_dict[cid]["attachments"] = await fetch_attachments(db, cid)
+        containers_dict[cid]["lots"] = await fetch_lots(db, cid, containers_dict[cid]["_lot_totals"])
 
     for c in containers_dict.values():
+        c.pop("_lot_totals", None)
         c["total_cbm"] = round(c["total_cbm"], 3)
         c["total_value"] = round(c["total_value"], 2)
         if c["container_capacity_cbm"] and c["container_capacity_cbm"] > 0:
