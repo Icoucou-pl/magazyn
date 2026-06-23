@@ -49,7 +49,7 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db)):
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    status_label = {"ORDERED": "Zamówione", "IN_PRODUCTION": "W produkcji", "IN_TRANSIT": "W drodze", "DELIVERED": "Dostarczone"}
+    status_label = {"ORDERED": "Zamówione", "IN_PRODUCTION": "W produkcji", "IN_TRANSIT": "W drodze", "CUSTOMS": "Odprawa celna", "DELIVERED": "Dostarczone"}
 
     for c in containers:
         for it in c.items:
@@ -58,7 +58,7 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db)):
             ws.append([
                 c.container_number, c.order_number or "",
                 c.manufacturer_name or "", c.container_type_name or "",
-                status_label.get(c.status, c.status),
+                status_label.get(c.effective_status, c.effective_status),
                 c.order_date.isoformat(), c.eta_date.isoformat(),
                 it.sku, it.product_name or "",
                 it.quantity, cena, wartosc, it.total_cbm,
