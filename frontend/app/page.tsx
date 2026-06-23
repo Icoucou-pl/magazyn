@@ -9,7 +9,7 @@
 // ============================================================
 
 import React, { useEffect, useState } from "react";
-import { getUser, logout } from "@/lib/api";
+import { getUser, logout, api } from "@/lib/api";
 import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
 import Header, { NAV_ITEMS, type User } from "@/components/header";
@@ -81,6 +81,7 @@ export default function Page() {
   const [pendingManufacturerId, setPendingManufacturerId] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
 
   // Motyw (akcent/warmth/theme/density) → na <html>
@@ -125,6 +126,40 @@ export default function Page() {
     setView("dashboard");
   };
 
+  // Odśwież dane Sellasista — uruchamia bieg w tle (backend) i polluje status,
+  // aż się skończy; wynik pokazuje w toaście. Ikona w headerze kręci się w tym czasie.
+  const handleRefreshSellasist = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const start = await api.post("/sellasist/refresh");
+      toast(
+        start?.status === "already_running"
+          ? "Odświeżanie Sellasista już trwa…"
+          : "Pobieram dane z Sellasista…",
+        "info",
+      );
+    } catch (e) {
+      setRefreshing(false);
+      toast(e instanceof Error ? e.message : "Nie udało się uruchomić odświeżania", "error");
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const s = await api.get("/sellasist/status");
+        if (s?.running) { window.setTimeout(poll, 2000); return; }
+        setRefreshing(false);
+        if (s?.error) toast(`Błąd odświeżania Sellasista: ${s.error}`, "error");
+        else toast(`Sellasist zaktualizowany — ${s?.message ?? "gotowe"}`, "ok");
+      } catch {
+        setRefreshing(false);
+        toast("Nie udało się sprawdzić statusu odświeżania", "warning");
+      }
+    };
+    window.setTimeout(poll, 1500);
+  };
+
   return (
     <UserContext.Provider value={currentUser}>
       <Header
@@ -136,7 +171,8 @@ export default function Page() {
         onLogout={handleLogout}
         onOpenSearch={() => setSearchOpen(true)}
         onOpenScan={() => setScanOpen(true)}
-        onRefresh={() => toast("Odświeżanie danych — wkrótce", "info")}
+        onRefresh={handleRefreshSellasist}
+        refreshing={refreshing}
         onChangePassword={() => setView("settings")}
       />
 
