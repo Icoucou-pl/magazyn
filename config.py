@@ -81,6 +81,18 @@ class Settings(BaseSettings):
     # a następnie sam zmienia się na "Dostarczone". Ręczny status DELIVERED zawsze wygrywa.
     CONTAINER_CUSTOMS_DAYS: int = 7
 
+    # --- Sellasist (ingesta zamówień w aplikacji: przycisk "Odśwież" w headerze) ---
+    # Te same wartości co w skryptach z Task Schedulera. Ustaw w ENV Railway:
+    #   SELLASIST_API_KEY  - klucz API (nagłówek apiKey)
+    #   SELLASIST_BASE_URL - bazowy adres API (np. https://twojadomena/api/v1)
+    # Pusty klucz/URL = przycisk zwróci czytelny błąd "nie skonfigurowano".
+    SELLASIST_API_KEY: str = ""
+    SELLASIST_BASE_URL: str = ""
+    SELLASIST_TIMEOUT: int = 30          # sekundy na pojedynczy request
+    SELLASIST_PAGE_SIZE: int = 100       # rozmiar partii GET /orders (offset)
+    SELLASIST_DAYS_BACK: int = 60        # okno listy nagłówków (dni wstecz)
+    SELLASIST_WEBHOOK_SECRET: str = ""   # rezerwa pod webhook (czat AUTH/później)
+
     # Auth - WAŻNE: w produkcji ustaw silny SECRET_KEY w zmiennych środowiskowych Railway!
     SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
