@@ -4,6 +4,7 @@
 //   Create (POST /containers) / edit (PATCH /containers/{id}, z items),
 //   usuwanie (DELETE), załączniki (POST .../attachments, DELETE /attachments/{id})
 //   z reconcyliacją przy zapisie. Podgląd wypełnienia z CBM produktów.
+//   Skonsolidowany kontener: kilka lotów (dostawca + PO), pozycje przypisane do lotu.
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +18,8 @@ import { fmtPLN, fmtNum } from "@/lib/format";
 
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
-type ItemDraft = { sku: string; quantity: string; unit_cost: string };
+type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string };
+type LotDraft = { manufacturer_id: string; order_number: string };
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -39,6 +41,14 @@ export default function ContainerFormModal({
   const showFin = can(user, "viewFinancials");
   const isNew = !initial;
 
+  // Mapowanie lot_id (z bazy) → indeks w tablicy lotów (formularz operuje na indeksach).
+  const initialLots: LotDraft[] = (initial?.lots || []).map((l) => ({
+    manufacturer_id: l.manufacturer_id ? String(l.manufacturer_id) : "",
+    order_number: l.order_number || "",
+  }));
+  const lotIdToIdx = new Map<number, number>();
+  (initial?.lots || []).forEach((l, i) => lotIdToIdx.set(l.id, i));
+
   const [containerNumber, setContainerNumber] = useState(initial?.container_number || "");
   const [orderNumber, setOrderNumber] = useState(initial?.order_number || "");
   const [containerTypeId, setContainerTypeId] = useState<string>(initial?.container_type_id ? String(initial.container_type_id) : "");
@@ -47,8 +57,13 @@ export default function ContainerFormModal({
   const [etaDate, setEtaDate] = useState(initial?.eta_date || plus90());
   const [status, setStatus] = useState(initial?.status || "ORDERED");
   const [notes, setNotes] = useState(initial?.notes || "");
+  const [isConsolidated, setIsConsolidated] = useState(!!initial?.is_consolidated && initialLots.length > 0);
+  const [lots, setLots] = useState<LotDraft[]>(initialLots.length ? initialLots : [{ manufacturer_id: "", order_number: "" }]);
   const [items, setItems] = useState<ItemDraft[]>(
-    initial?.items?.map((i) => ({ sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "" })) || [{ sku: "", quantity: "", unit_cost: "" }],
+    initial?.items?.map((i) => ({
+      sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "",
+      lotRef: (i.lot_id != null && lotIdToIdx.has(i.lot_id)) ? String(lotIdToIdx.get(i.lot_id)) : "",
+    })) || [{ sku: "", quantity: "", unit_cost: "", lotRef: "" }],
   );
   const [attachments, setAttachments] = useState<AttDraft[]>(initial?.attachments || []);
   const [dragging, setDragging] = useState(false);
@@ -71,14 +86,14 @@ export default function ContainerFormModal({
   const capacity = containerType?.capacity_cbm || 0;
 
   const sortedProducts = useMemo(() => {
-    if (!manufacturerId) return products;
+    if (isConsolidated || !manufacturerId) return products;
     const mfrId = Number(manufacturerId);
     return [...products].sort((a, b) => {
       const am = a.manufacturer_id === mfrId ? 0 : 1;
       const bm = b.manufacturer_id === mfrId ? 0 : 1;
       return am - bm || a.sku.localeCompare(b.sku);
     });
-  }, [manufacturerId, products]);
+  }, [manufacturerId, products, isConsolidated]);
 
   const itemDetails = items.map((item) => {
     const product = productBySku.get(item.sku);
@@ -87,7 +102,7 @@ export default function ContainerFormModal({
       ...item, product, qty,
       cbm: (product?.cbm_per_unit || 0) * qty,
       value: (parseFloat(item.unit_cost) || 0) * qty,
-      isMixed: !!(manufacturerId && product?.manufacturer_id && product.manufacturer_id !== Number(manufacturerId)),
+      isMixed: !isConsolidated && !!(manufacturerId && product?.manufacturer_id && product.manufacturer_id !== Number(manufacturerId)),
     };
   });
 
@@ -97,7 +112,7 @@ export default function ContainerFormModal({
   const fillPct = capacity > 0 ? (totalCbm / capacity) * 100 : 0;
   const fillColor = fillPct > 100 ? "var(--critical)" : fillPct > 90 ? "var(--warning)" : fillPct > 70 ? "var(--ok)" : "var(--info)";
 
-  const addItem = () => setItems([...items, { sku: "", quantity: "", unit_cost: "" }]);
+  const addItem = () => setItems([...items, { sku: "", quantity: "", unit_cost: "", lotRef: "" }]);
   const removeItem = (idx: number) => setItems(items.filter((_, i) => i !== idx));
   const updateItem = (idx: number, field: keyof ItemDraft, value: string) => {
     const next = [...items];
@@ -107,6 +122,30 @@ export default function ContainerFormModal({
       if (product) next[idx].unit_cost = String(product.purchase_price);
     }
     setItems(next);
+  };
+
+  // ── Loty (skonsolidowany kontener) ─────────────────────────
+  const addLot = () => setLots([...lots, { manufacturer_id: "", order_number: "" }]);
+  const updateLot = (idx: number, field: keyof LotDraft, value: string) => {
+    const next = [...lots];
+    next[idx] = { ...next[idx], [field]: value };
+    setLots(next);
+  };
+  const removeLot = (idx: number) => {
+    if (lots.length <= 1) { toast("Skonsolidowany kontener musi mieć przynajmniej jeden lot", "warning"); return; }
+    setLots(lots.filter((_, i) => i !== idx));
+    // Przeindeksuj przypisania pozycji: usunięty lot → brak; loty po nim przesuwają się o 1 w dół.
+    setItems((prev) => prev.map((it) => {
+      if (it.lotRef === "") return it;
+      const ref = Number(it.lotRef);
+      if (ref === idx) return { ...it, lotRef: "" };
+      if (ref > idx) return { ...it, lotRef: String(ref - 1) };
+      return it;
+    }));
+  };
+  const toggleConsolidated = (on: boolean) => {
+    setIsConsolidated(on);
+    if (on && lots.length === 0) setLots([{ manufacturer_id: "", order_number: "" }]);
   };
 
   const guessType = (name: string) => {
@@ -135,16 +174,29 @@ export default function ContainerFormModal({
     const validItems = items.filter((i) => i.sku && (parseInt(i.quantity, 10) || 0) > 0);
     if (validItems.length === 0) { toast("Dodaj co najmniej jedną pozycję (SKU + ilość)", "warning"); return; }
 
+    if (isConsolidated) {
+      const cleanLots = lots.filter((l) => l.manufacturer_id || l.order_number.trim());
+      if (cleanLots.length < 1) { toast("Skonsolidowany kontener wymaga przynajmniej jednego lotu (dostawca lub PO)", "warning"); return; }
+      if (cleanLots.length !== lots.length) { toast("Uzupełnij dostawcę lub PO w każdym locie (albo usuń pusty lot)", "warning"); return; }
+      const unassigned = validItems.filter((i) => i.lotRef === "");
+      if (unassigned.length > 0) { toast(`Przypisz lot do każdej pozycji (bez przypisania: ${unassigned.length})`, "warning"); return; }
+    }
+
     const payload = {
       container_number: containerNumber.trim(),
-      order_number: orderNumber.trim() || null,
+      order_number: isConsolidated ? null : (orderNumber.trim() || null),
       container_type_id: containerTypeId ? Number(containerTypeId) : null,
-      manufacturer_id: manufacturerId ? Number(manufacturerId) : null,
+      manufacturer_id: isConsolidated ? null : (manufacturerId ? Number(manufacturerId) : null),
       order_date: orderDate,
       eta_date: etaDate,
       status,
       notes: notes.trim() || null,
-      items: validItems.map((i) => ({ sku: i.sku, quantity: parseInt(i.quantity, 10), unit_cost: i.unit_cost ? parseFloat(i.unit_cost) : null })),
+      is_consolidated: isConsolidated,
+      lots: isConsolidated ? lots.map((l) => ({ manufacturer_id: l.manufacturer_id ? Number(l.manufacturer_id) : null, order_number: l.order_number.trim() || null })) : [],
+      items: validItems.map((i) => ({
+        sku: i.sku, quantity: parseInt(i.quantity, 10), unit_cost: i.unit_cost ? parseFloat(i.unit_cost) : null,
+        lot_ref: isConsolidated && i.lotRef !== "" ? Number(i.lotRef) : null,
+      })),
     };
 
     setBusy(true);
@@ -220,25 +272,41 @@ export default function ContainerFormModal({
           {/* Body */}
           <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
             <Section title="Identyfikacja">
+              {/* Przełącznik konsolidacji */}
+              <button type="button" onClick={() => showEdit && toggleConsolidated(!isConsolidated)} disabled={!showEdit}
+                style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 10, background: isConsolidated ? "var(--accent-soft)" : "var(--surface-2)", border: `1px solid ${isConsolidated ? "var(--accent)" : "var(--border-soft)"}`, borderRadius: 8, cursor: showEdit ? "pointer" : "default", textAlign: "left", transition: "all 0.12s" }}>
+                <span style={{ width: 34, height: 20, borderRadius: 99, background: isConsolidated ? "var(--accent)" : "var(--surface-3)", position: "relative", flexShrink: 0, transition: "background 0.15s" }}>
+                  <span style={{ position: "absolute", top: 2, left: isConsolidated ? 16 : 2, width: 16, height: 16, borderRadius: 99, background: "#fff", transition: "left 0.15s" }} />
+                </span>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: isConsolidated ? "var(--accent)" : "var(--text-mid)" }}>Kontener skonsolidowany</span>
+                  <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)" }}>Kilka zamówień (PO) od różnych dostawców w jednym kontenerze</span>
+                </span>
+              </button>
+
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
                 <Field label="Nr kontenera" required>
                   <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder="np. MSCU-7821934" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                 </Field>
-                <Field label="Nr zamówienia (PO)">
-                  <input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} placeholder="np. PO-2026-001" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
-                </Field>
+                {!isConsolidated && (
+                  <Field label="Nr zamówienia (PO)">
+                    <input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} placeholder="np. PO-2026-001" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                  </Field>
+                )}
                 <Field label="Typ kontenera">
                   <select value={containerTypeId} onChange={(e) => setContainerTypeId(e.target.value)} disabled={!showEdit} style={inputStyle}>
                     <option value="">— wybierz —</option>
                     {containerTypes.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.capacity_cbm} m³)</option>)}
                   </select>
                 </Field>
-                <Field label="Producent (dostawca)">
-                  <select value={manufacturerId} onChange={(e) => setManufacturerId(e.target.value)} disabled={!showEdit} style={inputStyle}>
-                    <option value="">— wybierz —</option>
-                    {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                </Field>
+                {!isConsolidated && (
+                  <Field label="Producent (dostawca)">
+                    <select value={manufacturerId} onChange={(e) => setManufacturerId(e.target.value)} disabled={!showEdit} style={inputStyle}>
+                      <option value="">— wybierz —</option>
+                      {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </Field>
+                )}
                 <Field label="Data zamówienia" required>
                   <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} disabled={!showEdit} style={inputStyle} />
                 </Field>
@@ -247,6 +315,28 @@ export default function ContainerFormModal({
                 </Field>
               </div>
             </Section>
+
+            {isConsolidated && (
+              <Section title={`Loty — dostawcy i PO (${lots.length})`} required action={showEdit ? <button onClick={addLot} style={btnGhostMini}><I.Plus size={11} /> Dodaj lot</button> : undefined}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {lots.map((lot, idx) => {
+                    const lotUnits = itemDetails.filter((it) => it.lotRef === String(idx)).reduce((s, it) => s + it.qty, 0);
+                    return (
+                      <div key={idx} style={{ display: "grid", gridTemplateColumns: "34px minmax(0, 1fr) 150px 30px", gap: 6, alignItems: "center", padding: 8, background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                        <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", textAlign: "center" }}>#{idx + 1}</span>
+                        <select value={lot.manufacturer_id} onChange={(e) => updateLot(idx, "manufacturer_id", e.target.value)} disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }}>
+                          <option value="">— dostawca —</option>
+                          {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                        <input value={lot.order_number} onChange={(e) => updateLot(idx, "order_number", e.target.value)} placeholder="Nr PO" disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)" }} />
+                        <button onClick={() => removeLot(idx)} disabled={!showEdit} title="Usuń lot" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, height: 32 }}><I.Close size={12} /></button>
+                        <div style={{ gridColumn: "2 / -1", fontSize: 10, color: "var(--text-lo)" }} className="num">{lotUnits} szt przypisanych</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Section>
+            )}
 
             <Section title="Status">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 6 }}>
@@ -304,7 +394,8 @@ export default function ContainerFormModal({
             <Section title={`Produkty (${items.length})`} required action={showEdit ? <button onClick={addItem} style={btnGhostMini}><I.Plus size={11} /> Dodaj pozycję</button> : undefined}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {itemDetails.map((item, idx) => (
-                  <ItemRow key={idx} item={item} sortedProducts={sortedProducts} manufacturers={manufacturers} manufacturerId={manufacturerId} disabled={!showEdit} showFin={showFin}
+                  <ItemRow key={idx} item={item} sortedProducts={sortedProducts} manufacturers={manufacturers} disabled={!showEdit} showFin={showFin}
+                    consolidated={isConsolidated} lots={lots}
                     onChange={(field, val) => updateItem(idx, field, val)} onRemove={() => removeItem(idx)} />
                 ))}
               </div>
@@ -354,15 +445,20 @@ export default function ContainerFormModal({
 
 // ── Wiersz pozycji ───────────────────────────────────────────
 function ItemRow({
-  item, sortedProducts, manufacturers, manufacturerId, disabled, showFin, onChange, onRemove,
+  item, sortedProducts, manufacturers, disabled, showFin, consolidated, lots, onChange, onRemove,
 }: {
-  item: { sku: string; quantity: string; unit_cost: string; product?: Product; qty: number; cbm: number; value: number; isMixed: boolean };
-  sortedProducts: Product[]; manufacturers: Manufacturer[]; manufacturerId: string; disabled: boolean; showFin: boolean;
-  onChange: (field: "sku" | "quantity" | "unit_cost", val: string) => void; onRemove: () => void;
+  item: { sku: string; quantity: string; unit_cost: string; lotRef: string; product?: Product; qty: number; cbm: number; value: number; isMixed: boolean };
+  sortedProducts: Product[]; manufacturers: Manufacturer[]; disabled: boolean; showFin: boolean;
+  consolidated: boolean; lots: LotDraft[];
+  onChange: (field: "sku" | "quantity" | "unit_cost" | "lotRef", val: string) => void; onRemove: () => void;
 }) {
   const mixedMfrName = item.product?.manufacturer_id ? manufacturers.find((m) => m.id === item.product!.manufacturer_id)?.name : undefined;
+  // Niezgodność dostawcy w trybie skonsolidowanym: SKU innego producenta niż wybrany lot.
+  const lotMfrId = consolidated && item.lotRef !== "" ? lots[Number(item.lotRef)]?.manufacturer_id : "";
+  const lotMismatch = !!(consolidated && item.product?.manufacturer_id && lotMfrId && Number(lotMfrId) !== item.product.manufacturer_id);
+  const warn = item.isMixed || lotMismatch;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 80px 90px 30px", gap: 6, alignItems: "flex-start", padding: 8, background: item.isMixed ? "color-mix(in oklch, var(--warning) 8%, var(--surface-2))" : "var(--surface-2)", border: `1px solid ${item.isMixed ? "color-mix(in oklch, var(--warning) 40%, var(--border))" : "var(--border-soft)"}`, borderRadius: 8 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 80px 90px 30px", gap: 6, alignItems: "flex-start", padding: 8, background: warn ? "color-mix(in oklch, var(--warning) 8%, var(--surface-2))" : "var(--surface-2)", border: `1px solid ${warn ? "color-mix(in oklch, var(--warning) 40%, var(--border))" : "var(--border-soft)"}`, borderRadius: 8 }}>
       <div style={{ minWidth: 0 }}>
         <select value={item.sku} onChange={(e) => onChange("sku", e.target.value)} disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%" }}>
           <option value="">— wybierz produkt —</option>
@@ -374,10 +470,21 @@ function ItemRow({
             </option>
           ))}
         </select>
+
+        {consolidated && (
+          <select value={item.lotRef} onChange={(e) => onChange("lotRef", e.target.value)} disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%", marginTop: 4 }}>
+            <option value="">— przypisz lot —</option>
+            {lots.map((l, i) => {
+              const mName = l.manufacturer_id ? manufacturers.find((m) => m.id === Number(l.manufacturer_id))?.name : null;
+              return <option key={i} value={String(i)}>#{i + 1} {mName || "bez dostawcy"}{l.order_number ? ` · ${l.order_number}` : ""}</option>;
+            })}
+          </select>
+        )}
+
         {item.product && (
-          item.isMixed ? (
+          warn ? (
             <div style={{ fontSize: 10, color: "var(--warning)", fontWeight: 600, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
-              <I.Alert size={10} /> Inny dostawca niż kontener{mixedMfrName ? ` (${mixedMfrName})` : ""}
+              <I.Alert size={10} /> {lotMismatch ? `SKU innego dostawcy niż lot${mixedMfrName ? ` (${mixedMfrName})` : ""}` : `Inny dostawca niż kontener${mixedMfrName ? ` (${mixedMfrName})` : ""}`}
             </div>
           ) : (
             <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>

@@ -17,7 +17,16 @@ import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 // ── Typy ─────────────────────────────────────────────────────
 export type ContainerItem = {
   id: number; sku: string; quantity: number; unit_cost: number | null;
+  lot_id?: number | null;
   product_name: string | null; cbm_per_unit: number; total_cbm: number;
+};
+export type ContainerLot = {
+  id: number;
+  manufacturer_id: number | null;
+  manufacturer_name: string | null;
+  manufacturer_color: string | null;
+  order_number: string | null;
+  total_units: number; total_cbm: number; total_value: number;
 };
 export type Attachment = { id: number; filename: string; file_type: string | null; file_size: string | null; uploaded_at: string };
 export type Container = {
@@ -30,6 +39,8 @@ export type Container = {
   manufacturer_id: number | null;
   manufacturer_name: string | null;
   manufacturer_color: string | null;
+  is_consolidated?: boolean;
+  lots?: ContainerLot[];
   order_date: string;
   eta_date: string;
   status: string;                       // status ręczny (z bazy)
@@ -173,6 +184,8 @@ export function ContainerCard({
   const nextStatus = STATUS_FLOW[STATUS_FLOW.indexOf(c.status) + 1];
   const fill = c.fill_percentage ?? 0;
   const fillColor = fill > 100 ? "var(--critical)" : fill > 90 ? "var(--warning)" : fill > 70 ? "var(--ok)" : "var(--info)";
+  const lots = c.lots ?? [];
+  const consolidated = !!c.is_consolidated && lots.length > 0;
 
   return (
     <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "hidden", transition: "border-color 0.12s" }}
@@ -187,11 +200,16 @@ export function ContainerCard({
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>
             {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
-            {c.manufacturer_id && c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />}
+            {consolidated
+              ? lots.map((l) => <MfrChip key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
+              : (c.manufacturer_id && c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />)}
+            {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
             {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa · auto" : "auto"}</Pill>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 4, flexWrap: "wrap" }}>
-            {c.order_number ? <span className="mono">PO: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez PO</span>}
+            {consolidated
+              ? <span className="mono">{lots.map((l) => l.order_number || "—").join(" · ")}</span>
+              : (c.order_number ? <span className="mono">PO: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez PO</span>)}
             <span>·</span>
             <span><span className="num" style={{ color: "var(--text-mid)" }}>{c.items.length}</span> pozycji · <span className="num" style={{ color: "var(--text-mid)" }}>{c.total_units}</span> szt</span>
             <span>·</span>
