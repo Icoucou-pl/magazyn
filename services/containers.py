@@ -3,7 +3,8 @@ Logika kontenerów: pobieranie kontenerów z pozycjami, załącznikami i wylicze
 (total_units, total_cbm, fill_percentage, total_value).
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from datetime import date, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -11,6 +12,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models import ContainerOut, ContainerItemOut, AttachmentOut
+
+# Strefa PL — żeby status liczony z ETA przeskakiwał o północy w Polsce, nie w UTC.
+try:
+    from zoneinfo import ZoneInfo
+    _TZ_PL = ZoneInfo("Europe/Warsaw")
+except Exception:  # brak bazy tzdata na obrazie — fallback do czasu serwera
+    _TZ_PL = None
+
+
+def _today_pl() -> date:
+    if _TZ_PL is not None:
+        try:
+            return datetime.now(_TZ_PL).date()
+        except Exception:
+            pass
+    return datetime.utcnow().date()
+
+
+def compute_effective_status(stored: str, eta: Optional[date]) -> Tuple[str, bool, Optional[int]]:
+    """Zwraca (effective_status, is_auto, customs_days_left).
+
+    Reguły (CONTAINER_CUSTOMS_DAYS = okno odprawy, domyślnie 7 dni):
+      - ręczny DELIVERED zawsze wygrywa → ('DELIVERED', False, None);
+      - dzień <= ETA → status ręczny, bez automatu;
+      - ETA+1 .. ETA+N → 'CUSTOMS' (Odprawa celna), z licznikiem dni do auto-dostawy;
+      - dzień >= ETA+N+1 → 'DELIVERED' automatycznie.
+    """
+    if stored == "DELIVERED":
+        return "DELIVERED", False, None
+    if eta is None:
+        return stored, False, None
+
+    n = max(0, int(settings.CONTAINER_CUSTOMS_DAYS))
+    days_after = (_today_pl() - eta).days
+
+    if days_after <= 0:
+        return stored, False, None
+    if n > 0 and days_after <= n:
+        # na ETA+1 zostaje N dni, na ETA+N zostaje 1 dzień
+        return "CUSTOMS", True, (n - days_after + 1)
+    return "DELIVERED", True, None
 
 
 async def fetch_attachments(db: AsyncSession, container_id: int) -> List[AttachmentOut]:
@@ -60,7 +102,9 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "manufacturer_name": row["manufacturer_name"],
                 "manufacturer_color": row["manufacturer_color"],
                 "order_date": row["order_date"], "eta_date": row["eta_date"],
-                "status": row["status"], "notes": row["notes"],
+                "status": row["status"],
+                "effective_status": row["status"], "is_auto": False, "customs_days_left": None,
+                "notes": row["notes"],
                 "items": [], "attachments": [],
                 "total_units": 0, "total_cbm": 0.0, "fill_percentage": None, "total_value": 0.0,
             }
@@ -89,6 +133,10 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         c["total_value"] = round(c["total_value"], 2)
         if c["container_capacity_cbm"] and c["container_capacity_cbm"] > 0:
             c["fill_percentage"] = round((c["total_cbm"] / c["container_capacity_cbm"]) * 100, 1)
+        eff, is_auto, days_left = compute_effective_status(c["status"], c["eta_date"])
+        c["effective_status"] = eff
+        c["is_auto"] = is_auto
+        c["customs_days_left"] = days_left
 
     return [ContainerOut(**c) for c in containers_dict.values()]
 
