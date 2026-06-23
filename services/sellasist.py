@@ -285,7 +285,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
         if oid not in existing:
             await session.execute(insert_sql, row)
             await session.execute(log_sql, {
-                "sync_time": sync_time, "order_id": oid, "change_type": "INSERT",
+                "sync_time": sync_time, "order_id": str(oid), "change_type": "INSERT",
                 "column_name": None, "old_value": None, "new_value": None,
             })
             _status["orders_inserted"] += 1
@@ -303,7 +303,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
             await session.execute(update_sql, row)
             for col, old_v, new_v in changes:
                 await session.execute(log_sql, {
-                    "sync_time": sync_time, "order_id": oid, "change_type": "UPDATE",
+                    "sync_time": sync_time, "order_id": str(oid), "change_type": "UPDATE",
                     "column_name": col,
                     "old_value": None if old_v is None else str(old_v),
                     "new_value": None if new_v is None else str(new_v),
@@ -318,7 +318,7 @@ async def _ensure_log_table(session: AsyncSession) -> None:
         CREATE TABLE IF NOT EXISTS {settings.TABLE_ORDERS}_log (
             log_id      SERIAL PRIMARY KEY,
             sync_time   TIMESTAMP NOT NULL,
-            order_id    INTEGER NOT NULL,
+            order_id    VARCHAR NOT NULL,
             change_type VARCHAR NOT NULL,
             column_name VARCHAR,
             old_value   VARCHAR,
