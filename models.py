@@ -179,6 +179,12 @@ class ContainerItemIn(BaseModel):
     sku: str
     quantity: int = Field(..., gt=0)
     unit_cost: Optional[float] = None
+    lot_ref: Optional[int] = None   # indeks lotu w tablicy lots (przy skonsolidowanym kontenerze)
+
+
+class ContainerLotIn(BaseModel):
+    manufacturer_id: Optional[int] = None
+    order_number: Optional[str] = None
 
 
 class ContainerCreate(BaseModel):
@@ -190,6 +196,8 @@ class ContainerCreate(BaseModel):
     eta_date: date
     status: ContainerStatus = "ORDERED"
     notes: Optional[str] = None
+    is_consolidated: bool = False
+    lots: List[ContainerLotIn] = []
     items: List[ContainerItemIn] = Field(..., min_length=1)
 
 
@@ -202,14 +210,31 @@ class ContainerUpdate(BaseModel):
     eta_date: Optional[date] = None
     status: Optional[ContainerStatus] = None
     notes: Optional[str] = None
+    is_consolidated: Optional[bool] = None
+    lots: Optional[List[ContainerLotIn]] = None
     items: Optional[List[ContainerItemIn]] = None
 
 
-class ContainerItemOut(ContainerItemIn):
+class ContainerItemOut(BaseModel):
+    sku: str
+    quantity: int
+    unit_cost: Optional[float] = None
     id: int
+    lot_id: Optional[int] = None
     product_name: Optional[str] = None
     cbm_per_unit: float = 0
     total_cbm: float = 0
+
+
+class ContainerLotOut(BaseModel):
+    id: int
+    manufacturer_id: Optional[int] = None
+    manufacturer_name: Optional[str] = None
+    manufacturer_color: Optional[str] = None
+    order_number: Optional[str] = None
+    total_units: int = 0
+    total_cbm: float = 0
+    total_value: float = 0
 
 
 class AttachmentOut(BaseModel):
@@ -242,6 +267,8 @@ class ContainerOut(BaseModel):
     effective_status: str = "ORDERED"       # status wyświetlany: ręczny lub auto (CUSTOMS/DELIVERED) z ETA
     is_auto: bool = False                   # True gdy effective_status wynika z dat (odprawa celna / auto-dostawa)
     customs_days_left: Optional[int] = None # gdy w "Odprawa celna": ile dni do auto-dostawy
+    is_consolidated: bool = False
+    lots: List[ContainerLotOut] = []
     notes: Optional[str]
     items: List[ContainerItemOut]
     attachments: List[AttachmentOut] = []
