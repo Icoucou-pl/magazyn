@@ -238,7 +238,10 @@ class ContainerOut(BaseModel):
     manufacturer_color: Optional[str] = None
     order_date: date
     eta_date: date
-    status: ContainerStatus
+    status: ContainerStatus                 # status ręczny (zapisany w bazie)
+    effective_status: str = "ORDERED"       # status wyświetlany: ręczny lub auto (CUSTOMS/DELIVERED) z ETA
+    is_auto: bool = False                   # True gdy effective_status wynika z dat (odprawa celna / auto-dostawa)
+    customs_days_left: Optional[int] = None # gdy w "Odprawa celna": ile dni do auto-dostawy
     notes: Optional[str]
     items: List[ContainerItemOut]
     attachments: List[AttachmentOut] = []

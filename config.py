@@ -75,6 +75,11 @@ class Settings(BaseSettings):
 
     DEFAULT_LEAD_TIME_DAYS: int = 90
 
+    # Kontenery: po przekroczeniu ETA kontener wchodzi automatycznie w status
+    # "Odprawa celna" (CUSTOMS) na CONTAINER_CUSTOMS_DAYS dni (licząc od dnia PO ETA),
+    # a następnie sam zmienia się na "Dostarczone". Ręczny status DELIVERED zawsze wygrywa.
+    CONTAINER_CUSTOMS_DAYS: int = 7
+
     # Auth - WAŻNE: w produkcji ustaw silny SECRET_KEY w zmiennych środowiskowych Railway!
     SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
