@@ -58,13 +58,14 @@ type HeaderProps = {
   onOpenSearch?: () => void;
   onOpenScan?: () => void;
   onRefresh?: () => void;
+  refreshing?: boolean;
   onChangePassword?: () => void;
   onAuditLog?: () => void;
 };
 
 export default function Header({
   view, setView, user, theme, onToggleTheme, onLogout,
-  onOpenSearch, onOpenScan, onRefresh, onChangePassword, onAuditLog,
+  onOpenSearch, onOpenScan, onRefresh, refreshing, onChangePassword, onAuditLog,
 }: HeaderProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -95,10 +96,11 @@ export default function Header({
       }}>
         <div style={{
           maxWidth: 1480, margin: "0 auto",
-          padding: "0 24px",
-          display: "flex", alignItems: "center", gap: 24,
-          height: 60,
+          padding: "10px 24px 12px",
+          display: "flex", flexDirection: "column", gap: 8,
         }}>
+          {/* Wiersz 1: dashboardy od lewej */}
+          <div style={{ display: "flex", alignItems: "center", gap: 24, minHeight: 38 }}>
           {/* Logo */}
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -128,8 +130,10 @@ export default function Header({
             <I.Menu size={18}/>
           </button>
 
-          <div style={{ flex: 1 }} className="hide-mobile"/>
+          </div>
 
+          {/* Wiersz 2: narzędzia od prawej */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
           {/* Search bar */}
           <button onClick={onOpenSearch} style={{
             display: "flex", alignItems: "center", gap: 10,
@@ -155,8 +159,15 @@ export default function Header({
             <button onClick={onToggleTheme} style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
               {theme === "light" ? <I.Moon size={16}/> : <I.Sun size={16}/>}
             </button>
-            <button onClick={onRefresh} style={iconBtn} title="Odśwież dane">
-              <I.Refresh size={16}/>
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              style={{ ...iconBtn, cursor: refreshing ? "default" : "pointer", opacity: refreshing ? 0.7 : 1 }}
+              title={refreshing ? "Odświeżanie danych Sellasista…" : "Odśwież dane Sellasista"}
+            >
+              <span className={refreshing ? "magazyn-spin" : ""} style={{ display: "inline-flex" }}>
+                <I.Refresh size={16}/>
+              </span>
             </button>
 
             {/* User menu */}
@@ -182,6 +193,7 @@ export default function Header({
               )}
             </div>
           </div>
+        </div>
         </div>
 
         {/* Mobile nav drawer */}
@@ -230,6 +242,8 @@ export default function Header({
           .hide-tablet { display: none !important; }
         }
         .search-bar-btn:hover { background: var(--surface-2); border-color: var(--border); color: var(--text-mid); }
+        @keyframes magazyn-spin { to { transform: rotate(360deg); } }
+        .magazyn-spin { animation: magazyn-spin 0.8s linear infinite; }
       `}</style>
     </>
   );
