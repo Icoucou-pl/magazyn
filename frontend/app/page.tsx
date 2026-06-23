@@ -151,7 +151,7 @@ export default function Page() {
           <Dashboard
             density={t.density}
             onProductClick={(p) => { setPendingProductSku(p.sku); setView("products"); }}
-            onContainerClick={() => toast("Edycja kontenera — wkrótce (etap 3)", "info")}
+            onContainerClick={(c) => goContainers(c.id)}
             onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
             onSimulator={() => toast("Symulator — wkrótce (etap 6)", "info")}
             onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
