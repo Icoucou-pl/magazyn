@@ -184,7 +184,7 @@ export default function Header({
         </div>
 
           {/* Wiersz 2: świeżość danych */}
-          <div style={{
+          <div className="freshness-row" style={{
             display: "flex", alignItems: "center", justifyContent: "flex-end",
             flexWrap: "wrap", gap: 4, rowGap: 2, columnGap: 10,
             fontSize: 11, color: "var(--text-lo)", marginTop: 1,
@@ -263,6 +263,7 @@ export default function Header({
       <style>{`
         @media (max-width: 980px) {
           .hide-mobile { display: none !important; }
+          .freshness-row { flex-direction: column !important; align-items: flex-end !important; }
         }
         @media (min-width: 981px) {
           .show-mobile { display: none !important; }
