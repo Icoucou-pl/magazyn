@@ -168,6 +168,18 @@ def _parse_dt(v: Any) -> Optional[datetime]:
     return None
 
 
+def _values_differ(old: Any, new: Any) -> bool:
+    """Czy wartość się zmieniła. Liczby porównujemy jako liczby (DB zwraca Decimal,
+    API float → str('199.00') != str('199.0') dawało fałszywe zmiany). Resztę po tekście."""
+    if old is None and new is None:
+        return False
+    fo = _to_float(old)
+    fn = _to_float(new)
+    if fo is not None and fn is not None:
+        return abs(fo - fn) > 1e-9
+    return str(old) != str(new)
+
+
 def _normalize_order_header(raw: dict) -> dict:
     """Surowe zamówienie z listy → wiersz sellasist_orders."""
     return {
@@ -251,9 +263,9 @@ async def _fetch_headers(date_from: str) -> List[dict]:
 # ============================================================
 # ZAPIS: nagłówki (upsert + log) i pozycje (insert-once)
 # ============================================================
-async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time: datetime) -> None:
+async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time: datetime) -> set:
     if not headers:
-        return
+        return set()
 
     ids = [h["order_id"] for h in headers]
     res = await session.execute(
@@ -278,6 +290,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
         "VALUES (:sync_time, :order_id, :change_type, :column_name, :old_value, :new_value)"
     )
 
+    inserted_ids: set = set()
     for h in headers:
         oid = h["order_id"]
         row = {**h, "data_pobrania": sync_time}
@@ -289,6 +302,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
                 "column_name": None, "old_value": None, "new_value": None,
             })
             _status["orders_inserted"] += 1
+            inserted_ids.add(oid)
             continue
 
         old = existing[oid]
@@ -296,7 +310,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
         for col in _TRACKED_COLS:
             new_v = h.get(col)
             old_v = old.get(col)
-            if str(new_v) != str(old_v):
+            if _values_differ(old_v, new_v):
                 changes.append((col, old_v, new_v))
 
         if changes:
@@ -311,6 +325,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
             _status["orders_updated"] += 1
 
     await session.commit()
+    return inserted_ids
 
 
 async def _ensure_log_table(session: AsyncSession) -> None:
@@ -328,18 +343,29 @@ async def _ensure_log_table(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_time: datetime) -> None:
-    """Dla zamówień bez pozycji w sellasist_order_items dociąga GET /orders/{id}
-    i wstawia carts (insert-once, jak skrypt pozycji)."""
+async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_time: datetime,
+                            newly_inserted: set) -> None:
+    """Dociąga pozycje (GET /orders/{id}) i wstawia carts (insert-once, jak skrypt).
+    Żeby hourly nie odpytywał w kółko zamówień z pustym koszykiem, ogranicza się do:
+    zamówień świeżo dodanych w tym biegu + krótkiego okna SELLASIST_ITEMS_DAYS_BACK
+    (samonaprawa po przerwanym biegu). Membership po stringu — odporne na typ kolumny."""
     if not headers:
         return
 
     res = await session.execute(text(f"SELECT DISTINCT order_id FROM {settings.TABLE_ORDER_ITEMS}"))
-    existing_ids = {r[0] for r in res.all()}
+    existing_ids = {str(r[0]) for r in res.all()}
 
+    cutoff = sync_time - timedelta(days=settings.SELLASIST_ITEMS_DAYS_BACK)
     by_id = {h["order_id"]: h for h in headers}
-    new_ids = [oid for oid in by_id if oid not in existing_ids]
-    if not new_ids:
+    targets = []
+    for oid, h in by_id.items():
+        if str(oid) in existing_ids:
+            continue
+        od = h.get("order_date")
+        recent = od is not None and od >= cutoff
+        if oid in newly_inserted or recent:
+            targets.append(oid)
+    if not targets:
         return
 
     item_cols = [
@@ -351,7 +377,7 @@ async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_tim
         f"VALUES ({', '.join(':' + c for c in item_cols)})"
     )
 
-    for oid in new_ids:
+    for oid in targets:
         try:
             detail = await _http_get(f"/orders/{oid}")
         except Exception as e:  # pojedyncze zamówienie nie wywala całego biegu
@@ -384,8 +410,8 @@ async def run_refresh() -> None:
         headers = await _fetch_headers(date_from)
         async with SessionLocal() as session:
             await _ensure_log_table(session)
-            await _upsert_headers(session, headers, sync_time)
-            await _insert_new_items(session, headers, sync_time)
+            inserted_ids = await _upsert_headers(session, headers, sync_time)
+            await _insert_new_items(session, headers, sync_time, inserted_ids)
         _status["message"] = (
             f"+{_status['orders_inserted']} nowych, "
             f"{_status['orders_updated']} zmienionych, "
