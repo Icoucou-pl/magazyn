@@ -15,8 +15,8 @@ import { can, canEdit, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
 
 // ── Typy odpowiedzi API ──────────────────────────────────────
-type StockPoint = { date: string; value: number };
-type StockHistory = { points: StockPoint[]; current_value: number };
+type StockPoint = { date: string; value: number; units: number };
+type StockHistory = { points: StockPoint[]; current_value: number; current_units?: number };
 type Classification = {
   counts: { ACTIVE: number; ACTIVE_NO_STOCK: number; DEAD_STOCK: number; INACTIVE: number };
   dead_stock_value_pln: number;
@@ -127,7 +127,7 @@ function Sparkline({ points, color }: { points: number[]; color: string }) {
 }
 
 // ── Wykres wartości magazynu ─────────────────────────────────
-function StockValueChart({ points, height = 220 }: { points: StockPoint[]; height?: number }) {
+function StockValueChart({ points, metric = "value", height = 220 }: { points: StockPoint[]; metric?: "value" | "units"; height?: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [size, setSize] = useState({ w: 800, h: height });
@@ -146,7 +146,11 @@ function StockValueChart({ points, height = 220 }: { points: StockPoint[]; heigh
     return <div ref={ref} style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-lo)", fontSize: 12 }}>Brak danych do wykresu</div>;
   }
 
-  const values = points.map((p) => p.value);
+  const val = (p: StockPoint) => (metric === "value" ? p.value : p.units);
+  const fmtTick = (n: number) => (metric === "value" ? fmtPLNk(n) : fmtNum(n));
+  const fmtFull = (n: number) => (metric === "value" ? fmtPLN(n) : `${fmtNum(n)} szt`);
+
+  const values = points.map(val);
   const max = Math.max(...values);
   const min = Math.min(...values);
   const range = max - min || 1;
@@ -157,10 +161,10 @@ function StockValueChart({ points, height = 220 }: { points: StockPoint[]; heigh
   const getX = (i: number) => padLeft + (i / (points.length - 1)) * innerW;
   const getY = (v: number) => padTop + innerH - ((v - min) / range) * innerH;
 
-  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"}${getX(i).toFixed(1)},${getY(p.value).toFixed(1)}`).join(" ");
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"}${getX(i).toFixed(1)},${getY(val(p)).toFixed(1)}`).join(" ");
   const areaPath = linePath + ` L${getX(points.length - 1).toFixed(1)},${padTop + innerH} L${getX(0).toFixed(1)},${padTop + innerH} Z`;
 
-  const valueChange = points[points.length - 1].value - points[0].value;
+  const valueChange = val(points[points.length - 1]) - val(points[0]);
   const positive = valueChange >= 0;
   const stroke = positive ? "var(--ok)" : "var(--critical)";
   const fill = positive ? "url(#chartGradOk)" : "url(#chartGradBad)";
@@ -195,11 +199,11 @@ function StockValueChart({ points, height = 220 }: { points: StockPoint[]; heigh
         {hover != null && (
           <g>
             <line x1={getX(hover)} x2={getX(hover)} y1={padTop} y2={padTop + innerH} stroke="var(--text-lo)" strokeDasharray="2,3" strokeWidth="1" />
-            <circle cx={getX(hover)} cy={getY(points[hover].value)} r="4" fill={stroke} stroke="var(--bg)" strokeWidth="2" />
+            <circle cx={getX(hover)} cy={getY(val(points[hover]))} r="4" fill={stroke} stroke="var(--bg)" strokeWidth="2" />
           </g>
         )}
         {ticks.map((t, i) => (
-          <text key={i} x={size.w - padRight} y={getY(t) - 4} fill="var(--text-lo)" fontSize="10" textAnchor="end" fontFamily="var(--font-mono)">{fmtPLNk(t)}</text>
+          <text key={i} x={size.w - padRight} y={getY(t) - 4} fill="var(--text-lo)" fontSize="10" textAnchor="end" fontFamily="var(--font-mono)">{fmtTick(t)}</text>
         ))}
         <text x={padLeft} y={size.h - 8} fill="var(--text-lo)" fontSize="10" fontFamily="var(--font-mono)">
           {new Date(points[0].date).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}
@@ -223,7 +227,7 @@ function StockValueChart({ points, height = 220 }: { points: StockPoint[]; heigh
           <div style={{ color: "var(--text-lo)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
             {new Date(points[hover].date).toLocaleDateString("pl-PL", { weekday: "short", day: "numeric", month: "long" })}
           </div>
-          <div className="num" style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{fmtPLN(points[hover].value)}</div>
+          <div className="num" style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{fmtFull(val(points[hover]))}</div>
         </div>
       )}
     </div>
@@ -266,44 +270,62 @@ function KpiGrid({
 }
 
 // ── Wykres (karta z zakresem 7D/30D/90D) ─────────────────────
-function ValueChartCard({ points }: { points: StockPoint[] }) {
+function ValueChartCard({ points, canFin }: { points: StockPoint[]; canFin: boolean }) {
   const [range, setRange] = useState<"7D" | "30D" | "90D">("90D");
+  const [metricSel, setMetricSel] = useState<"value" | "units">(canFin ? "value" : "units");
+  const metric: "value" | "units" = canFin ? metricSel : "units";
   const ranges: Array<"7D" | "30D" | "90D"> = ["7D", "30D", "90D"];
   const sliced = range === "7D" ? points.slice(-7) : range === "30D" ? points.slice(-30) : points;
-  const first = sliced[0]?.value ?? 0;
-  const last = sliced[sliced.length - 1]?.value ?? 0;
+
+  const val = (p?: StockPoint) => (p ? (metric === "value" ? p.value : p.units) : 0);
+  const first = val(sliced[0]);
+  const last = val(sliced[sliced.length - 1]);
   const change = last - first;
   const pct = first ? (change / first) * 100 : 0;
   const positive = change >= 0;
+
+  const title = metric === "value" ? "Wartość magazynu" : "Liczba sztuk";
+  const fmtBig = (n: number) => (metric === "value" ? fmtPLN(n) : `${fmtNum(n)} szt`);
+  const fmtDelta = (n: number) => (metric === "value" ? fmtPLNk(n) : `${fmtNum(n)} szt`);
+
+  const segBtn = (active: boolean): React.CSSProperties => ({
+    padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 6,
+    background: active ? "var(--surface-3)" : "transparent",
+    color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
+  });
 
   return (
     <Card>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "16px 20px 12px", gap: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>Wartość magazynu</span>
+            <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>{title}</span>
             <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm" mono>{range}</Pill>
           </div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 6 }}>
-            <div className="num" style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{fmtPLN(last)}</div>
+            <div className="num" style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{fmtBig(last)}</div>
             <span className="num" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 13, fontWeight: 600, color: positive ? "var(--ok)" : "var(--critical)" }}>
               {positive ? <I.TrendUp size={13} /> : <I.TrendDown size={13} />}
-              {positive ? "+" : ""}{fmtPLNk(change)} ({fmtPct(pct)})
+              {positive ? "+" : ""}{fmtDelta(change)} ({fmtPct(pct)})
             </span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
-          {ranges.map((r) => (
-            <button key={r} onClick={() => setRange(r)} className="num" style={{
-              padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 6,
-              background: r === range ? "var(--surface-3)" : "transparent",
-              color: r === range ? "var(--text-hi)" : "var(--text-mid)", border: "none",
-            }}>{r}</button>
-          ))}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {canFin && (
+            <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
+              <button onClick={() => setMetricSel("value")} style={segBtn(metric === "value")}>zł</button>
+              <button onClick={() => setMetricSel("units")} style={segBtn(metric === "units")}>szt</button>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
+            {ranges.map((r) => (
+              <button key={r} onClick={() => setRange(r)} className="num" style={segBtn(r === range)}>{r}</button>
+            ))}
+          </div>
         </div>
       </div>
       <div style={{ padding: "0 8px 4px" }}>
-        <StockValueChart points={sliced} height={220} />
+        <StockValueChart points={sliced} metric={metric} height={220} />
       </div>
     </Card>
   );
@@ -640,7 +662,7 @@ export default function Dashboard({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }} className="fade-in">
       <KpiGrid history={history} classification={classification} inTransitValue={inTransit.value} inTransitCount={inTransit.count} />
-      {showFin && history && history.points.length > 1 && <ValueChartCard points={history.points} />}
+      {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
       {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
         <FiresCard fires={fires} onProductClick={onProductClick} />
