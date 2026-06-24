@@ -127,6 +127,11 @@ export default function Header({
             <kbd>Ctrl+K</kbd>
           </button>
 
+          {/* Search — ikona na mobile (pełny pasek tylko na desktopie) */}
+          <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
+            <I.Search size={16}/>
+          </button>
+
           {/* Actions */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
@@ -220,9 +225,7 @@ export default function Header({
           </nav>
 
           {/* Mobile nav toggle */}
-          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={{
-            ...iconBtn, marginLeft: "auto",
-          }}>
+          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn}>
             <I.Menu size={18}/>
           </button>
 
@@ -252,15 +255,6 @@ export default function Header({
                 {item.label}
               </button>
             ))}
-            <button onClick={() => { onOpenSearch?.(); setMobileNavOpen(false); }} style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "10px 12px", marginTop: 6,
-              border: "1px dashed var(--border)", borderRadius: 8,
-              background: "transparent", color: "var(--text-mid)",
-              fontSize: 12,
-            }}>
-              <I.Search size={14}/> Szukaj wszędzie...
-            </button>
           </div>
         )}
       </header>
