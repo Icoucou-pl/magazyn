@@ -149,6 +149,7 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
     for offset in range(days, -1, -1):
         d = today - timedelta(days=offset)
         total_value = 0
+        total_units = 0
         for sku_norm in stock_map:
             stock_today = stock_map[sku_norm]
             price = price_map.get(sku_norm, 0)
@@ -168,6 +169,11 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
             if stock_at_d < 0:
                 stock_at_d = 0
             total_value += stock_at_d * price
-        points.append({"date": d.isoformat(), "value": round(total_value, 2)})
+            total_units += stock_at_d
+        points.append({"date": d.isoformat(), "value": round(total_value, 2), "units": round(total_units)})
 
-    return {"points": points, "current_value": points[-1]["value"] if points else 0}
+    return {
+        "points": points,
+        "current_value": points[-1]["value"] if points else 0,
+        "current_units": points[-1]["units"] if points else 0,
+    }
