@@ -109,40 +109,7 @@ export default function Header({
           padding: "10px 24px 12px",
           display: "flex", flexDirection: "column", gap: 8,
         }}>
-          {/* Wiersz 1: dashboardy od lewej */}
-          <div style={{ display: "flex", alignItems: "center", gap: 24, minHeight: 38 }}>
-          {/* Logo */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 26, width: "auto", display: "block" }}/>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
-            <span className="mono hide-tablet" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
-              MAGAZYN
-            </span>
-          </div>
-
-          {/* Nav — desktop */}
-          <nav style={{
-            display: "flex", gap: 2,
-            padding: 4, background: "var(--surface-1)", borderRadius: 10,
-            border: "1px solid var(--border-soft)",
-          }} className="hide-mobile">
-            {navItems.map((item) => (
-              <NavBtn key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)}/>
-            ))}
-          </nav>
-
-          {/* Mobile nav toggle */}
-          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={{
-            ...iconBtn, marginLeft: "auto",
-          }}>
-            <I.Menu size={18}/>
-          </button>
-
-          </div>
-
-          {/* Wiersz 2: narzędzia od prawej */}
+          {/* Wiersz 1: narzędzia od prawej */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
           {/* Search bar */}
           <button onClick={onOpenSearch} style={{
@@ -216,6 +183,39 @@ export default function Header({
             </div>
           </div>
         </div>
+
+          {/* Wiersz 2: dashboardy od lewej */}
+          <div style={{ display: "flex", alignItems: "center", gap: 24, minHeight: 38 }}>
+          {/* Logo */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 26, width: "auto", display: "block" }}/>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
+            <span className="mono hide-tablet" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
+              MAGAZYN
+            </span>
+          </div>
+
+          {/* Nav — desktop */}
+          <nav style={{
+            display: "flex", gap: 2,
+            padding: 4, background: "var(--surface-1)", borderRadius: 10,
+            border: "1px solid var(--border-soft)",
+          }} className="hide-mobile">
+            {navItems.map((item) => (
+              <NavBtn key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)}/>
+            ))}
+          </nav>
+
+          {/* Mobile nav toggle */}
+          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={{
+            ...iconBtn, marginLeft: "auto",
+          }}>
+            <I.Menu size={18}/>
+          </button>
+
+          </div>
 
           {/* Wiersz 3: świeżość danych */}
           <div className="hide-mobile" style={{
