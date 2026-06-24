@@ -59,13 +59,24 @@ type HeaderProps = {
   onOpenScan?: () => void;
   onRefresh?: () => void;
   refreshing?: boolean;
+  freshness?: { sellasist?: { last: string | null }; subiekt?: { last: string | null } } | null;
   onChangePassword?: () => void;
   onAuditLog?: () => void;
 };
 
+// Surowy stempel (czas warszawski, naive) → "DD.MM HH:MM". Bez konwersji stref
+// (data_pobrania zapisywana jest już czasem lokalnym).
+function fmtFresh(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export default function Header({
   view, setView, user, theme, onToggleTheme, onLogout,
-  onOpenSearch, onOpenScan, onRefresh, refreshing, onChangePassword, onAuditLog,
+  onOpenSearch, onOpenScan, onRefresh, refreshing, freshness, onChangePassword, onAuditLog,
 }: HeaderProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -194,6 +205,24 @@ export default function Header({
             </div>
           </div>
         </div>
+
+          {/* Wiersz 3: świeżość danych */}
+          <div className="hide-mobile" style={{
+            display: "flex", alignItems: "center", justifyContent: "flex-end",
+            gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 1,
+          }}>
+            <span>Ostatnie pobranie Sellasist:{" "}
+              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
+                {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
+              </b>
+            </span>
+            <span style={{ opacity: 0.45 }}>·</span>
+            <span>Ostatnie pobranie Subiekt:{" "}
+              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
+                {fmtFresh(freshness?.subiekt?.last)}
+              </b>
+            </span>
+          </div>
         </div>
 
         {/* Mobile nav drawer */}

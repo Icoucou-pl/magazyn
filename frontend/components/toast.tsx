@@ -42,8 +42,10 @@ export function ToastHost() {
   useEffect(() => {
     const onToast = (t: ToastItem) => {
       setItems((prev) => [...prev, t]);
-      const dur = t.duration || 3200;
-      setTimeout(() => setItems((prev) => prev.filter((x) => x.id !== t.id)), dur);
+      const dur = t.duration === undefined ? 3200 : t.duration;
+      if (dur > 0) {
+        setTimeout(() => setItems((prev) => prev.filter((x) => x.id !== t.id)), dur);
+      }
     };
     _toastSubs.add(onToast);
     return () => { _toastSubs.delete(onToast); };

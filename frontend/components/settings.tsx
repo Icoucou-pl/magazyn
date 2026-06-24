@@ -38,7 +38,7 @@ type PermDef = { key: string; label: string; desc: string; group: string };
 const PERMS = PERMISSIONS as unknown as PermDef[];
 const ROLE_DEF = ROLE_PERMS as unknown as Record<string, Record<string, boolean>>;
 
-type SectionId = "manufacturers" | "container_types" | "users" | "account" | "audit";
+type SectionId = "manufacturers" | "container_types" | "users" | "account" | "audit" | "freshness";
 type SectionDef = { id: SectionId; label: string; icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; desc: string };
 
 type CtxUser = {
@@ -53,6 +53,7 @@ const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "users",           label: "Użytkownicy",     icon: I.Activity, desc: "Konta, role, uprawnienia" },
   { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
   { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Historia zmian w systemie" },
+  { id: "freshness",       label: "Świeżość danych", icon: I.Refresh,  desc: "Ostatnie pobrania i dziennik synchronizacji" },
 ];
 
 const ROLE_META: Record<string, { label: string; color: string; soft: string }> = {
@@ -180,6 +181,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
           {section === "users"           && <UsersPanel currentUserId={user?.id}/>}
           {section === "account"         && <AccountPanel/>}
           {section === "audit"           && <AuditLogPanel/>}
+          {section === "freshness"       && <FreshnessPanel/>}
         </main>
       </div>
 
@@ -1181,6 +1183,130 @@ const btnGhostMini: React.CSSProperties = {
   background: "transparent", border: "1px solid var(--border-soft)", color: "var(--text-mid)",
   borderRadius: 5, fontSize: 11, fontWeight: 500, cursor: "pointer",
 };
+
+// ── ŚWIEŻOŚĆ DANYCH ──────────────────────────────────────────
+type FreshInfo = {
+  sellasist?: { last: string | null; count: number };
+  subiekt?: { last: string | null; count: number };
+};
+type SyncRow = {
+  id: number; source: string; started_at?: string | null; finished_at?: string | null;
+  ok?: boolean | null; inserted?: number; updated?: number; items_added?: number;
+  message?: string | null; error?: string | null;
+};
+
+function FreshCard({ title, info }: { title: string; info?: { last: string | null; count: number } }) {
+  return (
+    <div style={{
+      border: "1px solid var(--border)", borderRadius: 10,
+      padding: "14px 16px", background: "var(--bg-elevated)",
+    }}>
+      <div style={{ fontSize: 11, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{title}</div>
+      <div className="num" style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}>{fmtDateTime(info?.last)}</div>
+      <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 4 }}>
+        {info && info.count != null ? `${info.count.toLocaleString("pl-PL")} rekordów w bazie` : "—"}
+      </div>
+    </div>
+  );
+}
+
+function FreshnessPanel() {
+  const [fresh, setFresh] = useState<FreshInfo | null>(null);
+  const [rows, setRows] = useState<SyncRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [f, l] = await Promise.all([api.get("/data-freshness"), api.get("/sync-log")]);
+      setFresh(f as FreshInfo);
+      setRows(Array.isArray(l) ? (l as SyncRow[]) : []);
+    } catch {
+      /* cicho — panel informacyjny */
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const th: React.CSSProperties = {
+    textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 600,
+    color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.03em",
+    borderBottom: "1px solid var(--border)", whiteSpace: "nowrap",
+  };
+  const td: React.CSSProperties = {
+    padding: "8px 10px", fontSize: 12, color: "var(--text-mid)",
+    borderBottom: "1px solid var(--border-soft)", verticalAlign: "top",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <FreshCard title="Ostatnie pobranie Sellasist" info={fresh?.sellasist}/>
+        <FreshCard title="Ostatnie pobranie Subiekt" info={fresh?.subiekt}/>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>Dziennik pobrań</span>
+        <button onClick={load} style={btnSecondary} disabled={loading}>
+          <I.Refresh size={14}/> {loading ? "Ładowanie…" : "Odśwież widok"}
+        </button>
+      </div>
+
+      <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={th}>Źródło</th>
+              <th style={th}>Zakończono</th>
+              <th style={th}>Status</th>
+              <th style={th}>Dodane</th>
+              <th style={th}>Zmienione</th>
+              <th style={th}>Pozycje</th>
+              <th style={{ ...th, width: "30%" }}>Informacja</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td style={{ ...td, color: "var(--text-lo)" }} colSpan={7}>
+                {loading ? "Ładowanie…" : "Brak wpisów — pierwszy pojawi się po najbliższym pobraniu."}
+              </td></tr>
+            )}
+            {rows.map((r) => {
+              const ok = r.ok !== false && !r.error;
+              return (
+                <tr key={r.id}>
+                  <td style={{ ...td, fontWeight: 600, color: "var(--text-hi)" }}>
+                    {r.source === "subiekt" ? "Subiekt" : "Sellasist"}
+                  </td>
+                  <td style={td} className="num">{fmtDateTime(r.finished_at || r.started_at)}</td>
+                  <td style={td}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 99,
+                      color: ok ? "var(--ok)" : "var(--critical)",
+                      background: `color-mix(in oklch, ${ok ? "var(--ok)" : "var(--critical)"} 14%, transparent)`,
+                    }}>{ok ? "OK" : "Błąd"}</span>
+                  </td>
+                  <td style={td} className="num">{r.inserted ?? 0}</td>
+                  <td style={td} className="num">{r.updated ?? 0}</td>
+                  <td style={td} className="num">{r.items_added ?? 0}</td>
+                  <td style={{ ...td, color: r.error ? "var(--critical)" : "var(--text-lo)" }}>
+                    {r.error || r.message || "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p style={{ fontSize: 11, color: "var(--text-lo)", margin: 0 }}>
+        Sellasist trafia tu po każdym pobraniu (ręcznym i automatycznym 7–17). Subiekt pojawi się,
+        gdy skrypt na serwerze będzie dopisywał wpis do dziennika.
+      </p>
+    </div>
+  );
+}
 
 export { SettingsView };
 export default SettingsView;
