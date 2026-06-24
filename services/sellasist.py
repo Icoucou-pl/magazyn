@@ -66,6 +66,16 @@ def is_configured() -> bool:
     return bool(settings.SELLASIST_API_KEY and settings.SELLASIST_BASE_URL)
 
 
+def _now_local() -> datetime:
+    """Czas warszawski jako naive datetime — żeby data_pobrania Sellasista zgadzała się
+    ze stemplem Subiekta (skrypt na Windows zapisuje czas lokalny). Front pokazuje surowo."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Warsaw")).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
 def get_status() -> Dict[str, Any]:
     return {**_status, "configured": is_configured()}
 
@@ -404,7 +414,7 @@ async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_tim
 async def run_refresh() -> None:
     """Pełny bieg: nagłówki (upsert+log) + pozycje (insert-once). Zakłada, że
     mark_started() zostało już wywołane. Zawsze kończy się ustawieniem finished/error."""
-    sync_time = datetime.now()
+    sync_time = _now_local()
     date_from = (sync_time - timedelta(days=settings.SELLASIST_DAYS_BACK)).strftime("%Y-%m-%d")
     try:
         headers = await _fetch_headers(date_from)
@@ -426,3 +436,24 @@ async def run_refresh() -> None:
     finally:
         _status["running"] = False
         _status["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        await _write_sync_log(sync_time, _now_local())
+
+
+async def _write_sync_log(started: datetime, finished: datetime) -> None:
+    """Dopisuje wiersz do dziennika synchronizacji (świeżość danych w Ustawieniach).
+    Własna sesja; nigdy nie wywala biegu — log to dodatek, nie krytyczna ścieżka."""
+    try:
+        async with SessionLocal() as session:
+            await session.execute(text(
+                f"INSERT INTO {settings.TABLE_SYNC_LOG} "
+                "(source, started_at, finished_at, ok, inserted, updated, items_added, message, error) "
+                "VALUES ('sellasist', :s, :f, :ok, :ins, :upd, :items, :msg, :err)"
+            ), {
+                "s": started, "f": finished, "ok": _status["error"] is None,
+                "ins": _status["orders_inserted"], "upd": _status["orders_updated"],
+                "items": _status["items_added"],
+                "msg": _status["message"], "err": _status["error"],
+            })
+            await session.commit()
+    except Exception as e:
+        print(f"[sellasist] zapis dziennika pominięty: {e}")
