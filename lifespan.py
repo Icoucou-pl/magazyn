@@ -256,6 +256,23 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Dziennik synchronizacji (świeżość danych): po jednym wierszu na każdy bieg
+        # pobrania (Sellasist auto/ręczny zapisuje sam; Subiekt — jeśli skrypt loguje).
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_SYNC_LOG} (
+                id          SERIAL PRIMARY KEY,
+                source      VARCHAR        NOT NULL,
+                started_at  TIMESTAMP,
+                finished_at TIMESTAMP,
+                ok          BOOLEAN,
+                inserted    INTEGER DEFAULT 0,
+                updated     INTEGER DEFAULT 0,
+                items_added INTEGER DEFAULT 0,
+                message     VARCHAR,
+                error       VARCHAR
+            )
+        """))
+
         # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
         if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
             count_result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_USERS}"))

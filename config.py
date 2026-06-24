@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # EUR/CZK/HUF są wszystkie w tabeli A NBP, mid jest znormalizowany per 1 jednostkę
     # (HUF ~0.0126, CZK ~0.176, EUR ~4.48), więc wartość_PLN = wartość_waluty × mid.
     TABLE_FX_RATES: str = "app_fx_rates"
+    TABLE_SYNC_LOG: str = "app_sync_log"
     FX_BASE_CURRENCY: str = "PLN"           # waluta bazowa - mnożnik 1, bez przewalutowania
     FX_CURRENCIES: str = "EUR,CZK,HUF"      # waluty obce do pobierania z NBP (lista po przecinku)
     NBP_API_BASE: str = "https://api.nbp.pl/api"
