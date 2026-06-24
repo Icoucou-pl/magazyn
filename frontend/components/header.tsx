@@ -35,7 +35,6 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
   { id: "finance",    label: "Finanse",    icon: I.TrendUp, perm: "viewFinancials" },
   { id: "cashflow",   label: "Cashflow",   icon: I.Wallet, perm: "viewFinancials" },
-  { id: "settings",   label: "Ustawienia", icon: I.Settings },
 ];
 
 const iconBtn: React.CSSProperties = {
@@ -179,6 +178,18 @@ export default function Header({
               <span className={refreshing ? "magazyn-spin" : ""} style={{ display: "inline-flex" }}>
                 <I.Refresh size={16}/>
               </span>
+            </button>
+            <button
+              onClick={() => setView("settings")}
+              style={{
+                ...iconBtn,
+                ...(view === "settings"
+                  ? { background: "var(--surface-2)", borderColor: "var(--border)", color: "var(--text-hi)" }
+                  : {}),
+              }}
+              title="Ustawienia"
+            >
+              <I.Settings size={16}/>
             </button>
 
             {/* User menu */}
