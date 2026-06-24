@@ -38,6 +38,55 @@ async def _fx_refresh_loop():
             print(f"[fx] auto top-up błąd (pomijam, pętla działa dalej): {e}")
 
 
+# --- Automat Sellasista: co godzinę o pełnej godzinie w oknie [START..END] (Europe/Warsaw) ---
+try:
+    from zoneinfo import ZoneInfo
+    _WARSAW = ZoneInfo("Europe/Warsaw")
+except Exception:                       # brak tzdata → fallback do UTC (okno liczone w UTC)
+    _WARSAW = None
+
+
+def _now_warsaw():
+    from datetime import datetime
+    return datetime.now(_WARSAW) if _WARSAW else datetime.utcnow()
+
+
+def _next_run_at(now, start_h: int, end_h: int):
+    """Najbliższa pełna godzina > now mieszcząca się w oknie [start_h..end_h].
+    Poza oknem przeskakuje na start_h (dziś lub jutro)."""
+    from datetime import timedelta
+    nxt = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    if nxt.hour < start_h:
+        nxt = nxt.replace(hour=start_h)
+    elif nxt.hour > end_h:
+        nxt = (nxt + timedelta(days=1)).replace(hour=start_h)
+    return nxt
+
+
+async def _sellasist_auto_loop():
+    """Harmonogram: o pełnych godzinach 7–17 (czas warszawski) odświeża dane Sellasista.
+    Woła funkcję bezpośrednio (nie endpoint), pomija bieg jeśli akurat trwa ręczny,
+    każdy błąd łapany — pętla nigdy nie umiera. Działa tylko gdy skonfigurowane."""
+    if not settings.SELLASIST_AUTO_ENABLED:
+        print("[sellasist] automat wyłączony (SELLASIST_AUTO_ENABLED=false)")
+        return
+    from services.sellasist import is_configured, is_running, mark_started, run_refresh, get_status
+    start_h = settings.SELLASIST_AUTO_START_HOUR
+    end_h = settings.SELLASIST_AUTO_END_HOUR
+    while True:
+        now = _now_warsaw()
+        nxt = _next_run_at(now, start_h, end_h)
+        await asyncio.sleep(max(1.0, (nxt - now).total_seconds()))
+        try:
+            if is_configured() and not is_running():
+                mark_started()
+                await run_refresh()
+                st = get_status()
+                print(f"[sellasist] auto: {st.get('error') or st.get('message')}")
+        except Exception as e:
+            print(f"[sellasist] auto błąd (pomijam, pętla działa dalej): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
@@ -245,13 +294,15 @@ async def lifespan(app: FastAPI):
     # Harmonogram w tle: co FX_REFRESH_INTERVAL_SECONDS dociąga nowe kursy — kursy
     # odświeżają się same, bez deployu i bez konfiguracji w Railway.
     fx_task = asyncio.create_task(_fx_refresh_loop())
+    sellasist_task = asyncio.create_task(_sellasist_auto_loop())
 
     yield
 
     # Sprzątanie przy zamknięciu
-    fx_task.cancel()
-    try:
-        await fx_task
-    except asyncio.CancelledError:
-        pass
+    for _t in (fx_task, sellasist_task):
+        _t.cancel()
+        try:
+            await _t
+        except asyncio.CancelledError:
+            pass
     await engine.dispose()
