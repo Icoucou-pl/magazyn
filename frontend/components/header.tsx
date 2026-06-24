@@ -184,17 +184,18 @@ export default function Header({
         </div>
 
           {/* Wiersz 2: świeżość danych */}
-          <div className="hide-mobile" style={{
+          <div style={{
             display: "flex", alignItems: "center", justifyContent: "flex-end",
-            gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 1,
+            flexWrap: "wrap", gap: 4, rowGap: 2, columnGap: 10,
+            fontSize: 11, color: "var(--text-lo)", marginTop: 1,
           }}>
-            <span>Ostatnie pobranie Sellasist:{" "}
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Sellasist:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
                 {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
               </b>
             </span>
-            <span style={{ opacity: 0.45 }}>·</span>
-            <span>Ostatnie pobranie Subiekt:{" "}
+            <span style={{ opacity: 0.45 }} className="hide-mobile">·</span>
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Subiekt:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
                 {fmtFresh(freshness?.subiekt?.last)}
               </b>
@@ -208,7 +209,7 @@ export default function Header({
             <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 26, width: "auto", display: "block" }}/>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
-            <span className="mono hide-tablet" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
+            <span className="mono" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
               MAGAZYN
             </span>
           </div>
