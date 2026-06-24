@@ -23,6 +23,7 @@ class CurrentUser(BaseModel):
     email: str
     role: str
     full_name: Optional[str] = None
+    perms: Optional[dict] = None            # override uprawnień per-user (None = domyślne z roli)
 
 
 class UserCreate(BaseModel):

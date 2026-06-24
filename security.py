@@ -1,8 +1,9 @@
 """
 Bezpieczeństwo: hashowanie haseł (bcrypt), tokeny JWT, zależności autoryzacji.
 
-Uwaga: szkielet require_perm() jest przygotowany pod przyszłe granularne uprawnienia
-(etap 5 - kolumna perms JSONB w app_users). Na razie NIEAKTYWNY - używamy require_role.
+Granularne uprawnienia (require_perm) są AKTYWNE i odwzorowują frontowy can():
+override per-user z kolumny `permissions` (JSON) wygrywa nad domyślnym z roli (ROLE_PERMS).
+Domyślne zestawy ról są 1:1 z frontend/lib/permissions.js.
 """
 
 from datetime import datetime, timedelta
@@ -15,6 +16,7 @@ from jose import jwt, JWTError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 import re
+import json
 
 from config import settings
 from database import get_db
@@ -78,7 +80,7 @@ async def get_current_user(
 
     # Sprawdź czy user nadal istnieje i jest aktywny
     r = await db.execute(
-        text(f"SELECT id, email, role, full_name, is_active FROM {settings.TABLE_USERS} WHERE id = :id"),
+        text(f"SELECT id, email, role, full_name, is_active, permissions FROM {settings.TABLE_USERS} WHERE id = :id"),
         {"id": user_id},
     )
     u = r.first()
@@ -87,7 +89,18 @@ async def get_current_user(
     if not u.is_active:
         raise HTTPException(status_code=403, detail="Konto deaktywowane")
 
-    return CurrentUser(id=u.id, email=u.email, role=u.role, full_name=u.full_name)
+    perms = None
+    raw_perms = getattr(u, "permissions", None)
+    if raw_perms:
+        if isinstance(raw_perms, dict):
+            perms = raw_perms
+        else:
+            try:
+                perms = json.loads(raw_perms)
+            except Exception:
+                perms = None
+
+    return CurrentUser(id=u.id, email=u.email, role=u.role, full_name=u.full_name, perms=perms)
 
 
 def require_role(*allowed_roles):
@@ -103,25 +116,37 @@ require_admin = require_role("ADMIN")
 require_import_or_admin = require_role("ADMIN", "IMPORT")
 
 
-# ===== SZKIELET GRANULARNYCH UPRAWNIEŃ (etap 5 - na razie nieaktywny) =====
-# Domyślne uprawnienia per rola - odzwierciedlają obecne zachowanie ról.
-# W etapie 5: kolumna perms JSONB w app_users nadpisze te wartości per użytkownik.
+# ===== GRANULARNE UPRAWNIENIA (1:1 z frontend/lib/permissions.js) =====
+# Domyślne uprawnienia per rola. Override per-user (kolumna `permissions`) je nadpisuje.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts", "editContainers", "import", "manageUsers", "viewAudit"},
-    "IMPORT": {"editProducts", "editContainers", "import"},
-    "VIEWER": set(),
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewForecast": True,  "manageUsers": False, "viewAudit": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "viewForecast": True,  "manageUsers": False, "viewAudit": False},
 }
+
+
+def has_perm(user: CurrentUser, perm: str) -> bool:
+    """Odwzorowanie frontowego can(): override per-user wygrywa, inaczej domyślne z roli."""
+    if user is None:
+        return False
+    if user.perms is not None and perm in user.perms:
+        return bool(user.perms[perm])
+    return bool(ROLE_PERMS.get(user.role, {}).get(perm, False))
 
 
 def require_perm(perm: str):
     """
-    Dependency factory pod przyszłe granularne uprawnienia.
-    Na razie mapuje uprawnienie na domyślny zestaw roli (ROLE_PERMS).
-    W etapie 5 doczytamy nadpisania z kolumny perms JSONB użytkownika.
+    Dependency factory: wymusza granularne uprawnienie.
+    Override per-user (kolumna `permissions`) wygrywa nad domyślnym zestawem roli.
     """
     async def checker(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-        allowed = ROLE_PERMS.get(user.role, set())
-        if perm not in allowed:
+        if not has_perm(user, perm):
             raise HTTPException(403, f"Brak uprawnienia: {perm}")
         return user
     return checker
+
+
+# Nazwane skróty (czytelność importów w routerach)
+require_view_financials = require_perm("viewFinancials")
+require_edit_containers = require_perm("editContainers")
+require_export = require_perm("export")
