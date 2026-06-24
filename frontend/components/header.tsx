@@ -92,7 +92,6 @@ export default function Header({
 
   const navItems = NAV_ITEMS.filter((item) => !item.perm || can(user, item.perm));
   const displayName = user.name || user.email;
-  const firstName = displayName.split(" ")[0];
   const initials = user.initials || displayName.slice(0, 2).toUpperCase();
 
   return (
@@ -161,18 +160,13 @@ export default function Header({
 
             {/* User menu */}
             <div data-user-menu style={{ position: "relative" }}>
-              <button onClick={() => setUserMenuOpen(!userMenuOpen)} style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: "4px 10px 4px 4px",
-                background: "var(--surface-1)",
-                border: "1px solid var(--border-soft)",
-                borderRadius: 999,
-                color: "var(--text-hi)",
-                marginLeft: 4,
+              <button onClick={() => setUserMenuOpen(!userMenuOpen)} title={displayName} style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                padding: 0, marginLeft: 4,
+                background: "transparent", border: "none", borderRadius: 999,
+                cursor: "pointer",
               }}>
-                <Avatar initials={initials} size={26}/>
-                <span style={{ fontSize: 12, fontWeight: 500 }} className="hide-tablet">{firstName}</span>
-                <I.ChevronD size={12} style={{ color: "var(--text-lo)" }}/>
+                <Avatar initials={initials} size={32}/>
               </button>
               {userMenuOpen && (
                 <UserMenuPopover
@@ -184,7 +178,24 @@ export default function Header({
           </div>
         </div>
 
-          {/* Wiersz 2: dashboardy od lewej */}
+          {/* Wiersz 2: świeżość danych */}
+          <div className="hide-mobile" style={{
+            display: "flex", alignItems: "center", justifyContent: "flex-end",
+            gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 1,
+          }}>
+            <span>Ostatnie pobranie Sellasist:{" "}
+              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
+                {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
+              </b>
+            </span>
+            <span style={{ opacity: 0.45 }}>·</span>
+            <span>Ostatnie pobranie Subiekt:{" "}
+              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
+                {fmtFresh(freshness?.subiekt?.last)}
+              </b>
+            </span>
+          </div>
+          {/* Wiersz 3: dashboardy od lewej */}
           <div style={{ display: "flex", alignItems: "center", gap: 24, minHeight: 38 }}>
           {/* Logo */}
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
@@ -217,23 +228,6 @@ export default function Header({
 
           </div>
 
-          {/* Wiersz 3: świeżość danych */}
-          <div className="hide-mobile" style={{
-            display: "flex", alignItems: "center", justifyContent: "flex-end",
-            gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 1,
-          }}>
-            <span>Ostatnie pobranie Sellasist:{" "}
-              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
-              </b>
-            </span>
-            <span style={{ opacity: 0.45 }}>·</span>
-            <span>Ostatnie pobranie Subiekt:{" "}
-              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {fmtFresh(freshness?.subiekt?.last)}
-              </b>
-            </span>
-          </div>
         </div>
 
         {/* Mobile nav drawer */}
