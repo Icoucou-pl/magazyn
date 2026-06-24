@@ -121,6 +121,30 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
     price_map = {p.sku.strip().lower(): float(p.purchase_price or 0) for p in products}
     stock_map = {p.sku.strip().lower(): float(p.stock or 0) for p in products}
 
+    # Dostawy: kontenery, których ETA już minęła (towar wszedł do magazynu ~w dacie ETA).
+    # Cofając się w czasie MUSIMY je odjąć — przed dostawą stan był niższy. Bez tego wykres
+    # był gładką linią rosnącą wstecz (tylko sprzedaż), bez realnych skoków od dostaw.
+    deliveries_query = f"""
+        SELECT
+            LOWER(TRIM(ci.sku)) AS sku_norm,
+            DATE(c.eta_date) AS deliv_date,
+            SUM(ci.quantity) AS qty
+        FROM {settings.TABLE_CONTAINER_ITEMS} ci
+        JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+        WHERE c.eta_date IS NOT NULL
+            AND c.eta_date >= NOW() - INTERVAL '{days} days'
+            AND c.eta_date <= NOW()
+        GROUP BY LOWER(TRIM(ci.sku)), DATE(c.eta_date)
+    """
+    deliveries_result = await db.execute(text(deliveries_query))
+
+    deliveries_by_sku = {}
+    for r in deliveries_result:
+        sku_norm = r._mapping["sku_norm"]
+        deliv_date = r._mapping["deliv_date"]
+        qty = float(r._mapping["qty"] or 0)
+        deliveries_by_sku.setdefault(sku_norm, {})[deliv_date] = qty
+
     points = []
     for offset in range(days, -1, -1):
         d = today - timedelta(days=offset)
@@ -133,7 +157,16 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
                 for sale_d, qty in sales_by_sku[sku_norm].items():
                     if sale_d > d:
                         sold_between += qty
-            stock_at_d = stock_today + sold_between
+            delivered_between = 0
+            if sku_norm in deliveries_by_sku:
+                for deliv_d, qty in deliveries_by_sku[sku_norm].items():
+                    if deliv_d > d:
+                        delivered_between += qty
+            # stan(d) = dzisiaj + sprzedaż(d→dziś) − dostawy(d→dziś); clamp do 0
+            # (nowy SKU / niespójność danych nie może dać ujemnego stanu i wartości).
+            stock_at_d = stock_today + sold_between - delivered_between
+            if stock_at_d < 0:
+                stock_at_d = 0
             total_value += stock_at_d * price
         points.append({"date": d.isoformat(), "value": round(total_value, 2)})
 
