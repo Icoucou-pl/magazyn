@@ -92,6 +92,13 @@ const fmtDateTime = (s?: string | null) => {
   const d = parseTs(s);
   return d ? d.toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 };
+// Stemple świeżości danych są zapisywane czasem LOKALNYM (Warszawa) — formatujemy
+// je surowo, BEZ doliczania strefy (inaczej niż fmtDateTime zakładający UTC z backendu).
+const fmtLocalDt = (s?: string | null) => {
+  if (!s) return "—";
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? "—" : d.toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+};
 
 // Parsuje User-Agent → „Chrome · macOS"
 const parseDevice = (ua?: string | null) => {
@@ -1202,7 +1209,7 @@ function FreshCard({ title, info }: { title: string; info?: { last: string | nul
       padding: "14px 16px", background: "var(--bg-elevated)",
     }}>
       <div style={{ fontSize: 11, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{title}</div>
-      <div className="num" style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}>{fmtDateTime(info?.last)}</div>
+      <div className="num" style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}>{fmtLocalDt(info?.last)}</div>
       <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 4 }}>
         {info && info.count != null ? `${info.count.toLocaleString("pl-PL")} rekordów w bazie` : "—"}
       </div>
@@ -1279,7 +1286,7 @@ function FreshnessPanel() {
                   <td style={{ ...td, fontWeight: 600, color: "var(--text-hi)" }}>
                     {r.source === "subiekt" ? "Subiekt" : "Sellasist"}
                   </td>
-                  <td style={td} className="num">{fmtDateTime(r.finished_at || r.started_at)}</td>
+                  <td style={td} className="num">{fmtLocalDt(r.finished_at || r.started_at)}</td>
                   <td style={td}>
                     <span style={{
                       fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 99,
