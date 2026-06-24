@@ -82,6 +82,7 @@ export default function Page() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [freshness, setFreshness] = useState<{ sellasist?: { last: string | null }; subiekt?: { last: string | null } } | null>(null);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
 
   // Motyw (akcent/warmth/theme/density) → na <html>
@@ -95,6 +96,19 @@ export default function Page() {
     window.addEventListener("magazyn:unauthorized", onUnauth);
     return () => window.removeEventListener("magazyn:unauthorized", onUnauth);
   }, []);
+
+  // Świeżość danych — ostatnie pobranie Sellasist/Subiekt (pasek pod menu).
+  // Odświeżane na wejściu, co 5 min, oraz po ręcznym odświeżeniu Sellasista.
+  const loadFreshness = async () => {
+    try { setFreshness(await api.get("/data-freshness")); } catch { /* cicho */ }
+  };
+  useEffect(() => {
+    if (!currentUser) return;
+    loadFreshness();
+    const id = window.setInterval(loadFreshness, 5 * 60 * 1000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
 
   // Ctrl+K — globalna wyszukiwarka
   useEffect(() => {
@@ -150,11 +164,15 @@ export default function Page() {
         const s = await api.get("/sellasist/status");
         if (s?.running) { window.setTimeout(poll, 2000); return; }
         setRefreshing(false);
-        if (s?.error) toast(`Błąd odświeżania Sellasista: ${s.error}`, "error");
-        else toast(`Sellasist zaktualizowany — ${s?.message ?? "gotowe"}`, "ok");
+        if (s?.error) {
+          toast(`Błąd odświeżania Sellasista: ${s.error}`, "error", { duration: 0 });
+        } else {
+          toast(`Sellasist zaktualizowany — ${s?.message ?? "gotowe"}`, "ok", { duration: 0 });
+          loadFreshness();
+        }
       } catch {
         setRefreshing(false);
-        toast("Nie udało się sprawdzić statusu odświeżania", "warning");
+        toast("Nie udało się sprawdzić statusu odświeżania", "warning", { duration: 0 });
       }
     };
     window.setTimeout(poll, 1500);
@@ -173,6 +191,7 @@ export default function Page() {
         onOpenScan={() => setScanOpen(true)}
         onRefresh={handleRefreshSellasist}
         refreshing={refreshing}
+        freshness={freshness}
         onChangePassword={() => setView("settings")}
       />
 
