@@ -19,18 +19,34 @@ router = APIRouter(prefix="/api", tags=["sync"])
 
 @router.get("/data-freshness")
 async def data_freshness(db: AsyncSession = Depends(get_db)):
+    # Ostatni bieg per źródło z dziennika (że SPRAWDZILIŚMY, nie że dane się zmieniły).
+    log_last = {}
+    try:
+        r = await db.execute(text(
+            f"SELECT source, MAX(finished_at) AS last FROM {settings.TABLE_SYNC_LOG} GROUP BY source"))
+        for m in r.mappings().all():
+            log_last[m["source"]] = m["last"]
+    except Exception:
+        pass
+
     out = {}
-    for key, table in (("sellasist", settings.TABLE_ORDERS), ("subiekt", settings.TABLE_PRODUCTS)):
+    for key, table, logsrc in (
+        ("sellasist", settings.TABLE_ORDERS, "sellasist"),
+        ("subiekt", settings.TABLE_PRODUCTS, "subiekt"),
+    ):
+        last_data, cnt = None, 0
         try:
             r = await db.execute(text(f"SELECT MAX(data_pobrania) AS last, COUNT(*) AS cnt FROM {table}"))
             row = r.mappings().first()
-            last = row["last"] if row else None
-            out[key] = {
-                "last": last.isoformat() if last is not None else None,
-                "count": int(row["cnt"]) if row and row["cnt"] is not None else 0,
-            }
+            if row:
+                last_data = row["last"]
+                cnt = int(row["cnt"]) if row["cnt"] is not None else 0
         except Exception:
-            out[key] = {"last": None, "count": 0}
+            pass
+        # "Ostatnie pobranie" = najnowszy z: ostatni bieg (dziennik) i ostatnia zmiana danych.
+        candidates = [d for d in (last_data, log_last.get(logsrc)) if d is not None]
+        last = max(candidates) if candidates else None
+        out[key] = {"last": last.isoformat() if last is not None else None, "count": cnt}
     return out
 
 
