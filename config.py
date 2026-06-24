@@ -97,11 +97,11 @@ class Settings(BaseSettings):
     SELLASIST_WEBHOOK_SECRET: str = ""   # rezerwa pod webhook (czat AUTH/później)
 
     # Automat: co godzinę o pełnej godzinie w oknie [START..END] czasu warszawskiego.
-    # Domyślnie 7–17. Wyłącznik: SELLASIST_AUTO_ENABLED=false. Bieg i tak rusza tylko
+    # Domyślnie 7–20. Wyłącznik: SELLASIST_AUTO_ENABLED=false. Bieg i tak rusza tylko
     # gdy klucz/URL są ustawione i gdy nie trwa już ręczne odświeżanie.
     SELLASIST_AUTO_ENABLED: bool = True
     SELLASIST_AUTO_START_HOUR: int = 7
-    SELLASIST_AUTO_END_HOUR: int = 17
+    SELLASIST_AUTO_END_HOUR: int = 20
 
     # Auth - WAŻNE: w produkcji ustaw silny SECRET_KEY w zmiennych środowiskowych Railway!
     SECRET_KEY: str = ""
