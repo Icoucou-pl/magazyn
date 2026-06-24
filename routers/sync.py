@@ -4,7 +4,8 @@
   realny stan niezależnie od tego, gdzie chodzi ingesta; przeżywa redeploye).
 - /api/sync-log — ostatnie wiersze dziennika (app_sync_log) do zakładki w Ustawieniach.
 
-Bez guardu auth (spójnie z resztą — domknięcie w czacie AUTH). Tylko odczyt.
+Guard: wymaga zalogowania (get_current_user). Oba endpointy to tylko odczyt,
+widoczne dla każdego zalogowanego (pasek świeżości ładuje się wszystkim).
 """
 
 from fastapi import APIRouter, Depends
@@ -13,12 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
+from models import CurrentUser
+from security import get_current_user
 
 router = APIRouter(prefix="/api", tags=["sync"])
 
 
 @router.get("/data-freshness")
-async def data_freshness(db: AsyncSession = Depends(get_db)):
+async def data_freshness(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     # Ostatni bieg per źródło z dziennika (że SPRAWDZILIŚMY, nie że dane się zmieniły).
     log_last = {}
     try:
@@ -51,7 +54,7 @@ async def data_freshness(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/sync-log")
-async def sync_log(limit: int = 100, db: AsyncSession = Depends(get_db)):
+async def sync_log(limit: int = 100, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     limit = max(1, min(500, limit))
     try:
         r = await db.execute(text(

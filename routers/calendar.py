@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
+from models import CurrentUser
+from security import get_current_user, require_view_financials
 from services.products import fetch_products
 from services.containers import fetch_containers
 
@@ -15,7 +17,7 @@ router = APIRouter(prefix="/api", tags=["calendar"])
 
 
 @router.get("/calendar")
-async def calendar_events(db: AsyncSession = Depends(get_db)):
+async def calendar_events(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
     containers = await fetch_containers(db)
 
@@ -53,7 +55,7 @@ async def calendar_events(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/cashflow")
-async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db)):
+async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_view_financials)):
     containers = await fetch_containers(db)
     today = date.today()
 
@@ -87,7 +89,7 @@ async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/stock-value-history")
-async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)):
+async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """
     Symulacja wartości magazynu w czasie - bazuje na obecnym stanie + sprzedaży.
     To jest aproksymacja, bo Subiekt nie trzyma historii stanu - rekonstruujemy z danych zamówień.

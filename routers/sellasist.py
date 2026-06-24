@@ -1,8 +1,9 @@
 """Sellasist — ręczne odświeżanie danych (przycisk w headerze) + status.
 
-UWAGA bezpieczeństwo: spójnie z sąsiednimi routerami (fx, containers) te endpointy
-nie mają jeszcze guardu auth — przycisk i tak leci z aplikacji z tokenem usera
-(audit middleware zaloguje akcję). Twardy guard ADMIN-only dopinamy w czacie AUTH.
+Guard: wymaga zalogowania (get_current_user). Przycisk „Odśwież" jest widoczny
+w headerze dla każdego zalogowanego, więc bramkujemy tylko logowaniem — nie rolą
+(audit middleware zaloguje akcję). Ewentualne zacieśnienie do IMPORT/ADMIN —
+osobno, po potwierdzeniu kto widzi przycisk.
 
 Bieg pobiera dane bezpośrednio z API Sellasista i upsertuje do Supabase (te same
 tabele co skrypty z Task Schedulera) — patrz services/sellasist.py.
@@ -10,21 +11,23 @@ tabele co skrypty z Task Schedulera) — patrz services/sellasist.py.
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
+from models import CurrentUser
+from security import get_current_user
 from services.sellasist import get_status, is_running, mark_started, run_refresh
 
 router = APIRouter(prefix="/api/sellasist", tags=["sellasist"])
 
 
 @router.get("/status")
-async def sellasist_status():
+async def sellasist_status(user: CurrentUser = Depends(get_current_user)):
     """Stan ostatniego/bieżącego odświeżania (do pollowania z frontu)."""
     return get_status()
 
 
 @router.post("/refresh")
-async def sellasist_refresh():
+async def sellasist_refresh(user: CurrentUser = Depends(get_current_user)):
     """Uruchamia odświeżanie w tle. Zwraca natychmiast, front polluje /status."""
     st = get_status()
     if not st["configured"]:

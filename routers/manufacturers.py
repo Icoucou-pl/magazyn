@@ -8,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
-from models import ManufacturerIn, ManufacturerOut, SeasonPoint
+from models import ManufacturerIn, ManufacturerOut, SeasonPoint, CurrentUser
+from security import get_current_user, require_edit_containers
 
 router = APIRouter(prefix="/api", tags=["manufacturers"])
 
 
 @router.get("/manufacturers", response_model=List[ManufacturerOut])
-async def list_manufacturers(db: AsyncSession = Depends(get_db)):
+async def list_manufacturers(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     r = await db.execute(text(f"""
         SELECT m.id, m.name, m.color, m.notes, m.email, m.contact,
             (SELECT COUNT(*) FROM {settings.TABLE_PRODUCT_ATTRS} pa WHERE pa.manufacturer_id = m.id) AS sku_count,
@@ -26,7 +27,7 @@ async def list_manufacturers(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/manufacturers/{mid}/sales-season", response_model=List[SeasonPoint])
-async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)):
+async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Sprzedaż miesięczna wszystkich SKU producenta (qty + przychód netto/brutto w PLN),
     od 1 stycznia zeszłego roku do dziś — pod wykres kalendarzowy Sty–Gru."""
     where = f"""LOWER(TRIM(i.{settings.COL_ITEM_SKU})) IN (
@@ -37,7 +38,7 @@ async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)
 
 
 @router.get("/products/{sku}/sales-season", response_model=List[SeasonPoint])
-async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db)):
+async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Sprzedaż miesięczna pojedynczego SKU (qty + przychód netto/brutto w PLN),
     od 1 stycznia zeszłego roku do dziś — pod wykres w karcie produktu."""
     where = f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sku))"
@@ -100,7 +101,7 @@ async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> Li
 
 
 @router.post("/manufacturers", response_model=ManufacturerOut, status_code=201)
-async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depends(get_db)):
+async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(
         text(f"INSERT INTO {settings.TABLE_MANUFACTURERS} (name, color, notes, email, contact) VALUES (:n, :c, :no, :e, :ct) RETURNING id"),
         {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact}
@@ -111,7 +112,7 @@ async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depend
 
 
 @router.patch("/manufacturers/{mid}", response_model=ManufacturerOut)
-async def update_manufacturer(mid: int, payload: ManufacturerIn, db: AsyncSession = Depends(get_db)):
+async def update_manufacturer(mid: int, payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     await db.execute(
         text(f"UPDATE {settings.TABLE_MANUFACTURERS} SET name=:n, color=:c, notes=:no, email=:e, contact=:ct WHERE id=:id"),
         {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact, "id": mid}
@@ -121,7 +122,7 @@ async def update_manufacturer(mid: int, payload: ManufacturerIn, db: AsyncSessio
 
 
 @router.delete("/manufacturers/{mid}", status_code=204)
-async def delete_manufacturer(mid: int, db: AsyncSession = Depends(get_db)):
+async def delete_manufacturer(mid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_MANUFACTURERS} WHERE id=:id"), {"id": mid})
     await db.commit()
     if r.rowcount == 0:

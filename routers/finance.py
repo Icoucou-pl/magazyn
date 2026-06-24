@@ -10,8 +10,8 @@ Sprzedaż „zrealizowana" = whitelist statusów z config (INCLUDED_STATUS_FILTE
 Kanał sprzedaży = SALES_CHANNEL_CASE z creator (Allegro/Erli/Studio-Bay/Klaudia/I-CC.PL).
 Koszt do marży = ilość × cena_zakupu_netto z Subiekta (bieżący koszt, nie historyczny z dnia sprzedaży).
 
-Uwaga (auth): endpoint bez twardego guardu — spójnie z resztą routerów; pełne zabezpieczenie
-backendu to osobny temat. Na froncie zakładka jest pod uprawnieniem viewFinancials.
+Guard: oba endpointy wymagają uprawnienia viewFinancials (require_view_financials),
+odwzorowanie frontowego can(user, "viewFinancials"). Override per-user wygrywa nad rolą.
 """
 
 from datetime import date, timedelta
@@ -24,10 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings, INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, to_float
 from database import get_db
 from models import (
+    CurrentUser,
     FinanceOverview, FinanceKpi, FinanceChannelRow, FinanceMfrRow, FinanceMonthlyPoint,
     FinanceProduct, FinanceProductInfo, FinanceProductKpi, FinanceProductRotation,
     FinanceProductChannelRow, FinanceProductMonthly,
 )
+from security import require_view_financials
 
 router = APIRouter(prefix="/api", tags=["finance"])
 
@@ -120,6 +122,7 @@ def _margin(net: float, cost: float) -> tuple:
 async def finance_overview(
     period: str = Query("ytd"),
     db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_view_financials),
 ):
     if period not in ALLOWED_PERIODS:
         period = "ytd"
@@ -240,6 +243,7 @@ async def finance_product(
     symbol: str = Query(..., min_length=1),
     period: str = Query("ytd"),
     db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_view_financials),
 ):
     """Karta produktu: info + KPI finansowe + rotacja/pokrycie stanu + kanały + trend miesięczny.
     Koszt = cena_zakupu_netto z Subiekta (bieżący, jednolity per szt.) → koszt całkowity = sztuki × koszt jedn."""

@@ -8,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
-from models import ContainerTypeIn, ContainerTypeOut
+from models import ContainerTypeIn, ContainerTypeOut, CurrentUser
+from security import get_current_user, require_edit_containers
 
 router = APIRouter(prefix="/api", tags=["container-types"])
 
 
 @router.get("/container-types", response_model=List[ContainerTypeOut])
-async def list_container_types(db: AsyncSession = Depends(get_db)):
+async def list_container_types(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     r = await db.execute(text(f"SELECT id, name, capacity_cbm, sort_order FROM {settings.TABLE_CONTAINER_TYPES} ORDER BY sort_order, name"))
     return [ContainerTypeOut(id=row._mapping["id"], name=row._mapping["name"],
                              capacity_cbm=float(row._mapping["capacity_cbm"]),
@@ -22,7 +23,7 @@ async def list_container_types(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/container-types", response_model=ContainerTypeOut, status_code=201)
-async def create_container_type(payload: ContainerTypeIn, db: AsyncSession = Depends(get_db)):
+async def create_container_type(payload: ContainerTypeIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(
         text(f"INSERT INTO {settings.TABLE_CONTAINER_TYPES} (name, capacity_cbm, sort_order) VALUES (:n, :c, :s) RETURNING id"),
         {"n": payload.name, "c": payload.capacity_cbm, "s": payload.sort_order}
@@ -33,7 +34,7 @@ async def create_container_type(payload: ContainerTypeIn, db: AsyncSession = Dep
 
 
 @router.patch("/container-types/{tid}", response_model=ContainerTypeOut)
-async def update_container_type(tid: int, payload: ContainerTypeIn, db: AsyncSession = Depends(get_db)):
+async def update_container_type(tid: int, payload: ContainerTypeIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     await db.execute(
         text(f"UPDATE {settings.TABLE_CONTAINER_TYPES} SET name=:n, capacity_cbm=:c, sort_order=:s WHERE id=:id"),
         {"n": payload.name, "c": payload.capacity_cbm, "s": payload.sort_order, "id": tid}
@@ -43,7 +44,7 @@ async def update_container_type(tid: int, payload: ContainerTypeIn, db: AsyncSes
 
 
 @router.delete("/container-types/{tid}", status_code=204)
-async def delete_container_type(tid: int, db: AsyncSession = Depends(get_db)):
+async def delete_container_type(tid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_TYPES} WHERE id=:id"), {"id": tid})
     await db.commit()
     if r.rowcount == 0:

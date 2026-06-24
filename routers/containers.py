@@ -15,8 +15,9 @@ from config import settings
 from database import get_db, SessionLocal
 from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
-    AttachmentOut, AttachmentCreate,
+    AttachmentOut, AttachmentCreate, CurrentUser,
 )
+from security import get_current_user, require_edit_containers, require_export
 from services.containers import fetch_containers, get_container_by_id
 
 router = APIRouter(prefix="/api", tags=["containers"])
@@ -44,7 +45,7 @@ def _resolve_lot(lot_ref: Optional[int], lot_ids: List[int]) -> Optional[int]:
 
 
 @router.get("/containers/export/csv")
-async def export_containers_xlsx(db: AsyncSession = Depends(get_db)):
+async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_export)):
     """Eksport kontenerów do Excela (XLSX)."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -107,17 +108,17 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/containers", response_model=List[ContainerOut])
-async def list_containers(status: Optional[ContainerStatus] = None, db: AsyncSession = Depends(get_db)):
+async def list_containers(status: Optional[ContainerStatus] = None, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     return await fetch_containers(db, status)
 
 
 @router.get("/containers/{cid}", response_model=ContainerOut)
-async def get_container(cid: int, db: AsyncSession = Depends(get_db)):
+async def get_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     return await get_container_by_id(db, cid)
 
 
 @router.post("/containers", response_model=ContainerOut, status_code=201)
-async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(get_db)):
+async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     if payload.eta_date < payload.order_date:
         raise HTTPException(400, "ETA nie może być przed datą zamówienia")
 
@@ -151,7 +152,7 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
 
 
 @router.patch("/containers/{cid}", response_model=ContainerOut)
-async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession = Depends(get_db)):
+async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     updates = []
     params = {"id": cid}
     for field in ["container_number", "container_type_id", "order_date", "eta_date", "status", "notes"]:
@@ -205,7 +206,7 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
 
 
 @router.delete("/containers/{cid}", status_code=204)
-async def delete_container(cid: int, db: AsyncSession = Depends(get_db)):
+async def delete_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINERS} WHERE id = :id"), {"id": cid})
     await db.commit()
     if r.rowcount == 0:
@@ -213,7 +214,7 @@ async def delete_container(cid: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/containers/{cid}/deliver", response_model=ContainerOut)
-async def deliver_container(cid: int, db: AsyncSession = Depends(get_db)):
+async def deliver_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET status = 'DELIVERED', updated_at = CURRENT_TIMESTAMP WHERE id = :id"), {"id": cid})
     await db.commit()
     return await get_container_by_id(db, cid)
@@ -242,7 +243,7 @@ def _guess_type(filename: str) -> str:
 
 
 @router.post("/containers/{cid}/attachments", response_model=AttachmentOut, status_code=201)
-async def add_attachment(cid: int, file: UploadFile = File(...)):
+async def add_attachment(cid: int, file: UploadFile = File(...), user: CurrentUser = Depends(require_edit_containers)):
     """Wgrywa plik (zawartość w bazie jako BYTEA). Ponawia zapis na świeżym
     połączeniu przy chwilowych błędach poolера Supabase (działa za 1. razem)."""
     data = await file.read()
@@ -274,7 +275,7 @@ async def add_attachment(cid: int, file: UploadFile = File(...)):
 
 
 @router.get("/attachments/{aid}/download")
-async def download_attachment(aid: int, db: AsyncSession = Depends(get_db)):
+async def download_attachment(aid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Zwraca zawartość pliku załącznika."""
     r = await db.execute(text(f"SELECT filename, content_type, file_data FROM {settings.TABLE_ATTACHMENTS} WHERE id = :id"), {"id": aid})
     row = r.first()
@@ -286,7 +287,7 @@ async def download_attachment(aid: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/attachments/{aid}", status_code=204)
-async def delete_attachment(aid: int, db: AsyncSession = Depends(get_db)):
+async def delete_attachment(aid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_ATTACHMENTS} WHERE id = :id"), {"id": aid})
     await db.commit()
     if r.rowcount == 0:
