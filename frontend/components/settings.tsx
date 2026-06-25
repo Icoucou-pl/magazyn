@@ -1261,8 +1261,8 @@ function FreshnessPanel() {
         </button>
       </div>
 
-      <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+        <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse" }}>
           <thead>
             <tr>
               <th style={th}>Źródło</th>
