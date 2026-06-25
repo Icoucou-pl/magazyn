@@ -197,9 +197,10 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
           .settings-layout { grid-template-columns: 1fr !important; }
           .settings-sidebar {
             position: relative !important; top: 0 !important;
-            display: flex !important; overflow-x: auto; padding: 4px !important; gap: 4px;
+            display: flex !important; flex-wrap: wrap; overflow: visible !important;
+            padding: 4px !important; gap: 6px;
           }
-          .settings-sidebar > button { flex-shrink: 0; }
+          .settings-sidebar > button { width: auto !important; flex: 0 0 auto; }
         }
       `}</style>
     </div>
