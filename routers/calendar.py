@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from models import CurrentUser
-from security import get_current_user, require_view_financials
+from security import get_current_user, require_view_financials, has_perm
 from services.products import fetch_products
 from services.containers import fetch_containers
 
@@ -173,6 +173,10 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
             total_value += stock_at_d * price
             total_units += stock_at_d
         points.append({"date": d.isoformat(), "value": round(total_value, 2), "units": round(total_units)})
+
+    if not has_perm(user, "viewFinancials"):
+        for pt in points:
+            pt["value"] = 0
 
     return {
         "points": points,

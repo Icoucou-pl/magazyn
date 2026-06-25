@@ -14,22 +14,36 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser,
 )
+from security import get_current_user, has_perm
 from services.products import fetch_products, get_product
 
 router = APIRouter(prefix="/api", tags=["products"])
 
 
+def _mask_financials(products, user):
+    """Serwerowe ukrycie cen: zeruje pola finansowe dla usera bez viewFinancials.
+    Front i tak maskuje wizualnie — to zamyka wyciek wartości w payloadzie (zakładka Network)."""
+    if has_perm(user, "viewFinancials"):
+        return products
+    for p in products:
+        p.stock_value = 0.0
+        p.purchase_price = 0.0
+    return products
+
+
 @router.get("/products", response_model=List[ProductSummary])
-async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), db: AsyncSession = Depends(get_db)):
+async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
-    return await fetch_products(db, allowed)
+    return _mask_financials(await fetch_products(db, allowed), user)
 
 
 @router.get("/products/{sku}", response_model=ProductSummary)
-async def get_product_endpoint(sku: str, db: AsyncSession = Depends(get_db)):
-    return await get_product(db, sku)
+async def get_product_endpoint(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    p = await get_product(db, sku)
+    _mask_financials([p], user)
+    return p
 
 
 @router.put("/products/{sku}/lead-time", response_model=ProductSummary)
@@ -253,7 +267,7 @@ async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/favorites", response_model=List[ProductSummary])
-async def list_favorites(db: AsyncSession = Depends(get_db)):
+async def list_favorites(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Zwraca tylko ulubione produkty."""
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"})
-    return [p for p in products if p.is_favorite]
+    return _mask_financials([p for p in products if p.is_favorite], user)

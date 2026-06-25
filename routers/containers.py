@@ -17,10 +17,23 @@ from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
     AttachmentOut, AttachmentCreate, CurrentUser,
 )
-from security import get_current_user, require_edit_containers, require_export
+from security import get_current_user, require_edit_containers, require_export, has_perm
 from services.containers import fetch_containers, get_container_by_id
 
 router = APIRouter(prefix="/api", tags=["containers"])
+
+
+def _mask_container_financials(containers, user):
+    """Serwerowe ukrycie cen w kontenerach dla usera bez viewFinancials."""
+    if has_perm(user, "viewFinancials"):
+        return containers
+    for c in containers:
+        c.total_value = 0.0
+        for it in c.items:
+            it.unit_cost = None
+        for lot in c.lots:
+            lot.total_value = 0.0
+    return containers
 
 
 async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
@@ -109,12 +122,14 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
 
 @router.get("/containers", response_model=List[ContainerOut])
 async def list_containers(status: Optional[ContainerStatus] = None, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    return await fetch_containers(db, status)
+    return _mask_container_financials(await fetch_containers(db, status), user)
 
 
 @router.get("/containers/{cid}", response_model=ContainerOut)
 async def get_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    return await get_container_by_id(db, cid)
+    c = await get_container_by_id(db, cid)
+    _mask_container_financials([c], user)
+    return c
 
 
 @router.post("/containers", response_model=ContainerOut, status_code=201)
