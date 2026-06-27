@@ -13,7 +13,7 @@ from audit import audit_middleware
 from routers import (
     auth, users, audit_log, meta, products, anomalies,
     containers, manufacturers, container_types, calendar, tools, fx, finance,
-    sellasist, sync,
+    sellasist, sync, firmy,
 )
 
 app = FastAPI(title="Magazyn API", version="5.0", lifespan=lifespan)
@@ -32,5 +32,5 @@ app.middleware("http")(audit_middleware)
 # Routery - każdy ma własny prefix /api
 for r in (auth, users, audit_log, meta, products, anomalies,
           containers, manufacturers, container_types, calendar, tools, fx, finance,
-          sellasist, sync):
+          sellasist, sync, firmy):
     app.include_router(r.router)

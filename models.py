@@ -334,6 +334,27 @@ class ShoppingListGroup(BaseModel):
     total_skus: int
 
 
+# ===== FIRMY (sklepy: AMH / Acti / Veluxa) =====
+class FirmaOut(BaseModel):
+    id: int
+    slug: str
+    name: str
+    color: Optional[str] = None
+    is_self: bool = False
+    base_url: Optional[str] = None
+    api_key_env: Optional[str] = None
+    key_present: bool = False          # czy zmienna środowiskowa z kluczem jest ustawiona
+    configured: bool = False           # gotowa do ingestu (hub AMH zawsze, reszta: base_url + klucz)
+    sort_order: int = 0
+
+
+class FirmaUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    base_url: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
 # ===== AUTO-SUGESTIA =====
 class AutoSuggestRequest(BaseModel):
     manufacturer_id: int
