@@ -112,6 +112,32 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_MANUFACTURERS, "email", "VARCHAR(255)")
         await add_column_if_missing(conn, settings.TABLE_MANUFACTURERS, "contact", "VARCHAR(255)")
 
+        # Firmy (sklepy: AMH / Acti / Veluxa) — każda = jeden Sellasist.
+        # is_self = AMH (stan z Subiektu, hub). Acti/Veluxa to siostrzane sklepy-źródła zapasu.
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_FIRMY} (
+                id SERIAL PRIMARY KEY,
+                slug VARCHAR(40) NOT NULL UNIQUE,
+                name VARCHAR(120) NOT NULL,
+                color VARCHAR(20) DEFAULT '#6b7280',
+                is_self BOOLEAN DEFAULT FALSE,
+                base_url VARCHAR(255),
+                api_key_env VARCHAR(120),
+                sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        # Seed 3 firm — tylko jeśli pusto. base_url/klucz Acti i Veluxy uzupełnisz przy wpinaniu ingestu.
+        result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_FIRMY}"))
+        if result.scalar() == 0:
+            await conn.execute(text(f"""
+                INSERT INTO {settings.TABLE_FIRMY} (slug, name, color, is_self, base_url, api_key_env, sort_order)
+                VALUES
+                    ('amh',    'AMH (i-coucou)', '#4f7cff', TRUE,  :amh_base, 'SELLASIST_API_KEY',        0),
+                    ('acti',   'Acti',           '#22c55e', FALSE, NULL,      'SELLASIST_ACTI_API_KEY',   1),
+                    ('veluxa', 'Veluxa',         '#f59e0b', FALSE, NULL,      'SELLASIST_VELUXA_API_KEY', 2)
+            """), {"amh_base": settings.SELLASIST_BASE_URL or None})
+
         # Typy kontenerów
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_TYPES} (
@@ -148,6 +174,8 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "ean", "VARCHAR(50)")
         # Migracja: ręczne wymuszenie statusu
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "forced_status", "VARCHAR(30)")
+        # Migracja: firma macierzysta produktu (NULL = AMH). Override per-sku, jak manufacturer_id.
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "firma_id", f"INTEGER REFERENCES {settings.TABLE_FIRMY}(id) ON DELETE SET NULL")
 
         # Kontenery
         await conn.execute(text(f"""

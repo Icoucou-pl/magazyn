@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     TABLE_LEAD_TIMES: str = "app_lead_times"
     TABLE_PRODUCT_ATTRS: str = "app_product_attrs"
     TABLE_MANUFACTURERS: str = "app_manufacturers"
+    TABLE_FIRMY: str = "app_firmy"
     TABLE_CONTAINER_TYPES: str = "app_container_types"
     TABLE_CONTAINERS: str = "app_containers"
     TABLE_CONTAINER_ITEMS: str = "app_container_items"
