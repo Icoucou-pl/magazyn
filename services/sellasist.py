@@ -462,32 +462,43 @@ async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List
 # ============================================================
 # BIEG (zadanie w tle)
 # ============================================================
-async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str):
+async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> dict:
     """Jeden sklep. Łapie własne błędy — awaria jednej firmy nie ubija pozostałych.
-    Zwraca krotkę (slug, ok, opis): opis = liczby przy sukcesie albo powód błędu."""
+    Zwraca słownik wyniku: slug, ok, ins/upd/items (liczby tego sklepu), error."""
     before = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
+    err: Optional[str] = None
     try:
         headers = await _fetch_headers(firma, date_from)
         async with SessionLocal() as session:
             inserted_ids = await _upsert_headers(session, firma, headers, sync_time)
             await _insert_new_items(session, firma, headers, sync_time, inserted_ids)
-        a = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
-        return (firma.slug, True, f"+{a[0]-before[0]} nowych, {a[1]-before[1]} zm., +{a[2]-before[2]} poz.")
     except urllib.error.HTTPError as e:
-        return (firma.slug, False, f"HTTP {e.code}")
+        err = f"HTTP {e.code}"
     except urllib.error.URLError as e:
-        return (firma.slug, False, f"brak połączenia ({e.reason})")
+        err = f"brak połączenia ({e.reason})"
     except Exception as e:
-        return (firma.slug, False, str(e))
+        err = str(e)
+    a = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
+    return {
+        "slug": firma.slug, "ok": err is None, "error": err,
+        "ins": a[0] - before[0], "upd": a[1] - before[1], "items": a[2] - before[2],
+    }
+
+
+def _result_desc(r: dict) -> str:
+    if r["ok"]:
+        return f"+{r['ins']} nowych, {r['upd']} zm., +{r['items']} poz."
+    return f"błąd {r['error']}"
 
 
 async def run_refresh() -> None:
     """Pełny bieg po WSZYSTKICH skonfigurowanych firmach (sklepach). Zakłada, że
     mark_started() zostało już wywołane. Zawsze kończy się ustawieniem finished/error.
-    Komunikat to rozbicie per sklep (z liczbami sukcesu) — błąd jednego sklepu NIE
-    chowa wyniku pozostałych. `error` zapala się tylko gdy padły WSZYSTKIE sklepy."""
+    Komunikat to rozbicie per sklep — błąd jednego sklepu NIE chowa wyniku pozostałych.
+    Do dziennika trafia OSOBNY wiersz na każdy sklep (source = sellasist:<slug>)."""
     sync_time = _now_local()
     date_from = (sync_time - timedelta(days=settings.SELLASIST_DAYS_BACK)).strftime("%Y-%m-%d")
+    results: List[dict] = []
     try:
         firmy = await _load_firmy()
         if not firmy:
@@ -497,34 +508,43 @@ async def run_refresh() -> None:
                 await _ensure_schema(session)
             results = [await _refresh_one(f, sync_time, date_from) for f in firmy]
 
-            parts = [(f"{slug}: {desc}" if ok else f"{slug}: błąd {desc}") for slug, ok, desc in results]
-            _status["message"] = " · ".join(parts)
-
-            failed = [f"{slug}: {desc}" for slug, ok, desc in results if not ok]
+            _status["message"] = " · ".join(f"{r['slug']}: {_result_desc(r)}" for r in results)
+            failed = [r for r in results if not r["ok"]]
             if failed and len(failed) == len(results):     # wszystkie padły → realny błąd biegu
-                _status["error"] = "; ".join(failed)
+                _status["error"] = "; ".join(f"{r['slug']}: {r['error']}" for r in failed)
     except Exception as e:
         _status["error"] = str(e)
     finally:
         _status["running"] = False
+        finished = _now_local()
         _status["finished_at"] = datetime.now().isoformat(timespec="seconds")
-        await _write_sync_log(sync_time, _now_local())
+        if results:
+            for r in results:
+                await _write_sync_log(
+                    f"sellasist:{r['slug']}", sync_time, finished, r["ok"],
+                    r["ins"], r["upd"], r["items"],
+                    _result_desc(r) if r["ok"] else None, r["error"],
+                )
+        else:
+            # brak firm / wyjątek przed pętlą — jeden wpis informacyjny, żeby ślad był
+            await _write_sync_log("sellasist", sync_time, finished, _status["error"] is None,
+                                  0, 0, 0, _status.get("message"), _status.get("error"))
 
 
-async def _write_sync_log(started: datetime, finished: datetime) -> None:
-    """Dopisuje wiersz do dziennika synchronizacji (świeżość danych w Ustawieniach).
+async def _write_sync_log(source: str, started: datetime, finished: datetime, ok: bool,
+                          ins: int, upd: int, items: int,
+                          message: Optional[str], error: Optional[str]) -> None:
+    """Dopisuje JEDEN wiersz do dziennika synchronizacji (świeżość danych w Ustawieniach).
     Własna sesja; nigdy nie wywala biegu — log to dodatek, nie krytyczna ścieżka."""
     try:
         async with SessionLocal() as session:
             await session.execute(text(
                 f"INSERT INTO {settings.TABLE_SYNC_LOG} "
                 "(source, started_at, finished_at, ok, inserted, updated, items_added, message, error) "
-                "VALUES ('sellasist', :s, :f, :ok, :ins, :upd, :items, :msg, :err)"
+                "VALUES (:src, :s, :f, :ok, :ins, :upd, :items, :msg, :err)"
             ), {
-                "s": started, "f": finished, "ok": _status["error"] is None,
-                "ins": _status["orders_inserted"], "upd": _status["orders_updated"],
-                "items": _status["items_added"],
-                "msg": _status["message"], "err": _status["error"],
+                "src": source, "s": started, "f": finished, "ok": ok,
+                "ins": ins, "upd": upd, "items": items, "msg": message, "err": error,
             })
             await session.commit()
     except Exception as e:
