@@ -398,6 +398,21 @@ async def _ensure_schema(session: AsyncSession) -> None:
             await session.rollback()
             print(f"[sellasist] migracja {tbl}.shop pominięta: {e}")
 
+    # Unikalność: stary indeks po samym order_id blokuje multi-sklep (ten sam order_id
+    # w dwóch sklepach). Zamieniamy na (shop, order_id). Każdy krok izolowany commitem —
+    # próbujemy i jako indeks, i jako constraint (zależnie jak był założony).
+    for stmt in (
+        "DROP INDEX IF EXISTS idx_sellasist_orders_id",
+        f"ALTER TABLE {settings.TABLE_ORDERS} DROP CONSTRAINT IF EXISTS idx_sellasist_orders_id",
+        f"CREATE UNIQUE INDEX IF NOT EXISTS idx_sellasist_orders_shop_id ON {settings.TABLE_ORDERS} (shop, order_id)",
+    ):
+        try:
+            await session.execute(text(stmt))
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            print(f"[sellasist] migracja indeksu pominięta ({stmt[:40]}…): {e}")
+
 
 async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List[dict], sync_time: datetime,
                             newly_inserted: set) -> None:
