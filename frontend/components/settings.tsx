@@ -38,7 +38,7 @@ type PermDef = { key: string; label: string; desc: string; group: string };
 const PERMS = PERMISSIONS as unknown as PermDef[];
 const ROLE_DEF = ROLE_PERMS as unknown as Record<string, Record<string, boolean>>;
 
-type SectionId = "manufacturers" | "container_types" | "users" | "account" | "audit" | "freshness";
+type SectionId = "manufacturers" | "firmy" | "container_types" | "users" | "account" | "audit" | "freshness";
 type SectionDef = { id: SectionId; label: string; icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; desc: string };
 
 type CtxUser = {
@@ -49,6 +49,7 @@ type CtxUser = {
 // ── Stałe ────────────────────────────────────────────────────
 const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "manufacturers",   label: "Producenci",      icon: I.Factory,  desc: "Dostawcy, kolory, kontakty" },
+  { id: "firmy",            label: "Firmy",           icon: I.Cart,     desc: "Sklepy AMH/Acti/Veluxa, konfiguracja API" },
   { id: "container_types", label: "Typy kontenerów", icon: I.Ship,     desc: "Pojemność CBM, sortowanie" },
   { id: "users",           label: "Użytkownicy",     icon: I.Activity, desc: "Konta, role, uprawnienia" },
   { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
@@ -184,6 +185,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
             </div>
           )}
           {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer}/>}
+          {section === "firmy"           && <FirmaePanel/>}
           {section === "container_types" && <ContainerTypesPanel/>}
           {section === "users"           && <UsersPanel currentUserId={user?.id}/>}
           {section === "account"         && <AccountPanel/>}
@@ -521,6 +523,121 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
         </div>
         <div style={{ height: 4, background: "var(--surface-2)", borderRadius: 99, overflow: "hidden" }}>
           <div style={{ height: "100%", width: `${pct}%`, background: "var(--accent)", borderRadius: 99, transition: "width 0.3s" }}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// FIRMY (sklepy: AMH / Acti / Veluxa)
+// ============================================================
+type Firma = {
+  id: number; slug: string; name: string; color?: string | null; is_self: boolean;
+  base_url?: string | null; api_key_env?: string | null; key_present: boolean;
+  configured: boolean; sort_order: number;
+};
+
+function FirmaePanel() {
+  const user = useUser() as CtxUser;
+  const showEdit = isAdmin(user);
+  const [items, setItems] = useState<Firma[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<number | null>(null);
+
+  const load = async () => {
+    try {
+      const data = await api.get("/firmy");
+      setItems(Array.isArray(data) ? (data as Firma[]) : []);
+    } catch { toast("Nie udało się pobrać firm", "error"); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <span style={{ fontSize: 12, color: "var(--text-lo)", lineHeight: 1.5 }}>
+        Sklepy = źródła sprzedaży i zapasu. <b style={{ color: "var(--text-mid)" }}>AMH</b> to hub (stan z Subiektu).
+        Acti i Veluxa ciągniemy z ich Sellasista — uzupełnij <span className="num">base_url</span>; klucz API jest w zmiennej środowiskowej na Railway (nie w bazie).
+      </span>
+      {loading && !items.length ? (
+        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+          {items.map(f => (
+            <FirmaCard key={f.id} item={f}
+              editing={editingId === f.id} onEdit={() => setEditingId(f.id)}
+              onSaved={() => { setEditingId(null); load(); }} onCancel={() => setEditingId(null)} showEdit={showEdit}/>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FirmaCard({ item, editing, onEdit, onSaved, onCancel, showEdit }: {
+  item: Firma; editing: boolean; onEdit: () => void; onSaved: () => void; onCancel: () => void; showEdit: boolean;
+}) {
+  const [baseUrl, setBaseUrl] = useState(item.base_url || "");
+  const [color, setColor] = useState(item.color || "#6b7280");
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.patch(`/firmy/${item.id}`, { base_url: baseUrl.trim() || null, color });
+      toast("Zapisano firmę", "ok"); onSaved();
+    } catch { toast("Nie udało się zapisać", "error"); }
+    finally { setBusy(false); }
+  };
+
+  if (editing) {
+    return (
+      <div style={{ padding: 14, background: "var(--surface-2)", border: "1px solid var(--accent)", borderRadius: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{item.name}</div>
+        <SettingsField label="Base URL Sellasista">
+          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} autoFocus placeholder="https://…/api" style={inputStyle}/>
+        </SettingsField>
+        <SettingsField label="Kolor (tag na dashboardach)">
+          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={{ ...inputStyle, height: 38, padding: 3 }}/>
+        </SettingsField>
+        <div style={{ fontSize: 11, color: "var(--text-lo)", marginBottom: 10 }}>
+          Klucz API: zmienna <span className="num">{item.api_key_env || "—"}</span> — {item.key_present ? "ustawiona ✓" : "brak na Railway"}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+          <button onClick={onCancel} disabled={busy} style={btnSecondary}>Anuluj</button>
+          <button onClick={save} disabled={busy} style={btnPrimary}>{busy ? "…" : "Zapisz"}</button>
+        </div>
+      </div>
+    );
+  }
+
+  const badge = item.is_self
+    ? { txt: "Hub (Subiekt)", col: "var(--text-mid)" }
+    : item.configured
+      ? { txt: "Połączona", col: "var(--ok, #22c55e)" }
+      : !item.key_present
+        ? { txt: "Brak klucza API", col: "var(--critical)" }
+        : { txt: "Uzupełnij base_url", col: "var(--warning, #f59e0b)" };
+
+  return (
+    <div style={{ padding: 14, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, transition: "all 0.12s" }}
+      onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--border)"}
+      onMouseLeave={(e) => e.currentTarget.style.borderColor = "var(--border-soft)"}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ width: 12, height: 12, borderRadius: 3, background: item.color || "#6b7280", flexShrink: 0 }}/>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{item.name}</div>
+            <div className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{item.slug}</div>
+          </div>
+        </div>
+        {showEdit && <button onClick={onEdit} style={btnGhostMini}>Edytuj</button>}
+      </div>
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ alignSelf: "flex-start", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: badge.col, background: "var(--surface-2)", padding: "3px 8px", borderRadius: 99 }}>{badge.txt}</span>
+        <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", wordBreak: "break-all" }}>
+          {item.base_url || "— brak base_url —"}
         </div>
       </div>
     </div>
