@@ -46,8 +46,13 @@ async def data_freshness(db: AsyncSession = Depends(get_db), user: CurrentUser =
                 cnt = int(row["cnt"]) if row["cnt"] is not None else 0
         except Exception:
             pass
+        # Ostatni bieg z dziennika: dopasowanie po prefiksie, bo Sellasist loguje per sklep
+        # (sellasist:amh, sellasist:acti, …) — bierzemy najnowszy z wszystkich pasujących.
+        log_candidates = [v for k, v in log_last.items()
+                          if v is not None and (k == logsrc or k.startswith(logsrc + ":"))]
+        last_log = max(log_candidates) if log_candidates else None
         # "Ostatnie pobranie" = najnowszy z: ostatni bieg (dziennik) i ostatnia zmiana danych.
-        candidates = [d for d in (last_data, log_last.get(logsrc)) if d is not None]
+        candidates = [d for d in (last_data, last_log) if d is not None]
         last = max(candidates) if candidates else None
         out[key] = {"last": last.isoformat() if last is not None else None, "count": cnt}
     return out
