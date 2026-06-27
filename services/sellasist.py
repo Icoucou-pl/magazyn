@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -38,6 +40,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import SessionLocal
+
+
+@dataclass
+class Firma:
+    """Kontekst jednego sklepu Sellasista (z app_firmy + klucz ze zmiennej środowiskowej)."""
+    slug: str
+    base_url: str
+    api_key: str
+
+
+async def _load_firmy() -> List["Firma"]:
+    """Wczytuje skonfigurowane firmy z app_firmy (base_url ustawiony + klucz w env).
+    Fallback: jeśli tabela pusta/niewypełniona, a legacy SELLASIST_* jest ustawione,
+    syntetyzuje 'amh' — żeby zachowanie nie zmieniło się dopóki nie skonfigurujesz firm."""
+    out: List[Firma] = []
+    try:
+        async with SessionLocal() as session:
+            r = await session.execute(text(
+                f"SELECT slug, base_url, api_key_env FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
+            ))
+            for row in r.mappings():
+                base = (row["base_url"] or "").strip()
+                key = os.getenv(row["api_key_env"]) if row["api_key_env"] else None
+                if base and key:
+                    out.append(Firma(slug=row["slug"], base_url=base, api_key=key))
+    except Exception as e:
+        print(f"[sellasist] _load_firmy błąd (fallback do legacy): {e}")
+
+    if not out and settings.SELLASIST_API_KEY and settings.SELLASIST_BASE_URL:
+        out.append(Firma(slug="amh", base_url=settings.SELLASIST_BASE_URL, api_key=settings.SELLASIST_API_KEY))
+    return out
 
 # Kolumny zapisywane do sellasist_orders (1:1 ze skryptem nagłówków) + data_pobrania.
 _ORDER_COLS = [
@@ -109,15 +142,15 @@ def _ssl_context() -> Optional[ssl.SSLContext]:
         return None
 
 
-def _http_get_sync(path: str, params: Optional[dict] = None) -> Any:
-    """Synchroniczny GET do API Sellasista. Zwraca sparsowany JSON.
+def _http_get_sync(firma: "Firma", path: str, params: Optional[dict] = None) -> Any:
+    """Synchroniczny GET do API Sellasista danego sklepu. Zwraca sparsowany JSON.
     Nagłówek apiKey jak w skryptach. Rzuca wyjątek przy błędzie HTTP."""
-    base = settings.SELLASIST_BASE_URL.rstrip("/")
+    base = firma.base_url.rstrip("/")
     url = f"{base}{path}"
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, method="GET")
-    req.add_header("apiKey", settings.SELLASIST_API_KEY)
+    req.add_header("apiKey", firma.api_key)
     req.add_header("Accept", "application/json")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=settings.SELLASIST_TIMEOUT, context=_ssl_context()) as resp:
@@ -125,8 +158,8 @@ def _http_get_sync(path: str, params: Optional[dict] = None) -> Any:
     return json.loads(raw) if raw else None
 
 
-async def _http_get(path: str, params: Optional[dict] = None) -> Any:
-    return await asyncio.to_thread(_http_get_sync, path, params)
+async def _http_get(firma: "Firma", path: str, params: Optional[dict] = None) -> Any:
+    return await asyncio.to_thread(_http_get_sync, firma, path, params)
 
 
 # ============================================================
@@ -234,7 +267,7 @@ def _normalize_items(order_id: int, order_date: Optional[datetime],
 # ============================================================
 # POBIERANIE NAGŁÓWKÓW (lista, stronicowana)
 # ============================================================
-async def _fetch_headers(date_from: str) -> List[dict]:
+async def _fetch_headers(firma: "Firma", date_from: str) -> List[dict]:
     """Pobiera nagłówki zamówień z ostatnich DAYS_BACK dni (offset += page_size),
     zatrzymuje się gdy partia jest starsza niż date_from albo niepełna."""
     page = settings.SELLASIST_PAGE_SIZE
@@ -243,7 +276,7 @@ async def _fetch_headers(date_from: str) -> List[dict]:
     out: List[dict] = []
 
     for _ in range(_PAGE_SAFETY_LIMIT):
-        payload = await _http_get("/orders", {"offset": offset})
+        payload = await _http_get(firma, "/orders", {"offset": offset})
         rows = payload if isinstance(payload, list) else (payload or {}).get("data", [])
         if not rows:
             break
@@ -273,18 +306,19 @@ async def _fetch_headers(date_from: str) -> List[dict]:
 # ============================================================
 # ZAPIS: nagłówki (upsert + log) i pozycje (insert-once)
 # ============================================================
-async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time: datetime) -> set:
+async def _upsert_headers(session: AsyncSession, firma: "Firma", headers: List[dict], sync_time: datetime) -> set:
     if not headers:
         return set()
 
+    shop = firma.slug
     ids = [h["order_id"] for h in headers]
     res = await session.execute(
-        text(f"SELECT * FROM {settings.TABLE_ORDERS} WHERE order_id = ANY(:ids)"),
-        {"ids": ids},
+        text(f"SELECT * FROM {settings.TABLE_ORDERS} WHERE shop = :shop AND order_id = ANY(:ids)"),
+        {"ids": ids, "shop": shop},
     )
     existing = {row["order_id"]: dict(row) for row in res.mappings().all()}
 
-    insert_cols = _ORDER_COLS + ["data_pobrania"]
+    insert_cols = _ORDER_COLS + ["data_pobrania", "shop"]
     insert_sql = text(
         f"INSERT INTO {settings.TABLE_ORDERS} ({', '.join(insert_cols)}) "
         f"VALUES ({', '.join(':' + c for c in insert_cols)})"
@@ -292,23 +326,23 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
     set_clause = ", ".join(f"{c} = :{c}" for c in _ORDER_COLS if c != "order_id")
     update_sql = text(
         f"UPDATE {settings.TABLE_ORDERS} SET {set_clause}, data_pobrania = :data_pobrania "
-        f"WHERE order_id = :order_id"
+        f"WHERE shop = :shop AND order_id = :order_id"
     )
     log_sql = text(
         f"INSERT INTO {settings.TABLE_ORDERS}_log "
-        "(sync_time, order_id, change_type, column_name, old_value, new_value) "
-        "VALUES (:sync_time, :order_id, :change_type, :column_name, :old_value, :new_value)"
+        "(sync_time, order_id, shop, change_type, column_name, old_value, new_value) "
+        "VALUES (:sync_time, :order_id, :shop, :change_type, :column_name, :old_value, :new_value)"
     )
 
     inserted_ids: set = set()
     for h in headers:
         oid = h["order_id"]
-        row = {**h, "data_pobrania": sync_time}
+        row = {**h, "data_pobrania": sync_time, "shop": shop}
 
         if oid not in existing:
             await session.execute(insert_sql, row)
             await session.execute(log_sql, {
-                "sync_time": sync_time, "order_id": str(oid), "change_type": "INSERT",
+                "sync_time": sync_time, "order_id": str(oid), "shop": shop, "change_type": "INSERT",
                 "column_name": None, "old_value": None, "new_value": None,
             })
             _status["orders_inserted"] += 1
@@ -327,7 +361,7 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
             await session.execute(update_sql, row)
             for col, old_v, new_v in changes:
                 await session.execute(log_sql, {
-                    "sync_time": sync_time, "order_id": str(oid), "change_type": "UPDATE",
+                    "sync_time": sync_time, "order_id": str(oid), "shop": shop, "change_type": "UPDATE",
                     "column_name": col,
                     "old_value": None if old_v is None else str(old_v),
                     "new_value": None if new_v is None else str(new_v),
@@ -338,12 +372,16 @@ async def _upsert_headers(session: AsyncSession, headers: List[dict], sync_time:
     return inserted_ids
 
 
-async def _ensure_log_table(session: AsyncSession) -> None:
+async def _ensure_schema(session: AsyncSession) -> None:
+    """Tworzy tabelę logu (jeśli brak) i dokłada kolumnę `shop` do zamówień/pozycji/logu.
+    Idempotentne. Istniejące wiersze (tylko AMH) dostają DEFAULT 'amh' (backfill).
+    Każdy ALTER izolowany własnym commitem — błąd jednego nie psuje pozostałych."""
     await session.execute(text(f"""
         CREATE TABLE IF NOT EXISTS {settings.TABLE_ORDERS}_log (
             log_id      SERIAL PRIMARY KEY,
             sync_time   TIMESTAMP NOT NULL,
             order_id    VARCHAR NOT NULL,
+            shop        VARCHAR NOT NULL DEFAULT 'amh',
             change_type VARCHAR NOT NULL,
             column_name VARCHAR,
             old_value   VARCHAR,
@@ -352,17 +390,30 @@ async def _ensure_log_table(session: AsyncSession) -> None:
     """))
     await session.commit()
 
+    for tbl in (settings.TABLE_ORDERS, settings.TABLE_ORDER_ITEMS, f"{settings.TABLE_ORDERS}_log"):
+        try:
+            await session.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS shop VARCHAR NOT NULL DEFAULT 'amh'"))
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            print(f"[sellasist] migracja {tbl}.shop pominięta: {e}")
 
-async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_time: datetime,
+
+async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List[dict], sync_time: datetime,
                             newly_inserted: set) -> None:
     """Dociąga pozycje (GET /orders/{id}) i wstawia carts (insert-once, jak skrypt).
     Żeby hourly nie odpytywał w kółko zamówień z pustym koszykiem, ogranicza się do:
     zamówień świeżo dodanych w tym biegu + krótkiego okna SELLASIST_ITEMS_DAYS_BACK
-    (samonaprawa po przerwanym biegu). Membership po stringu — odporne na typ kolumny."""
+    (samonaprawa po przerwanym biegu). Membership po stringu — odporne na typ kolumny.
+    Zakres istniejących pozycji ograniczony do tego sklepu (shop) — bez kolizji order_id."""
     if not headers:
         return
 
-    res = await session.execute(text(f"SELECT DISTINCT order_id FROM {settings.TABLE_ORDER_ITEMS}"))
+    shop = firma.slug
+    res = await session.execute(
+        text(f"SELECT DISTINCT order_id FROM {settings.TABLE_ORDER_ITEMS} WHERE shop = :shop"),
+        {"shop": shop},
+    )
     existing_ids = {str(r[0]) for r in res.all()}
 
     cutoff = sync_time - timedelta(days=settings.SELLASIST_ITEMS_DAYS_BACK)
@@ -380,7 +431,7 @@ async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_tim
 
     item_cols = [
         "order_id", "order_date", "product_id", "product_name", "symbol", "ean",
-        "quantity", "price", "price_netto", "tax_rate", "currency", "data_pobrania",
+        "quantity", "price", "price_netto", "tax_rate", "currency", "data_pobrania", "shop",
     ]
     insert_sql = text(
         f"INSERT INTO {settings.TABLE_ORDER_ITEMS} ({', '.join(item_cols)}) "
@@ -389,9 +440,9 @@ async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_tim
 
     for oid in targets:
         try:
-            detail = await _http_get(f"/orders/{oid}")
+            detail = await _http_get(firma, f"/orders/{oid}")
         except Exception as e:  # pojedyncze zamówienie nie wywala całego biegu
-            print(f"[sellasist] detail {oid} błąd (pomijam): {e}")
+            print(f"[sellasist] detail {shop}/{oid} błąd (pomijam): {e}")
             continue
         if not detail:
             continue
@@ -402,7 +453,7 @@ async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_tim
         hdr = by_id[oid]
         rows = _normalize_items(oid, hdr.get("order_date"), hdr.get("currency"), carts)
         for r in rows:
-            await session.execute(insert_sql, {**r, "data_pobrania": sync_time})
+            await session.execute(insert_sql, {**r, "data_pobrania": sync_time, "shop": shop})
         _status["items_added"] += len(rows)
         await session.commit()
         await asyncio.sleep(0.1)
@@ -411,26 +462,49 @@ async def _insert_new_items(session: AsyncSession, headers: List[dict], sync_tim
 # ============================================================
 # BIEG (zadanie w tle)
 # ============================================================
+async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> Optional[str]:
+    """Jeden sklep: nagłówki (upsert+log) + pozycje. Łapie własne błędy — awaria
+    jednej firmy nie ubija pozostałych. Zwraca komunikat błędu albo None."""
+    try:
+        headers = await _fetch_headers(firma, date_from)
+        async with SessionLocal() as session:
+            inserted_ids = await _upsert_headers(session, firma, headers, sync_time)
+            await _insert_new_items(session, firma, headers, sync_time, inserted_ids)
+        return None
+    except urllib.error.HTTPError as e:
+        return f"{firma.slug}: HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return f"{firma.slug}: brak połączenia ({e.reason})"
+    except Exception as e:
+        return f"{firma.slug}: {e}"
+
+
 async def run_refresh() -> None:
-    """Pełny bieg: nagłówki (upsert+log) + pozycje (insert-once). Zakłada, że
-    mark_started() zostało już wywołane. Zawsze kończy się ustawieniem finished/error."""
+    """Pełny bieg po WSZYSTKICH skonfigurowanych firmach (sklepach). Zakłada, że
+    mark_started() zostało już wywołane. Zawsze kończy się ustawieniem finished/error.
+    Liczniki _status sumują się po sklepach; do dziennika idzie jeden zbiorczy wiersz."""
     sync_time = _now_local()
     date_from = (sync_time - timedelta(days=settings.SELLASIST_DAYS_BACK)).strftime("%Y-%m-%d")
+    errors: List[str] = []
     try:
-        headers = await _fetch_headers(date_from)
-        async with SessionLocal() as session:
-            await _ensure_log_table(session)
-            inserted_ids = await _upsert_headers(session, headers, sync_time)
-            await _insert_new_items(session, headers, sync_time, inserted_ids)
-        _status["message"] = (
-            f"+{_status['orders_inserted']} nowych, "
-            f"{_status['orders_updated']} zmienionych, "
-            f"+{_status['items_added']} pozycji"
-        )
-    except urllib.error.HTTPError as e:
-        _status["error"] = f"HTTP {e.code} z Sellasista"
-    except urllib.error.URLError as e:
-        _status["error"] = f"Brak połączenia z Sellasistem: {e.reason}"
+        firmy = await _load_firmy()
+        if not firmy:
+            _status["error"] = "Brak skonfigurowanych firm (base_url + klucz API)"
+        else:
+            async with SessionLocal() as session:
+                await _ensure_schema(session)
+            for firma in firmy:
+                err = await _refresh_one(firma, sync_time, date_from)
+                if err:
+                    errors.append(err)
+            shops = ", ".join(f.slug for f in firmy)
+            _status["message"] = (
+                f"[{shops}] +{_status['orders_inserted']} nowych, "
+                f"{_status['orders_updated']} zmienionych, "
+                f"+{_status['items_added']} pozycji"
+            )
+            if errors:
+                _status["error"] = "; ".join(errors)
     except Exception as e:
         _status["error"] = str(e)
     finally:
