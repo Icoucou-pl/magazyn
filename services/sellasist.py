@@ -462,30 +462,32 @@ async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List
 # ============================================================
 # BIEG (zadanie w tle)
 # ============================================================
-async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> Optional[str]:
-    """Jeden sklep: nagłówki (upsert+log) + pozycje. Łapie własne błędy — awaria
-    jednej firmy nie ubija pozostałych. Zwraca komunikat błędu albo None."""
+async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str):
+    """Jeden sklep. Łapie własne błędy — awaria jednej firmy nie ubija pozostałych.
+    Zwraca krotkę (slug, ok, opis): opis = liczby przy sukcesie albo powód błędu."""
+    before = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
     try:
         headers = await _fetch_headers(firma, date_from)
         async with SessionLocal() as session:
             inserted_ids = await _upsert_headers(session, firma, headers, sync_time)
             await _insert_new_items(session, firma, headers, sync_time, inserted_ids)
-        return None
+        a = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
+        return (firma.slug, True, f"+{a[0]-before[0]} nowych, {a[1]-before[1]} zm., +{a[2]-before[2]} poz.")
     except urllib.error.HTTPError as e:
-        return f"{firma.slug}: HTTP {e.code}"
+        return (firma.slug, False, f"HTTP {e.code}")
     except urllib.error.URLError as e:
-        return f"{firma.slug}: brak połączenia ({e.reason})"
+        return (firma.slug, False, f"brak połączenia ({e.reason})")
     except Exception as e:
-        return f"{firma.slug}: {e}"
+        return (firma.slug, False, str(e))
 
 
 async def run_refresh() -> None:
     """Pełny bieg po WSZYSTKICH skonfigurowanych firmach (sklepach). Zakłada, że
     mark_started() zostało już wywołane. Zawsze kończy się ustawieniem finished/error.
-    Liczniki _status sumują się po sklepach; do dziennika idzie jeden zbiorczy wiersz."""
+    Komunikat to rozbicie per sklep (z liczbami sukcesu) — błąd jednego sklepu NIE
+    chowa wyniku pozostałych. `error` zapala się tylko gdy padły WSZYSTKIE sklepy."""
     sync_time = _now_local()
     date_from = (sync_time - timedelta(days=settings.SELLASIST_DAYS_BACK)).strftime("%Y-%m-%d")
-    errors: List[str] = []
     try:
         firmy = await _load_firmy()
         if not firmy:
@@ -493,18 +495,14 @@ async def run_refresh() -> None:
         else:
             async with SessionLocal() as session:
                 await _ensure_schema(session)
-            for firma in firmy:
-                err = await _refresh_one(firma, sync_time, date_from)
-                if err:
-                    errors.append(err)
-            shops = ", ".join(f.slug for f in firmy)
-            _status["message"] = (
-                f"[{shops}] +{_status['orders_inserted']} nowych, "
-                f"{_status['orders_updated']} zmienionych, "
-                f"+{_status['items_added']} pozycji"
-            )
-            if errors:
-                _status["error"] = "; ".join(errors)
+            results = [await _refresh_one(f, sync_time, date_from) for f in firmy]
+
+            parts = [(f"{slug}: {desc}" if ok else f"{slug}: błąd {desc}") for slug, ok, desc in results]
+            _status["message"] = " · ".join(parts)
+
+            failed = [f"{slug}: {desc}" for slug, ok, desc in results if not ok]
+            if failed and len(failed) == len(results):     # wszystkie padły → realny błąd biegu
+                _status["error"] = "; ".join(failed)
     except Exception as e:
         _status["error"] = str(e)
     finally:
