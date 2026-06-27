@@ -1402,7 +1402,15 @@ function FreshnessPanel() {
               return (
                 <tr key={r.id}>
                   <td style={{ ...td, fontWeight: 600, color: "var(--text-hi)" }}>
-                    {r.source === "subiekt" ? "Subiekt" : "Sellasist"}
+                    {(() => {
+                      const s = r.source || "";
+                      if (s === "subiekt") return "Subiekt";
+                      if (s.startsWith("sellasist:")) {
+                        const sh = s.slice(10);
+                        return sh ? `Sellasist · ${sh.toUpperCase()}` : "Sellasist";
+                      }
+                      return "Sellasist";
+                    })()}
                   </td>
                   <td style={td} className="num">{fmtLocalDt(r.finished_at || r.started_at)}</td>
                   <td style={td}>
