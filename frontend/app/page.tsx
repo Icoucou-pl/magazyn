@@ -23,6 +23,7 @@ import FinanceView from "@/components/finance";
 import SettingsView from "@/components/settings";
 import CommandPalette from "@/components/command-palette";
 import EanScanner from "@/components/ean-scanner";
+import Assistant from "@/components/assistant";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import {
@@ -263,6 +264,7 @@ export default function Page() {
 
       {/* Pływający panel wyglądu (⚙ w prawym dolnym rogu) — stan wspólny z headerem */}
       <AppearancePanel t={t} setTweak={setTweak}/>
+      <Assistant/>
       <ToastHost/>
     </UserContext.Provider>
   );
