@@ -25,8 +25,8 @@ from models import CurrentUser
 from services.products import fetch_products
 from services.containers import fetch_containers
 
-MAX_ROUNDS = 5            # ile razy max model może poprosić o narzędzie w jednej turze
-LLM_TIMEOUT = 45          # sekundy na pojedyncze wywołanie LLM
+MAX_ROUNDS = 4            # ile razy max model może poprosić o narzędzie w jednej turze
+LLM_TIMEOUT = 30          # sekundy na pojedyncze wywołanie LLM
 
 SYSTEM_PROMPT = (
     "Jesteś asystentem magazynowym aplikacji „Magazyn” firmy i-coucou. "
@@ -35,6 +35,9 @@ SYSTEM_PROMPT = (
     "Nigdy nie zmyślaj stanów, dat, liczb ani SKU — jeśli nie masz danych z narzędzia, powiedz to wprost. "
     "Do pytań o kontenery, dostawy, ETA i „kiedy coś przypłynie/dotrze” użyj narzędzia kontenery_w_drodze — "
     "NIE używaj do tego narzędzi produktowych. "
+    "Co jest w środku konkretnego kontenera (jakie produkty, jaki towar) sprawdzaj narzędziem zawartosc_kontenera "
+    "po numerze kontenera — nigdy nie zgaduj zawartości. "
+    "Nie wywołuj tego samego narzędzia kilka razy z tymi samymi argumentami. "
     "Do pytań o konkretny produkt (stan, prognoza, sprzedaż) potrzebujesz SKU — jeśli użytkownik go nie podał, dopytaj, nie zgaduj. "
     "Jeśli produkt nie został znaleziony, powiedz to jasno i nie wymyślaj danych. "
     "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”)."
@@ -103,6 +106,19 @@ TOOLS: List[Dict[str, Any]] = [
                 "type": "object",
                 "properties": {"producent": {"type": "string", "description": "opcjonalna nazwa producenta do filtra"}},
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "zawartosc_kontenera",
+            "description": ("Zawartość konkretnego kontenera po numerze: lista produktów w środku (SKU, nazwa, ilość). "
+                            "Użyj do pytań: co jest w kontenerze, jaki towar/produkty w dostawie."),
+            "parameters": {
+                "type": "object",
+                "properties": {"numer": {"type": "string", "description": "numer kontenera, np. TCKU7064646"}},
+                "required": ["numer"],
             },
         },
     },
@@ -185,7 +201,7 @@ async def _tool_lista_do_zamowienia(db: AsyncSession, user: CurrentUser, produce
     rows = [{
         "sku": p.sku, "nazwa": p.name, "stan": p.stock,
         "dni_do_wyczerpania": p.days_until_empty, "producent": p.manufacturer_name,
-    } for p in items[:30]]
+    } for p in items[:15]]
     return {"liczba": len(items), "pozycje": rows, "filtr_producent": producent}
 
 
@@ -201,8 +217,24 @@ async def _tool_kontenery_w_drodze(db: AsyncSession, user: CurrentUser, producen
         "eta": _fmt_date(c.eta_date), "status": c.effective_status,
         "dni_do_odprawy": c.customs_days_left, "sztuk": c.total_units,
         "cbm": round(c.total_cbm or 0, 2),
-    } for c in upcoming[:15]]
+    } for c in upcoming[:12]]
     return {"liczba": len(upcoming), "kontenery": rows, "filtr_producent": producent}
+
+
+async def _tool_zawartosc_kontenera(db: AsyncSession, user: CurrentUser, numer: str) -> Dict[str, Any]:
+    target = (numer or "").strip().upper()
+    if not target:
+        return {"znaleziono": False}
+    conts = await fetch_containers(db)
+    match = next((c for c in conts if (c.container_number or "").upper() == target), None)
+    if not match:
+        return {"znaleziono": False, "numer": numer}
+    items = [{"sku": it.sku, "nazwa": it.product_name, "ilosc": it.quantity} for it in (match.items or [])]
+    return {
+        "znaleziono": True, "numer": match.container_number, "producent": match.manufacturer_name,
+        "eta": _fmt_date(match.eta_date), "status": match.effective_status,
+        "razem_sztuk": match.total_units, "pozycje": items,
+    }
 
 
 _DISPATCH = {
@@ -211,6 +243,7 @@ _DISPATCH = {
     "sprzedaz": _tool_sprzedaz,
     "lista_do_zamowienia": _tool_lista_do_zamowienia,
     "kontenery_w_drodze": _tool_kontenery_w_drodze,
+    "zawartosc_kontenera": _tool_zawartosc_kontenera,
 }
 
 
@@ -248,9 +281,15 @@ async def _llm_call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         "tools": TOOLS,
         "tool_choice": "auto",
         "temperature": 0.2,
-        "max_tokens": 700,
+        "max_tokens": 600,
     }
-    return await asyncio.to_thread(_llm_request, payload)
+    try:
+        return await asyncio.to_thread(_llm_request, payload)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:                       # limit darmowego tieru — jedna próba ponowienia
+            await asyncio.sleep(2.5)
+            return await asyncio.to_thread(_llm_request, payload)
+        raise
 
 
 async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, str]]) -> Dict[str, Any]:
