@@ -69,9 +69,10 @@ export default function Assistant() {
       const res: any = await api.post("/assistant/chat", { messages: history });
       setMsgs(m => [...m, { role: "assistant", content: res?.answer || "(brak odpowiedzi)", tools: res?.tools || [] }]);
     } catch (e: any) {
-      const msg = e?.status === 503
-        ? "Asystent nie jest jeszcze skonfigurowany (brak klucza LLM)."
-        : "Nie udało się uzyskać odpowiedzi. Spróbuj ponownie za chwilę.";
+      let msg = "Nie udało się uzyskać odpowiedzi. Spróbuj ponownie za chwilę.";
+      if (e?.status === 503) msg = "Asystent nie jest jeszcze skonfigurowany (brak klucza LLM).";
+      else if (e?.status === 429) msg = "Limit zapytań Groqa — odczekaj ~minutę i spróbuj ponownie.";
+      else if (typeof e?.status === "number") msg = `Błąd ${e.status} — spróbuj ponownie za chwilę.`;
       setMsgs(m => [...m, { role: "assistant", content: msg }]);
     } finally {
       setLoading(false);
