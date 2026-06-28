@@ -144,6 +144,7 @@ class LeadTimeUpdate(BaseModel):
 class ProductAttrsUpdate(BaseModel):
     cbm_per_unit: Optional[float] = Field(None, ge=0)
     manufacturer_id: Optional[int] = None
+    firma_id: Optional[int] = None
     seasonality_enabled: Optional[bool] = None
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # "ACTIVE","ACTIVE_NO_STOCK","DEAD_STOCK","INACTIVE", lub None (auto)
@@ -346,6 +347,7 @@ class FirmaOut(BaseModel):
     key_present: bool = False          # czy zmienna środowiskowa z kluczem jest ustawiona
     configured: bool = False           # gotowa do ingestu (hub AMH zawsze, reszta: base_url + klucz)
     sort_order: int = 0
+    product_count: int = 0             # ile produktów ma przypisaną tę firmę macierzystą
 
 
 class FirmaUpdate(BaseModel):
@@ -353,6 +355,10 @@ class FirmaUpdate(BaseModel):
     color: Optional[str] = None
     base_url: Optional[str] = None
     sort_order: Optional[int] = None
+
+
+class FirmaAssignRequest(BaseModel):
+    manufacturer_id: int               # przypisz wszystkie produkty tego producenta do firmy
 
 
 # ===== AUTO-SUGESTIA =====
@@ -507,3 +513,23 @@ class FinanceProduct(BaseModel):
     rotation: FinanceProductRotation
     channels: List[FinanceProductChannelRow]
     monthly: List[FinanceProductMonthly]
+
+
+# ── ASYSTENT AI ──────────────────────────────────────────────────────────────
+class AssistantMessage(BaseModel):
+    role: str                      # "user" lub "assistant"
+    content: str
+
+
+class AssistantChatRequest(BaseModel):
+    messages: List[AssistantMessage]   # cała rozmowa (frontend dosyła historię)
+
+
+class AssistantToolUsed(BaseModel):
+    name: str
+    args: dict = {}
+
+
+class AssistantChatResponse(BaseModel):
+    answer: str
+    tools: List[AssistantToolUsed] = []   # które narzędzia odpalił model (do chipów w UI)

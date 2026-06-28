@@ -19,6 +19,12 @@ class Settings(BaseSettings):
 
     ALLOWED_ORIGINS: str = "http://localhost:3000"
 
+    # Asystent AI — provider-agnostyczny (endpoint zgodny z OpenAI: Groq / Gemini / Ollama / Anthropic).
+    # Przełączenie dostawcy = zmiana tych 3 zmiennych, bez ruszania kodu.
+    LLM_BASE_URL: str = ""                        # np. https://api.groq.com/openai/v1
+    LLM_API_KEY: str = ""                         # klucz dostawcy
+    LLM_MODEL: str = "llama-3.3-70b-versatile"    # domyślnie darmowy Groq
+
     TABLE_PRODUCTS: str = "subiekt_towary"
     COL_PRODUCT_SKU: str = "symbol"
     COL_PRODUCT_NAME: str = "nazwa"
