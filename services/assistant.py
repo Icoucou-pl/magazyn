@@ -18,12 +18,12 @@ import urllib.request
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models import CurrentUser
-from services.products import fetch_products, get_product
+from services.products import fetch_products
+from services.containers import fetch_containers
 
 MAX_ROUNDS = 5            # ile razy max model może poprosić o narzędzie w jednej turze
 LLM_TIMEOUT = 45          # sekundy na pojedyncze wywołanie LLM
@@ -31,11 +31,13 @@ LLM_TIMEOUT = 45          # sekundy na pojedyncze wywołanie LLM
 SYSTEM_PROMPT = (
     "Jesteś asystentem magazynowym aplikacji „Magazyn” firmy i-coucou. "
     "Odpowiadasz wyłącznie po polsku, krótko i konkretnie — jak kolega z pracy. "
-    "ZAWSZE używaj narzędzi, żeby pobrać liczby z bazy: stany, prognozy, sprzedaż, listę do zamówienia. "
-    "Nigdy nie zmyślaj stanów, dat ani liczb — jeśli nie masz danych z narzędzia, powiedz to wprost. "
-    "Jeśli produkt nie został znaleziony, powiedz to jasno i nie wymyślaj. "
-    "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”). "
-    "Gdy pytanie dotyczy konkretnego SKU, użyj właściwego narzędzia dla tego SKU."
+    "ZAWSZE używaj narzędzi, żeby pobrać liczby z bazy: stany, prognozy, sprzedaż, listę do zamówienia, kontenery. "
+    "Nigdy nie zmyślaj stanów, dat, liczb ani SKU — jeśli nie masz danych z narzędzia, powiedz to wprost. "
+    "Do pytań o kontenery, dostawy, ETA i „kiedy coś przypłynie/dotrze” użyj narzędzia kontenery_w_drodze — "
+    "NIE używaj do tego narzędzi produktowych. "
+    "Do pytań o konkretny produkt (stan, prognoza, sprzedaż) potrzebujesz SKU — jeśli użytkownik go nie podał, dopytaj, nie zgaduj. "
+    "Jeśli produkt nie został znaleziony, powiedz to jasno i nie wymyślaj danych. "
+    "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”)."
 )
 
 TOOLS: List[Dict[str, Any]] = [
@@ -90,6 +92,20 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "kontenery_w_drodze",
+            "description": ("Kontenery jeszcze niedostarczone (w drodze / w odprawie celnej), posortowane od najbliższej "
+                            "daty ETA. Użyj do pytań: kiedy przypłynie najbliższy kontener, co jest w drodze, kiedy dotrze "
+                            "dostawa. Opcjonalnie filtruj po nazwie producenta."),
+            "parameters": {
+                "type": "object",
+                "properties": {"producent": {"type": "string", "description": "opcjonalna nazwa producenta do filtra"}},
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -108,10 +124,21 @@ def _deliveries(p) -> List[Dict[str, Any]]:
     return out
 
 
+async def _find_product(db: AsyncSession, sku: str):
+    """Szuka produktu po SKU BEZ względu na wielkość liter. Zwraca ProductSummary lub None."""
+    target = (sku or "").strip().upper()
+    if not target:
+        return None
+    prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"})
+    for p in prods:
+        if (p.sku or "").upper() == target:
+            return p
+    return None
+
+
 async def _tool_pobierz_stan(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    try:
-        p = await get_product(db, (sku or "").strip())
-    except HTTPException:
+    p = await _find_product(db, sku)
+    if not p:
         return {"znaleziono": False, "sku": sku}
     return {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name,
@@ -121,9 +148,8 @@ async def _tool_pobierz_stan(db: AsyncSession, user: CurrentUser, sku: str) -> D
 
 
 async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    try:
-        p = await get_product(db, (sku or "").strip())
-    except HTTPException:
+    p = await _find_product(db, sku)
+    if not p:
         return {"znaleziono": False, "sku": sku}
     return {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name,
@@ -139,9 +165,8 @@ async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[
 
 
 async def _tool_sprzedaz(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    try:
-        p = await get_product(db, (sku or "").strip())
-    except HTTPException:
+    p = await _find_product(db, sku)
+    if not p:
         return {"znaleziono": False, "sku": sku}
     return {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name,
@@ -164,11 +189,28 @@ async def _tool_lista_do_zamowienia(db: AsyncSession, user: CurrentUser, produce
     return {"liczba": len(items), "pozycje": rows, "filtr_producent": producent}
 
 
+async def _tool_kontenery_w_drodze(db: AsyncSession, user: CurrentUser, producent: Optional[str] = None) -> Dict[str, Any]:
+    conts = await fetch_containers(db)
+    upcoming = [c for c in conts if (c.effective_status or "").upper() != "DELIVERED"]
+    if producent:
+        needle = producent.strip().lower()
+        upcoming = [c for c in upcoming if needle in (c.manufacturer_name or "").lower()]
+    upcoming.sort(key=lambda c: c.eta_date or date.max)
+    rows = [{
+        "kontener": c.container_number, "producent": c.manufacturer_name,
+        "eta": _fmt_date(c.eta_date), "status": c.effective_status,
+        "dni_do_odprawy": c.customs_days_left, "sztuk": c.total_units,
+        "cbm": round(c.total_cbm or 0, 2),
+    } for c in upcoming[:15]]
+    return {"liczba": len(upcoming), "kontenery": rows, "filtr_producent": producent}
+
+
 _DISPATCH = {
     "pobierz_stan": _tool_pobierz_stan,
     "prognoza_wyczerpania": _tool_prognoza,
     "sprzedaz": _tool_sprzedaz,
     "lista_do_zamowienia": _tool_lista_do_zamowienia,
+    "kontenery_w_drodze": _tool_kontenery_w_drodze,
 }
 
 
