@@ -7,7 +7,7 @@ import { I } from "@/components/ui";
 type Tool = { name: string; args: Record<string, unknown> };
 type Msg = { role: "user" | "assistant"; content: string; tools?: Tool[] };
 
-const SUGGESTIONS = ["kiedy skończy się D2B?", "ile mam STO-200?", "co muszę domówić?", "kiedy skończy się LMP-05?"];
+const DEFAULT_SUGGESTIONS = ["co muszę domówić?"];
 const INTRO: Msg = { role: "assistant", content: "Cześć. Pytaj o magazyn po ludzku — stany, kiedy coś się skończy, co domówić." };
 
 function toolLabel(t: Tool): string {
@@ -21,10 +21,31 @@ export default function Assistant() {
   const [msgs, setMsgs] = useState<Msg[]>([INTRO]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_SUGGESTIONS);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setMounted(true), []);
+
+  // Podpowiedzi na realnych SKU — produkty najbliższe wyczerpania (z istniejącego /products).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const prods: any[] = await api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK");
+        if (!alive || !Array.isArray(prods)) return;
+        const withSku = prods.filter(p => p && p.sku);
+        withSku.sort((a, b) => (a.days_until_empty ?? 99999) - (b.days_until_empty ?? 99999));
+        const top = withSku.slice(0, 3).map(p => p.sku as string);
+        const dyn: string[] = ["co muszę domówić?"];
+        if (top[0]) dyn.push(`kiedy skończy się ${top[0]}?`);
+        if (top[1]) dyn.push(`ile mam ${top[1]}?`);
+        if (top[2]) dyn.push(`kiedy skończy się ${top[2]}?`);
+        setSuggestions(dyn);
+      } catch { /* zostaw domyślne */ }
+    })();
+    return () => { alive = false; };
+  }, []);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [msgs, loading, open]);
@@ -148,7 +169,7 @@ export default function Assistant() {
 
         {msgs.length === 1 && !loading && (
           <div style={{ marginTop: "auto", display: "flex", flexWrap: "wrap", gap: 7 }}>
-            {SUGGESTIONS.map((s, i) => (
+            {suggestions.map((s, i) => (
               <button key={i} onClick={() => send(s)} style={{
                 fontSize: 12.5, color: "var(--text-mid)", background: "var(--surface-2)",
                 border: "1px solid var(--border-soft)", borderRadius: 99, padding: "7px 12px", cursor: "pointer",
