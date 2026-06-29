@@ -94,3 +94,27 @@ async def items_debug(db: AsyncSession = Depends(get_db), user: CurrentUser = De
     ))
     out["acti_sample"] = [dict(row) for row in s.mappings()]
     return out
+
+
+@router.get("/sellasist/products-probe")
+async def products_probe(shop: str = "acti", path: str = "/products",
+                         db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Próbnik 2b: pobiera 1-2 produkty z Sellasista danego sklepu i pokazuje realne klucze
+    (gdzie SKU, gdzie stan). Tylko do odkrycia kształtu API — potem usuwamy."""
+    from services.sellasist import _load_firmy, _http_get
+    firmy = await _load_firmy()
+    firma = next((f for f in firmy if f.slug == shop), None)
+    if not firma:
+        return {"error": f"Sklep '{shop}' nieskonfigurowany", "dostepne": [f.slug for f in firmy]}
+    try:
+        data = await _http_get(firma, path, {"offset": 0})
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}", "proba_path": path}
+    items = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return {"ksztalt_top": type(data).__name__,
+                "klucze_top": sorted(data.keys()) if isinstance(data, dict) else None,
+                "raw": str(data)[:1500]}
+    sample = items[:2]
+    keys = sorted(sample[0].keys()) if sample and isinstance(sample[0], dict) else []
+    return {"liczba_na_stronie": len(items), "klucze_produktu": keys, "probka": sample}
