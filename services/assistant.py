@@ -337,6 +337,8 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
                 args = json.loads(fn.get("arguments") or "{}")
             except Exception:
                 args = {}
+            if not isinstance(args, dict):    # Llama bywa wysyła arguments: "null" → None; narzędzia i odpowiedź wymagają dict
+                args = {}
             result = await _dispatch_tool(db, user, name, args)
             tools_used.append({"name": name, "args": args})
             messages.append({
