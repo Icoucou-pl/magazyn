@@ -535,20 +535,23 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
 type Firma = {
   id: number; slug: string; name: string; color?: string | null; is_self: boolean;
   base_url?: string | null; api_key_env?: string | null; key_present: boolean;
-  configured: boolean; sort_order: number;
+  configured: boolean; sort_order: number; product_count: number;
 };
+type FirmaMfr = { id: number; name: string };
 
 function FirmaePanel() {
   const user = useUser() as CtxUser;
   const showEdit = isAdmin(user);
   const [items, setItems] = useState<Firma[]>([]);
+  const [mfrs, setMfrs] = useState<FirmaMfr[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const load = async () => {
     try {
-      const data = await api.get("/firmy");
-      setItems(Array.isArray(data) ? (data as Firma[]) : []);
+      const [f, m] = await Promise.all([api.get("/firmy"), api.get("/manufacturers")]);
+      setItems(Array.isArray(f) ? (f as Firma[]) : []);
+      setMfrs(Array.isArray(m) ? (m as FirmaMfr[]) : []);
     } catch { toast("Nie udało się pobrać firm", "error"); }
     finally { setLoading(false); }
   };
@@ -559,13 +562,14 @@ function FirmaePanel() {
       <span style={{ fontSize: 12, color: "var(--text-lo)", lineHeight: 1.5 }}>
         Sklepy = źródła sprzedaży i zapasu. <b style={{ color: "var(--text-mid)" }}>AMH</b> to hub (stan z Subiektu).
         Acti i Veluxa ciągniemy z ich Sellasista — uzupełnij <span className="num">base_url</span>; klucz API jest w zmiennej środowiskowej na Railway (nie w bazie).
+        Produkty przypisujesz do firmy masowo — po producencie (zrób to <b style={{ color: "var(--text-mid)" }}>zanim</b> wyczyścisz producentów Acti/Veluxa).
       </span>
       {loading && !items.length ? (
         <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
           {items.map(f => (
-            <FirmaCard key={f.id} item={f}
+            <FirmaCard key={f.id} item={f} mfrs={mfrs}
               editing={editingId === f.id} onEdit={() => setEditingId(f.id)}
               onSaved={() => { setEditingId(null); load(); }} onCancel={() => setEditingId(null)} showEdit={showEdit}/>
           ))}
@@ -575,12 +579,14 @@ function FirmaePanel() {
   );
 }
 
-function FirmaCard({ item, editing, onEdit, onSaved, onCancel, showEdit }: {
-  item: Firma; editing: boolean; onEdit: () => void; onSaved: () => void; onCancel: () => void; showEdit: boolean;
+function FirmaCard({ item, mfrs, editing, onEdit, onSaved, onCancel, showEdit }: {
+  item: Firma; mfrs: FirmaMfr[]; editing: boolean; onEdit: () => void; onSaved: () => void; onCancel: () => void; showEdit: boolean;
 }) {
   const [baseUrl, setBaseUrl] = useState(item.base_url || "");
   const [color, setColor] = useState(item.color || "#6b7280");
   const [busy, setBusy] = useState(false);
+  const [assignMfr, setAssignMfr] = useState("");
+  const [assigning, setAssigning] = useState(false);
 
   const save = async () => {
     setBusy(true);
@@ -589,6 +595,18 @@ function FirmaCard({ item, editing, onEdit, onSaved, onCancel, showEdit }: {
       toast("Zapisano firmę", "ok"); onSaved();
     } catch { toast("Nie udało się zapisać", "error"); }
     finally { setBusy(false); }
+  };
+
+  const assign = async () => {
+    const mid = parseInt(assignMfr, 10);
+    if (!mid) { toast("Wybierz producenta", "warning"); return; }
+    setAssigning(true);
+    try {
+      const res = await api.post(`/firmy/${item.id}/assign-products`, { manufacturer_id: mid });
+      const n = (res && typeof res.assigned === "number") ? res.assigned : 0;
+      toast(`Przypisano ${n} produktów do ${item.name}`, "ok"); setAssignMfr(""); onSaved();
+    } catch { toast("Nie udało się przypisać", "error"); }
+    finally { setAssigning(false); }
   };
 
   if (editing) {
@@ -639,7 +657,25 @@ function FirmaCard({ item, editing, onEdit, onSaved, onCancel, showEdit }: {
         <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", wordBreak: "break-all" }}>
           {item.base_url || "— brak base_url —"}
         </div>
+        <div style={{ fontSize: 11, color: "var(--text-lo)" }}>
+          Przypisane produkty: <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{item.product_count}</span>
+        </div>
       </div>
+
+      {showEdit && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border-soft)" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Przypisz produkty po producencie
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <select value={assignMfr} onChange={(e) => setAssignMfr(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+              <option value="">— wybierz producenta —</option>
+              {mfrs.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+            <button onClick={assign} disabled={assigning || !assignMfr} style={btnPrimary}>{assigning ? "…" : "Przypisz"}</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
