@@ -32,6 +32,36 @@ sales_yoy AS (
       AND o.{settings.COL_ORDER_DATE} < NOW() - INTERVAL '335 days'
       {INCLUDED_STATUS_FILTER}
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+),
+sellasist_skus AS (
+    SELECT LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_canon,
+           MAX(oi.{settings.COL_ITEM_SKU}) AS sku_raw,
+           MAX(oi.product_name) AS nazwa
+    FROM {settings.TABLE_ORDER_ITEMS} oi
+    WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
+    GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+),
+catalog AS (
+    SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})) AS sku_canon,
+           {settings.COL_PRODUCT_SKU} AS sku_raw,
+           {settings.COL_PRODUCT_NAME} AS nazwa,
+           {settings.COL_PRODUCT_STOCK} AS stan,
+           {settings.COL_PRODUCT_PRICE} AS cena,
+           1 AS pri
+    FROM {settings.TABLE_PRODUCTS}
+    WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL AND TRIM({settings.COL_PRODUCT_SKU}) <> ''
+    UNION ALL
+    SELECT sku_canon, sku_raw, nazwa, 0::numeric AS stan, 0::numeric AS cena, 2 AS pri
+    FROM sellasist_skus
+),
+catalog_dedup AS (
+    SELECT DISTINCT ON (sku_canon)
+           sku_raw AS {settings.COL_PRODUCT_SKU},
+           nazwa  AS {settings.COL_PRODUCT_NAME},
+           stan   AS {settings.COL_PRODUCT_STOCK},
+           cena   AS {settings.COL_PRODUCT_PRICE}
+    FROM catalog
+    ORDER BY sku_canon, pri, stan DESC NULLS LAST, sku_raw
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
@@ -55,27 +85,7 @@ SELECT
     COALESCE(sp.qty_12m, 0)::int AS sales_12m_total,
     COALESCE(sy.qty_yoy_30d, 0)::int AS sales_yoy_30d,
     COALESCE(sy.qty_yoy_next_30d, 0)::int AS sales_yoy_next_30d
-FROM (
-    SELECT {settings.COL_PRODUCT_SKU}, {settings.COL_PRODUCT_NAME},
-           {settings.COL_PRODUCT_STOCK}, {settings.COL_PRODUCT_PRICE}
-    FROM {settings.TABLE_PRODUCTS}
-    UNION ALL
-    SELECT s.symbol AS {settings.COL_PRODUCT_SKU},
-           s.product_name AS {settings.COL_PRODUCT_NAME},
-           0::numeric AS {settings.COL_PRODUCT_STOCK},
-           0::numeric AS {settings.COL_PRODUCT_PRICE}
-    FROM (
-        SELECT oi.{settings.COL_ITEM_SKU} AS symbol, MAX(oi.product_name) AS product_name
-        FROM {settings.TABLE_ORDER_ITEMS} oi
-        WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
-          AND LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) NOT IN (
-              SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU}))
-              FROM {settings.TABLE_PRODUCTS}
-              WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
-          )
-        GROUP BY oi.{settings.COL_ITEM_SKU}
-    ) s
-) p
+FROM catalog_dedup p
 LEFT JOIN sales_periods sp ON sp.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
