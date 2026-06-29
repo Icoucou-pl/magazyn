@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
-from models import CurrentUser, FirmaOut, FirmaUpdate
+from models import CurrentUser, FirmaOut, FirmaUpdate, FirmaAssignRequest
 from security import get_current_user, require_admin
 
 router = APIRouter(prefix="/api", tags=["firmy"])
@@ -31,12 +31,20 @@ def _to_out(r) -> FirmaOut:
         id=r["id"], slug=r["slug"], name=r["name"], color=r["color"],
         is_self=bool(r["is_self"]), base_url=r["base_url"], api_key_env=r["api_key_env"],
         key_present=key_present, configured=configured, sort_order=r["sort_order"] or 0,
+        product_count=int(r["product_count"]) if "product_count" in r and r["product_count"] is not None else 0,
     )
 
 
 @router.get("/firmy", response_model=List[FirmaOut])
 async def list_firmy(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    r = await db.execute(text(f"SELECT {_COLS} FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"))
+    r = await db.execute(text(
+        f"SELECT f.id, f.slug, f.name, f.color, f.is_self, f.base_url, f.api_key_env, f.sort_order, "
+        f"COALESCE(pc.cnt, 0) AS product_count "
+        f"FROM {settings.TABLE_FIRMY} f "
+        f"LEFT JOIN (SELECT firma_id, COUNT(*) AS cnt FROM {settings.TABLE_PRODUCT_ATTRS} "
+        f"          WHERE firma_id IS NOT NULL GROUP BY firma_id) pc ON pc.firma_id = f.id "
+        f"ORDER BY f.sort_order, f.id"
+    ))
     return [_to_out(row) for row in r.mappings()]
 
 
@@ -55,3 +63,19 @@ async def update_firma(fid: int, payload: FirmaUpdate, db: AsyncSession = Depend
     if not row:
         raise HTTPException(404, "Firma nie znaleziona")
     return _to_out(row)
+
+
+@router.post("/firmy/{fid}/assign-products")
+async def assign_products(fid: int, payload: FirmaAssignRequest, db: AsyncSession = Depends(get_db), admin: CurrentUser = Depends(require_admin)):
+    """Masowo: wszystkie produkty danego producenta dostają firmę macierzystą = fid.
+    Bootstrap pod multi-sklep — uruchom ZANIM wyczyścisz producentów Acti/Veluxa."""
+    f = (await db.execute(text(f"SELECT id FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": fid})).first()
+    if not f:
+        raise HTTPException(404, "Firma nie znaleziona")
+    r = await db.execute(
+        text(f"UPDATE {settings.TABLE_PRODUCT_ATTRS} SET firma_id = :fid, updated_at = CURRENT_TIMESTAMP "
+             f"WHERE manufacturer_id = :mfr"),
+        {"fid": fid, "mfr": payload.manufacturer_id},
+    )
+    await db.commit()
+    return {"assigned": r.rowcount or 0}

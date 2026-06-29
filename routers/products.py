@@ -62,7 +62,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 
 @router.put("/products/{sku}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, seasonality_enabled, ean, forced_status FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
     # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
@@ -70,6 +70,11 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
         mfr = None if payload.manufacturer_id == 0 else payload.manufacturer_id
     else:
         mfr = e.manufacturer_id if e else None
+    # firma_id: 0 = odepnij (→ domyślnie AMH); None = nie zmieniaj; >0 = ustaw
+    if payload.firma_id is not None:
+        firma = None if payload.firma_id == 0 else payload.firma_id
+    else:
+        firma = e.firma_id if e else None
     seas = payload.seasonality_enabled if payload.seasonality_enabled is not None else (e.seasonality_enabled if e else False)
     ean = payload.ean if payload.ean is not None else (e.ean if e else None)
     if ean is not None and not ean.strip():
@@ -84,17 +89,18 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
 
     await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, seasonality_enabled, ean, forced_status, updated_at)
-            VALUES (:sku, :cbm, :mfr, :seas, :ean, :forced, CURRENT_TIMESTAMP)
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, CURRENT_TIMESTAMP)
             ON CONFLICT (sku) DO UPDATE SET
                 cbm_per_unit = EXCLUDED.cbm_per_unit,
                 manufacturer_id = EXCLUDED.manufacturer_id,
+                firma_id = EXCLUDED.firma_id,
                 seasonality_enabled = EXCLUDED.seasonality_enabled,
                 ean = EXCLUDED.ean,
                 forced_status = EXCLUDED.forced_status,
                 updated_at = CURRENT_TIMESTAMP
         """),
-        {"sku": sku, "cbm": cbm, "mfr": mfr, "seas": seas, "ean": ean, "forced": forced}
+        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced}
     )
     await db.commit()
     return await get_product(db, sku)
