@@ -75,3 +75,22 @@ async def sync_log(limit: int = 100, db: AsyncSession = Depends(get_db), user: C
         return rows
     except Exception:
         return []
+
+
+@router.get("/sellasist/items-debug")
+async def items_debug(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Diagnostyka: czy pozycje Sellasista mają wypełniony symbol (SKU), per sklep + próbka Acti."""
+    out = {}
+    r = await db.execute(text(
+        f"SELECT shop, COUNT(*) AS items, "
+        f"COUNT(*) FILTER (WHERE symbol IS NOT NULL AND TRIM(symbol) <> '') AS with_symbol, "
+        f"COUNT(DISTINCT NULLIF(TRIM(symbol), '')) AS distinct_symbols "
+        f"FROM {settings.TABLE_ORDER_ITEMS} GROUP BY shop ORDER BY shop"
+    ))
+    out["per_shop"] = [dict(row) for row in r.mappings()]
+    s = await db.execute(text(
+        f"SELECT symbol, product_name, ean, quantity FROM {settings.TABLE_ORDER_ITEMS} "
+        f"WHERE shop = 'acti' ORDER BY order_id DESC LIMIT 15"
+    ))
+    out["acti_sample"] = [dict(row) for row in s.mappings()]
+    return out
