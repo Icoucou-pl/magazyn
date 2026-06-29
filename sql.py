@@ -55,7 +55,27 @@ SELECT
     COALESCE(sp.qty_12m, 0)::int AS sales_12m_total,
     COALESCE(sy.qty_yoy_30d, 0)::int AS sales_yoy_30d,
     COALESCE(sy.qty_yoy_next_30d, 0)::int AS sales_yoy_next_30d
-FROM {settings.TABLE_PRODUCTS} p
+FROM (
+    SELECT {settings.COL_PRODUCT_SKU}, {settings.COL_PRODUCT_NAME},
+           {settings.COL_PRODUCT_STOCK}, {settings.COL_PRODUCT_PRICE}
+    FROM {settings.TABLE_PRODUCTS}
+    UNION ALL
+    SELECT s.symbol AS {settings.COL_PRODUCT_SKU},
+           s.product_name AS {settings.COL_PRODUCT_NAME},
+           0::numeric AS {settings.COL_PRODUCT_STOCK},
+           0::numeric AS {settings.COL_PRODUCT_PRICE}
+    FROM (
+        SELECT oi.{settings.COL_ITEM_SKU} AS symbol, MAX(oi.product_name) AS product_name
+        FROM {settings.TABLE_ORDER_ITEMS} oi
+        WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
+          AND LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) NOT IN (
+              SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU}))
+              FROM {settings.TABLE_PRODUCTS}
+              WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
+          )
+        GROUP BY oi.{settings.COL_ITEM_SKU}
+    ) s
+) p
 LEFT JOIN sales_periods sp ON sp.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
