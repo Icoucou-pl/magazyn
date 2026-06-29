@@ -1,5 +1,12 @@
 """Asystent AI — endpointy. Czat działa tylko dla zalogowanych; jeśli dostawca LLM
-nie jest skonfigurowany (brak klucza), zwraca 503 z czytelnym komunikatem."""
+nie jest skonfigurowany (brak klucza), zwraca 503 z czytelnym komunikatem.
+
+Wersja samodiagnozująca: każdy wyjątek w trakcie rozmowy jest łapany i zwracany jako
+zwykła odpowiedź 200 (z treścią błędu) — dzięki temu przeglądarka nie blokuje go na CORS,
+a w dymku czatu widać dokładną przyczynę. Pełny traceback leci też do logów Railway.
+"""
+import traceback
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,5 +39,11 @@ async def assistant_chat(
     if not payload.messages:
         raise HTTPException(400, "Pusta rozmowa.")
     history = [{"role": m.role, "content": m.content} for m in payload.messages]
-    result = await run_chat(db, user, history)
-    return AssistantChatResponse(answer=result["answer"], tools=result.get("tools", []))
+    try:
+        result = await run_chat(db, user, history)
+        return AssistantChatResponse(answer=result["answer"], tools=result.get("tools", []))
+    except Exception as e:
+        tb = traceback.format_exc()
+        print("[assistant] BLAD /assistant/chat:\n" + tb)
+        last = tb.strip().splitlines()[-1] if tb.strip() else ""
+        return AssistantChatResponse(answer=f"DIAGNOSTYKA - blad serwera: {type(e).__name__}: {e} | {last}", tools=[])
