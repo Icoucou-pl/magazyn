@@ -10,11 +10,6 @@ type Msg = { role: "user" | "assistant"; content: string; tools?: Tool[] };
 const DEFAULT_SUGGESTIONS = ["co muszę domówić?"];
 const INTRO: Msg = { role: "assistant", content: "Cześć. Pytaj o magazyn po ludzku — stany, kiedy coś się skończy, co domówić." };
 
-function toolLabel(t: Tool): string {
-  const vals = Object.values(t.args || {}).filter(v => v !== undefined && v !== null && v !== "");
-  return vals.length ? `${t.name} (${vals.join(", ")})` : t.name;
-}
-
 export default function Assistant() {
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
@@ -142,16 +137,6 @@ export default function Assistant() {
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
         {msgs.map((m, i) => (
           <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start", gap: 5 }}>
-            {!!(m.tools && m.tools.length) && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {m.tools!.map((t, k) => (
-                  <span key={k} className="num" style={{
-                    fontSize: 11, color: "var(--accent)", border: "1px dashed var(--border)",
-                    borderRadius: 8, padding: "2px 8px", background: "var(--surface-2)",
-                  }}>⚙ {toolLabel(t)}</span>
-                ))}
-              </div>
-            )}
             <div style={{
               ...bubbleBase,
               background: m.role === "user" ? "var(--accent)" : "var(--surface-2)",
