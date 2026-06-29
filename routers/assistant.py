@@ -42,8 +42,6 @@ async def assistant_chat(
     try:
         result = await run_chat(db, user, history)
         return AssistantChatResponse(answer=result["answer"], tools=result.get("tools", []))
-    except Exception as e:
-        tb = traceback.format_exc()
-        print("[assistant] BLAD /assistant/chat:\n" + tb)
-        last = tb.strip().splitlines()[-1] if tb.strip() else ""
-        return AssistantChatResponse(answer=f"DIAGNOSTYKA - blad serwera: {type(e).__name__}: {e} | {last}", tools=[])
+    except Exception:
+        print("[assistant] BLAD /assistant/chat:\n" + traceback.format_exc())   # traceback w logach Railway
+        return AssistantChatResponse(answer="Asystent napotkał błąd po stronie serwera. Spróbuj ponownie za chwilę.", tools=[])
