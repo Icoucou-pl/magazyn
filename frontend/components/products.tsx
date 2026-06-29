@@ -104,13 +104,16 @@ export default function ProductsView({
 
   const filtered = useMemo(() => {
     let arr = products;
-    if (filter === "active") arr = arr.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK");
-    if (filter === "favorites") arr = arr.filter((p) => p.is_favorite);
-    if (filter === "critical") arr = arr.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
-    if (filter === "dead") arr = arr.filter((p) => p.product_status === "DEAD_STOCK");
-    if (search) {
-      const q = search.toLowerCase();
+    const q = search.trim().toLowerCase();
+    if (q) {
+      // Szukanie działa globalnie — niezależnie od zakładki statusu, żeby znaleźć też
+      // produkty nieaktywne/martwe (np. stan 0 bez świeżej sprzedaży).
       arr = arr.filter((p) => p.sku.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+    } else {
+      if (filter === "active") arr = arr.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK");
+      if (filter === "favorites") arr = arr.filter((p) => p.is_favorite);
+      if (filter === "critical") arr = arr.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
+      if (filter === "dead") arr = arr.filter((p) => p.product_status === "DEAD_STOCK");
     }
     if (sort.key) {
       const key = sort.key;
