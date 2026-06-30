@@ -61,7 +61,8 @@ catalog_dedup AS (
            sku_raw AS {settings.COL_PRODUCT_SKU},
            nazwa  AS {settings.COL_PRODUCT_NAME},
            stan   AS {settings.COL_PRODUCT_STOCK},
-           cena   AS {settings.COL_PRODUCT_PRICE}
+           cena   AS {settings.COL_PRODUCT_PRICE},
+           pri    AS src_pri
     FROM catalog
     ORDER BY sku_canon, pri, stan DESC NULLS LAST, sku_raw
 ),
@@ -100,6 +101,11 @@ LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT
 LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
 LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = p.{settings.COL_PRODUCT_SKU}
 LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
+WHERE (
+    :shop = ''
+    OR (:shop = 'amh' AND p.src_pri = 1)
+    OR (:shop <> '' AND :shop <> 'amh' AND (es.qty IS NOT NULL OR sp.sku_normalized IS NOT NULL))
+)
 ORDER BY p.{settings.COL_PRODUCT_SKU};
 """
 
