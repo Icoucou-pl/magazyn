@@ -183,6 +183,10 @@ def included_status_clause(alias: str = "o") -> str:
     (zgodnie z Power BI), ROZDZIELONEJ per sklep: AMH ma własne statusy "Doręczone - *",
     sklepy nie-AMH (Acti/Veluxa) realizują na "Wysłane". Warunek działa per-wiersz
     (po {alias}.shop), więc jest poprawny i dla pojedynczego sklepu, i dla "Wszystkich".
+
+    WYDAJNOŚĆ: pierwszy warunek to płaskie `status_name IN (suma obu whitelist)` —
+    indeksowalne (idx_orders_status, bitmap scan), redukuje zbiór zanim policzy się
+    droższy OR per-shop. Bez tego pre-filtru sam OR po różnych kolumnach wymusza seq scan.
     Obie whitelisty puste → brak filtra (liczy wszystko)."""
     amh = [s.strip() for s in settings.INCLUDED_ORDER_STATUSES.split(",") if s.strip()]
     ext = [s.strip() for s in settings.INCLUDED_ORDER_STATUSES_EXT.split(",") if s.strip()]
@@ -194,12 +198,16 @@ def included_status_clause(alias: str = "o") -> str:
     def _q(lst):
         return ",".join("'" + s.replace("'", "''") + "'" for s in lst)
 
+    combined = list(dict.fromkeys(amh + ext))  # suma, dedup, kolejność zachowana
+    prefilter = f"{col} IN ({_q(combined)})"
+
     parts = []
     if amh:
         parts.append(f"({shop} = 'amh' AND {col} IN ({_q(amh)}))")
     if ext:
         parts.append(f"({shop} <> 'amh' AND {col} IN ({_q(ext)}))")
-    return "AND (" + " OR ".join(parts) + ")"
+    detailed = "(" + " OR ".join(parts) + ")"
+    return f"AND {prefilter} AND {detailed}"
 
 
 def sales_channel_case(alias: str = "o") -> str:
