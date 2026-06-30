@@ -273,7 +273,7 @@ async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/favorites", response_model=List[ProductSummary])
-async def list_favorites(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+async def list_favorites(shop: str = "", db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Zwraca tylko ulubione produkty."""
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"})
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
     return _mask_financials([p for p in products if p.is_favorite], user)

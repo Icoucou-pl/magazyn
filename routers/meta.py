@@ -28,8 +28,8 @@ async def stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/classification")
-async def classification(db: AsyncSession = Depends(get_db)):
-    products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS})
+async def classification(shop: str = "", db: AsyncSession = Depends(get_db)):
+    products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0}
     dead_stock_value = 0.0
     for r in products_result:

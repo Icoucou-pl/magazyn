@@ -15,14 +15,14 @@ router = APIRouter(prefix="/api", tags=["anomalies"])
 
 
 @router.get("/anomalies", response_model=List[Anomaly])
-async def detect_anomalies(db: AsyncSession = Depends(get_db)):
+async def detect_anomalies(shop: str = "", db: AsyncSession = Depends(get_db)):
     """
     Wykrywanie anomalii - rozsądna czułość:
     - sales_spike: 1m > 1.5x średniej z poprzednich 3m, ALE 1m >= 5 (żeby nie spam dla małych)
     - sales_drop: 1m < 0.4x średniej z poprzednich 3m, ALE poprzedni miesiąc był >= 5
     - stock_drain: stan = 0 i sprzedaż 1m >= 10
     """
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     anomalies = []
 
     for p in products:
@@ -61,9 +61,9 @@ async def detect_anomalies(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/shopping-list", response_model=List[ShoppingListGroup])
-async def shopping_list(db: AsyncSession = Depends(get_db)):
+async def shopping_list(shop: str = "", db: AsyncSession = Depends(get_db)):
     """Grupy produktów do zamówienia per producent."""
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     needing = [p for p in products if p.status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and p.avg_monthly_weighted >= 1]
 
     mfr_result = await db.execute(text(f"SELECT id, name, color, email FROM {settings.TABLE_MANUFACTURERS}"))
