@@ -19,6 +19,7 @@ WITH sales_periods AS (
     JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'
       {INCLUDED_STATUS_FILTER}
+      AND (:shop = '' OR o.shop = :shop)
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
 ),
 sales_yoy AS (
@@ -31,6 +32,7 @@ sales_yoy AS (
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '395 days'
       AND o.{settings.COL_ORDER_DATE} < NOW() - INTERVAL '335 days'
       {INCLUDED_STATUS_FILTER}
+      AND (:shop = '' OR o.shop = :shop)
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
 ),
 sellasist_skus AS (
@@ -66,12 +68,13 @@ catalog_dedup AS (
 ext_stock AS (
     SELECT sku_canon, SUM(quantity) AS qty
     FROM {settings.TABLE_EXTERNAL_STOCK}
+    WHERE (:shop = '' OR shop = :shop)
     GROUP BY sku_canon
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
     p.{settings.COL_PRODUCT_NAME} AS name,
-    (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(es.qty, 0))::int AS stock,
+    (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) ELSE 0 END + COALESCE(es.qty, 0))::int AS stock,
     COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
     COALESCE(pa.cbm_per_unit, 0)::float AS cbm_per_unit,
