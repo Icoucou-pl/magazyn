@@ -510,13 +510,6 @@ async def _fetch_stock(firma: "Firma") -> List[dict]:
     return out
 
 
-def _to_float(v) -> float:
-    try:
-        return float(str(v).replace(",", ".").strip())
-    except Exception:
-        return 0.0
-
-
 async def _upsert_external_stock(session: AsyncSession, firma: "Firma", products: List[dict]) -> int:
     """Pełna podmiana stanów sklepu: kasuje stare wiersze sklepu i wstawia bieżące.
     Klucz kanoniczny = LOWER(TRIM(symbol)), żeby pasował do katalogu (case-insensitive)."""
@@ -532,8 +525,8 @@ async def _upsert_external_stock(session: AsyncSession, firma: "Firma", products
             "ON CONFLICT (shop, sku_canon) DO UPDATE SET symbol = EXCLUDED.symbol, "
             "quantity = EXCLUDED.quantity, reserved = EXCLUDED.reserved, updated_at = EXCLUDED.updated_at"
         ), {"shop": firma.slug, "sku": sku, "canon": sku.lower(),
-            "qty": _to_float(p.get("quantity")),
-            "res": _to_float(p.get("reserved")) if p.get("reserved") not in (None, "") else 0.0,
+            "qty": _to_float(p.get("quantity"), 0.0) or 0.0,
+            "res": (_to_float(p.get("reserved"), 0.0) or 0.0) if p.get("reserved") not in (None, "") else 0.0,
             "ts": _now_local()})
         n += 1
     await session.commit()
