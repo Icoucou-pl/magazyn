@@ -135,10 +135,11 @@ async def auto_deliver_containers(db: AsyncSession):
     await db.commit()
 
 
-async def fetch_products(db: AsyncSession, include_set: set) -> List[ProductSummary]:
-    """Pobiera produkty z metrykami, filtrowane po statusie (include_set)."""
+async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> List[ProductSummary]:
+    """Pobiera produkty z metrykami, filtrowane po statusie (include_set).
+    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = sprzedaż i stan tylko danego sklepu (Faza 3)."""
     await auto_deliver_containers(db)
-    products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS})
+    products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     products = [dict(r._mapping) for r in products_result]
 
     incoming_result = await db.execute(text(INCOMING_QUERY))
