@@ -606,18 +606,21 @@ export default function Dashboard({
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
   const [favorites, setFavorites] = useState<FavProduct[]>([]);
+  const [shop, setShop] = useState("");
 
   useEffect(() => {
     let alive = true;
     (async () => {
       setLoading(true);
-      const [h, cls, cont, ano, shop, fav] = await Promise.allSettled([
-        api.get("/stock-value-history?days=90"),
-        api.get("/classification"),
+      const q = shop ? `&shop=${shop}` : "";
+      const q1 = shop ? `?shop=${shop}` : "";
+      const [h, cls, cont, ano, shp, fav] = await Promise.allSettled([
+        api.get(`/stock-value-history?days=90${q}`),
+        api.get(`/classification${q1}`),
         api.get("/containers"),
-        api.get("/anomalies"),
-        api.get("/shopping-list"),
-        api.get("/favorites"),
+        api.get(`/anomalies${q1}`),
+        api.get(`/shopping-list${q1}`),
+        api.get(`/favorites${q1}`),
       ]);
       if (!alive) return;
       let failed = false;
@@ -625,7 +628,7 @@ export default function Dashboard({
       if (cls.status === "fulfilled") setClassification(cls.value as Classification); else failed = true;
       if (cont.status === "fulfilled") setContainers((cont.value as ContainerOut[]) || []); else failed = true;
       if (ano.status === "fulfilled") setAnomalies((ano.value as Anomaly[]) || []); else failed = true;
-      if (shop.status === "fulfilled") setShopping((shop.value as ShoppingGroup[]) || []); else failed = true;
+      if (shp.status === "fulfilled") setShopping((shp.value as ShoppingGroup[]) || []); else failed = true;
       if (fav.status === "fulfilled") setFavorites((fav.value as FavProduct[]) || []); else failed = true;
       if (failed) {
         toast("Część danych pulpitu nie wczytała się", "warning");
@@ -633,7 +636,7 @@ export default function Dashboard({
       setLoading(false);
     })();
     return () => { alive = false; };
-  }, []);
+  }, [shop]);
 
   // Nadchodzące dostawy: kontenery niedostarczone, najbliższe wg ETA
   const deliveries = useMemo(
@@ -657,22 +660,50 @@ export default function Dashboard({
       .slice(0, 8);
   }, [shopping]);
 
-  if (loading) return <DashboardSkeleton gap={gap} />;
+  const SHOPS: Array<{ v: string; l: string }> = [
+    { v: "", l: "Wszystkie" },
+    { v: "amh", l: "AMH" },
+    { v: "acti", l: "Acti" },
+    { v: "veluxa", l: "Veluxa" },
+  ];
+
+  const shopSelector = (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
+      <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
+        {SHOPS.map((s) => {
+          const active = shop === s.v;
+          return (
+            <button key={s.v || "all"} onClick={() => setShop(s.v)} style={{
+              padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+              background: active ? "var(--surface-3)" : "transparent",
+              color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
+            }}>{s.l}</button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }} className="fade-in">
-      <KpiGrid history={history} classification={classification} inTransitValue={inTransit.value} inTransitCount={inTransit.count} />
-      {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
-      {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
-        <FiresCard fires={fires} onProductClick={onProductClick} />
-        <DeliveriesCard deliveries={deliveries} onContainerClick={onContainerClick} />
-      </div>
-      <ShoppingListCard groups={shopping} showEdit={showEdit} onShowOrderPdf={onShowOrderPdf} onAutoSuggest={onAutoSuggest} />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
-        <AnomaliesCard anomalies={anomalies} onProductClick={onProductClick} />
-        <WatchedCard watched={favorites} onProductClick={onProductClick} />
-      </div>
+      {shopSelector}
+      {loading ? <DashboardSkeleton gap={gap} /> : (
+        <>
+          <KpiGrid history={history} classification={classification} inTransitValue={inTransit.value} inTransitCount={inTransit.count} />
+          {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
+          {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
+            <FiresCard fires={fires} onProductClick={onProductClick} />
+            <DeliveriesCard deliveries={deliveries} onContainerClick={onContainerClick} />
+          </div>
+          <ShoppingListCard groups={shopping} showEdit={showEdit} onShowOrderPdf={onShowOrderPdf} onAutoSuggest={onAutoSuggest} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
+            <AnomaliesCard anomalies={anomalies} onProductClick={onProductClick} />
+            <WatchedCard watched={favorites} onProductClick={onProductClick} />
+          </div>
+        </>
+      )}
     </div>
   );
 }
