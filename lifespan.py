@@ -138,6 +138,20 @@ async def lifespan(app: FastAPI):
                     ('veluxa', 'Veluxa',         '#f59e0b', FALSE, NULL,      'SELLASIST_VELUXA_API_KEY', 2)
             """), {"amh_base": settings.SELLASIST_BASE_URL or None})
 
+        # 2b: stany zewnętrzne (Acti/Veluxa). Tworzymy też tu, żeby katalog (sql.py) nie zależał
+        # od pierwszego "Odśwież" — inaczej zapytanie produktów mogłoby trafić na brak tabeli.
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_EXTERNAL_STOCK} (
+                shop VARCHAR(40) NOT NULL,
+                symbol VARCHAR(255) NOT NULL,
+                sku_canon VARCHAR(255) NOT NULL,
+                quantity NUMERIC DEFAULT 0,
+                reserved NUMERIC DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT now(),
+                PRIMARY KEY (shop, sku_canon)
+            )
+        """))
+
         # Typy kontenerów
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_TYPES} (

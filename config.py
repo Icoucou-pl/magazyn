@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""                         # klucz dostawcy
     LLM_MODEL: str = "llama-3.3-70b-versatile"    # domyślnie darmowy Groq
 
+    TABLE_EXTERNAL_STOCK: str = "sellasist_stock"   # stany z Sellasistów nie-AMH (Faza 2b)
+
     TABLE_PRODUCTS: str = "subiekt_towary"
     COL_PRODUCT_SKU: str = "symbol"
     COL_PRODUCT_NAME: str = "nazwa"

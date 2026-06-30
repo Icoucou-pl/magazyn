@@ -62,11 +62,16 @@ catalog_dedup AS (
            cena   AS {settings.COL_PRODUCT_PRICE}
     FROM catalog
     ORDER BY sku_canon, pri, stan DESC NULLS LAST, sku_raw
+),
+ext_stock AS (
+    SELECT sku_canon, SUM(quantity) AS qty
+    FROM {settings.TABLE_EXTERNAL_STOCK}
+    GROUP BY sku_canon
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
     p.{settings.COL_PRODUCT_NAME} AS name,
-    COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0)::int AS stock,
+    (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(es.qty, 0))::int AS stock,
     COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
     COALESCE(pa.cbm_per_unit, 0)::float AS cbm_per_unit,
@@ -86,6 +91,7 @@ SELECT
     COALESCE(sy.qty_yoy_30d, 0)::int AS sales_yoy_30d,
     COALESCE(sy.qty_yoy_next_30d, 0)::int AS sales_yoy_next_30d
 FROM catalog_dedup p
+LEFT JOIN ext_stock es ON es.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_periods sp ON sp.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
