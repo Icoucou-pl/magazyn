@@ -61,6 +61,15 @@ class Settings(BaseSettings):
         "Doręczone - Studio Bay,Exchange - zakończony"
     )
 
+    # Whitelista statusów dla sklepów nie-AMH (Acti/Veluxa) — mają inny workflow:
+    # realizacja kończy się na "Wysłane" (AMH ma własne "Wysłane" = w drodze, dlatego
+    # whitelisty są ROZDZIELONE per sklep). Doręczone - * dodane na zapas (future-proof,
+    # gdy Acti zacznie domykać do doręczenia); nazwy 1:1 jak w bazie danego sklepu —
+    # nieistniejący jeszcze status jest nieszkodliwy (whitelist > blacklist).
+    INCLUDED_ORDER_STATUSES_EXT: str = (
+        "Wysłane,Odebrane przez kuriera,Doręczone - Allegro,Doręczone - Sklep"
+    )
+
     # --- Kursy walut NBP (tabela A) → przewalutowanie na PLN ---
     # app_fx_rates trzyma kurs średni (mid) per 1 jednostka waluty, per dzień roboczy.
     # EUR/CZK/HUF są wszystkie w tabeli A NBP, mid jest znormalizowany per 1 jednostkę
@@ -171,12 +180,26 @@ def excluded_status_clause(alias: str = "o") -> str:
 
 def included_status_clause(alias: str = "o") -> str:
     """Buduje fragment SQL zawężający do whitelisty statusów = sprzedaż zrealizowana
-    (zgodnie z Power BI). Pusta whitelista → brak filtra (liczy wszystko)."""
-    if not settings.INCLUDED_ORDER_STATUSES.strip():
+    (zgodnie z Power BI), ROZDZIELONEJ per sklep: AMH ma własne statusy "Doręczone - *",
+    sklepy nie-AMH (Acti/Veluxa) realizują na "Wysłane". Warunek działa per-wiersz
+    (po {alias}.shop), więc jest poprawny i dla pojedynczego sklepu, i dla "Wszystkich".
+    Obie whitelisty puste → brak filtra (liczy wszystko)."""
+    amh = [s.strip() for s in settings.INCLUDED_ORDER_STATUSES.split(",") if s.strip()]
+    ext = [s.strip() for s in settings.INCLUDED_ORDER_STATUSES_EXT.split(",") if s.strip()]
+    if not amh and not ext:
         return ""
-    statuses = [s.strip() for s in settings.INCLUDED_ORDER_STATUSES.split(",") if s.strip()]
-    quoted = ",".join("'" + s.replace("'", "''") + "'" for s in statuses)
-    return f"AND {alias}.{settings.COL_ORDER_STATUS} IN ({quoted})"
+    col = f"{alias}.{settings.COL_ORDER_STATUS}"
+    shop = f"{alias}.shop"
+
+    def _q(lst):
+        return ",".join("'" + s.replace("'", "''") + "'" for s in lst)
+
+    parts = []
+    if amh:
+        parts.append(f"({shop} = 'amh' AND {col} IN ({_q(amh)}))")
+    if ext:
+        parts.append(f"({shop} <> 'amh' AND {col} IN ({_q(ext)}))")
+    return "AND (" + " OR ".join(parts) + ")"
 
 
 def sales_channel_case(alias: str = "o") -> str:

@@ -16,7 +16,7 @@ WITH sales_periods AS (
         SUM(CASE WHEN o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '120 days' THEN oi.{settings.COL_ITEM_QTY} ELSE 0 END) AS qty_4m,
         SUM(CASE WHEN o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days' THEN oi.{settings.COL_ITEM_QTY} ELSE 0 END) AS qty_12m
     FROM {settings.TABLE_ORDER_ITEMS} oi
-    JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
+    JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID} AND o.shop = oi.shop
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'
       {INCLUDED_STATUS_FILTER}
       AND (:shop = '' OR o.shop = :shop)
@@ -28,7 +28,7 @@ sales_yoy AS (
         SUM(CASE WHEN o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '395 days' AND o.{settings.COL_ORDER_DATE} < NOW() - INTERVAL '365 days' THEN oi.{settings.COL_ITEM_QTY} ELSE 0 END) AS qty_yoy_30d,
         SUM(CASE WHEN o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days' AND o.{settings.COL_ORDER_DATE} < NOW() - INTERVAL '335 days' THEN oi.{settings.COL_ITEM_QTY} ELSE 0 END) AS qty_yoy_next_30d
     FROM {settings.TABLE_ORDER_ITEMS} oi
-    JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
+    JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID} AND o.shop = oi.shop
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '395 days'
       AND o.{settings.COL_ORDER_DATE} < NOW() - INTERVAL '335 days'
       {INCLUDED_STATUS_FILTER}
