@@ -118,3 +118,21 @@ async def products_probe(shop: str = "acti", path: str = "/products",
     sample = items[:2]
     keys = sorted(sample[0].keys()) if sample and isinstance(sample[0], dict) else []
     return {"liczba_na_stronie": len(items), "klucze_produktu": keys, "probka": sample}
+
+
+@router.get("/sellasist/stock-debug")
+async def stock_debug(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """2b: podgląd zaciągniętych stanów zewnętrznych (per sklep + próbka)."""
+    from config import settings as _s
+    out = {}
+    r = await db.execute(text(
+        f"SELECT shop, COUNT(*) AS pozycje, SUM(quantity) AS suma_stanu "
+        f"FROM {_s.TABLE_EXTERNAL_STOCK} GROUP BY shop ORDER BY shop"
+    ))
+    out["per_shop"] = [dict(x) for x in r.mappings()]
+    s = await db.execute(text(
+        f"SELECT shop, symbol, sku_canon, quantity, reserved FROM {_s.TABLE_EXTERNAL_STOCK} "
+        f"ORDER BY shop, sku_canon LIMIT 20"
+    ))
+    out["probka"] = [dict(x) for x in s.mappings()]
+    return out
