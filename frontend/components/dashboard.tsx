@@ -607,9 +607,27 @@ export default function Dashboard({
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
   const [favorites, setFavorites] = useState<FavProduct[]>([]);
   const [shop, setShop] = useState("");
+  const cacheRef = useRef<Record<string, {
+    history: StockHistory | null; classification: Classification | null;
+    containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; favorites: FavProduct[];
+  }>>({});
+
+  const applyBundle = (b: {
+    history: StockHistory | null; classification: Classification | null;
+    containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; favorites: FavProduct[];
+  }) => {
+    setHistory(b.history); setClassification(b.classification); setContainers(b.containers);
+    setAnomalies(b.anomalies); setShopping(b.shopping); setFavorites(b.favorites);
+  };
 
   useEffect(() => {
     let alive = true;
+    const cached = cacheRef.current[shop];
+    if (cached) {
+      applyBundle(cached);
+      setLoading(false);
+      return () => { alive = false; };
+    }
     (async () => {
       setLoading(true);
       const q = shop ? `&shop=${shop}` : "";
@@ -624,12 +642,19 @@ export default function Dashboard({
       ]);
       if (!alive) return;
       let failed = false;
-      if (h.status === "fulfilled") setHistory(h.value as StockHistory); else failed = true;
-      if (cls.status === "fulfilled") setClassification(cls.value as Classification); else failed = true;
-      if (cont.status === "fulfilled") setContainers((cont.value as ContainerOut[]) || []); else failed = true;
-      if (ano.status === "fulfilled") setAnomalies((ano.value as Anomaly[]) || []); else failed = true;
-      if (shp.status === "fulfilled") setShopping((shp.value as ShoppingGroup[]) || []); else failed = true;
-      if (fav.status === "fulfilled") setFavorites((fav.value as FavProduct[]) || []); else failed = true;
+      const bundle = {
+        history: null as StockHistory | null, classification: null as Classification | null,
+        containers: [] as ContainerOut[], anomalies: [] as Anomaly[],
+        shopping: [] as ShoppingGroup[], favorites: [] as FavProduct[],
+      };
+      if (h.status === "fulfilled") bundle.history = h.value as StockHistory; else failed = true;
+      if (cls.status === "fulfilled") bundle.classification = cls.value as Classification; else failed = true;
+      if (cont.status === "fulfilled") bundle.containers = (cont.value as ContainerOut[]) || []; else failed = true;
+      if (ano.status === "fulfilled") bundle.anomalies = (ano.value as Anomaly[]) || []; else failed = true;
+      if (shp.status === "fulfilled") bundle.shopping = (shp.value as ShoppingGroup[]) || []; else failed = true;
+      if (fav.status === "fulfilled") bundle.favorites = (fav.value as FavProduct[]) || []; else failed = true;
+      if (!failed) cacheRef.current[shop] = bundle;
+      applyBundle(bundle);
       if (failed) {
         toast("Część danych pulpitu nie wczytała się", "warning");
       }
