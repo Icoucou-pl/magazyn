@@ -48,6 +48,7 @@ class Firma:
     slug: str
     base_url: str
     api_key: str
+    is_self: bool = False    # AMH (hub) — stan z Subiektu, NIE ciągniemy stanów z jego Sellasista
 
 
 async def _load_firmy() -> List["Firma"]:
@@ -58,18 +59,18 @@ async def _load_firmy() -> List["Firma"]:
     try:
         async with SessionLocal() as session:
             r = await session.execute(text(
-                f"SELECT slug, base_url, api_key_env FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
+                f"SELECT slug, base_url, api_key_env, is_self FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
             ))
             for row in r.mappings():
                 base = (row["base_url"] or "").strip()
                 key = os.getenv(row["api_key_env"]) if row["api_key_env"] else None
                 if base and key:
-                    out.append(Firma(slug=row["slug"], base_url=base, api_key=key))
+                    out.append(Firma(slug=row["slug"], base_url=base, api_key=key, is_self=bool(row["is_self"])))
     except Exception as e:
         print(f"[sellasist] _load_firmy błąd (fallback do legacy): {e}")
 
     if not out and settings.SELLASIST_API_KEY and settings.SELLASIST_BASE_URL:
-        out.append(Firma(slug="amh", base_url=settings.SELLASIST_BASE_URL, api_key=settings.SELLASIST_API_KEY))
+        out.append(Firma(slug="amh", base_url=settings.SELLASIST_BASE_URL, api_key=settings.SELLASIST_API_KEY, is_self=True))
     return out
 
 # Kolumny zapisywane do sellasist_orders (1:1 ze skryptem nagłówków) + data_pobrania.
@@ -390,6 +391,20 @@ async def _ensure_schema(session: AsyncSession) -> None:
     """))
     await session.commit()
 
+    # 2b: stany zewnętrzne (Acti/Veluxa) — stan + rezerwacje per sklep i SKU (kanon bez wielkości liter).
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS sellasist_stock ("
+        " shop VARCHAR NOT NULL,"
+        " symbol VARCHAR NOT NULL,"
+        " sku_canon VARCHAR NOT NULL,"
+        " quantity NUMERIC DEFAULT 0,"
+        " reserved NUMERIC DEFAULT 0,"
+        " updated_at TIMESTAMP DEFAULT now(),"
+        " PRIMARY KEY (shop, sku_canon)"
+        ")"
+    ))
+    await session.commit()
+
     for tbl in (settings.TABLE_ORDERS, settings.TABLE_ORDER_ITEMS, f"{settings.TABLE_ORDERS}_log"):
         try:
             await session.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS shop VARCHAR NOT NULL DEFAULT 'amh'"))
@@ -476,10 +491,59 @@ async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List
 
 # ============================================================
 # BIEG (zadanie w tle)
+async def _fetch_stock(firma: "Firma") -> List[dict]:
+    """Pobiera produkty (ze stanami) z Sellasista danego sklepu, stronicowane po offset.
+    Zwraca listę surowych produktów (symbol + quantity + reserved)."""
+    page = settings.SELLASIST_PAGE_SIZE
+    offset = 0
+    out: List[dict] = []
+    for _ in range(_PAGE_SAFETY_LIMIT):
+        payload = await _http_get(firma, "/products", {"offset": offset})
+        rows = payload if isinstance(payload, list) else (payload or {}).get("data", [])
+        if not rows:
+            break
+        out.extend(rows)
+        if len(rows) < page:
+            break
+        offset += page
+        await asyncio.sleep(0.2)
+    return out
+
+
+def _to_float(v) -> float:
+    try:
+        return float(str(v).replace(",", ".").strip())
+    except Exception:
+        return 0.0
+
+
+async def _upsert_external_stock(session: AsyncSession, firma: "Firma", products: List[dict]) -> int:
+    """Pełna podmiana stanów sklepu: kasuje stare wiersze sklepu i wstawia bieżące.
+    Klucz kanoniczny = LOWER(TRIM(symbol)), żeby pasował do katalogu (case-insensitive)."""
+    await session.execute(text(f"DELETE FROM {settings.TABLE_EXTERNAL_STOCK} WHERE shop = :shop"), {"shop": firma.slug})
+    n = 0
+    for p in products:
+        sku = str(p.get("symbol") or "").strip()
+        if not sku:
+            continue
+        await session.execute(text(
+            f"INSERT INTO {settings.TABLE_EXTERNAL_STOCK} (shop, symbol, sku_canon, quantity, reserved, updated_at) "
+            "VALUES (:shop, :sku, :canon, :qty, :res, :ts) "
+            "ON CONFLICT (shop, sku_canon) DO UPDATE SET symbol = EXCLUDED.symbol, "
+            "quantity = EXCLUDED.quantity, reserved = EXCLUDED.reserved, updated_at = EXCLUDED.updated_at"
+        ), {"shop": firma.slug, "sku": sku, "canon": sku.lower(),
+            "qty": _to_float(p.get("quantity")),
+            "res": _to_float(p.get("reserved")) if p.get("reserved") not in (None, "") else 0.0,
+            "ts": _now_local()})
+        n += 1
+    await session.commit()
+    return n
+
+
 # ============================================================
 async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> dict:
     """Jeden sklep. Łapie własne błędy — awaria jednej firmy nie ubija pozostałych.
-    Zwraca słownik wyniku: slug, ok, ins/upd/items (liczby tego sklepu), error."""
+    Zwraca słownik wyniku: slug, ok, ins/upd/items + stany zewnętrzne (dla sklepów nie-AMH)."""
     before = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
     err: Optional[str] = None
     try:
@@ -494,16 +558,38 @@ async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> d
     except Exception as e:
         err = str(e)
     a = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
+
+    # 2b: stany zewnętrzne — tylko sklepy nie-AMH (AMH ma stan z Subiektu, nie dublujemy).
+    stock_rows: Optional[int] = None
+    stock_err: Optional[str] = None
+    if not firma.is_self:
+        try:
+            products = await _fetch_stock(firma)
+            async with SessionLocal() as session:
+                stock_rows = await _upsert_external_stock(session, firma, products)
+        except urllib.error.HTTPError as e:
+            stock_err = f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            stock_err = f"brak połączenia ({e.reason})"
+        except Exception as e:
+            stock_err = str(e)
+
     return {
         "slug": firma.slug, "ok": err is None, "error": err,
         "ins": a[0] - before[0], "upd": a[1] - before[1], "items": a[2] - before[2],
+        "stock_rows": stock_rows, "stock_err": stock_err,
     }
 
 
 def _result_desc(r: dict) -> str:
-    if r["ok"]:
-        return f"+{r['ins']} nowych, {r['upd']} zm., +{r['items']} poz."
-    return f"błąd {r['error']}"
+    if not r["ok"]:
+        return f"błąd {r['error']}"
+    base = f"+{r['ins']} nowych, {r['upd']} zm., +{r['items']} poz."
+    if r.get("stock_err"):
+        base += f" · stan: błąd {r['stock_err']}"
+    elif r.get("stock_rows") is not None:
+        base += f" · stan: {r['stock_rows']} poz."
+    return base
 
 
 async def run_refresh() -> None:
