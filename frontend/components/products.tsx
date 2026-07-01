@@ -101,7 +101,7 @@ export default function ProductsView({
 
   const onToggleFav = async (p: Product) => {
     try {
-      const updated = (await api.put(`/products/${p.sku}/favorite`)) as Product;
+      const updated = (await api.put(`/products/${encodeURIComponent(p.sku)}/favorite`)) as Product;
       setProducts((prev) => prev.map((x) => (x.sku === p.sku ? updated : x)));
     } catch {
       toast("Nie udało się zmienić obserwowania", "warning");

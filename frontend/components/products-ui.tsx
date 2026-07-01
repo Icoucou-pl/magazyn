@@ -488,11 +488,11 @@ export function BulkBar({
   const watch = () => {
     // tylko te, które jeszcze nie są obserwowane (endpoint /favorite jest togglem)
     const toAdd = selectedRows().filter((p) => !p.is_favorite).map((p) => p.sku);
-    runBulk(`Dodano ${toAdd.length} do obserwowanych`, (sku) => api.put(`/products/${sku}/favorite`), toAdd);
+    runBulk(`Dodano ${toAdd.length} do obserwowanych`, (sku) => api.put(`/products/${encodeURIComponent(sku)}/favorite`), toAdd);
   };
   const assignMfr = (m: Manufacturer) => {
     setMfrOpen(false);
-    runBulk(`Przypisano ${count} do: ${m.name}`, (sku) => api.put(`/products/${sku}/attrs`, { manufacturer_id: m.id }), selectedSkus);
+    runBulk(`Przypisano ${count} do: ${m.name}`, (sku) => api.put(`/products/${encodeURIComponent(sku)}/attrs`, { manufacturer_id: m.id }), selectedSkus);
   };
   // Ręczne wymuszenie statusu (forced_status). "AUTO" = zdejmij wymuszenie (wróć do auto-klasyfikacji).
   const STATUS_OPTIONS: Array<{ label: string; value: string; color: string }> = [
@@ -504,7 +504,7 @@ export function BulkBar({
   const setStatus = (opt: { label: string; value: string }) => {
     setStatusOpen(false);
     const msg = opt.value === "AUTO" ? `Wyczyszczono status dla ${count}` : `Ustawiono status „${opt.label}" dla ${count}`;
-    runBulk(msg, (sku) => api.put(`/products/${sku}/attrs`, { forced_status: opt.value }), selectedSkus);
+    runBulk(msg, (sku) => api.put(`/products/${encodeURIComponent(sku)}/attrs`, { forced_status: opt.value }), selectedSkus);
   };
 
   return (
