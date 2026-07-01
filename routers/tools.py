@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
+from config import settings, included_status_clause
 from database import get_db
 from models import AutoSuggestRequest, AutoSuggestItem, AutoSuggestResponse, OrderPdfRequest
 from services.products import fetch_products
@@ -93,9 +93,45 @@ async def search_ean(q: str = Query(..., min_length=2), db: AsyncSession = Depen
     return [{"sku": row._mapping["sku"], "name": row._mapping["name"], "stock": row._mapping["stock"], "ean": row._mapping["ean"]} for row in r]
 
 
+def _visible_products_clause(sku_raw_sql: str) -> str:
+    """Zwraca predykat SQL (bool): TRUE gdy produkt o danym SKU NIE jest INACTIVE.
+    Definicja 1:1 z classify_product / SALES_QUERY: force_visible oraz forced_status
+    (ACTIVE/ACTIVE_NO_STOCK/DEAD_STOCK) wymuszają widoczność; forced_status='INACTIVE'
+    ukrywa zawsze; inaczej produkt jest widoczny gdy ma stan (Subiekt lub zewnętrzny
+    Sellasist) albo zrealizowaną sprzedaż (whitelist statusów) w ostatnich 365 dniach.
+    Użyte w globalnej wyszukiwarce (Ctrl+K / skaner EAN), żeby nieaktywne SKU nie wypływały."""
+    canon = f"LOWER(TRIM({sku_raw_sql}))"
+    status_ext = included_status_clause("o2")
+    return f"""(
+        EXISTS (SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} pav
+                WHERE LOWER(TRIM(pav.sku)) = {canon}
+                  AND (COALESCE(pav.force_visible, FALSE) = TRUE
+                       OR pav.forced_status IN ('ACTIVE', 'ACTIVE_NO_STOCK', 'DEAD_STOCK')))
+        OR (
+            NOT EXISTS (SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} pai
+                        WHERE LOWER(TRIM(pai.sku)) = {canon} AND pai.forced_status = 'INACTIVE')
+            AND (
+                EXISTS (SELECT 1 FROM {settings.TABLE_PRODUCTS} sub
+                        WHERE LOWER(TRIM(sub.{settings.COL_PRODUCT_SKU})) = {canon}
+                          AND COALESCE(sub.{settings.COL_PRODUCT_STOCK}, 0) > 0)
+                OR EXISTS (SELECT 1 FROM {settings.TABLE_EXTERNAL_STOCK} ss
+                           WHERE ss.sku_canon = {canon} AND COALESCE(ss.quantity, 0) > 0)
+                OR EXISTS (SELECT 1 FROM {settings.TABLE_ORDER_ITEMS} oi2
+                           JOIN {settings.TABLE_ORDERS} o2
+                             ON o2.{settings.COL_ORDER_ID} = oi2.{settings.COL_ITEM_ORDER_ID}
+                            AND o2.shop = oi2.shop
+                           WHERE LOWER(TRIM(oi2.{settings.COL_ITEM_SKU})) = {canon}
+                             AND o2.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'
+                             {status_ext})
+            )
+        )
+    )"""
+
+
 @router.get("/search/global")
 async def search_global(q: str = Query(..., min_length=2), db: AsyncSession = Depends(get_db)):
-    """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera."""
+    """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera.
+    Produkty INACTIVE (zero stanu i zero sprzedaży 12m) są pomijane — patrz _visible_products_clause."""
     query_lower = f"%{q.lower()}%"
 
     # 1. Produkty (SKU + nazwa)
@@ -109,8 +145,9 @@ async def search_global(q: str = Query(..., min_length=2), db: AsyncSession = De
         FROM {settings.TABLE_PRODUCTS} p
         LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = p.{settings.COL_PRODUCT_SKU}
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
-        WHERE LOWER(p.{settings.COL_PRODUCT_SKU}) LIKE :q
-           OR LOWER(p.{settings.COL_PRODUCT_NAME}) LIKE :q
+        WHERE (LOWER(p.{settings.COL_PRODUCT_SKU}) LIKE :q
+           OR LOWER(p.{settings.COL_PRODUCT_NAME}) LIKE :q)
+          AND {_visible_products_clause(f"p.{settings.COL_PRODUCT_SKU}")}
         ORDER BY
             CASE WHEN LOWER(p.{settings.COL_PRODUCT_SKU}) = LOWER(:exact) THEN 0 ELSE 1 END,
             p.{settings.COL_PRODUCT_SKU}
@@ -130,6 +167,7 @@ async def search_global(q: str = Query(..., min_length=2), db: AsyncSession = De
             LEFT JOIN {settings.TABLE_PRODUCTS} p
                 ON LOWER(TRIM(p.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
             WHERE oi.{settings.COL_ITEM_EAN} LIKE :q
+              AND {_visible_products_clause(f"oi.{settings.COL_ITEM_SKU}")}
             GROUP BY oi.{settings.COL_ITEM_SKU}, oi.{settings.COL_ITEM_EAN}
             LIMIT 10
         """), {"q": query_lower})
