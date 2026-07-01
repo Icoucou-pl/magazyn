@@ -1,12 +1,12 @@
 "use client";
 // ============================================================
-// MAGAZYN — Header (+ NavBtn, UserMenuPopover, MenuItem). Port z app.jsx.
+// MAGAZYN — Sidebar (lewe pionowe menu) + Topbar (search z lewej + akcje).
+//   - układ: logo + nawigacja w lewym sidebarze (góra→dół), pasek narzędzi na górze
 //   - nawigacja gate'owana can(user, perm) z lib/permissions
 //   - Sun/Moon → onToggleTheme (shell zmienia t.theme)
 //   - menu usera: Zmień hasło / Dziennik audytu (super) / Wyloguj
-//   - search/scan/refresh/changePassword/auditLog = opcjonalne (modale w kolejnych etapach)
+//   - mobile: sidebar chowany, hamburger w Topbarze otwiera drawer
 //   - logo z /public/assets (logo-white.png / logo-black.png)
-// Pominięte do etapu 5: PresenceIndicator, NotificationsBell. Badge kontenerów: realny licznik później.
 // ============================================================
 
 import React, { useEffect, useState } from "react";
@@ -37,6 +37,8 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "cashflow",   label: "Cashflow",   icon: I.Wallet, perm: "viewFinancials" },
 ];
 
+export const SIDEBAR_WIDTH = 224;
+
 const iconBtn: React.CSSProperties = {
   display: "inline-flex", alignItems: "center", justifyContent: "center",
   width: 34, height: 34,
@@ -47,7 +49,61 @@ const iconBtn: React.CSSProperties = {
   transition: "all 0.12s",
 };
 
-type HeaderProps = {
+// Surowy stempel (czas warszawski, naive) → "DD.MM HH:MM". Bez konwersji stref.
+function fmtFresh(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// ── Logo (współdzielone) ─────────────────────────────────────
+function Brand() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 26, width: "auto", display: "block" }}/>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
+      <span className="mono" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
+        MAGAZYN
+      </span>
+    </div>
+  );
+}
+
+// ── Sidebar (lewe pionowe menu) — desktop ────────────────────
+export function Sidebar({
+  view, setView, user,
+}: {
+  view: string; setView: (v: string) => void; user: User;
+}) {
+  const navItems = NAV_ITEMS.filter((item) => !item.perm || can(user, item.perm));
+  return (
+    <aside className="app-sidebar hide-mobile" style={{
+      position: "sticky", top: 0, alignSelf: "flex-start",
+      width: SIDEBAR_WIDTH, flexShrink: 0,
+      height: "100dvh",
+      display: "flex", flexDirection: "column",
+      gap: 4,
+      padding: "16px 12px",
+      background: "var(--surface-1)",
+      borderRight: "1px solid var(--border-soft)",
+    }}>
+      <div style={{ padding: "6px 8px 14px" }}>
+        <Brand/>
+      </div>
+      <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {navItems.map((item) => (
+          <NavBtn key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)}/>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
+type TopbarProps = {
   view: string;
   setView: (v: string) => void;
   user: User;
@@ -63,20 +119,11 @@ type HeaderProps = {
   onAuditLog?: () => void;
 };
 
-// Surowy stempel (czas warszawski, naive) → "DD.MM HH:MM". Bez konwersji stref
-// (data_pobrania zapisywana jest już czasem lokalnym).
-function fmtFresh(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "—";
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-export default function Header({
+// ── Topbar (search z lewej + świeżość + akcje) ───────────────
+export function Topbar({
   view, setView, user, theme, onToggleTheme, onLogout,
   onOpenSearch, onOpenScan, onRefresh, refreshing, freshness, onChangePassword, onAuditLog,
-}: HeaderProps) {
+}: TopbarProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -104,13 +151,16 @@ export default function Header({
         borderBottom: "1px solid var(--border-soft)",
       }}>
         <div style={{
-          maxWidth: 1480, margin: "0 auto",
-          padding: "10px 24px 12px",
-          display: "flex", flexDirection: "column", gap: 8,
+          padding: "10px 24px",
+          display: "flex", alignItems: "center", gap: 12,
         }}>
-          {/* Wiersz 1: narzędzia od prawej */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-          {/* Search bar */}
+          {/* Hamburger + logo — tylko mobile (sidebar schowany) */}
+          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn} title="Menu">
+            <I.Menu size={18}/>
+          </button>
+          <div className="show-mobile"><Brand/></div>
+
+          {/* Search — z LEWEJ (desktop pełny pasek, mobile ikona) */}
           <button onClick={onOpenSearch} style={{
             display: "flex", alignItems: "center", gap: 10,
             padding: "8px 12px",
@@ -119,20 +169,38 @@ export default function Header({
             borderRadius: 8,
             color: "var(--text-lo)",
             fontSize: 12,
-            minWidth: 240, maxWidth: 320,
+            width: "100%", maxWidth: 380,
             transition: "all 0.12s",
           }} className="hide-mobile search-bar-btn">
             <I.Search size={14}/>
             <span style={{ flex: 1, textAlign: "left" }}>Szukaj wszędzie...</span>
             <kbd>Ctrl+K</kbd>
           </button>
-
-          {/* Search — ikona na mobile (pełny pasek tylko na desktopie) */}
           <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
             <I.Search size={16}/>
           </button>
 
-          {/* Actions */}
+          {/* Spacer — dosuwa świeżość + akcje do prawej */}
+          <div style={{ flex: 1 }}/>
+
+          {/* Świeżość danych */}
+          <div className="freshness-row hide-tablet" style={{
+            display: "flex", flexDirection: "column", alignItems: "flex-end",
+            gap: 1, fontSize: 11, color: "var(--text-lo)", lineHeight: 1.35, whiteSpace: "nowrap",
+          }}>
+            <span>Ostatnie pobranie Sellasist:{" "}
+              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
+                {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
+              </b>
+            </span>
+            <span>Ostatnie pobranie Subiekt:{" "}
+              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
+                {fmtFresh(freshness?.subiekt?.last)}
+              </b>
+            </span>
+          </div>
+
+          {/* Akcje */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
               <I.Scan size={16}/>
@@ -183,57 +251,6 @@ export default function Header({
           </div>
         </div>
 
-          {/* Wiersz 2: świeżość danych */}
-          <div className="freshness-row" style={{
-            display: "flex", alignItems: "center", justifyContent: "flex-end",
-            flexWrap: "wrap", gap: 4, rowGap: 2, columnGap: 10,
-            fontSize: 11, color: "var(--text-lo)", marginTop: 1,
-          }}>
-            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Sellasist:{" "}
-              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
-              </b>
-            </span>
-            <span style={{ opacity: 0.45 }} className="hide-mobile">·</span>
-            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Subiekt:{" "}
-              <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {fmtFresh(freshness?.subiekt?.last)}
-              </b>
-            </span>
-          </div>
-          {/* Wiersz 3: dashboardy od lewej */}
-          <div style={{ display: "flex", alignItems: "center", gap: 24, minHeight: 38 }}>
-          {/* Logo */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 26, width: "auto", display: "block" }}/>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
-            <span className="mono" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
-              MAGAZYN
-            </span>
-          </div>
-
-          {/* Nav — desktop */}
-          <nav style={{
-            display: "flex", gap: 2,
-            padding: 4, background: "var(--surface-1)", borderRadius: 10,
-            border: "1px solid var(--border-soft)",
-          }} className="hide-mobile">
-            {navItems.map((item) => (
-              <NavBtn key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)}/>
-            ))}
-          </nav>
-
-          {/* Mobile nav toggle */}
-          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn}>
-            <I.Menu size={18}/>
-          </button>
-
-          </div>
-
-        </div>
-
         {/* Mobile nav drawer */}
         {mobileNavOpen && (
           <div className="show-mobile" style={{
@@ -263,7 +280,7 @@ export default function Header({
       <style>{`
         @media (max-width: 980px) {
           .hide-mobile { display: none !important; }
-          .freshness-row { flex-direction: column !important; align-items: flex-end !important; }
+          .app-sidebar { display: none !important; }
         }
         @media (min-width: 981px) {
           .show-mobile { display: none !important; }
@@ -279,21 +296,26 @@ export default function Header({
   );
 }
 
+// ── Pozycja nawigacji (pionowa, pełna szerokość) ─────────────
 function NavBtn({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} style={{
-      display: "flex", alignItems: "center", gap: 6,
-      padding: "7px 12px",
+      display: "flex", alignItems: "center", gap: 11,
+      width: "100%",
+      padding: "9px 12px",
       background: active ? "var(--surface-3)" : "transparent",
       color: active ? "var(--text-hi)" : "var(--text-mid)",
-      border: "none", borderRadius: 7,
-      fontSize: 12, fontWeight: 500,
+      border: "none",
+      borderRadius: 8,
+      fontSize: 13, fontWeight: 500,
+      textAlign: "left",
       transition: "all 0.12s",
       position: "relative",
     }}
-      onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--text-hi)"; }}
-      onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--text-mid)"; }}>
-      <item.icon size={14}/>
+      onMouseEnter={(e) => { if (!active) { e.currentTarget.style.color = "var(--text-hi)"; e.currentTarget.style.background = "var(--surface-2)"; } }}
+      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.color = "var(--text-mid)"; e.currentTarget.style.background = "transparent"; } }}>
+      {active && <span style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 99, background: "var(--accent)" }}/>}
+      <item.icon size={16}/>
       {item.label}
     </button>
   );
@@ -365,3 +387,6 @@ function MenuItem({
     </button>
   );
 }
+
+// Zgodność wsteczna: domyślny eksport = Topbar (gdyby ktoś importował `Header`).
+export default Topbar;
