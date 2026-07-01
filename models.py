@@ -117,6 +117,9 @@ class ProductSummary(BaseModel):
     manufacturer_id: Optional[int]
     manufacturer_name: Optional[str]
     manufacturer_color: Optional[str] = None
+    firma_id: Optional[int] = None          # firma-właściciel magazynu źródłowego (NULL = AMH)
+    firma_name: Optional[str] = None
+    firma_color: Optional[str] = None
     seasonality_enabled: bool
     is_favorite: bool = False
     ean: Optional[str] = None

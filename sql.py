@@ -83,6 +83,9 @@ SELECT
     pa.manufacturer_id,
     m.name AS manufacturer_name,
     m.color AS manufacturer_color,
+    pa.firma_id,
+    f.name AS firma_name,
+    f.color AS firma_color,
     COALESCE(pa.seasonality_enabled, FALSE) AS seasonality_enabled,
     COALESCE(pa.is_favorite, FALSE) AS is_favorite,
     pa.ean AS ean,
@@ -102,6 +105,7 @@ LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT
 LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
 LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = p.{settings.COL_PRODUCT_SKU}
 LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
+LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
 WHERE (
     :shop = ''
     OR (:shop = 'amh' AND p.src_pri = 1)
