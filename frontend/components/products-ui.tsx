@@ -464,12 +464,21 @@ export function BulkBar({
     if (skus.length === 0) { toast("Nic do zmiany", "info"); return; }
     setBusy(true);
     try {
-      await Promise.all(skus.map((sku) => fn(sku)));
-      toast(label, "ok");
-      onClear();
+      const results = await Promise.allSettled(skus.map((sku) => fn(sku)));
+      const failed = skus.filter((_, i) => results[i].status === "rejected");
+      const okCount = skus.length - failed.length;
+      if (failed.length === 0) {
+        toast(label, "ok");
+        onClear();
+      } else if (okCount === 0) {
+        toast(`Nie powiodło się (${failed.length}): ${failed.slice(0, 5).join(", ")}${failed.length > 5 ? "…" : ""}`, "warning");
+      } else {
+        toast(`${label} — OK: ${okCount}, błąd: ${failed.length} (${failed.slice(0, 4).join(", ")}${failed.length > 4 ? "…" : ""})`, "warning");
+        onClear();
+      }
       onReload();
     } catch {
-      toast("Część operacji się nie powiodła", "warning");
+      toast("Operacja zbiorcza nie powiodła się", "warning");
       onReload();
     } finally {
       setBusy(false);
