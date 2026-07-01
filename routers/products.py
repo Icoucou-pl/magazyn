@@ -35,9 +35,10 @@ def _mask_financials(products, user):
 
 
 @router.get("/products", response_model=List[ProductSummary])
-async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    # shop="" = wszystkie sklepy (suma); "amh"/"acti"/"veluxa" = sprzedaż i stan tylko danego sklepu (Faza 3).
     allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
-    return _mask_financials(await fetch_products(db, allowed), user)
+    return _mask_financials(await fetch_products(db, allowed, shop), user)
 
 
 @router.get("/products/{sku}", response_model=ProductSummary)
@@ -207,13 +208,14 @@ async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_
 
 
 @router.get("/products/export/csv")
-async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_only: bool = Query(False), db: AsyncSession = Depends(get_db)):
-    """Eksport produktów do Excela (XLSX) - polskie znaki zawsze działają."""
+async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_only: bool = Query(False), shop: str = Query(""), db: AsyncSession = Depends(get_db)):
+    """Eksport produktów do Excela (XLSX) - polskie znaki zawsze działają.
+    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = liczby danego sklepu (zgodnie z wybraną zakładką)."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
     allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
-    products = await fetch_products(db, allowed)
+    products = await fetch_products(db, allowed, shop)
 
     if favorites_only:
         products = [p for p in products if p.is_favorite]
