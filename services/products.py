@@ -97,6 +97,7 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
         stock=float(row["stock"] or 0),
         stock_value=round(row["stock"] * price, 2),
         purchase_price=round(price, 2),
+        cena_zakupu_manual=(round(float(row["cena_zakupu_manual"]), 2) if row.get("cena_zakupu_manual") is not None else None),
         stock_in_transit=stock_in_transit,
         product_status=classify_product(row),
         cbm_per_unit=row.get("cbm_per_unit", 0),
