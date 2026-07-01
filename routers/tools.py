@@ -129,10 +129,15 @@ def _visible_products_clause(sku_raw_sql: str) -> str:
 
 
 @router.get("/search/global")
-async def search_global(q: str = Query(..., min_length=2), db: AsyncSession = Depends(get_db)):
+async def search_global(q: str = Query(..., min_length=2), include_inactive: bool = False, db: AsyncSession = Depends(get_db)):
     """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera.
-    Produkty INACTIVE (zero stanu i zero sprzedaży 12m) są pomijane — patrz _visible_products_clause."""
+    Produkty INACTIVE (zero stanu i zero sprzedaży 12m) są domyślnie pomijane
+    (_visible_products_clause). include_inactive=1 (z preferencji "Nieaktywne" we froncie)
+    wyłącza filtr, żeby dało się je odnaleźć."""
     query_lower = f"%{q.lower()}%"
+    # Pusty fragment = brak filtra (pokaż też nieaktywne); inaczej dokładamy predykat widoczności.
+    vis_prod = "" if include_inactive else f"AND {_visible_products_clause(f'p.{settings.COL_PRODUCT_SKU}')}"
+    vis_ean = "" if include_inactive else f"AND {_visible_products_clause(f'oi.{settings.COL_ITEM_SKU}')}"
 
     # 1. Produkty (SKU + nazwa)
     products_result = await db.execute(text(f"""
@@ -147,7 +152,7 @@ async def search_global(q: str = Query(..., min_length=2), db: AsyncSession = De
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
         WHERE (LOWER(p.{settings.COL_PRODUCT_SKU}) LIKE :q
            OR LOWER(p.{settings.COL_PRODUCT_NAME}) LIKE :q)
-          AND {_visible_products_clause(f"p.{settings.COL_PRODUCT_SKU}")}
+          {vis_prod}
         ORDER BY
             CASE WHEN LOWER(p.{settings.COL_PRODUCT_SKU}) = LOWER(:exact) THEN 0 ELSE 1 END,
             p.{settings.COL_PRODUCT_SKU}
@@ -167,7 +172,7 @@ async def search_global(q: str = Query(..., min_length=2), db: AsyncSession = De
             LEFT JOIN {settings.TABLE_PRODUCTS} p
                 ON LOWER(TRIM(p.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
             WHERE oi.{settings.COL_ITEM_EAN} LIKE :q
-              AND {_visible_products_clause(f"oi.{settings.COL_ITEM_SKU}")}
+              {vis_ean}
             GROUP BY oi.{settings.COL_ITEM_SKU}, oi.{settings.COL_ITEM_EAN}
             LIMIT 10
         """), {"q": query_lower})
