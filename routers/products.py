@@ -47,7 +47,7 @@ async def get_product_endpoint(sku: str, db: AsyncSession = Depends(get_db), use
     return p
 
 
-@router.put("/products/{sku}/lead-time", response_model=ProductSummary)
+@router.put("/products/{sku:path}/lead-time", response_model=ProductSummary)
 async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession = Depends(get_db)):
     await db.execute(
         text(f"""
@@ -61,7 +61,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
     return await get_product(db, sku)
 
 
-@router.put("/products/{sku}/attrs", response_model=ProductSummary)
+@router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
@@ -117,7 +117,7 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     return _mask_financials([await get_product(db, sku)], user)[0]
 
 
-@router.get("/products/{sku}/projection", response_model=List[StockProjectionPoint])
+@router.get("/products/{sku:path}/projection", response_model=List[StockProjectionPoint])
 async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_db)):
     product = await get_product(db, sku)
     today = date.today()
@@ -271,7 +271,7 @@ async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_
     )
 
 
-@router.put("/products/{sku}/favorite", response_model=ProductSummary)
+@router.put("/products/{sku:path}/favorite", response_model=ProductSummary)
 async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
     """Przełącza status ulubione - jeśli był true, robi false i odwrotnie."""
     existing = await db.execute(text(f"SELECT is_favorite FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
