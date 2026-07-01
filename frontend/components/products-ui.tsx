@@ -97,6 +97,15 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
   { id: "all", label: "Wszystkie" },
 ];
 
+// Selektor sklepu (Faza 3). "" = suma wszystkich sklepów (realny łączny popyt),
+// "amh"/"acti"/"veluxa" = sprzedaż i stan liczone tylko dla danego sklepu.
+const SHOPS: Array<{ v: string; l: string; title: string }> = [
+  { v: "", l: "Wszystkie", title: "Suma ze wszystkich sklepów — realny łączny popyt (np. produkt sprzedawany i na AMH, i w źródle)" },
+  { v: "amh", l: "AMH", title: "Widok z AMH: katalog Subiektu, sprzedaż w sklepie AMH, stan z Subiektu" },
+  { v: "acti", l: "Acti", title: "Tylko produkty Acti: sprzedaż i stan magazynu Acti" },
+  { v: "veluxa", l: "Veluxa", title: "Tylko produkty Veluxa: sprzedaż i stan magazynu Veluxa" },
+];
+
 // ── Helpery wyświetlania ─────────────────────────────────────
 export const displayStatus = (p: Product): string => (p.product_status === "DEAD_STOCK" ? "DEAD_STOCK" : p.status);
 export const monthsDisplay = (v: number): string => (!isFinite(v) || v > 99 ? "∞" : v.toFixed(1));
@@ -126,7 +135,7 @@ export function Portal({ children }: { children: React.ReactNode }) {
 // ── Toolbar ──────────────────────────────────────────────────
 export function ProductsToolbar({
   search, setSearch, filter, setFilter, counts, resultCount, onPickCols, visibleColsCount, onImport, onExport,
-  showInactive, setShowInactive,
+  showInactive, setShowInactive, shop, setShop,
 }: {
   search: string; setSearch: (v: string) => void;
   filter: string; setFilter: (v: string) => void;
@@ -134,11 +143,27 @@ export function ProductsToolbar({
   onPickCols: () => void; visibleColsCount: number;
   onImport: () => void; onExport: () => void;
   showInactive?: boolean; setShowInactive?: (v: boolean) => void;
+  shop?: string; setShop?: (v: string) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }}>
+      {setShop && (
+        <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, flexShrink: 0 }}>
+          {SHOPS.map((s) => {
+            const active = (shop || "") === s.v;
+            return (
+              <button key={s.v || "all"} onClick={() => setShop(s.v)} title={s.title} style={{
+                padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+                background: active ? "var(--surface-3)" : "transparent",
+                color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none", whiteSpace: "nowrap",
+              }}>{s.l}</button>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", background: "var(--bg)", border: "1px solid var(--border-soft)", borderRadius: 8, flex: "1 1 240px", minWidth: 200, maxWidth: 360 }}>
         <I.Search size={14} style={{ color: "var(--text-lo)" }} />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Szukaj SKU lub nazwy..."
