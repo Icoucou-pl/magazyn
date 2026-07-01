@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { I } from "@/components/ui";
-import { Portal, modalBackdrop, modalCard } from "@/components/products-ui";
+import { Portal, modalBackdrop, modalCard, readShowInactive } from "@/components/products-ui";
 
 // ── Kształt odpowiedzi /search/global ────────────────────────
 interface GProduct { sku: string; name: string; stock: number; manufacturer_name: string | null; manufacturer_color: string | null; }
@@ -69,7 +69,8 @@ export default function CommandPalette({ open, onClose, onProduct, onContainer, 
     const reqId = ++seq.current;
     const t = setTimeout(async () => {
       try {
-        const data = (await api.get(`/search/global?q=${encodeURIComponent(query)}`)) as GlobalSearchResponse;
+        const inc = readShowInactive() ? "&include_inactive=1" : "";
+        const data = (await api.get(`/search/global?q=${encodeURIComponent(query)}${inc}`)) as GlobalSearchResponse;
         if (reqId !== seq.current) return; // odrzuć nieaktualną odpowiedź
         setRes(data || EMPTY);
         setActive(0);

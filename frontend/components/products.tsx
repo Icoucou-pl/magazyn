@@ -13,6 +13,7 @@ import { useUser, can } from "@/lib/permissions";
 import {
   ProductsToolbar, ProductsTable, ColPickerModal, BulkBar,
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
+  readShowInactive, writeShowInactive,
   type Product, type Manufacturer,
 } from "./products-ui";
 import ImportModal from "./import-modal";
@@ -46,7 +47,11 @@ export default function ProductsView({
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("active");
+  // Start false (SSR-safe: brak window), wczytaj zapamiętaną preferencję po montażu.
   const [showInactive, setShowInactive] = useState(false);
+  useEffect(() => { setShowInactive(readShowInactive()); }, []);
+  // Zapis tylko przy jawnym przełączeniu przez usera (nie klobruje przy starcie).
+  const toggleInactive = useCallback((v: boolean) => { setShowInactive(v); writeShowInactive(v); }, []);
   const [sort, setSort] = useState<SortState>({ key: "status", dir: "asc" });
   const [visibleCols, setVisibleCols] = useState(DEFAULT_COLS);
   const [showColPicker, setShowColPicker] = useState(false);
@@ -186,7 +191,7 @@ export default function ProductsView({
       <ProductsToolbar
         search={search} setSearch={setSearch}
         filter={filter} setFilter={setFilter}
-        showInactive={showInactive} setShowInactive={setShowInactive}
+        showInactive={showInactive} setShowInactive={toggleInactive}
         counts={counts}
         resultCount={filtered.length}
         onPickCols={() => setShowColPicker(true)}

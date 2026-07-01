@@ -100,6 +100,19 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
 export const displayStatus = (p: Product): string => (p.product_status === "DEAD_STOCK" ? "DEAD_STOCK" : p.status);
 export const monthsDisplay = (v: number): string => (!isFinite(v) || v > 99 ? "∞" : v.toFixed(1));
 
+// ── Preferencja "pokaż nieaktywne" (trwała, współdzielona) ────
+// Jeden przełącznik dla listy Produktów i globalnej wyszukiwarki (Ctrl+K/skaner).
+// Trzymana w localStorage, żeby przeżyć odświeżenie strony. SSR-safe (guard na window).
+export const SHOW_INACTIVE_KEY = "magazyn.showInactive";
+export function readShowInactive(): boolean {
+  if (typeof window === "undefined") return false;
+  try { return window.localStorage.getItem(SHOW_INACTIVE_KEY) === "1"; } catch { return false; }
+}
+export function writeShowInactive(v: boolean): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(SHOW_INACTIVE_KEY, v ? "1" : "0"); } catch { /* brak dostępu do localStorage — ignoruj */ }
+}
+
 // ── Portal — renderuje modale w document.body (ponad nagłówkiem,
 //    poza stacking-context #app / main / .fade-in) ─────────────
 export function Portal({ children }: { children: React.ReactNode }) {
