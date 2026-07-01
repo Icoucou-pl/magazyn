@@ -440,6 +440,7 @@ export function BulkBar({
   manufacturers: Manufacturer[]; onClear: () => void; onReload: () => void;
 }) {
   const [mfrOpen, setMfrOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const showFin = can(useUser(), "viewFinancials");
 
@@ -483,7 +484,18 @@ export function BulkBar({
     setMfrOpen(false);
     runBulk(`Przypisano ${count} do: ${m.name}`, (sku) => api.put(`/products/${sku}/attrs`, { manufacturer_id: m.id }), selectedSkus);
   };
-  const toForecast = () => runBulk(`Włączono prognozę dla ${count}`, (sku) => api.put(`/products/${sku}/attrs`, { seasonality_enabled: true }), selectedSkus);
+  // Ręczne wymuszenie statusu (forced_status). "AUTO" = zdejmij wymuszenie (wróć do auto-klasyfikacji).
+  const STATUS_OPTIONS: Array<{ label: string; value: string; color: string }> = [
+    { label: "Aktywny", value: "ACTIVE", color: "var(--ok)" },
+    { label: "Nieaktywny", value: "INACTIVE", color: "var(--text-lo)" },
+    { label: "Dead stock", value: "DEAD_STOCK", color: "var(--critical)" },
+    { label: "Auto (wyczyść)", value: "AUTO", color: "var(--text-mid)" },
+  ];
+  const setStatus = (opt: { label: string; value: string }) => {
+    setStatusOpen(false);
+    const msg = opt.value === "AUTO" ? `Wyczyszczono status dla ${count}` : `Ustawiono status „${opt.label}" dla ${count}`;
+    runBulk(msg, (sku) => api.put(`/products/${sku}/attrs`, { forced_status: opt.value }), selectedSkus);
+  };
 
   return (
     <div style={{ position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", zIndex: 70, maxWidth: "calc(100vw - 24px)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "10px 12px 10px 16px", background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 12, boxShadow: "0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)", opacity: busy ? 0.7 : 1 }} className="fade-in">
@@ -495,7 +507,7 @@ export function BulkBar({
         <I.StarFill size={12} style={{ color: "var(--accent)" }} /> Obserwuj
       </button>
       <div style={{ position: "relative" }}>
-        <button onClick={() => setMfrOpen(!mfrOpen)} disabled={busy} style={bulkBtn}>
+        <button onClick={() => { setMfrOpen(!mfrOpen); setStatusOpen(false); }} disabled={busy} style={bulkBtn}>
           <I.Factory size={12} /> Producent <I.ChevronD size={11} />
         </button>
         {mfrOpen && (
@@ -512,9 +524,23 @@ export function BulkBar({
           </div>
         )}
       </div>
-      <button onClick={toForecast} disabled={busy} style={bulkBtn}>
-        <I.Activity size={12} /> Do prognozy
-      </button>
+      <div style={{ position: "relative" }}>
+        <button onClick={() => { setStatusOpen(!statusOpen); setMfrOpen(false); }} disabled={busy} style={bulkBtn}>
+          <I.Activity size={12} /> Zmień status <I.ChevronD size={11} />
+        </button>
+        {statusOpen && (
+          <div className="fade-in" style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, width: 190, background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 10, padding: 6, boxShadow: "0 16px 40px rgba(0,0,0,0.4)" }}>
+            {STATUS_OPTIONS.map((opt) => (
+              <button key={opt.value} onClick={() => setStatus(opt)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", textAlign: "left" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                <span style={{ width: 9, height: 9, borderRadius: 99, background: opt.color, flexShrink: 0 }} />
+                <span style={{ fontSize: 12, color: "var(--text-hi)" }}>{opt.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <button onClick={exportSel} disabled={busy} style={bulkBtn}>
         <I.ArrowDown size={12} /> Eksport
       </button>
