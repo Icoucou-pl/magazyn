@@ -12,7 +12,7 @@ import React, { useEffect, useState } from "react";
 import { getUser, logout, api } from "@/lib/api";
 import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
-import Header, { NAV_ITEMS, type User } from "@/components/header";
+import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
 import ProductsView from "@/components/products";
 import ContainersView from "@/components/containers";
@@ -181,20 +181,23 @@ export default function Page() {
 
   return (
     <UserContext.Provider value={currentUser}>
-      <Header
-        view={view}
-        setView={setView}
-        user={currentUser}
-        theme={t.theme}
-        onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
-        onLogout={handleLogout}
-        onOpenSearch={() => setSearchOpen(true)}
-        onOpenScan={() => setScanOpen(true)}
-        onRefresh={handleRefreshSellasist}
-        refreshing={refreshing}
-        freshness={freshness}
-        onChangePassword={() => setView("settings")}
-      />
+      <div style={{ display: "flex", alignItems: "flex-start", minHeight: "100dvh" }}>
+        <Sidebar view={view} setView={setView} user={currentUser}/>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: "100dvh" }}>
+          <Topbar
+            view={view}
+            setView={setView}
+            user={currentUser}
+            theme={t.theme}
+            onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
+            onLogout={handleLogout}
+            onOpenSearch={() => setSearchOpen(true)}
+            onOpenScan={() => setScanOpen(true)}
+            onRefresh={handleRefreshSellasist}
+            refreshing={refreshing}
+            freshness={freshness}
+            onChangePassword={() => setView("settings")}
+          />
 
       {!canEdit(currentUser) && <ReadOnlyBanner/>}
 
@@ -245,6 +248,8 @@ export default function Page() {
           <ComingSoon view={view} />
         )}
       </main>
+        </div>
+      </div>
 
       {/* Globalna wyszukiwarka (Ctrl+K / przycisk Szukaj w headerze) */}
       <CommandPalette
