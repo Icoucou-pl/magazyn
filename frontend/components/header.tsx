@@ -59,7 +59,18 @@ function fmtFresh(iso?: string | null): string {
 }
 
 // ── Logo (współdzielone) ─────────────────────────────────────
-function Brand() {
+function Brand({ stacked }: { stacked?: boolean }) {
+  if (stacked) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 3, flexShrink: 0, lineHeight: 1 }}>
+        <span className="mono" style={{ fontSize: 8, color: "var(--text-lo)", letterSpacing: "0.14em" }}>MAGAZYN</span>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 20, width: "auto", display: "block" }}/>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 20, width: "auto", display: "none" }}/>
+      </div>
+    );
+  }
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -156,13 +167,13 @@ export function Topbar({
         }}>
           {/* Wiersz 1: hamburger/logo (mobile) + search z lewej + akcje z prawej */}
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {/* Hamburger + logo — tylko mobile (sidebar schowany) */}
+            {/* Hamburger + logo (MAGAZYN nad i-coucou) — tylko mobile (sidebar schowany) */}
             <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn} title="Menu">
               <I.Menu size={18}/>
             </button>
-            <div className="show-mobile"><Brand/></div>
+            <div className="show-mobile"><Brand stacked/></div>
 
-            {/* Search — z LEWEJ (desktop pełny pasek, mobile ikona) */}
+            {/* Search — z LEWEJ (desktop pełny pasek; na mobile ikona przeniesiona do akcji) */}
             <button onClick={onOpenSearch} style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "8px 12px",
@@ -178,15 +189,16 @@ export function Topbar({
               <span style={{ flex: 1, textAlign: "left" }}>Szukaj wszędzie...</span>
               <kbd>Ctrl+K</kbd>
             </button>
-            <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
-              <I.Search size={16}/>
-            </button>
 
             {/* Spacer — dosuwa akcje do prawej */}
             <div style={{ flex: 1 }}/>
 
             {/* Akcje */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              {/* Lupka — na mobile przyklejona do skanera EAN (na desktopie ukryta, jest pasek z lewej) */}
+              <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
+                <I.Search size={16}/>
+              </button>
               <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
                 <I.Scan size={16}/>
               </button>
