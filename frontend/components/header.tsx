@@ -152,102 +152,107 @@ export function Topbar({
       }}>
         <div style={{
           padding: "10px 24px",
-          display: "flex", alignItems: "center", gap: 12,
+          display: "flex", flexDirection: "column", gap: 8,
         }}>
-          {/* Hamburger + logo — tylko mobile (sidebar schowany) */}
-          <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn} title="Menu">
-            <I.Menu size={18}/>
-          </button>
-          <div className="show-mobile"><Brand/></div>
+          {/* Wiersz 1: hamburger/logo (mobile) + search z lewej + akcje z prawej */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {/* Hamburger + logo — tylko mobile (sidebar schowany) */}
+            <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn} title="Menu">
+              <I.Menu size={18}/>
+            </button>
+            <div className="show-mobile"><Brand/></div>
 
-          {/* Search — z LEWEJ (desktop pełny pasek, mobile ikona) */}
-          <button onClick={onOpenSearch} style={{
-            display: "flex", alignItems: "center", gap: 10,
-            padding: "8px 12px",
-            background: "var(--surface-1)",
-            border: "1px solid var(--border-soft)",
-            borderRadius: 8,
-            color: "var(--text-lo)",
-            fontSize: 12,
-            width: "100%", maxWidth: 380,
-            transition: "all 0.12s",
-          }} className="hide-mobile search-bar-btn">
-            <I.Search size={14}/>
-            <span style={{ flex: 1, textAlign: "left" }}>Szukaj wszędzie...</span>
-            <kbd>Ctrl+K</kbd>
-          </button>
-          <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
-            <I.Search size={16}/>
-          </button>
+            {/* Search — z LEWEJ (desktop pełny pasek, mobile ikona) */}
+            <button onClick={onOpenSearch} style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "8px 12px",
+              background: "var(--surface-1)",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 8,
+              color: "var(--text-lo)",
+              fontSize: 12,
+              width: "100%", maxWidth: 380,
+              transition: "all 0.12s",
+            }} className="hide-mobile search-bar-btn">
+              <I.Search size={14}/>
+              <span style={{ flex: 1, textAlign: "left" }}>Szukaj wszędzie...</span>
+              <kbd>Ctrl+K</kbd>
+            </button>
+            <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
+              <I.Search size={16}/>
+            </button>
 
-          {/* Spacer — dosuwa świeżość + akcje do prawej */}
-          <div style={{ flex: 1 }}/>
+            {/* Spacer — dosuwa akcje do prawej */}
+            <div style={{ flex: 1 }}/>
 
-          {/* Świeżość danych */}
-          <div className="freshness-row hide-tablet" style={{
-            display: "flex", flexDirection: "column", alignItems: "flex-end",
-            gap: 1, fontSize: 11, color: "var(--text-lo)", lineHeight: 1.35, whiteSpace: "nowrap",
+            {/* Akcje */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
+                <I.Scan size={16}/>
+              </button>
+              <button onClick={onToggleTheme} style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
+                {theme === "light" ? <I.Moon size={16}/> : <I.Sun size={16}/>}
+              </button>
+              <button
+                onClick={onRefresh}
+                disabled={refreshing}
+                style={{ ...iconBtn, cursor: refreshing ? "default" : "pointer", opacity: refreshing ? 0.7 : 1 }}
+                title={refreshing ? "Odświeżanie danych Sellasista…" : "Odśwież dane Sellasista"}
+              >
+                <span className={refreshing ? "magazyn-spin" : ""} style={{ display: "inline-flex" }}>
+                  <I.Refresh size={16}/>
+                </span>
+              </button>
+              <button
+                onClick={() => setView("settings")}
+                style={{
+                  ...iconBtn,
+                  ...(view === "settings"
+                    ? { background: "var(--surface-2)", borderColor: "var(--border)", color: "var(--text-hi)" }
+                    : {}),
+                }}
+                title="Ustawienia"
+              >
+                <I.Settings size={16}/>
+              </button>
+
+              {/* User menu */}
+              <div data-user-menu style={{ position: "relative" }}>
+                <button onClick={() => setUserMenuOpen(!userMenuOpen)} title={displayName} style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: 0, marginLeft: 4,
+                  background: "transparent", border: "none", borderRadius: 999,
+                  cursor: "pointer",
+                }}>
+                  <Avatar initials={initials} size={32}/>
+                </button>
+                {userMenuOpen && (
+                  <UserMenuPopover
+                    user={user} initials={initials} displayName={displayName}
+                    onLogout={onLogout} onChangePassword={onChangePassword} onAuditLog={onAuditLog}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Wiersz 2: świeżość danych (osobny wiersz — nie nachodzi na ikony przy wąskim ekranie) */}
+          <div className="freshness-row" style={{
+            display: "flex", alignItems: "center", justifyContent: "flex-end",
+            flexWrap: "wrap", gap: 2, rowGap: 2, columnGap: 10,
+            fontSize: 11, color: "var(--text-lo)",
           }}>
-            <span>Ostatnie pobranie Sellasist:{" "}
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Sellasist:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
                 {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
               </b>
             </span>
-            <span>Ostatnie pobranie Subiekt:{" "}
+            <span style={{ opacity: 0.45 }} className="hide-mobile">·</span>
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Subiekt:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
                 {fmtFresh(freshness?.subiekt?.last)}
               </b>
             </span>
-          </div>
-
-          {/* Akcje */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
-              <I.Scan size={16}/>
-            </button>
-            <button onClick={onToggleTheme} style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
-              {theme === "light" ? <I.Moon size={16}/> : <I.Sun size={16}/>}
-            </button>
-            <button
-              onClick={onRefresh}
-              disabled={refreshing}
-              style={{ ...iconBtn, cursor: refreshing ? "default" : "pointer", opacity: refreshing ? 0.7 : 1 }}
-              title={refreshing ? "Odświeżanie danych Sellasista…" : "Odśwież dane Sellasista"}
-            >
-              <span className={refreshing ? "magazyn-spin" : ""} style={{ display: "inline-flex" }}>
-                <I.Refresh size={16}/>
-              </span>
-            </button>
-            <button
-              onClick={() => setView("settings")}
-              style={{
-                ...iconBtn,
-                ...(view === "settings"
-                  ? { background: "var(--surface-2)", borderColor: "var(--border)", color: "var(--text-hi)" }
-                  : {}),
-              }}
-              title="Ustawienia"
-            >
-              <I.Settings size={16}/>
-            </button>
-
-            {/* User menu */}
-            <div data-user-menu style={{ position: "relative" }}>
-              <button onClick={() => setUserMenuOpen(!userMenuOpen)} title={displayName} style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                padding: 0, marginLeft: 4,
-                background: "transparent", border: "none", borderRadius: 999,
-                cursor: "pointer",
-              }}>
-                <Avatar initials={initials} size={32}/>
-              </button>
-              {userMenuOpen && (
-                <UserMenuPopover
-                  user={user} initials={initials} displayName={displayName}
-                  onLogout={onLogout} onChangePassword={onChangePassword} onAuditLog={onAuditLog}
-                />
-              )}
-            </div>
           </div>
         </div>
 
