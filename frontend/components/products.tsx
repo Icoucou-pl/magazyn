@@ -14,7 +14,7 @@ import {
   ProductsToolbar, ProductsTable, ColPickerModal, BulkBar,
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
   readShowInactive, writeShowInactive,
-  type Product, type Manufacturer,
+  type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import ImportModal from "./import-modal";
 import ProductModal from "./product-modal";
@@ -42,13 +42,12 @@ export default function ProductsView({
 
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
+  const [firmy, setFirmy] = useState<Firma[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("active");
-  // Selektor sklepu (Faza 3 na Produktach): "" = Wszystkie (suma), "amh"/"acti"/"veluxa" = liczby per sklep.
-  const [shop, setShop] = useState("");
   // Start false (SSR-safe: brak window), wczytaj zapamiętaną preferencję po montażu.
   const [showInactive, setShowInactive] = useState(false);
   useEffect(() => { setShowInactive(readShowInactive()); }, []);
@@ -69,18 +68,24 @@ export default function ProductsView({
     const include = showInactive
       ? "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"
       : "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK";
-    const shopQ = shop ? `&shop=${shop}` : "";
     const [prod, mfr] = await Promise.allSettled([
-      api.get(`/products?include=${include}${shopQ}`),
+      api.get(`/products?include=${include}`),
       api.get("/manufacturers"),
     ]);
     if (prod.status === "fulfilled") setProducts((prod.value as Product[]) || []);
     else toast("Nie udało się wczytać produktów", "warning");
     if (mfr.status === "fulfilled") setManufacturers((mfr.value as Manufacturer[]) || []);
     setLoading(false);
-  }, [showInactive, shop]);
+  }, [showInactive]);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Firmy (sklepy AMH/Acti/Veluxa) — do dropdownu „Firma" na karcie i bulku „Przypisz firmę". Statyczne → raz na mount.
+  useEffect(() => {
+    (async () => {
+      try { setFirmy(((await api.get("/firmy")) as Firma[]) || []); } catch { /* brak firm — dropdown pokaże pustkę */ }
+    })();
+  }, []);
 
   // Drill-down z Dashboardu: po załadowaniu otwórz modal wskazanego SKU
   useEffect(() => {
@@ -101,8 +106,6 @@ export default function ProductsView({
     return allSel ? new Set() : new Set(rows.map((r) => r.sku));
   });
   const clearSel = () => setSelected(new Set());
-  // Zmiana sklepu: czyścimy zaznaczenie, bo lista SKU się zmienia (inaczej bulk mógłby trafić w SKU spoza widoku).
-  const changeShop = useCallback((v: string) => { setShop(v); setSelected(new Set()); }, []);
 
   const onToggleFav = async (p: Product) => {
     try {
@@ -197,7 +200,6 @@ export default function ProductsView({
       <ProductsToolbar
         search={search} setSearch={setSearch}
         filter={filter} setFilter={setFilter}
-        shop={shop} setShop={changeShop}
         showInactive={showInactive} setShowInactive={toggleInactive}
         counts={counts}
         resultCount={filtered.length}
@@ -222,6 +224,7 @@ export default function ProductsView({
           selectedSkus={[...selected]}
           rows={products}
           manufacturers={manufacturers}
+          firmy={firmy}
           onClear={clearSel}
           onReload={reload}
         />
@@ -245,6 +248,7 @@ export default function ProductsView({
         <ProductModal
           product={selectedProduct}
           manufacturers={manufacturers}
+          firmy={firmy}
           onClose={() => setSelectedProduct(null)}
           onUpdated={onProductUpdated}
         />

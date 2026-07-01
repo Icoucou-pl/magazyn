@@ -11,7 +11,7 @@ import { I, Pill, MfrChip, STATUS_META } from "./ui";
 import {
   StatusPillExt, displayStatus, monthsDisplay,
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
-  type Product, type Manufacturer,
+  type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
@@ -56,10 +56,11 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
 }
 
 export default function ProductModal({
-  product: initialProduct, manufacturers, onClose, onUpdated,
+  product: initialProduct, manufacturers, firmy, onClose, onUpdated,
 }: {
   product: Product;
   manufacturers: Manufacturer[];
+  firmy?: Firma[];
   onClose: () => void;
   onUpdated?: (p: Product) => void;
 }) {
@@ -166,7 +167,7 @@ export default function ProductModal({
           </Section>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-            <AttributesCard product={product} manufacturers={manufacturers} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} />
+            <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} />
             <LeadTimeCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
           </div>
         </div>
@@ -373,9 +374,9 @@ function SalesBars({ product: p }: { product: Product }) {
 
 // ── Atrybuty (edytowalne) ────────────────────────────────────
 function AttributesCard({
-  product, manufacturers, editing, setEditing, onSaved,
+  product, manufacturers, firmy, editing, setEditing, onSaved,
 }: {
-  product: Product; manufacturers: Manufacturer[];
+  product: Product; manufacturers: Manufacturer[]; firmy?: Firma[];
   editing: boolean; setEditing: (v: boolean) => void; onSaved: (p: Product) => void;
 }) {
   const user = useUser();
@@ -387,13 +388,14 @@ function AttributesCard({
     seasonality: product.seasonality_enabled,
     classification: product.forced_status || "AUTO",
     mfrId: product.manufacturer_id != null ? String(product.manufacturer_id) : "",
+    firmaId: product.firma_id != null ? String(product.firma_id) : "",
     cena: product.cena_zakupu_manual != null ? String(product.cena_zakupu_manual) : "",
   });
   const [draft, setDraft] = useState(init);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.forced_status, product.seasonality_enabled, product.cena_zakupu_manual]);
+  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.seasonality_enabled, product.cena_zakupu_manual]);
 
   const save = async () => {
     if (busy) return;
@@ -402,6 +404,7 @@ function AttributesCard({
       const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/attrs`, {
         cbm_per_unit: draft.cbm,
         manufacturer_id: draft.mfrId === "" ? 0 : Number(draft.mfrId),
+        firma_id: draft.firmaId === "" ? 0 : Number(draft.firmaId),
         ean: draft.ean,
         seasonality_enabled: draft.seasonality,
         forced_status: draft.classification,
@@ -416,6 +419,9 @@ function AttributesCard({
 
   const mfrOptions = [{ value: "", label: "— bez producenta —" }, ...manufacturers.map((m) => ({ value: String(m.id), label: m.name }))];
   const curMfr = manufacturers.find((m) => String(m.id) === draft.mfrId);
+  const firmaList = firmy ?? [];
+  const firmaOptions = [{ value: "", label: "— domyślnie (AMH) —" }, ...firmaList.map((f) => ({ value: String(f.id), label: f.name }))];
+  const curFirma = firmaList.find((f) => String(f.id) === draft.firmaId);
 
   return (
     <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
@@ -455,6 +461,10 @@ function AttributesCard({
         </div>
         <AttrSelect label="Producent (dostawca)" value={draft.mfrId} editing={editing} onChange={(v) => setDraft({ ...draft, mfrId: v })} options={mfrOptions}
           renderDisplay={() => (curMfr ? <MfrChip name={curMfr.name} color={curMfr.color} size="sm" /> : <span style={{ color: "var(--text-disabled)" }}>—</span>)} />
+        <AttrSelect label="Firma (magazyn źródłowy)" value={draft.firmaId} editing={editing} onChange={(v) => setDraft({ ...draft, firmaId: v })} options={firmaOptions}
+          renderDisplay={() => (curFirma
+            ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 99, background: curFirma.color }} /><span style={{ color: "var(--text-hi)", fontWeight: 500 }}>{curFirma.name}</span></span>
+            : <span style={{ color: "var(--text-disabled)" }}>AMH (domyślnie)</span>)} />
         <AttrSelect label="Klasyfikacja" value={draft.classification} editing={editing} onChange={(v) => setDraft({ ...draft, classification: v })} options={CLASSIFICATION_OPTIONS}
           renderDisplay={() => {
             const opt = CLASSIFICATION_OPTIONS.find((o) => o.value === draft.classification);

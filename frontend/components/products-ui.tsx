@@ -31,6 +31,9 @@ export type Product = {
   manufacturer_id: number | null;
   manufacturer_name: string | null;
   manufacturer_color: string | null;
+  firma_id: number | null;
+  firma_name: string | null;
+  firma_color: string | null;
   seasonality_enabled: boolean;
   is_favorite: boolean;
   ean: string | null;
@@ -49,6 +52,9 @@ export type Product = {
 };
 
 export type Manufacturer = { id: number; name: string; color: string; email?: string | null; notes?: string | null };
+
+// Firma = sklep/właściciel magazynu źródłowego (AMH / Acti / Veluxa). Z /api/firmy.
+export type Firma = { id: number; slug: string; name: string; color: string };
 
 // ── Stałe ────────────────────────────────────────────────────
 export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, OK: 3, DEAD_STOCK: 4 };
@@ -97,15 +103,6 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
   { id: "all", label: "Wszystkie" },
 ];
 
-// Selektor sklepu (Faza 3). "" = suma wszystkich sklepów (realny łączny popyt),
-// "amh"/"acti"/"veluxa" = sprzedaż i stan liczone tylko dla danego sklepu.
-const SHOPS: Array<{ v: string; l: string; title: string }> = [
-  { v: "", l: "Wszystkie", title: "Suma ze wszystkich sklepów — realny łączny popyt (np. produkt sprzedawany i na AMH, i w źródle)" },
-  { v: "amh", l: "AMH", title: "Widok z AMH: katalog Subiektu, sprzedaż w sklepie AMH, stan z Subiektu" },
-  { v: "acti", l: "Acti", title: "Tylko produkty Acti: sprzedaż i stan magazynu Acti" },
-  { v: "veluxa", l: "Veluxa", title: "Tylko produkty Veluxa: sprzedaż i stan magazynu Veluxa" },
-];
-
 // ── Helpery wyświetlania ─────────────────────────────────────
 export const displayStatus = (p: Product): string => (p.product_status === "DEAD_STOCK" ? "DEAD_STOCK" : p.status);
 export const monthsDisplay = (v: number): string => (!isFinite(v) || v > 99 ? "∞" : v.toFixed(1));
@@ -135,7 +132,7 @@ export function Portal({ children }: { children: React.ReactNode }) {
 // ── Toolbar ──────────────────────────────────────────────────
 export function ProductsToolbar({
   search, setSearch, filter, setFilter, counts, resultCount, onPickCols, visibleColsCount, onImport, onExport,
-  showInactive, setShowInactive, shop, setShop,
+  showInactive, setShowInactive,
 }: {
   search: string; setSearch: (v: string) => void;
   filter: string; setFilter: (v: string) => void;
@@ -143,27 +140,11 @@ export function ProductsToolbar({
   onPickCols: () => void; visibleColsCount: number;
   onImport: () => void; onExport: () => void;
   showInactive?: boolean; setShowInactive?: (v: boolean) => void;
-  shop?: string; setShop?: (v: string) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }}>
-      {setShop && (
-        <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, flexShrink: 0 }}>
-          {SHOPS.map((s) => {
-            const active = (shop || "") === s.v;
-            return (
-              <button key={s.v || "all"} onClick={() => setShop(s.v)} title={s.title} style={{
-                padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
-                background: active ? "var(--surface-3)" : "transparent",
-                color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none", whiteSpace: "nowrap",
-              }}>{s.l}</button>
-            );
-          })}
-        </div>
-      )}
-
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 11px", background: "var(--bg)", border: "1px solid var(--border-soft)", borderRadius: 8, flex: "1 1 240px", minWidth: 200, maxWidth: 360 }}>
         <I.Search size={14} style={{ color: "var(--text-lo)" }} />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Szukaj SKU lub nazwy..."
@@ -460,12 +441,13 @@ export function Checkbox({ checked, onChange, disabled }: { checked: boolean; on
 
 // ── BulkBar (akcje na zaznaczonych) ──────────────────────────
 export function BulkBar({
-  count, selectedSkus, rows, manufacturers, onClear, onReload,
+  count, selectedSkus, rows, manufacturers, firmy, onClear, onReload,
 }: {
   count: number; selectedSkus: string[]; rows: Product[];
-  manufacturers: Manufacturer[]; onClear: () => void; onReload: () => void;
+  manufacturers: Manufacturer[]; firmy?: Firma[]; onClear: () => void; onReload: () => void;
 }) {
   const [mfrOpen, setMfrOpen] = useState(false);
+  const [firmaOpen, setFirmaOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const showFin = can(useUser(), "viewFinancials");
@@ -519,6 +501,12 @@ export function BulkBar({
     setMfrOpen(false);
     runBulk(`Przypisano ${count} do: ${m.name}`, (sku) => api.put(`/products/${encodeURIComponent(sku)}/attrs`, { manufacturer_id: m.id }), selectedSkus);
   };
+  // Firma źródłowa (właścicielstwo magazynu). firma_id: 0 = odepnij → domyślnie AMH; >0 = ustaw.
+  const assignFirma = (f: Firma | null) => {
+    setFirmaOpen(false);
+    const label = f ? `Przypisano ${count} do firmy: ${f.name}` : `Odpięto firmę (→ AMH) dla ${count}`;
+    runBulk(label, (sku) => api.put(`/products/${encodeURIComponent(sku)}/attrs`, { firma_id: f ? f.id : 0 }), selectedSkus);
+  };
   // Ręczne wymuszenie statusu (forced_status). "AUTO" = zdejmij wymuszenie (wróć do auto-klasyfikacji).
   const STATUS_OPTIONS: Array<{ label: string; value: string; color: string }> = [
     { label: "Aktywny", value: "ACTIVE", color: "var(--ok)" },
@@ -542,7 +530,7 @@ export function BulkBar({
         <I.StarFill size={12} style={{ color: "var(--accent)" }} /> Obserwuj
       </button>
       <div style={{ position: "relative" }}>
-        <button onClick={() => { setMfrOpen(!mfrOpen); setStatusOpen(false); }} disabled={busy} style={bulkBtn}>
+        <button onClick={() => { setMfrOpen(!mfrOpen); setStatusOpen(false); setFirmaOpen(false); }} disabled={busy} style={bulkBtn}>
           <I.Factory size={12} /> Producent <I.ChevronD size={11} />
         </button>
         {mfrOpen && (
@@ -559,8 +547,34 @@ export function BulkBar({
           </div>
         )}
       </div>
+      {firmy && (
+        <div style={{ position: "relative" }}>
+          <button onClick={() => { setFirmaOpen(!firmaOpen); setMfrOpen(false); setStatusOpen(false); }} disabled={busy} style={bulkBtn}>
+            <I.Box size={12} /> Firma <I.ChevronD size={11} />
+          </button>
+          {firmaOpen && (
+            <div className="fade-in" style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, width: 210, maxHeight: 280, overflowY: "auto", background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 10, padding: 6, boxShadow: "0 16px 40px rgba(0,0,0,0.4)" }}>
+              <button onClick={() => assignFirma(null)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", textAlign: "left" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                <span style={{ width: 9, height: 9, borderRadius: 99, border: "1px solid var(--border-strong)", background: "transparent" }} />
+                <span style={{ fontSize: 12, color: "var(--text-mid)" }}>— domyślnie (AMH) —</span>
+              </button>
+              {firmy.length === 0 && <div style={{ padding: "8px 10px", fontSize: 12, color: "var(--text-lo)" }}>Brak firm</div>}
+              {firmy.map((f) => (
+                <button key={f.id} onClick={() => assignFirma(f)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", textAlign: "left" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                  <span style={{ width: 9, height: 9, borderRadius: 99, background: f.color }} />
+                  <span style={{ fontSize: 12, color: "var(--text-hi)" }}>{f.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ position: "relative" }}>
-        <button onClick={() => { setStatusOpen(!statusOpen); setMfrOpen(false); }} disabled={busy} style={bulkBtn}>
+        <button onClick={() => { setStatusOpen(!statusOpen); setMfrOpen(false); setFirmaOpen(false); }} disabled={busy} style={bulkBtn}>
           <I.Activity size={12} /> Zmień status <I.ChevronD size={11} />
         </button>
         {statusOpen && (
