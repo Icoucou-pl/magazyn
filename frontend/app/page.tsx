@@ -202,7 +202,6 @@ export default function Page() {
       {!canEdit(currentUser) && <ReadOnlyBanner/>}
 
       <main className="app-main" style={{
-        maxWidth: 1480, margin: "0 auto",
         width: "100%",
         padding: t.density === "compact" ? "16px 20px" : "24px 24px",
       }}>
