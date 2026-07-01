@@ -112,12 +112,14 @@ export function Portal({ children }: { children: React.ReactNode }) {
 // ── Toolbar ──────────────────────────────────────────────────
 export function ProductsToolbar({
   search, setSearch, filter, setFilter, counts, resultCount, onPickCols, visibleColsCount, onImport, onExport,
+  showInactive, setShowInactive,
 }: {
   search: string; setSearch: (v: string) => void;
   filter: string; setFilter: (v: string) => void;
   counts: Record<string, number>; resultCount: number;
   onPickCols: () => void; visibleColsCount: number;
   onImport: () => void; onExport: () => void;
+  showInactive?: boolean; setShowInactive?: (v: boolean) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -144,6 +146,29 @@ export function ProductsToolbar({
           );
         })}
       </div>
+
+      {setShowInactive && (
+        <button
+          onClick={() => setShowInactive(!showInactive)}
+          title={showInactive ? "Ukryj produkty nieaktywne (stan 0, brak sprzedaży 12m)" : "Pokaż też produkty nieaktywne (stan 0, brak sprzedaży 12m)"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 7, padding: "6px 11px", fontSize: 12, fontWeight: 500,
+            background: showInactive ? "var(--accent-soft)" : "transparent",
+            color: showInactive ? "var(--accent)" : "var(--text-mid)",
+            border: `1px solid ${showInactive ? "var(--accent)" : "var(--border-soft)"}`,
+            borderRadius: 8, cursor: "pointer", transition: "all 0.12s", whiteSpace: "nowrap",
+          }}
+        >
+          <span style={{
+            width: 26, height: 15, borderRadius: 99, padding: 2, flexShrink: 0,
+            background: showInactive ? "var(--accent)" : "var(--surface-3)", transition: "background 0.12s",
+            display: "inline-flex", justifyContent: showInactive ? "flex-end" : "flex-start", alignItems: "center",
+          }}>
+            <span style={{ width: 11, height: 11, borderRadius: 99, background: "var(--surface-1)" }} />
+          </span>
+          Nieaktywne
+        </button>
+      )}
 
       <div style={{ flex: 1 }} />
 

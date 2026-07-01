@@ -46,6 +46,7 @@ export default function ProductsView({
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("active");
+  const [showInactive, setShowInactive] = useState(false);
   const [sort, setSort] = useState<SortState>({ key: "status", dir: "asc" });
   const [visibleCols, setVisibleCols] = useState(DEFAULT_COLS);
   const [showColPicker, setShowColPicker] = useState(false);
@@ -56,15 +57,20 @@ export default function ProductsView({
 
   const reload = useCallback(async () => {
     setLoading(true);
+    // INACTIVE (stan 0 + zero sprzedaży 12m) domyślnie POMIJANE — zaśmiecały listę,
+    // liczniki i wyszukiwanie w liście. Wchodzą tylko po włączeniu toggla "Nieaktywne".
+    const include = showInactive
+      ? "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"
+      : "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK";
     const [prod, mfr] = await Promise.allSettled([
-      api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
+      api.get(`/products?include=${include}`),
       api.get("/manufacturers"),
     ]);
     if (prod.status === "fulfilled") setProducts((prod.value as Product[]) || []);
     else toast("Nie udało się wczytać produktów", "warning");
     if (mfr.status === "fulfilled") setManufacturers((mfr.value as Manufacturer[]) || []);
     setLoading(false);
-  }, []);
+  }, [showInactive]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -180,6 +186,7 @@ export default function ProductsView({
       <ProductsToolbar
         search={search} setSearch={setSearch}
         filter={filter} setFilter={setFilter}
+        showInactive={showInactive} setShowInactive={setShowInactive}
         counts={counts}
         resultCount={filtered.length}
         onPickCols={() => setShowColPicker(true)}
