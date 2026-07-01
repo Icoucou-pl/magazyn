@@ -109,7 +109,8 @@ class ProductSummary(BaseModel):
     name: str
     stock: int
     stock_value: float
-    purchase_price: float = 0  # cena zakupu z Subiekta
+    purchase_price: float = 0  # cena zakupu efektywna (ręczna override, inaczej Subiekt)
+    cena_zakupu_manual: Optional[float] = None  # ręczny override PLN netto (None = brak, jedzie z Subiektu)
     stock_in_transit: int
     product_status: ProductStatus
     cbm_per_unit: float
@@ -148,6 +149,7 @@ class ProductAttrsUpdate(BaseModel):
     seasonality_enabled: Optional[bool] = None
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # "ACTIVE","ACTIVE_NO_STOCK","DEAD_STOCK","INACTIVE", lub None (auto)
+    cena_zakupu: Optional[float] = None  # None = nie zmieniaj; <=0 = wyczyść override (→ Subiekt); >0 = ustaw. Wymaga viewFinancials.
 
 
 # ===== PRODUCENCI =====
@@ -317,6 +319,7 @@ class ImportRow(BaseModel):
     manufacturer_name: Optional[str] = None
     lead_time_days: Optional[int] = None
     seasonality_enabled: Optional[bool] = None
+    cena_zakupu: Optional[float] = None  # ręczna cena zakupu (PLN netto); stosowana tylko z uprawnieniem viewFinancials
 
 
 class ImportResult(BaseModel):
