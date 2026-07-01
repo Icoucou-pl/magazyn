@@ -21,15 +21,16 @@ type ParsedRow = {
   manufacturer_name?: string;
   lead_time_days?: number;
   seasonality_enabled?: boolean;
+  cena_zakupu?: number;
   _existing: boolean;
 };
 type DetectedColumns = Record<string, string | null>;
 type ImportResult = { total: number; updated: number; skipped: number; errors: string[]; dryRun: boolean };
 
-const EXAMPLE_CSV = `sku;cbm;manufacturer_name;lead_time_days;seasonality_enabled
-FUR-7732-OAK;0.180;Tianjin Furniture;90;false
-TRN-4521-BLK;0.018;Guangzhou Lights;75;false
-CRM-2814-WHT;0.024;Foshan Ceramics;60;true`;
+const EXAMPLE_CSV = `sku;cbm;manufacturer_name;lead_time_days;seasonality_enabled;cena zakupu (reczna)
+FUR-7732-OAK;0.180;Tianjin Furniture;90;false;349.00
+TRN-4521-BLK;0.018;Guangzhou Lights;75;false;
+CRM-2814-WHT;0.024;Foshan Ceramics;60;true;89.90`;
 
 export default function ImportModal({
   onClose, existingSkus, onImported,
@@ -76,6 +77,9 @@ export default function ImportModal({
       const mfrIdx = headers.findIndex((h) => h.includes("manufacturer") || h === "producent");
       const ltIdx = headers.findIndex((h) => h.includes("lead") || h === "lead_time_days");
       const seasIdx = headers.findIndex((h) => h.includes("season"));
+      // Cena zakupu (ręczna) — tylko kolumna z "reczna"/"ręczna" albo dokładnie "cena_zakupu".
+      // NIE łapiemy "cena zakupu (obecna)" ani gołego "cena zakupu" (to efektywna z eksportu/XLSX).
+      const cenaIdx = headers.findIndex((h) => h.includes("reczna") || h.includes("ręczna") || h === "cena_zakupu");
 
       setDetectedColumns({
         sku: skuIdx >= 0 ? headers[skuIdx] : null,
@@ -83,6 +87,7 @@ export default function ImportModal({
         manufacturer: mfrIdx >= 0 ? headers[mfrIdx] : null,
         lead_time: ltIdx >= 0 ? headers[ltIdx] : null,
         seasonality: seasIdx >= 0 ? headers[seasIdx] : null,
+        cena_zakupu: cenaIdx >= 0 ? headers[cenaIdx] : null,
       });
 
       if (skuIdx === -1) { setParseError('Nie znaleziono kolumny "sku" / "symbol" w nagłówku'); return; }
@@ -97,6 +102,10 @@ export default function ImportModal({
         if (mfrIdx >= 0 && cols[mfrIdx]) row.manufacturer_name = cols[mfrIdx];
         if (ltIdx >= 0 && cols[ltIdx]) row.lead_time_days = parseInt(cols[ltIdx], 10);
         if (seasIdx >= 0 && cols[seasIdx]) row.seasonality_enabled = ["true", "tak", "1", "yes", "on"].includes(cols[seasIdx].toLowerCase());
+        if (cenaIdx >= 0 && cols[cenaIdx]) {
+          const v = parseFloat(cols[cenaIdx].replace(/\s/g, "").replace(",", "."));
+          if (!Number.isNaN(v)) row.cena_zakupu = v;
+        }
         rows.push(row);
       }
       if (rows.length === 0) { setParseError("Wszystkie wiersze mają pusty SKU"); return; }
@@ -131,6 +140,7 @@ export default function ImportModal({
         manufacturer_name: r.manufacturer_name ?? null,
         lead_time_days: r.lead_time_days ?? null,
         seasonality_enabled: r.seasonality_enabled ?? null,
+        cena_zakupu: r.cena_zakupu ?? null,
       }));
       const res = (await api.post("/products/import", payload)) as { total: number; updated: number; skipped: number; errors: string[] };
       setResult({ total: res.total, updated: res.updated, skipped: res.skipped, errors: res.errors || [], dryRun: false });

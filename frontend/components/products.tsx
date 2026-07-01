@@ -167,7 +167,8 @@ export default function ProductsView({
       { key: "sales_1m", label: "Sprzedaz 30d" },
       { label: "Miesiecy zapasu", get: (p) => monthsDisplay(p.months_of_stock) },
       ...(showFin ? [
-        { key: "purchase_price", label: "Cena zakupu" },
+        { key: "purchase_price", label: "Cena zakupu (obecna)" },
+        { label: "Cena zakupu (reczna)", get: (p) => (p.cena_zakupu_manual != null && p.cena_zakupu_manual > 0 ? p.cena_zakupu_manual : "") },
         { key: "stock_value", label: "Wartosc stanu" },
       ] as CsvColumn<Product>[] : []),
       { key: "lead_time_days", label: "Lead time (dni)" },

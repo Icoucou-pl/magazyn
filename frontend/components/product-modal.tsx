@@ -387,12 +387,13 @@ function AttributesCard({
     seasonality: product.seasonality_enabled,
     classification: product.forced_status || "AUTO",
     mfrId: product.manufacturer_id != null ? String(product.manufacturer_id) : "",
+    cena: product.cena_zakupu_manual != null ? String(product.cena_zakupu_manual) : "",
   });
   const [draft, setDraft] = useState(init);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.forced_status, product.seasonality_enabled]);
+  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.forced_status, product.seasonality_enabled, product.cena_zakupu_manual]);
 
   const save = async () => {
     if (busy) return;
@@ -404,6 +405,7 @@ function AttributesCard({
         ean: draft.ean,
         seasonality_enabled: draft.seasonality,
         forced_status: draft.classification,
+        ...(showFin ? { cena_zakupu: draft.cena.trim() === "" ? 0 : (parseFloat(draft.cena.replace(",", ".")) || 0) } : {}),
       })) as Product;
       onSaved(updated);
       setEditing(false);
@@ -428,7 +430,28 @@ function AttributesCard({
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>Cena zakupu</span>
-          <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>{showFin ? (<>{fmtNum(product.purchase_price)} zł <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>(Subiekt)</span></>) : "•••••"}</span>
+          {!showFin ? (
+            <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>•••••</span>
+          ) : editing ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="number" step="0.01" inputMode="decimal"
+                value={draft.cena}
+                placeholder={product.purchase_price ? String(product.purchase_price) : "z Subiektu"}
+                onChange={(e) => setDraft({ ...draft, cena: e.target.value })}
+                title="Puste = cena z Subiektu. Wpisana wartość nadpisuje (PLN netto)."
+                style={{ padding: "4px 8px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: 120, textAlign: "right" }}
+              />
+              <span style={{ fontSize: 11, color: "var(--text-lo)", minWidth: 22 }}>zł</span>
+            </div>
+          ) : (
+            <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>
+              {fmtNum(product.purchase_price)} zł{" "}
+              <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>
+                {product.cena_zakupu_manual != null && product.cena_zakupu_manual > 0 ? "(ręczna)" : "(Subiekt)"}
+              </span>
+            </span>
+          )}
         </div>
         <AttrSelect label="Producent (dostawca)" value={draft.mfrId} editing={editing} onChange={(v) => setDraft({ ...draft, mfrId: v })} options={mfrOptions}
           renderDisplay={() => (curMfr ? <MfrChip name={curMfr.name} color={curMfr.color} size="sm" /> : <span style={{ color: "var(--text-disabled)" }}>—</span>)} />

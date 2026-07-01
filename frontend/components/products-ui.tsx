@@ -24,6 +24,7 @@ export type Product = {
   stock: number;
   stock_value: number;
   purchase_price: number;
+  cena_zakupu_manual?: number | null;
   stock_in_transit: number;
   product_status: "ACTIVE" | "ACTIVE_NO_STOCK" | "DEAD_STOCK" | "INACTIVE";
   cbm_per_unit: number;
