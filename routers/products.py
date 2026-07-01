@@ -30,6 +30,7 @@ def _mask_financials(products, user):
     for p in products:
         p.stock_value = 0.0
         p.purchase_price = 0.0
+        p.cena_zakupu_manual = None
     return products
 
 
@@ -61,8 +62,8 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 
 
 @router.put("/products/{sku}/attrs", response_model=ProductSummary)
-async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
     # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
@@ -87,10 +88,19 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     elif forced not in ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"):
         raise HTTPException(400, f"Niepoprawny status: {forced}. Dozwolone: ACTIVE, ACTIVE_NO_STOCK, DEAD_STOCK, INACTIVE, AUTO")
 
+    # Cena zakupu (ręczna): None = nie zmieniaj; <=0 = wyczyść override; >0 = ustaw.
+    # Dane finansowe — zapis TYLKO z uprawnieniem viewFinancials (guard po stronie serwera).
+    if payload.cena_zakupu is not None:
+        if not has_perm(user, "viewFinancials"):
+            raise HTTPException(403, "Brak uprawnień do edycji ceny zakupu (viewFinancials)")
+        cena = None if payload.cena_zakupu <= 0 else round(float(payload.cena_zakupu), 2)
+    else:
+        cena = (float(e.cena_zakupu) if (e and e.cena_zakupu is not None) else None)
+
     await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, updated_at)
-            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, CURRENT_TIMESTAMP)
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, CURRENT_TIMESTAMP)
             ON CONFLICT (sku) DO UPDATE SET
                 cbm_per_unit = EXCLUDED.cbm_per_unit,
                 manufacturer_id = EXCLUDED.manufacturer_id,
@@ -98,12 +108,13 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
                 seasonality_enabled = EXCLUDED.seasonality_enabled,
                 ean = EXCLUDED.ean,
                 forced_status = EXCLUDED.forced_status,
+                cena_zakupu = EXCLUDED.cena_zakupu,
                 updated_at = CURRENT_TIMESTAMP
         """),
-        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced}
+        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced, "cena": cena}
     )
     await db.commit()
-    return await get_product(db, sku)
+    return _mask_financials([await get_product(db, sku)], user)[0]
 
 
 @router.get("/products/{sku}/projection", response_model=List[StockProjectionPoint])
@@ -128,8 +139,9 @@ async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_d
 
 
 @router.post("/products/import", response_model=ImportResult)
-async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_db)):
+async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Import atrybutów dla produktów - z UI lub bezpośrednio JSON-em."""
+    can_fin = has_perm(user, "viewFinancials")  # cena zakupu tylko dla uprawnionych
     products_result = await db.execute(text(f"SELECT {settings.COL_PRODUCT_SKU} as sku FROM {settings.TABLE_PRODUCTS}"))
     valid_skus = {r._mapping["sku"].strip().lower(): r._mapping["sku"] for r in products_result}
 
@@ -160,17 +172,23 @@ async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_
                 mfr_map[row.manufacturer_name.strip().lower()] = mfr_id
 
         try:
-            existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, seasonality_enabled FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": real_sku})
+            existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, seasonality_enabled, cena_zakupu FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": real_sku})
             e = existing.first()
             cbm = row.cbm if row.cbm is not None else (float(e.cbm_per_unit) if e else 0)
             new_mfr = mfr_id if mfr_id is not None else (e.manufacturer_id if e else None)
             new_seas = row.seasonality_enabled if row.seasonality_enabled is not None else (e.seasonality_enabled if e else False)
+            # Cena zakupu: tylko z uprawnieniem; puste = zostaw; <=0 = wyczyść; >0 = ustaw
+            prev_cena = float(e.cena_zakupu) if (e and e.cena_zakupu is not None) else None
+            if can_fin and row.cena_zakupu is not None:
+                new_cena = None if row.cena_zakupu <= 0 else round(float(row.cena_zakupu), 2)
+            else:
+                new_cena = prev_cena
 
             await db.execute(text(f"""
-                INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, seasonality_enabled, updated_at)
-                VALUES (:sku, :cbm, :mfr, :seas, CURRENT_TIMESTAMP)
-                ON CONFLICT (sku) DO UPDATE SET cbm_per_unit=EXCLUDED.cbm_per_unit, manufacturer_id=EXCLUDED.manufacturer_id, seasonality_enabled=EXCLUDED.seasonality_enabled, updated_at=CURRENT_TIMESTAMP
-            """), {"sku": real_sku, "cbm": cbm, "mfr": new_mfr, "seas": new_seas})
+                INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, seasonality_enabled, cena_zakupu, updated_at)
+                VALUES (:sku, :cbm, :mfr, :seas, :cena, CURRENT_TIMESTAMP)
+                ON CONFLICT (sku) DO UPDATE SET cbm_per_unit=EXCLUDED.cbm_per_unit, manufacturer_id=EXCLUDED.manufacturer_id, seasonality_enabled=EXCLUDED.seasonality_enabled, cena_zakupu=EXCLUDED.cena_zakupu, updated_at=CURRENT_TIMESTAMP
+            """), {"sku": real_sku, "cbm": cbm, "mfr": new_mfr, "seas": new_seas, "cena": new_cena})
 
             if row.lead_time_days is not None and 1 <= row.lead_time_days <= 365:
                 await db.execute(text(f"""
