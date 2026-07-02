@@ -71,11 +71,27 @@ ext_stock AS (
     FROM {settings.TABLE_EXTERNAL_STOCK}
     WHERE (:shop = '' OR shop = :shop)
     GROUP BY sku_canon
+),
+ext_stock_global AS (
+    SELECT sku_canon, SUM(quantity) AS qty
+    FROM {settings.TABLE_EXTERNAL_STOCK}
+    GROUP BY sku_canon
+),
+sales_global AS (
+    SELECT
+        LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_normalized,
+        SUM(CASE WHEN o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days' THEN oi.{settings.COL_ITEM_QTY} ELSE 0 END) AS qty_12m
+    FROM {settings.TABLE_ORDER_ITEMS} oi
+    JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID} AND o.shop = oi.shop
+    WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'
+      {INCLUDED_STATUS_FILTER}
+    GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
     p.{settings.COL_PRODUCT_NAME} AS name,
     (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) ELSE 0 END + COALESCE(es.qty, 0))::int AS stock,
+    (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(esg.qty, 0))::int AS stock_global,
     COALESCE(NULLIF(pa.cena_zakupu, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     pa.cena_zakupu::float AS cena_zakupu_manual,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
@@ -96,11 +112,14 @@ SELECT
     COALESCE(sp.qty_3m, 0)::int AS sales_3m_total,
     COALESCE(sp.qty_4m, 0)::int AS sales_4m_total,
     COALESCE(sp.qty_12m, 0)::int AS sales_12m_total,
+    COALESCE(sg.qty_12m, 0)::int AS sales_12m_global,
     COALESCE(sy.qty_yoy_30d, 0)::int AS sales_yoy_30d,
     COALESCE(sy.qty_yoy_next_30d, 0)::int AS sales_yoy_next_30d
 FROM catalog_dedup p
 LEFT JOIN ext_stock es ON es.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+LEFT JOIN ext_stock_global esg ON esg.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_periods sp ON sp.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+LEFT JOIN sales_global sg ON sg.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
 LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = p.{settings.COL_PRODUCT_SKU}
