@@ -89,12 +89,14 @@ async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db), user: Cu
 
 
 @router.get("/stock-value-history")
-async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+async def stock_value_history(days: int = 90, shop: str = "", db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """
     Symulacja wartości magazynu w czasie - bazuje na obecnym stanie + sprzedaży.
     To jest aproksymacja, bo Subiekt nie trzyma historii stanu - rekonstruujemy z danych zamówień.
+    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = wartość i stan tylko danego magazynu
+    (sprzedaż wstecz filtrowana po sklepie; dostawy doliczane tylko dla magazynu, który fizycznie ma dany SKU).
     """
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
 
     today = date.today()
 
@@ -106,10 +108,11 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
         FROM {settings.TABLE_ORDER_ITEMS} oi
         JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
         WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '{days} days'
+            AND (:shop = '' OR o.shop = :shop)
             {INCLUDED_STATUS_FILTER}
         GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU})), DATE(o.{settings.COL_ORDER_DATE})
     """
-    sales_result = await db.execute(text(sales_query))
+    sales_result = await db.execute(text(sales_query), {"shop": shop})
 
     sales_by_sku = {}
     for r in sales_result:
@@ -136,9 +139,13 @@ async def stock_value_history(days: int = 90, db: AsyncSession = Depends(get_db)
         WHERE c.eta_date IS NOT NULL
             AND c.eta_date >= NOW() - INTERVAL '{days} days'
             AND c.eta_date <= NOW()
+            AND (:shop = '' OR EXISTS (
+                SELECT 1 FROM {settings.TABLE_EXTERNAL_STOCK} es
+                WHERE es.sku_canon = LOWER(TRIM(ci.sku)) AND es.shop = :shop
+            ))
         GROUP BY LOWER(TRIM(ci.sku)), DATE(c.eta_date)
     """
-    deliveries_result = await db.execute(text(deliveries_query))
+    deliveries_result = await db.execute(text(deliveries_query), {"shop": shop})
 
     deliveries_by_sku = {}
     for r in deliveries_result:
