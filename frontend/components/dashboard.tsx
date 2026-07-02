@@ -671,9 +671,10 @@ export default function Dashboard({
     [containers],
   );
 
-  // W drodze (KPI): suma wartości i liczba kontenerów IN_TRANSIT
+  // W drodze (KPI): suma wartości i liczba WSZYSTKICH niedostarczonych kontenerów
+  // (zamówione + w produkcji + w drodze + odprawa) — cały pipeline zaopatrzenia, nie tylko IN_TRANSIT.
   const inTransit = useMemo(() => {
-    const t = containers.filter((c) => (c.effective_status ?? c.status) === "IN_TRANSIT");
+    const t = containers.filter((c) => (c.effective_status ?? c.status) !== "DELIVERED");
     return { value: t.reduce((s, c) => s + (c.total_value || 0), 0), count: t.length };
   }, [containers]);
 
