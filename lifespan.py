@@ -192,6 +192,8 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "firma_id", f"INTEGER REFERENCES {settings.TABLE_FIRMY}(id) ON DELETE SET NULL")
         # Migracja: ręczna cena zakupu (PLN netto). NULL/0 = fallback do ceny z Subiektu. Override per-sku.
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "cena_zakupu", "NUMERIC")
+        # Migracja: ręczna nazwa produktu. Puste = nazwa z Subiektu/zamówień (a jak brak, to SKU). Override per-sku.
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "name_override", "VARCHAR(255)")
 
         # Kontenery
         await conn.execute(text(f"""

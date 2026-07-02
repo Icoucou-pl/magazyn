@@ -102,7 +102,8 @@ sales_global AS (
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
-    p.{settings.COL_PRODUCT_NAME} AS name,
+    COALESCE(NULLIF(TRIM(pa.name_override), ''), p.{settings.COL_PRODUCT_NAME}) AS name,
+    pa.name_override AS name_override_manual,
     (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) ELSE 0 END + COALESCE(es.qty, 0))::int AS stock,
     (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(esg.qty, 0))::int AS stock_global,
     COALESCE(NULLIF(pa.cena_zakupu, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,

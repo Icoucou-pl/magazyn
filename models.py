@@ -107,6 +107,7 @@ class IncomingDelivery(BaseModel):
 class ProductSummary(BaseModel):
     sku: str
     name: str
+    name_override_manual: Optional[str] = None  # ręczna nazwa (None = brak, nazwa jedzie z Subiektu/zamówień/SKU)
     stock: int
     stock_value: float
     purchase_price: float = 0  # cena zakupu efektywna (ręczna override, inaczej Subiekt)
@@ -153,6 +154,7 @@ class ProductAttrsUpdate(BaseModel):
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # "ACTIVE","ACTIVE_NO_STOCK","DEAD_STOCK","INACTIVE", lub None (auto)
     cena_zakupu: Optional[float] = None  # None = nie zmieniaj; <=0 = wyczyść override (→ Subiekt); >0 = ustaw. Wymaga viewFinancials.
+    name_override: Optional[str] = None  # None = nie zmieniaj; "" = wyczyść (→ nazwa z Subiektu/zamówień); tekst = ustaw ręczną nazwę.
 
 
 # ===== PRODUCENCI =====
