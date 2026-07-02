@@ -24,6 +24,15 @@ type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
 const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
+// Okno odprawy celnej — musi odpowiadać CONTAINER_CUSTOMS_DAYS na backendzie (domyślnie 7).
+const CUSTOMS_DAYS = 7;
+const addDays = (iso: string, n: number) => {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  if (isNaN(d.getTime())) return "";
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+};
 
 export default function ContainerFormModal({
   initial, manufacturers, containerTypes, products, onClose, onSaved, onDeleted,
@@ -312,6 +321,11 @@ export default function ContainerFormModal({
                 </Field>
                 <Field label="ETA (planowana dostawa)" required>
                   <input type="date" value={etaDate} onChange={(e) => setEtaDate(e.target.value)} disabled={!showEdit} style={inputStyle} />
+                  {etaDate && (
+                    <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
+                      Wejście do magazynu po odprawie (~{CUSTOMS_DAYS} dni): <strong style={{ color: "var(--text-mid)" }}>{addDays(etaDate, CUSTOMS_DAYS)}</strong>
+                    </span>
+                  )}
                 </Field>
               </div>
             </Section>
