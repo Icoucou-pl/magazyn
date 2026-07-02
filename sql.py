@@ -55,6 +55,19 @@ catalog AS (
     UNION ALL
     SELECT sku_canon, sku_raw, nazwa, 0::numeric AS stan, 0::numeric AS cena, 2 AS pri
     FROM sellasist_skus
+    UNION ALL
+    -- 3. źródło: produkty istniejące TYLKO w magazynach Sellasist (Acti/Veluxa) — nigdy nie sprzedane
+    --    i nieobecne w Subiekcie. Bez tego wypadały z katalogu (nie było ich nawet we „Wszystkich").
+    --    Nazwa: brak w sellasist_stock → podkładamy surowy symbol (realna nazwa z Subiektu/zamówień wygra przez niższe pri).
+    SELECT sku_canon,
+           MAX(symbol) AS sku_raw,
+           MAX(symbol) AS nazwa,
+           0::numeric AS stan,
+           0::numeric AS cena,
+           3 AS pri
+    FROM {settings.TABLE_EXTERNAL_STOCK}
+    WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''
+    GROUP BY sku_canon
 ),
 catalog_dedup AS (
     SELECT DISTINCT ON (sku_canon)
