@@ -214,6 +214,8 @@ async def lifespan(app: FastAPI):
         """))
         # Migracja: order_number
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "order_number", "VARCHAR(100)")
+        # Migracja: rzeczywista data dostawy (ustawiana przy DELIVERED; NULL = auto po odprawie ETA+CONTAINER_CUSTOMS_DAYS)
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "delivered_date", "DATE")
 
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_ITEMS} (
