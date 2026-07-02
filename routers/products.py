@@ -64,7 +64,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 
 @router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
     # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
@@ -98,10 +98,16 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     else:
         cena = (float(e.cena_zakupu) if (e and e.cena_zakupu is not None) else None)
 
+    # Nazwa ręczna: None = nie zmieniaj; "" (po strip) = wyczyść (→ nazwa z Subiektu/zamówień); tekst = ustaw.
+    if payload.name_override is not None:
+        name_ov = payload.name_override.strip()[:255] or None
+    else:
+        name_ov = (e.name_override if e else None)
+
     await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, updated_at)
-            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, CURRENT_TIMESTAMP)
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, CURRENT_TIMESTAMP)
             ON CONFLICT (sku) DO UPDATE SET
                 cbm_per_unit = EXCLUDED.cbm_per_unit,
                 manufacturer_id = EXCLUDED.manufacturer_id,
@@ -110,9 +116,10 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
                 ean = EXCLUDED.ean,
                 forced_status = EXCLUDED.forced_status,
                 cena_zakupu = EXCLUDED.cena_zakupu,
+                name_override = EXCLUDED.name_override,
                 updated_at = CURRENT_TIMESTAMP
         """),
-        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced, "cena": cena}
+        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced, "cena": cena, "name_ov": name_ov}
     )
     await db.commit()
     return _mask_financials([await get_product(db, sku)], user)[0]
