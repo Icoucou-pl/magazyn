@@ -97,6 +97,7 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
     return ProductSummary(
         sku=row["sku"],
         name=row["name"] or "",
+        name_override_manual=row.get("name_override_manual"),
         stock=float(row["stock"] or 0),
         stock_value=round(row["stock"] * price, 2),
         purchase_price=round(price, 2),
