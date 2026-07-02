@@ -196,6 +196,14 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
             updates.append("order_number = :onum")
             params["onum"] = payload.order_number
 
+    # Data dostawy: przy ręcznym ustawieniu DELIVERED zapisz dzisiejszą (jeśli nie ma);
+    # przy cofnięciu statusu wyczyść (wróci do auto: ETA + odprawa celna).
+    if payload.status is not None:
+        if payload.status == "DELIVERED":
+            updates.append("delivered_date = COALESCE(delivered_date, CURRENT_DATE)")
+        else:
+            updates.append("delivered_date = NULL")
+
     if updates:
         updates.append("updated_at = CURRENT_TIMESTAMP")
         await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET {', '.join(updates)} WHERE id = :id"), params)
@@ -230,7 +238,7 @@ async def delete_container(cid: int, db: AsyncSession = Depends(get_db), user: C
 
 @router.post("/containers/{cid}/deliver", response_model=ContainerOut)
 async def deliver_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
-    await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET status = 'DELIVERED', updated_at = CURRENT_TIMESTAMP WHERE id = :id"), {"id": cid})
+    await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET status = 'DELIVERED', delivered_date = COALESCE(delivered_date, CURRENT_DATE), updated_at = CURRENT_TIMESTAMP WHERE id = :id"), {"id": cid})
     await db.commit()
     return await get_container_by_id(db, cid)
 

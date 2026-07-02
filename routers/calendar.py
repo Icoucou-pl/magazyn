@@ -126,24 +126,25 @@ async def stock_value_history(days: int = 90, shop: str = "", db: AsyncSession =
     price_map = {p.sku.strip().lower(): float(p.purchase_price or 0) for p in products}
     stock_map = {p.sku.strip().lower(): float(p.stock or 0) for p in products}
 
-    # Dostawy: kontenery, których ETA już minęła (towar wszedł do magazynu ~w dacie ETA).
-    # Cofając się w czasie MUSIMY je odjąć — przed dostawą stan był niższy. Bez tego wykres
-    # był gładką linią rosnącą wstecz (tylko sprzedaż), bez realnych skoków od dostaw.
+    # Dostawy: towar wchodzi do magazynu PO odprawie celnej = ETA + CONTAINER_CUSTOMS_DAYS,
+    # albo w ręcznej dacie dostawy (c.delivered_date), jeśli ktoś oznaczył DELIVERED wcześniej.
+    # Przypisanie do sklepu po WŁAŚCICIELSTWIE produktu (firma_id; brak = AMH) — import z Chin
+    # zaopatruje magazyn firmy-właściciela (AMH ma większość importów, Acti/Veluxa tylko część).
+    # Cofając się w czasie odejmujemy dostawy — przed wejściem do magazynu stan był niższy.
+    customs = int(settings.CONTAINER_CUSTOMS_DAYS)
     deliveries_query = f"""
         SELECT
             LOWER(TRIM(ci.sku)) AS sku_norm,
-            DATE(c.eta_date) AS deliv_date,
+            DATE(COALESCE(c.delivered_date, c.eta_date + {customs})) AS deliv_date,
             SUM(ci.quantity) AS qty
         FROM {settings.TABLE_CONTAINER_ITEMS} ci
         JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(ci.sku))
         WHERE c.eta_date IS NOT NULL
-            AND c.eta_date >= NOW() - INTERVAL '{days} days'
-            AND c.eta_date <= NOW()
-            AND (:shop = '' OR EXISTS (
-                SELECT 1 FROM {settings.TABLE_EXTERNAL_STOCK} es
-                WHERE es.sku_canon = LOWER(TRIM(ci.sku)) AND es.shop = :shop
-            ))
-        GROUP BY LOWER(TRIM(ci.sku)), DATE(c.eta_date)
+            AND COALESCE(c.delivered_date, c.eta_date + {customs}) >= (NOW() - INTERVAL '{days} days')::date
+            AND COALESCE(c.delivered_date, c.eta_date + {customs}) <= NOW()::date
+            AND (:shop = '' OR COALESCE((SELECT LOWER(af.slug) FROM {settings.TABLE_FIRMY} af WHERE af.id = pa.firma_id), 'amh') = :shop)
+        GROUP BY LOWER(TRIM(ci.sku)), DATE(COALESCE(c.delivered_date, c.eta_date + {customs}))
     """
     deliveries_result = await db.execute(text(deliveries_query), {"shop": shop})
 
