@@ -20,8 +20,11 @@ def classify_product(row: dict) -> str:
     if forced and forced in ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"):
         return forced
 
-    stock = row["stock"]
-    sales_12m = row["sales_12m_total"]
+    # Status liczony GLOBALNIE (ze wszystkich sklepów), niezależnie od wybranej zakładki:
+    # produkt aktywny gdziekolwiek jest aktywny wszędzie. Liczby per-sklep (stock, sales_*)
+    # zostają do wyświetlania i prognozy — status to osobna oś widoczności.
+    stock = row.get("stock_global", row["stock"])
+    sales_12m = row.get("sales_12m_global", row["sales_12m_total"])
     if row.get("force_visible", False):
         return "ACTIVE"
     if stock > 0 and sales_12m > 0:
