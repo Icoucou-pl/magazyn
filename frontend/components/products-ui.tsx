@@ -21,6 +21,7 @@ export type IncomingDelivery = {
 export type Product = {
   sku: string;
   name: string;
+  name_override_manual?: string | null;
   stock: number;
   stock_value: number;
   purchase_price: number;

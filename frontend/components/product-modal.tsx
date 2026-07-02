@@ -384,6 +384,7 @@ function AttributesCard({
   const showFin = can(user, "viewFinancials");
   const init = () => ({
     cbm: product.cbm_per_unit ?? 0,
+    nazwa: product.name_override_manual ?? "",
     ean: product.ean ?? "",
     seasonality: product.seasonality_enabled,
     classification: product.forced_status || "AUTO",
@@ -395,7 +396,7 @@ function AttributesCard({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.seasonality_enabled, product.cena_zakupu_manual]);
+  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.seasonality_enabled, product.cena_zakupu_manual, product.name_override_manual]);
 
   const save = async () => {
     if (busy) return;
@@ -403,6 +404,7 @@ function AttributesCard({
     try {
       const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/attrs`, {
         cbm_per_unit: draft.cbm,
+        name_override: draft.nazwa,
         manufacturer_id: draft.mfrId === "" ? 0 : Number(draft.mfrId),
         firma_id: draft.firmaId === "" ? 0 : Number(draft.firmaId),
         ean: draft.ean,
@@ -432,6 +434,7 @@ function AttributesCard({
         )}
       </div>
       <div style={{ padding: "6px 0" }}>
+        <AttrInput label="Nazwa (ręczna)" wide value={editing ? draft.nazwa : (product.name_override_manual || "—")} editing={editing} placeholder={product.name} onChange={(v) => setDraft({ ...draft, nazwa: v })} />
         <AttrInput label="CBM / szt" suffix="m³" value={editing ? draft.cbm : (product.cbm_per_unit ?? 0).toFixed(3)} editing={editing} type="number" step="0.001" onChange={(v) => setDraft({ ...draft, cbm: parseFloat(v) || 0 })} />
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
         <div style={attrRowStyle}>
@@ -477,13 +480,13 @@ function AttributesCard({
   );
 }
 
-function AttrInput({ label, value, editing, type = "text", mono, suffix, step, onChange }: { label: string; value: string | number; editing: boolean; type?: string; mono?: boolean; suffix?: string; step?: string; onChange: (v: string) => void }) {
+function AttrInput({ label, value, editing, type = "text", mono, suffix, step, wide, placeholder, onChange }: { label: string; value: string | number; editing: boolean; type?: string; mono?: boolean; suffix?: string; step?: string; wide?: boolean; placeholder?: string; onChange: (v: string) => void }) {
   return (
     <div style={attrRowStyle}>
       <span style={attrLabelStyle}>{label}</span>
       {editing ? (
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input type={type} value={value} step={step} onChange={(e) => onChange(e.target.value)} style={{ padding: "4px 8px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: 120, textAlign: "right", fontFamily: mono ? "var(--font-mono)" : "inherit" }} />
+          <input type={type} value={value} step={step} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} style={{ padding: "4px 8px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: wide ? 240 : 120, textAlign: wide ? "left" : "right", fontFamily: mono ? "var(--font-mono)" : "inherit" }} />
           {suffix && <span style={{ fontSize: 11, color: "var(--text-lo)", minWidth: 22 }}>{suffix}</span>}
         </div>
       ) : (
