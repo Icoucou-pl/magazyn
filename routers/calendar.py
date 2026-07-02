@@ -96,7 +96,9 @@ async def stock_value_history(days: int = 90, shop: str = "", db: AsyncSession =
     shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = wartość i stan tylko danego magazynu
     (sprzedaż wstecz filtrowana po sklepie; dostawy doliczane tylko dla magazynu, który fizycznie ma dany SKU).
     """
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
+    # DEAD_STOCK też ma stan (i wartość!), więc wchodzi do wykresu — inaczej świeży import bez sprzedaży
+    # (klasyfikowany jako DEAD_STOCK) byłby niewidoczny, a jego dostawa nigdy by się nie doliczyła.
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"}, shop)
 
     today = date.today()
 
