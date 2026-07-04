@@ -335,6 +335,18 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Ręcznie rejestrowane dopłaty do konta LLM (przycisk w panelu, tylko super-admin).
+        # "Wpłacone" w liczniku = STARTING_BALANCE_USD (env) + suma tych dopłat.
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_llm_topups (
+                id         BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ    NOT NULL DEFAULT now(),
+                amount_usd NUMERIC(12,2)  NOT NULL,
+                note       TEXT,
+                added_by   TEXT
+            )
+        """))
+
         # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
         if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
             count_result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_USERS}"))
