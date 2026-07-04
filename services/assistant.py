@@ -24,6 +24,7 @@ from config import settings
 from models import CurrentUser
 from services.products import fetch_products
 from services.containers import fetch_containers
+from services.usage import log_usage
 
 MAX_ROUNDS = 4            # ile razy max model może poprosić o narzędzie w jednej turze
 LLM_TIMEOUT = 30          # sekundy na pojedyncze wywołanie LLM
@@ -301,6 +302,11 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
         if role in ("user", "assistant") and m.get("content"):
             messages.append({"role": role, "content": m["content"]})
 
+    # treść ostatniego pytania użytkownika + akumulatory tokenów (do licznika kosztów)
+    user_q = next((m.get("content", "") for m in reversed(history)
+                   if m.get("role") == "user"), "")
+    usage_in = usage_out = rounds = 0
+
     tools_used: List[Dict[str, Any]] = []
     for _ in range(MAX_ROUNDS):
         try:
@@ -319,6 +325,11 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
         except Exception as e:
             return {"answer": f"Asystent napotkał problem: {e}", "tools": tools_used}
 
+        u = data.get("usage") or {}
+        usage_in  += u.get("prompt_tokens", 0) or 0
+        usage_out += u.get("completion_tokens", 0) or 0
+        rounds    += 1
+
         choices = data.get("choices") or []
         if not choices:
             return {"answer": "Model nie zwrócił odpowiedzi.", "tools": tools_used}
@@ -326,6 +337,8 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
         tool_calls = msg.get("tool_calls") or []
 
         if not tool_calls:
+            await log_usage(db, query=user_q, model=settings.LLM_MODEL,
+                            tin=usage_in, tout=usage_out, rounds=rounds)
             return {"answer": (msg.get("content") or "").strip() or "(brak odpowiedzi)", "tools": tools_used}
 
         # dołącz wiadomość asystenta z żądaniami narzędzi (round-trip wymaga jej obecności)
