@@ -1,18 +1,21 @@
 "use client";
 // ============================================================
 // MAGAZYN — Zużycie API (asystent AI). Panel w Ustawieniach.
-// Widoczny tylko dla admina i super-admina (gating w settings.tsx).
-// Dane: GET /usage/stats → saldo, rozkład input/output, ostatnie zapytania.
+// Widoczny dla admina i super-admina. RÓŻNICE wg roli:
+//   • kolumnę "Pytanie" widzi TYLKO super-admin (serwer wycina treść
+//     dla zwykłego admina — pole can_see_queries),
+//   • dopłaty ("＋ wpłata") rejestruje TYLKO super-admin.
 //
-// Uwaga: Anthropic nie udostępnia realnego salda konta przez API, więc
-// "pozostało" = STARTING_BALANCE_USD − suma zalogowanych kosztów. Trzymaj
-// STARTING_BALANCE_USD (env) zgodne z tym, co realnie wpłacone w konsoli.
+// Saldo: Anthropic nie udostępnia realnego stanu konta przez API, więc
+//   Wpłacone = STARTING_BALANCE_USD (env) + suma ręcznych dopłat,
+//   Pozostało = Wpłacone − koszty.
 // ============================================================
 
 import React, { useCallback, useEffect, useState } from "react";
 import { I } from "./ui";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
+import { useUser } from "@/lib/permissions";
 
 // ── Typy (kształt z /usage/stats) ────────────────────────────
 type UsageRow = {
@@ -35,10 +38,12 @@ type Breakdown = {
   output_share_pct: number;
 };
 type UsageStats = {
-  starting_balance: number;
+  deposited: number;
+  topups_total: number;
   spent: number;
   remaining: number;
   count: number;
+  can_see_queries: boolean;
   breakdown: Breakdown;
   rows: UsageRow[];
 };
@@ -73,20 +78,22 @@ const TD_R: React.CSSProperties = {
   borderBottom: "1px solid var(--border-soft)", color: "var(--text-mid)", whiteSpace: "nowrap",
 };
 
-const HEADS: { label: string; align: React.CSSProperties["textAlign"] }[] = [
-  { label: "Czas", align: "left" },
-  { label: "Pytanie", align: "left" },
-  { label: "Model", align: "left" },
-  { label: "Tok. in", align: "right" },
-  { label: "Tok. out", align: "right" },
-  { label: "Koszt", align: "right" },
-];
+type CtxUser = { is_super_admin?: boolean; isSuper?: boolean } | null;
 
 // ── Panel ────────────────────────────────────────────────────
 export default function UsagePanel() {
+  const user = useUser() as CtxUser;
+  const isSuper = Boolean(user?.is_super_admin ?? user?.isSuper);
+
   const [data, setData] = useState<UsageStats | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const [topupOpen, setTopupOpen] = useState(false);
+  const [topupAmt, setTopupAmt] = useState("");
+  const [topupErr, setTopupErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -106,18 +113,45 @@ export default function UsagePanel() {
     return () => clearInterval(t);
   }, [load]);
 
+  const submitTopup = async () => {
+    const amt = parseFloat(topupAmt.replace(",", "."));
+    if (!amt || amt <= 0) { setTopupErr("Podaj dodatnią kwotę."); return; }
+    setSaving(true);
+    setTopupErr(null);
+    try {
+      const d = (await api.post("/usage/topup", { amount: amt })) as UsageStats;
+      setData(d);
+      setTopupAmt("");
+      setTopupOpen(false);
+    } catch (e) {
+      setTopupErr(e instanceof Error ? e.message : "Nie udało się zapisać dopłaty");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading && !data) return <div style={{ color: "var(--text-lo)", fontSize: 13, padding: 20 }}>Ładowanie…</div>;
   if (err && !data) return <div style={{ color: "var(--critical)", fontSize: 13, padding: 20 }}>{err}</div>;
   if (!data) return null;
 
-  const start = data.starting_balance || 0;
-  const pctUsed = start > 0 ? Math.min(100, (data.spent / start) * 100) : 0;
-  const low = data.remaining <= start * 0.15;
+  const deposited = data.deposited || 0;
+  const pctUsed = deposited > 0 ? Math.min(100, (data.spent / deposited) * 100) : 0;
+  const low = data.remaining <= deposited * 0.15;
+  const canQueries = data.can_see_queries;
 
   const b = data.breakdown;
   const totalCost = (b.input_cost || 0) + (b.output_cost || 0);
   const outW = totalCost > 0 ? (b.output_cost / totalCost) * 100 : 0;
   const inW = 100 - outW;
+
+  const heads: { label: string; align: React.CSSProperties["textAlign"] }[] = [
+    { label: "Czas", align: "left" },
+    ...(canQueries ? [{ label: "Pytanie", align: "left" as const }] : []),
+    { label: "Model", align: "left" },
+    { label: "Tok. in", align: "right" },
+    { label: "Tok. out", align: "right" },
+    { label: "Koszt", align: "right" },
+  ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -133,17 +167,51 @@ export default function UsagePanel() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 24 }}>
-            <Metric label="Wpłacone" value={usd(start)} />
+            <Metric label="Wpłacone" value={usd(deposited)} />
             <Metric label="Wydane" value={usd(data.spent)} />
             <Metric label="Zapytań" value={fmtNum(data.count)} />
           </div>
         </div>
+
         <div style={{ height: 6, borderRadius: 99, background: "var(--surface-3)", marginTop: 16, overflow: "hidden" }}>
           <div style={{ height: "100%", width: `${pctUsed}%`, background: low ? "var(--critical)" : "var(--accent)", borderRadius: 99, transition: "width .4s" }} />
         </div>
-        <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 6 }}>
-          {pctUsed.toFixed(1)}% wykorzystane · saldo liczone jako wpłata − koszty
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 11, color: "var(--text-lo)" }}>
+            {pctUsed.toFixed(1)}% wykorzystane · wpłacone = env + dopłaty ({usd(data.topups_total)} dopłat)
+          </div>
+          {isSuper && !topupOpen && (
+            <button
+              onClick={() => { setTopupOpen(true); setTopupErr(null); }}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface-2)", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}
+            >
+              <I.Plus size={13} /> Zarejestruj wpłatę
+            </button>
+          )}
         </div>
+
+        {isSuper && topupOpen && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border-soft)", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "var(--text-mid)" }}>Dopłata (USD):</span>
+            <input
+              type="number" min="0" step="0.01" value={topupAmt} autoFocus
+              onChange={(e) => setTopupAmt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitTopup(); if (e.key === "Escape") setTopupOpen(false); }}
+              placeholder="np. 10"
+              className="num"
+              style={{ width: 110, background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "6px 10px", fontSize: 13, color: "var(--text-hi)" }}
+            />
+            <button onClick={submitTopup} disabled={saving}
+              style={{ background: "var(--accent)", color: "var(--accent-ink)", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: saving ? 0.6 : 1 }}>
+              {saving ? "Zapisuję…" : "Dodaj"}
+            </button>
+            <button onClick={() => { setTopupOpen(false); setTopupErr(null); }}
+              style={{ background: "transparent", color: "var(--text-lo)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
+              Anuluj
+            </button>
+            {topupErr && <span style={{ fontSize: 12, color: "var(--critical)" }}>{topupErr}</span>}
+          </div>
+        )}
       </div>
 
       {/* ROZKŁAD input vs output */}
@@ -165,11 +233,11 @@ export default function UsagePanel() {
       {/* TABELA ostatnich zapytań */}
       <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderBottom: "1px solid var(--border-soft)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>Ostatnie zapytania</div>
-          <button
-            onClick={load}
-            style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface-2)", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}
-          >
+          <div style={{ fontSize: 13, fontWeight: 600 }}>
+            Ostatnie zapytania {canQueries && <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-lo)" }}>· kliknij wiersz, by zobaczyć całe pytanie</span>}
+          </div>
+          <button onClick={load}
+            style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface-2)", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}>
             <I.Refresh size={13} /> Odśwież
           </button>
         </div>
@@ -183,7 +251,7 @@ export default function UsagePanel() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr>
-                  {HEADS.map((h) => (
+                  {heads.map((h) => (
                     <th key={h.label} style={{ textAlign: h.align, padding: "10px 14px", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-lo)", fontWeight: 500, borderBottom: "1px solid var(--border-soft)", whiteSpace: "nowrap" }}>
                       {h.label}
                     </th>
@@ -191,20 +259,41 @@ export default function UsagePanel() {
                 </tr>
               </thead>
               <tbody>
-                {data.rows.map((r) => (
-                  <tr key={r.id}>
-                    <td style={TD_L}>{fmtTs(r.created_at)}</td>
-                    <td style={{ ...TD_L, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-hi)" }} title={r.query || ""}>
-                      {r.query || "—"}
-                    </td>
-                    <td style={{ ...TD_L, color: "var(--text-lo)" }}>{(r.model || "").replace("claude-", "")}</td>
-                    <td className="num" style={TD_R}>{fmtNum(r.input_tokens)}</td>
-                    <td className="num" style={TD_R}>{fmtNum(r.output_tokens)}</td>
-                    <td className="num" style={{ ...TD_R, color: "var(--accent)", fontWeight: 500 }} title={`in ${usd(r.input_cost)} · out ${usd(r.output_cost)}`}>
-                      {usd(r.cost_usd)}
-                    </td>
-                  </tr>
-                ))}
+                {data.rows.map((r) => {
+                  const open = expandedId === r.id;
+                  return (
+                    <React.Fragment key={r.id}>
+                      <tr
+                        onClick={canQueries ? () => setExpandedId(open ? null : r.id) : undefined}
+                        style={{ cursor: canQueries ? "pointer" : "default", background: open ? "var(--surface-2)" : "transparent" }}
+                      >
+                        <td style={TD_L}>{fmtTs(r.created_at)}</td>
+                        {canQueries && (
+                          <td style={{ ...TD_L, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-hi)" }}>
+                            <span style={{ color: "var(--text-lo)", marginRight: 6 }}>{open ? "▾" : "▸"}</span>
+                            {r.query || "—"}
+                          </td>
+                        )}
+                        <td style={{ ...TD_L, color: "var(--text-lo)" }}>{(r.model || "").replace("claude-", "")}</td>
+                        <td className="num" style={TD_R}>{fmtNum(r.input_tokens)}</td>
+                        <td className="num" style={TD_R}>{fmtNum(r.output_tokens)}</td>
+                        <td className="num" style={{ ...TD_R, color: "var(--accent)", fontWeight: 500 }} title={`in ${usd(r.input_cost)} · out ${usd(r.output_cost)}`}>
+                          {usd(r.cost_usd)}
+                        </td>
+                      </tr>
+                      {canQueries && open && (
+                        <tr>
+                          <td colSpan={heads.length} style={{ padding: "0 14px 14px", background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)" }}>
+                            <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-lo)", margin: "0 0 6px" }}>Pełne pytanie</div>
+                            <div style={{ fontSize: 13, color: "var(--text-hi)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              {r.query || "—"}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
