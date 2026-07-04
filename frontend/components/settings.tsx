@@ -14,6 +14,7 @@ import { btnPrimary, btnSecondary } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, isAdmin, canEdit, PERMISSIONS, ROLE_PERMS } from "@/lib/permissions";
+import UsagePanel from "./usage-panel";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Manufacturer = {
@@ -38,7 +39,7 @@ type PermDef = { key: string; label: string; desc: string; group: string };
 const PERMS = PERMISSIONS as unknown as PermDef[];
 const ROLE_DEF = ROLE_PERMS as unknown as Record<string, Record<string, boolean>>;
 
-type SectionId = "manufacturers" | "firmy" | "container_types" | "users" | "account" | "audit" | "freshness";
+type SectionId = "manufacturers" | "firmy" | "container_types" | "users" | "account" | "audit" | "freshness" | "usage";
 type SectionDef = { id: SectionId; label: string; icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; desc: string };
 
 type CtxUser = {
@@ -55,6 +56,7 @@ const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
   { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Historia zmian w systemie" },
   { id: "freshness",       label: "Świeżość danych", icon: I.Refresh,  desc: "Ostatnie pobrania i dziennik synchronizacji" },
+  { id: "usage",           label: "Zużycie API",     icon: I.Wallet,   desc: "Koszty asystenta AI — tokeny i saldo" },
 ];
 
 const ROLE_META: Record<string, { label: string; color: string; soft: string }> = {
@@ -131,6 +133,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
   const visibleSections = SETTINGS_SECTIONS.filter(s => {
     if (s.id === "users") return admin;
     if (s.id === "audit") return superUser;
+    if (s.id === "usage") return admin || superUser;
     return true;
   });
   const [section, setSection] = useState<SectionId>(
@@ -191,6 +194,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
           {section === "account"         && <AccountPanel/>}
           {section === "audit"           && <AuditLogPanel/>}
           {section === "freshness"       && <FreshnessPanel/>}
+          {section === "usage"           && <UsagePanel/>}
         </main>
       </div>
 
