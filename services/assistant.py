@@ -45,8 +45,9 @@ SYSTEM_PROMPT = (
     "Do pytań „co pilne / czym się dziś zająć / podsumuj sytuację” użyj co_wymaga_uwagi_dzis. "
     "Listy produktów (martwy stan, tracona sprzedaż, top sprzedaż, wolno rotujące) bierz z dedykowanych narzędzi — nie zgaduj. "
     "Do „ile zamówić X” użyj ile_zamowic, do „kiedy przypłynie X” — dostawy_produktu, do „co przypłynie w danym miesiącu” — kontenery_w_oknie. "
-    "Firmy/sklepy to AMH (i-coucou), Acti i Veluxa. Gdy pytanie dotyczy jednego sklepu (np. „sprzedaż Veluxy”, „co domówić dla Acti”, „martwy stan Acti”), "
+    "Firmy/sklepy to AMH (i-coucou), Acti i Veluxa. Gdy pytanie dotyczy jednego sklepu (np. „sprzedaż Veluxy”, „co domówić dla Acti”, „martwy stan Acti”, „stan SZP0 w Acti”), "
     "podaj parametr sklep = amh|acti|veluxa do narzędzi, które go przyjmują. Bez wskazania sklepu liczby są sumą wszystkich. "
+    "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
     "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu, cashflow). "
     "Jeśli narzędzie finansowe zwróci „brak_uprawnien”, powiedz krótko, że użytkownik nie ma dostępu do danych finansowych — nie podawaj żadnych kwot. "
     "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
@@ -61,7 +62,7 @@ TOOLS: List[Dict[str, Any]] = [
             "description": "Aktualny stan magazynowy produktu po SKU: ile sztuk na stanie, ile w drodze, status, producent.",
             "parameters": {
                 "type": "object",
-                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}},
+                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}, "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa — liczby tylko tego sklepu"}},
                 "required": ["sku"],
             },
         },
@@ -75,7 +76,7 @@ TOOLS: List[Dict[str, Any]] = [
                             "(z lead time) oraz co jest już w drodze."),
             "parameters": {
                 "type": "object",
-                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}},
+                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}, "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa — liczby tylko tego sklepu"}},
                 "required": ["sku"],
             },
         },
@@ -87,7 +88,7 @@ TOOLS: List[Dict[str, Any]] = [
             "description": "Sprzedaż produktu po SKU: ostatni miesiąc, 2 i 3 miesiące wstecz oraz średnia miesięczna ważona.",
             "parameters": {
                 "type": "object",
-                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}},
+                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}, "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa — liczby tylko tego sklepu"}},
                 "required": ["sku"],
             },
         },
@@ -192,7 +193,7 @@ TOOLS: List[Dict[str, Any]] = [
                             "Użyj do pytań „kiedy przypłynie X”, „czy X jest w jakimś kontenerze”."),
             "parameters": {
                 "type": "object",
-                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}},
+                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}, "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa — liczby tylko tego sklepu"}},
                 "required": ["sku"],
             },
         },
@@ -205,7 +206,7 @@ TOOLS: List[Dict[str, Any]] = [
                             "minus stan i to, co już w drodze. Mini-PO."),
             "parameters": {
                 "type": "object",
-                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}},
+                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}, "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa — liczby tylko tego sklepu"}},
                 "required": ["sku"],
             },
         },
@@ -244,6 +245,19 @@ TOOLS: List[Dict[str, Any]] = [
             "description": ("Lista firm/sklepów (AMH = i-coucou, Acti, Veluxa) wraz z liczbą przypisanych produktów. "
                             "Użyj do pytań „jakie mamy sklepy”, „ile towarów ma Veluxa”."),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stan_per_firma",
+            "description": ("Rozbicie stanu magazynowego produktu (po SKU) na poszczególne firmy/sklepy: ile sztuk w AMH, ile w Acti, "
+                            "ile w Veluxa, oraz razem. Użyj do pytań typu „ile SZP0 jest w Acti a ile w AMH”, „rozdziel stan X per firma”."),
+            "parameters": {
+                "type": "object",
+                "properties": {"sku": {"type": "string", "description": "SKU produktu, np. SZP0"}},
+                "required": ["sku"],
+            },
         },
     },
     # --- PACZKA 2: finanse (wymagają uprawnienia viewFinancials) ---
@@ -419,35 +433,39 @@ def _deliveries(p) -> List[Dict[str, Any]]:
     return out
 
 
-async def _find_product(db: AsyncSession, sku: str):
-    """Szuka produktu po SKU BEZ względu na wielkość liter. Zwraca ProductSummary lub None."""
+async def _find_product(db: AsyncSession, sku: str, shop: str = ""):
+    """Szuka produktu po SKU BEZ względu na wielkość liter. shop='' = wszystkie sklepy (suma);
+    'amh'/'acti'/'veluxa' = stan i sprzedaż tylko tego sklepu. Zwraca ProductSummary lub None."""
     target = (sku or "").strip().upper()
     if not target:
         return None
-    prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"})
+    prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
     for p in prods:
         if (p.sku or "").upper() == target:
             return p
     return None
 
 
-async def _tool_pobierz_stan(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    p = await _find_product(db, sku)
+async def _tool_pobierz_stan(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
+    shop = _norm_shop(sklep)
+    p = await _find_product(db, sku, shop)
     if not p:
-        return {"znaleziono": False, "sku": sku}
+        return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     return {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name,
         "stan": p.stock, "w_drodze": p.stock_in_transit,
         "status": p.status, "producent": p.manufacturer_name,
+        "firma_wlasciciel": p.firma_name, "sklep": shop or "wszystkie",
     }
 
 
-async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    p = await _find_product(db, sku)
+async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
+    shop = _norm_shop(sklep)
+    p = await _find_product(db, sku, shop)
     if not p:
-        return {"znaleziono": False, "sku": sku}
+        return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     return {
-        "znaleziono": True, "sku": p.sku, "nazwa": p.name,
+        "znaleziono": True, "sku": p.sku, "nazwa": p.name, "sklep": shop or "wszystkie",
         "stan": p.stock, "w_drodze": p.stock_in_transit,
         "dni_do_wyczerpania": p.days_until_empty,
         "data_wyczerpania": _fmt_date(p.empty_date),
@@ -459,12 +477,13 @@ async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[
     }
 
 
-async def _tool_sprzedaz(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    p = await _find_product(db, sku)
+async def _tool_sprzedaz(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
+    shop = _norm_shop(sklep)
+    p = await _find_product(db, sku, shop)
     if not p:
-        return {"znaleziono": False, "sku": sku}
+        return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     return {
-        "znaleziono": True, "sku": p.sku, "nazwa": p.name,
+        "znaleziono": True, "sku": p.sku, "nazwa": p.name, "sklep": shop or "wszystkie",
         "sprzedaz_30dni": p.sales_1m, "sprzedaz_60dni": p.sales_2m, "sprzedaz_90dni": p.sales_3m,
         "srednia_miesieczna_wazona": round(p.avg_monthly_weighted or 0, 1),
     }
@@ -595,29 +614,31 @@ async def _tool_wolno_rotujace(db: AsyncSession, user: CurrentUser, ile: Any = 1
     return {"pozycje": rows}
 
 
-async def _tool_dostawy_produktu(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    p = await _find_product(db, sku)
+async def _tool_dostawy_produktu(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
+    shop = _norm_shop(sklep)
+    p = await _find_product(db, sku, shop)
     if not p:
-        return {"znaleziono": False, "sku": sku}
+        return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     dost = _deliveries(p)
     return {
-        "znaleziono": True, "sku": p.sku, "nazwa": p.name,
+        "znaleziono": True, "sku": p.sku, "nazwa": p.name, "sklep": shop or "wszystkie",
         "stan": p.stock, "w_drodze_razem": p.stock_in_transit,
         "liczba_dostaw": len(dost), "dostawy": dost,
     }
 
 
-async def _tool_ile_zamowic(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    p = await _find_product(db, sku)
+async def _tool_ile_zamowic(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
+    shop = _norm_shop(sklep)
+    p = await _find_product(db, sku, shop)
     if not p:
-        return {"znaleziono": False, "sku": sku}
+        return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     daily = (p.avg_monthly_weighted or 0) / 30.0
     lead = p.lead_time_days or 0
     potrzeba = daily * lead
     dostepne = (p.stock or 0) + (p.stock_in_transit or 0)
     sugestia = max(0, round(potrzeba - dostepne))
     return {
-        "znaleziono": True, "sku": p.sku, "nazwa": p.name,
+        "znaleziono": True, "sku": p.sku, "nazwa": p.name, "sklep": shop or "wszystkie",
         "stan": p.stock, "w_drodze": p.stock_in_transit,
         "srednia_dzienna_sprzedaz": round(daily, 2), "lead_time_dni": lead,
         "zapotrzebowanie_na_lead_time": round(potrzeba),
@@ -730,6 +751,38 @@ async def _tool_firmy(db: AsyncSession, user: CurrentUser) -> Dict[str, Any]:
         "nazwa": f.name, "slug": f.slug, "liczba_produktow": f.product_count,
         "skonfigurowana": f.configured,
     } for f in firmy]}
+
+
+async def _tool_stan_per_firma(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
+    """Rozbija stan SKU po firmach. Uwaga: 'w drodze' (kontenery/import) nie jest per-sklep —
+    liczone tak samo w każdym wywołaniu (import = AMH), więc pokazujemy je raz, nie per firma."""
+    symbol = (sku or "").strip().upper()
+    if not symbol:
+        return {"znaleziono": False}
+    rows = (await db.execute(text(
+        f"SELECT slug, name FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
+    ))).mappings().all()
+    firmy_list = [(r["slug"], r["name"]) for r in rows if r["slug"]] or \
+                 [("amh", "AMH"), ("acti", "Acti"), ("veluxa", "Veluxa")]
+    nazwa = None
+    w_drodze = 0
+    rozklad = []
+    razem = 0
+    for slug, fname in firmy_list:
+        p = await _find_product(db, symbol, slug)
+        stan = (p.stock if p else 0) or 0
+        if p:
+            if nazwa is None:
+                nazwa = p.name
+            w_drodze = p.stock_in_transit or 0   # ta sama wartość w każdym wywołaniu (nie sumujemy)
+        rozklad.append({"firma": fname, "slug": slug, "stan": stan})
+        razem += stan
+    if nazwa is None:
+        return {"znaleziono": False, "sku": symbol}
+    return {
+        "znaleziono": True, "sku": symbol, "nazwa": nazwa,
+        "rozklad_per_firma": rozklad, "razem_stan": razem, "w_drodze_razem": w_drodze,
+    }
 
 
 async def _tool_wartosc_magazynu(db: AsyncSession, user: CurrentUser, sklep: Any = None) -> Dict[str, Any]:
@@ -936,6 +989,7 @@ _DISPATCH = {
     "co_wymaga_uwagi_dzis": _tool_co_wymaga_uwagi_dzis,
     # PACZKA 3 — firmy/sklepy
     "firmy": _tool_firmy,
+    "stan_per_firma": _tool_stan_per_firma,
     # PACZKA 2 — finanse (viewFinancials)
     "wartosc_magazynu": _tool_wartosc_magazynu,
     "finanse_ogolne": _tool_finanse_ogolne,
