@@ -52,8 +52,33 @@ async def log_usage(db: AsyncSession, *, query: str, model: str,
     await db.commit()
 
 
-async def get_stats(db: AsyncSession, starting_balance: float, limit: int = 200) -> Dict[str, Any]:
-    """Saldo + rozkład input/output (globalnie i per wiersz) + ostatnie wiersze."""
+async def add_topup(db: AsyncSession, *, amount: float, note: str = "", added_by: str = "") -> None:
+    """Rejestruje ręczną dopłatę do konta LLM (przycisk w panelu, tylko super-admin)."""
+    await db.execute(
+        text("""
+            INSERT INTO app_llm_topups (amount_usd, note, added_by)
+            VALUES (:amt, :note, :by)
+        """),
+        {"amt": amount, "note": (note or "")[:200], "by": (added_by or "")[:200]},
+    )
+    await db.commit()
+
+
+async def get_stats(db: AsyncSession, base_balance: float,
+                    include_query: bool = True, limit: int = 200) -> Dict[str, Any]:
+    """Saldo + rozkład input/output (globalnie i per wiersz) + ostatnie wiersze.
+
+    base_balance  – wpłata początkowa z env (STARTING_BALANCE_USD).
+    include_query – gdy False, treść pytań jest wycinana z odpowiedzi
+                    (admin nie-super nie widzi, o co pytano).
+    Wpłacone = base_balance + suma ręcznych dopłat (app_llm_topups).
+    """
+
+    # suma ręcznie zarejestrowanych dopłat
+    topups_total = float((await db.execute(text(
+        "SELECT COALESCE(SUM(amount_usd), 0) FROM app_llm_topups"
+    ))).scalar() or 0)
+    deposited = round(float(base_balance) + topups_total, 6)
 
     # --- agregat per model: pozwala policzyć koszt input vs output dokładnie,
     #     nawet gdyby w logu były różne modele (np. część na Groq, część na Claude) ---
@@ -99,6 +124,7 @@ async def get_stats(db: AsyncSession, starting_balance: float, limit: int = 200)
         pin, pout = _prices(r["model"])
         ti, to = int(r["input_tokens"]), int(r["output_tokens"])
         d = dict(r)
+        d["query"]       = r["query"] if include_query else None   # blokada dla nie-super
         d["cost_usd"]    = float(r["cost_usd"])
         d["input_cost"]  = float(round(ti * pin, 6))
         d["output_cost"] = float(round(to * pout, 6))
@@ -106,11 +132,13 @@ async def get_stats(db: AsyncSession, starting_balance: float, limit: int = 200)
         rows.append(d)
 
     return {
-        "starting_balance": starting_balance,
+        "deposited": deposited,             # wpłacone = env + suma dopłat
+        "topups_total": round(topups_total, 6),
         "spent": spent_f,
-        "remaining": round(starting_balance - spent_f, 6),
+        "remaining": round(deposited - spent_f, 6),
         "count": count,
-        # rozkład input vs output — to jest to, co chciałeś zobaczyć:
+        "can_see_queries": include_query,   # front używa do ukrycia kolumny
+        # rozkład input vs output:
         "breakdown": {
             "input_tokens": total_in,
             "output_tokens": total_out,
