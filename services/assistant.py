@@ -1069,56 +1069,65 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
     usage_in = usage_out = rounds = 0
 
     tools_used: List[Dict[str, Any]] = []
-    for _ in range(MAX_ROUNDS):
-        try:
-            data = await _llm_call(messages)
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                return {"answer": "Asystent jest chwilowo przeciążony (limit zapytań) — spróbuj za chwilę.", "tools": tools_used}
-            detail = ""
+    try:
+        for _ in range(MAX_ROUNDS):
             try:
-                detail = e.read().decode("utf-8")[:300]
+                data = await _llm_call(messages)
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    return {"answer": "Asystent jest chwilowo przeciążony (limit zapytań) — spróbuj za chwilę.", "tools": tools_used}
+                detail = ""
+                try:
+                    detail = e.read().decode("utf-8")[:300]
+                except Exception:
+                    pass
+                return {"answer": f"Błąd modelu (HTTP {e.code}). {detail}", "tools": tools_used}
+            except urllib.error.URLError as e:
+                return {"answer": f"Nie mogę połączyć się z modelem ({e.reason}).", "tools": tools_used}
+            except Exception as e:
+                return {"answer": f"Asystent napotkał problem: {e}", "tools": tools_used}
+
+            u = data.get("usage") or {}
+            usage_in  += u.get("prompt_tokens", 0) or 0
+            usage_out += u.get("completion_tokens", 0) or 0
+            rounds    += 1
+
+            choices = data.get("choices") or []
+            if not choices:
+                return {"answer": "Model nie zwrócił odpowiedzi.", "tools": tools_used}
+            msg = choices[0].get("message") or {}
+            tool_calls = msg.get("tool_calls") or []
+
+            if not tool_calls:
+                return {"answer": (msg.get("content") or "").strip() or "(brak odpowiedzi)", "tools": tools_used}
+
+            # dołącz wiadomość asystenta z żądaniami narzędzi (round-trip wymaga jej obecności)
+            messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
+            for tc in tool_calls:
+                fn = (tc.get("function") or {})
+                name = fn.get("name") or ""
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    args = {}
+                if not isinstance(args, dict):    # Llama bywa wysyła arguments: "null" → None; narzędzia i odpowiedź wymagają dict
+                    args = {}
+                result = await _dispatch_tool(db, user, name, args)
+                tools_used.append({"name": name, "args": args})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "content": json.dumps(result, ensure_ascii=False, default=str),
+                })
+
+        return {"answer": "Za dużo kroków — przerwałem, żeby nie zapętlić. Spróbuj zapytać prościej.", "tools": tools_used}
+    finally:
+        # Log zużycia na KAŻDEJ ścieżce wyjścia (sukces, błąd modelu/sieci, wyczerpanie rundek),
+        # o ile jakiekolwiek tokeny zostały zużyte — żeby licznik nie rozjeżdżał się z realnym kontem.
+        # Logowanie nie może wywalić odpowiedzi, więc łapiemy wszystko.
+        if rounds > 0:
+            try:
+                await log_usage(db, query=user_q, model=settings.LLM_MODEL,
+                                tin=usage_in, tout=usage_out, rounds=rounds)
             except Exception:
                 pass
-            return {"answer": f"Błąd modelu (HTTP {e.code}). {detail}", "tools": tools_used}
-        except urllib.error.URLError as e:
-            return {"answer": f"Nie mogę połączyć się z modelem ({e.reason}).", "tools": tools_used}
-        except Exception as e:
-            return {"answer": f"Asystent napotkał problem: {e}", "tools": tools_used}
-
-        u = data.get("usage") or {}
-        usage_in  += u.get("prompt_tokens", 0) or 0
-        usage_out += u.get("completion_tokens", 0) or 0
-        rounds    += 1
-
-        choices = data.get("choices") or []
-        if not choices:
-            return {"answer": "Model nie zwrócił odpowiedzi.", "tools": tools_used}
-        msg = choices[0].get("message") or {}
-        tool_calls = msg.get("tool_calls") or []
-
-        if not tool_calls:
-            await log_usage(db, query=user_q, model=settings.LLM_MODEL,
-                            tin=usage_in, tout=usage_out, rounds=rounds)
-            return {"answer": (msg.get("content") or "").strip() or "(brak odpowiedzi)", "tools": tools_used}
-
-        # dołącz wiadomość asystenta z żądaniami narzędzi (round-trip wymaga jej obecności)
-        messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
-        for tc in tool_calls:
-            fn = (tc.get("function") or {})
-            name = fn.get("name") or ""
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except Exception:
-                args = {}
-            if not isinstance(args, dict):    # Llama bywa wysyła arguments: "null" → None; narzędzia i odpowiedź wymagają dict
-                args = {}
-            result = await _dispatch_tool(db, user, name, args)
-            tools_used.append({"name": name, "args": args})
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get("id"),
-                "content": json.dumps(result, ensure_ascii=False, default=str),
-            })
-
-    return {"answer": "Za dużo kroków — przerwałem, żeby nie zapętlić. Spróbuj zapytać prościej.", "tools": tools_used}
