@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""                        # np. https://api.groq.com/openai/v1
     LLM_API_KEY: str = ""                         # klucz dostawcy
     LLM_MODEL: str = "llama-3.3-70b-versatile"    # domyślnie darmowy Groq
+    STARTING_BALANCE_USD: float = 10.0            # ile realnie wrzucone na konto (do salda w liczniku)
 
     TABLE_EXTERNAL_STOCK: str = "sellasist_stock"   # stany z Sellasistów nie-AMH (Faza 2b)
 

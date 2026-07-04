@@ -321,6 +321,20 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Licznik zużycia LLM (asystent): jeden wiersz na turę czatu — tokeny in/out + koszt USD.
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_llm_usage (
+                id            BIGSERIAL PRIMARY KEY,
+                created_at    TIMESTAMPTZ   NOT NULL DEFAULT now(),
+                query         TEXT,
+                model         TEXT,
+                input_tokens  INTEGER       NOT NULL DEFAULT 0,
+                output_tokens INTEGER       NOT NULL DEFAULT 0,
+                cost_usd      NUMERIC(12,6) NOT NULL DEFAULT 0,
+                api_calls     INTEGER       NOT NULL DEFAULT 1
+            )
+        """))
+
         # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
         if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
             count_result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_USERS}"))
