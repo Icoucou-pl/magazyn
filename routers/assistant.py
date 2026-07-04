@@ -15,6 +15,7 @@ from database import get_db
 from models import AssistantChatRequest, AssistantChatResponse, CurrentUser
 from security import get_current_user
 from services.assistant import run_chat
+from services.usage import get_stats
 
 router = APIRouter(prefix="/api", tags=["assistant"])
 
@@ -45,3 +46,12 @@ async def assistant_chat(
     except Exception:
         print("[assistant] BLAD /assistant/chat:\n" + traceback.format_exc())   # traceback w logach Railway
         return AssistantChatResponse(answer="Asystent napotkał błąd po stronie serwera. Spróbuj ponownie za chwilę.", tools=[])
+
+
+@router.get("/usage/stats")
+async def usage_stats(
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Saldo + rozkład input/output + ostatnie zapytania (dla strony licznika)."""
+    return await get_stats(db, settings.STARTING_BALANCE_USD)
