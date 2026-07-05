@@ -39,9 +39,10 @@ type StatCounts = Record<SimStatusKey, number>;
 const emptyCounts = (): StatCounts => ({ KRYTYCZNY: 0, ZAMOW_TERAZ: 0, ZAMOW_WKROTCE: 0, OK: 0 });
 
 export function SimulatorModal({
-  products, onClose, onProductClick,
+  products, loading, onClose, onProductClick,
 }: {
   products: Product[];
+  loading?: boolean;
   onClose: () => void;
   onProductClick?: (sku: string) => void;
 }) {
@@ -155,6 +156,11 @@ export function SimulatorModal({
 
           {/* Body */}
           <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
+
+            {loading ? (
+              <SimEmptyState icon={<span className="pulse-soft"><I.Flask size={28} /></span>} title="Ładuję produkty…" sub="Przygotowuję dane do symulacji." />
+            ) : (
+            <>
 
             {/* Suwaki */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12 }}>
@@ -274,6 +280,9 @@ export function SimulatorModal({
                   ))}
                 </div>
               </SimSection>
+            )}
+
+            </>
             )}
 
           </div>

@@ -24,7 +24,6 @@ import {
   type Product, type Manufacturer,
 } from "./products-ui";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
-import { SimulatorModal } from "./simulator";
 
 // ── Kubełki pokrycia (months-of-cover) ───────────────────────
 type Bucket = "BRAKI" | "ZAMAWIAMY" | "IDEALNIE" | "ZA_DUZO" | "WYPRZEDAZ";
@@ -140,7 +139,6 @@ export default function ForecastView({
   const [colVis, setColVis] = useState<{ sales60: boolean; sales90: boolean }>({ sales60: true, sales90: true });
   const [showColMenu, setShowColMenu] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
-  const [showSim, setShowSim] = useState(false);
   const [detailMfrId, setDetailMfrId] = useState<number | null>(null);
   // Ręczne nadpisania — SKU wymuszone do usunięcia / dodania
   const [hiddenSkus, setHiddenSkus] = useState<Set<string>>(() => new Set());
@@ -399,9 +397,6 @@ export default function ForecastView({
           )}
         </div>
 
-        <button onClick={() => setShowSim(true)} title="Przelicz co-jeśli: wzrost/spadek sprzedaży, opóźnienie dostaw" style={{ ...fcGhostBtn, color: "var(--anomaly)", borderColor: "color-mix(in oklch, var(--anomaly) 40%, var(--border))" }}>
-          <I.Flask size={12} /> Symulator
-        </button>
         <button onClick={() => setShowAdd(true)} style={{ ...fcGhostBtn, color: "var(--accent)", borderColor: "color-mix(in oklch, var(--accent) 40%, var(--border))" }}>
           <I.Plus size={12} /> Dodaj produkt
         </button>
@@ -529,14 +524,6 @@ export default function ForecastView({
       </div>
 
       {showAdd && <AddProductModal addable={addable} onAdd={addRow} onClose={() => setShowAdd(false)} />}
-
-      {showSim && (
-        <SimulatorModal
-          products={products}
-          onClose={() => setShowSim(false)}
-          onProductClick={(sku) => { setShowSim(false); onProductClick?.(sku); }}
-        />
-      )}
 
       {detailMfrId != null && (
         <ManufacturerModal
