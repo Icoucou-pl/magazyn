@@ -79,6 +79,7 @@ export default function Page() {
   const [view, setView] = useState("dashboard");
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
   const [pendingContainerId, setPendingContainerId] = useState<number | null>(null);
+  const [pendingAutoSuggestNew, setPendingAutoSuggestNew] = useState(false);
   const [pendingManufacturerId, setPendingManufacturerId] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
@@ -210,7 +211,7 @@ export default function Page() {
             density={t.density}
             onProductClick={(p) => { setPendingProductSku(p.sku); setView("products"); }}
             onContainerClick={(c) => goContainers(c.id)}
-            onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
+            onAutoSuggest={() => { setPendingAutoSuggestNew(true); setView("containers"); }}
             onSimulator={() => toast("Symulator — wkrótce (etap 6)", "info")}
             onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
           />
@@ -225,6 +226,8 @@ export default function Page() {
             density={t.density}
             openId={pendingContainerId}
             onOpenedId={() => setPendingContainerId(null)}
+            openNewAutoSuggest={pendingAutoSuggestNew}
+            onOpenedNewAutoSuggest={() => setPendingAutoSuggestNew(false)}
           />
         ) : view === "calendar" ? (
           <Calendar density={t.density} />
