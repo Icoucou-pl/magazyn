@@ -17,9 +17,10 @@ import {
   STATUS_FLOW, FILTER_STATUSES, eff, type Container,
 } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
+import AutoSuggestModal from "./auto-suggest";
 import type { Product, Manufacturer } from "./products-ui";
 
-export default function ContainersView({ density, openId, onOpenedId }: { density?: string; openId?: number | null; onOpenedId?: () => void }) {
+export default function ContainersView({ density, openId, onOpenedId, openNewAutoSuggest, onOpenedNewAutoSuggest }: { density?: string; openId?: number | null; onOpenedId?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void }) {
   const gap = density === "compact" ? 10 : 14;
   const showFin = can(useUser(), "viewFinancials");
 
@@ -35,6 +36,7 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
   const [products, setProducts] = useState<Product[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Container | null>(null);
+  const [autoSuggestOpen, setAutoSuggestOpen] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -66,6 +68,7 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
 
   const openNew = () => { setEditing(null); setShowForm(true); };
   const openEdit = (c: Container) => { setEditing(c); setShowForm(true); };
+  const openAutoSuggest = () => { setAutoSuggestOpen(true); };
 
   // Deep-link z globalnej wyszukiwarki: otwórz konkretny kontener po id
   useEffect(() => {
@@ -73,6 +76,11 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
     const c = containers.find((x) => x.id === openId);
     if (c) { openEdit(c); onOpenedId?.(); }
   }, [openId, containers]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Wywołanie z Dashboardu / szybkiej akcji: otwórz nowy kontener w trybie autosugestii
+  useEffect(() => {
+    if (openNewAutoSuggest) { openAutoSuggest(); onOpenedNewAutoSuggest?.(); }
+  }, [openNewAutoSuggest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: containers.length };
@@ -150,7 +158,7 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
         filter={filter} setFilter={setFilter} counts={counts}
         expandedAny={expandedIds.size > 0}
         onToggleAll={toggleAll}
-        onAutoSuggest={() => toast("Auto-sugestia kontenera — wkrótce (etap 6)", "info")}
+        onAutoSuggest={openAutoSuggest}
         onNew={openNew}
         rows={containers}
       />
@@ -184,6 +192,15 @@ export default function ContainersView({ density, openId, onOpenedId }: { densit
           onClose={() => setShowForm(false)}
           onSaved={reload}
           onDeleted={reload}
+        />
+      )}
+      {autoSuggestOpen && (
+        <AutoSuggestModal
+          manufacturers={manufacturers}
+          containerTypes={containerTypes}
+          products={products}
+          onClose={() => setAutoSuggestOpen(false)}
+          onCreated={reload}
         />
       )}
     </div>

@@ -15,6 +15,7 @@ import { api, download } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
+import { computeContainerFill } from "./auto-suggest";
 
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
@@ -26,8 +27,6 @@ const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
 // Okno odprawy celnej — musi odpowiadać CONTAINER_CUSTOMS_DAYS na backendzie (domyślnie 7).
 const CUSTOMS_DAYS = 7;
-// Ranking pilności do autosugestii (niższy = pilniejszy). Klucze = urgencja z prognozy.
-const URGENCY_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2 };
 const addDays = (iso: string, n: number) => {
   if (!iso) return "";
   const d = new Date(iso + "T00:00:00");
@@ -136,11 +135,10 @@ export default function ContainerFormModal({
     setItems(next);
   };
 
-  // ── Autosugestia wypełnienia kontenera ───────────────────────
-  // Bierze produkty do zamówienia (KRYTYCZNY/ZAMÓW_TERAZ/ZAMÓW_WKRÓTCE), liczy sugerowaną
-  // ilość na zadany horyzont pokrycia (avg_mies * mies − stan − w drodze), sortuje wg pilności
-  // i greedy dokłada do pojemności CBM — do 100%, bez przekroczenia i bez cięcia pozycji na części.
-  // Zakres: gdy wybrany producent (kontener nieskonsolidowany) → tylko jego produkty.
+  // ── Automatyczne wypełnienie kontenera ───────────────────────
+  // Wspólny algorytm (computeContainerFill): pokrywa realne potrzeby wg pilności, a wolną
+  // przestrzeń dopełnia wg popytu — dąży do ~100% CBM. Szanuje pozycje już wpisane ręcznie
+  // (liczy od wolnej przestrzeni, pomija SKU już na liście). Zakres: wybrany producent, jeśli jest.
   const autoFill = () => {
     if (!showEdit) return;
     if (capacity <= 0) { toast("Najpierw wybierz typ kontenera — potrzebna pojemność CBM", "warning"); return; }
@@ -148,42 +146,26 @@ export default function ContainerFormModal({
 
     const usedSkus = new Set(items.map((i) => i.sku).filter(Boolean));
     const mfrId = !isConsolidated && manufacturerId ? Number(manufacturerId) : null;
+    const pool = products.filter((p) => !usedSkus.has(p.sku) && (mfrId === null || p.manufacturer_id === mfrId));
 
-    const candidates = products
-      .filter((p) => URGENCY_RANK[p.status] !== undefined)
-      .filter((p) => (p.avg_monthly_weighted || 0) >= 1 && (p.cbm_per_unit || 0) > 0)
-      .filter((p) => !usedSkus.has(p.sku))
-      .filter((p) => mfrId === null || p.manufacturer_id === mfrId)
-      .map((p) => {
-        const qty = Math.max(1, Math.round((p.avg_monthly_weighted || 0) * months - (p.stock || 0) - (p.stock_in_transit || 0)));
-        return { p, qty, cbm: qty * (p.cbm_per_unit || 0) };
-      })
-      .filter((c) => c.qty > 0)
-      .sort((a, b) => (URGENCY_RANK[a.p.status] - URGENCY_RANK[b.p.status]) || (a.p.days_until_empty - b.p.days_until_empty));
+    if (capacity - totalCbm <= 1e-6) { toast("Kontener już pełny — brak wolnego miejsca na autouzupełnienie", "info"); return; }
 
-    let remaining = capacity - totalCbm;
-    if (remaining <= 1e-6) { toast("Kontener już pełny — brak wolnego miejsca na autosugestię", "info"); return; }
-
-    const additions: ItemDraft[] = [];
-    for (const c of candidates) {
-      if (c.cbm <= remaining + 1e-9) {
-        additions.push({ sku: c.p.sku, quantity: String(c.qty), unit_cost: c.p.purchase_price ? String(c.p.purchase_price) : "", lotRef: "" });
-        remaining -= c.cbm;
-      }
-      // mniejsze/mniej pilne pozycje niżej mogą jeszcze domknąć lukę — nie przerywamy pętli
-    }
-
-    if (additions.length === 0) {
-      toast(mfrId !== null ? "Brak produktów tego producenta do dołożenia" : "Brak produktów do zamówienia mieszczących się w wolnej przestrzeni", "info");
+    const lines = computeContainerFill(pool, capacity, months, totalCbm);
+    if (lines.length === 0) {
+      toast(mfrId !== null ? "Brak sprzedających się produktów tego producenta do dołożenia" : "Brak produktów do dołożenia w wolnej przestrzeni", "info");
       return;
     }
 
+    const additions: ItemDraft[] = lines.map((l) => ({
+      sku: l.sku, quantity: String(l.quantity), unit_cost: l.unit_cost ? String(l.unit_cost) : "", lotRef: "",
+    }));
     setItems((prev) => {
       const kept = prev.filter((i) => i.sku || (parseInt(i.quantity, 10) || 0) > 0);
       return [...kept, ...additions];
     });
 
-    const pct = ((capacity - remaining) / capacity) * 100;
+    const addedCbm = lines.reduce((s, l) => s + l.cbm_total, 0);
+    const pct = ((totalCbm + addedCbm) / capacity) * 100;
     toast(`Dodano ${additions.length} ${additions.length === 1 ? "pozycję" : "pozycji"} · wypełnienie ${pct.toFixed(0)}%`, "ok");
   };
 
