@@ -213,9 +213,9 @@ export default function AutoSuggestModal({
         <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 760 }}>
           {/* Header */}
           <div style={{ padding: "14px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, position: "relative" }}>
-            <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: "var(--anomaly)" }} />
+            <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: "var(--text-lo)" }} />
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--anomaly-soft)", color: "var(--anomaly)", display: "flex", alignItems: "center", justifyContent: "center" }}><I.Wand size={16} /></div>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--surface-2)", color: "var(--text-mid)", display: "flex", alignItems: "center", justifyContent: "center" }}><I.Wand size={16} /></div>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-hi)" }}>Auto-sugestia kontenera</div>
                 <div style={{ fontSize: 11, color: "var(--text-lo)" }}>Algorytm dobierze produkty tak, żeby wypełnić kontener do pełna</div>
@@ -254,13 +254,13 @@ function Stepper({ step, steps }: { step: number; steps: string[] }) {
         return (
           <React.Fragment key={s}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-              <div style={{ width: 24, height: 24, borderRadius: 99, background: reached ? "var(--anomaly)" : "var(--surface-2)", color: reached ? "white" : "var(--text-lo)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, border: active ? "2px solid var(--anomaly-soft)" : "1px solid var(--border-soft)", transition: "all 0.16s" }}>
+              <div style={{ width: 24, height: 24, borderRadius: 99, background: reached ? "var(--text-mid)" : "var(--surface-2)", color: reached ? "var(--bg)" : "var(--text-lo)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, border: active ? "2px solid var(--surface-2)" : "1px solid var(--border-soft)", transition: "all 0.16s" }}>
                 {reached && step > s ? <I.Activity size={11} /> : s}
               </div>
               <span style={{ fontSize: 12, fontWeight: 500, color: active ? "var(--text-hi)" : reached ? "var(--text-mid)" : "var(--text-lo)" }}>{label}</span>
             </div>
             {i < steps.length - 1 && (
-              <div style={{ flex: 1, height: 2, background: step > s ? "var(--anomaly)" : "var(--surface-2)", margin: "0 12px", transition: "background 0.2s" }} />
+              <div style={{ flex: 1, height: 2, background: step > s ? "var(--text-mid)" : "var(--surface-2)", margin: "0 12px", transition: "background 0.2s" }} />
             )}
           </React.Fragment>
         );
@@ -311,8 +311,8 @@ function Step1({
         )}
       </Field>
 
-      <Field label={<>Horyzont planowania: <span className="num" style={{ color: "var(--anomaly)", fontWeight: 700 }}>{monthsHorizon} mies.</span></>}>
-        <input type="range" min={3} max={12} value={monthsHorizon} onChange={(e) => setMonthsHorizon(parseInt(e.target.value, 10))} style={{ width: "100%", accentColor: "var(--anomaly)" }} />
+      <Field label={<>Horyzont planowania: <span className="num" style={{ color: "var(--text-mid)", fontWeight: 700 }}>{monthsHorizon} mies.</span></>}>
+        <input type="range" min={3} max={12} value={monthsHorizon} onChange={(e) => setMonthsHorizon(parseInt(e.target.value, 10))} style={{ width: "100%", accentColor: "var(--text-mid)" }} />
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>
           <span>3 mies (bezpiecznie)</span>
           <span className="num">{monthsHorizon}m</span>
@@ -320,10 +320,10 @@ function Step1({
         </div>
       </Field>
 
-      <div style={{ padding: "12px 14px", background: "var(--anomaly-soft)", border: "1px solid color-mix(in oklch, var(--anomaly) 30%, var(--border))", borderRadius: 8 }}>
+      <div style={{ padding: "12px 14px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-          <I.Activity size={12} style={{ color: "var(--anomaly)" }} />
-          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--anomaly)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Jak liczy algorytm</span>
+          <I.Activity size={12} style={{ color: "var(--text-mid)" }} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Jak liczy algorytm</span>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-mid)", lineHeight: 1.5 }}>
           Dla każdego SKU: <span style={{ color: "var(--text-hi)", fontFamily: "var(--font-mono)" }}>śr. sprzedaż × {monthsHorizon} − stan − w drodze = potrzebne</span>
@@ -331,7 +331,7 @@ function Step1({
           Sortuje wg pilności, pokrywa potrzeby, a wolną przestrzeń dopełnia wg popytu — aż do pełnego kontenera.
         </div>
         {preview && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid color-mix(in oklch, var(--anomaly) 30%, transparent)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border-soft)" }}>
             <span style={{ fontSize: 11, color: "var(--text-mid)" }}>Producent ma:</span>
             <span className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>{preview.needing}</span>
             <span style={{ fontSize: 11, color: "var(--text-lo)" }}>SKU wymagających uzupełnienia · {preview.total} sprzedających się łącznie</span>
@@ -339,7 +339,7 @@ function Step1({
         )}
       </div>
 
-      <button onClick={generate} disabled={!manufacturerId || loading} style={{ ...btnPrimaryFull, background: "var(--anomaly)", color: "white", borderColor: "var(--anomaly)", opacity: (!manufacturerId || loading) ? 0.5 : 1, cursor: (!manufacturerId || loading) ? "not-allowed" : "pointer" }}>
+      <button onClick={generate} disabled={!manufacturerId || loading} style={{ ...btnPrimaryFull, background: "var(--text-mid)", color: "var(--bg)", borderColor: "var(--text-mid)", opacity: (!manufacturerId || loading) ? 0.5 : 1, cursor: (!manufacturerId || loading) ? "not-allowed" : "pointer" }}>
         {loading ? (<><span className="pulse-soft"><I.Refresh size={14} /></span> Generuję sugestię…</>) : (<><I.Wand size={14} /> Wygeneruj sugestię</>)}
       </button>
     </div>
@@ -403,7 +403,7 @@ function Step2({
 
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => setStep(1)} style={btnSecondaryFull}><I.ArrowRight size={12} style={{ transform: "rotate(180deg)" }} /> Wstecz</button>
-        <button onClick={() => setStep(3)} style={{ ...btnPrimaryFull, background: "var(--anomaly)", color: "white", borderColor: "var(--anomaly)" }}>Dalej: utwórz kontener <I.ArrowRight size={12} /></button>
+        <button onClick={() => setStep(3)} style={{ ...btnPrimaryFull, background: "var(--text-mid)", color: "var(--bg)", borderColor: "var(--text-mid)" }}>Dalej: utwórz kontener <I.ArrowRight size={12} /></button>
       </div>
     </div>
   );
@@ -490,15 +490,15 @@ function Step3({
         </Field>
       </div>
 
-      <div style={{ padding: 14, background: "var(--anomaly-soft)", border: "1px solid color-mix(in oklch, var(--anomaly) 30%, var(--border))", borderRadius: 10 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--anomaly)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Podsumowanie kontenera</div>
+      <div style={{ padding: 14, background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Podsumowanie kontenera</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
           <SummaryRow label="Producent" value={mfr ? <MfrChip name={mfr.name} color={mfr.color} size="sm" /> : "—"} />
           <SummaryRow label="Typ" value={<span style={{ fontSize: 12, fontWeight: 600 }}>{ct?.name}</span>} />
           <SummaryRow label="Produktów" value={<span className="num" style={{ fontSize: 13, fontWeight: 600 }}>{suggestion.items.length}</span>} />
           <SummaryRow label="Sztuk" value={<span className="num" style={{ fontSize: 13, fontWeight: 600 }}>{fmtNum(suggestion.total_units)}</span>} />
           {showFin && <SummaryRow label="Wartość" value={<span className="num" style={{ fontSize: 13, fontWeight: 600 }}>{fmtPLN(suggestion.total_value)}</span>} />}
-          <SummaryRow label="Wypełnienie" value={<span className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--anomaly)" }}>{suggestion.fill_pct}%</span>} />
+          <SummaryRow label="Wypełnienie" value={<span className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-mid)" }}>{suggestion.fill_pct}%</span>} />
         </div>
       </div>
 
