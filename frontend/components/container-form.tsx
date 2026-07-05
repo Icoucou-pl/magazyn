@@ -26,6 +26,8 @@ const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
 // Okno odprawy celnej — musi odpowiadać CONTAINER_CUSTOMS_DAYS na backendzie (domyślnie 7).
 const CUSTOMS_DAYS = 7;
+// Ranking pilności do autosugestii (niższy = pilniejszy). Klucze = urgencja z prognozy.
+const URGENCY_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2 };
 const addDays = (iso: string, n: number) => {
   if (!iso) return "";
   const d = new Date(iso + "T00:00:00");
@@ -78,6 +80,7 @@ export default function ContainerFormModal({
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
+  const [coverMonths, setCoverMonths] = useState("6");  // horyzont pokrycia dla autosugestii (mies.)
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -131,6 +134,57 @@ export default function ContainerFormModal({
       if (product) next[idx].unit_cost = String(product.purchase_price);
     }
     setItems(next);
+  };
+
+  // ── Autosugestia wypełnienia kontenera ───────────────────────
+  // Bierze produkty do zamówienia (KRYTYCZNY/ZAMÓW_TERAZ/ZAMÓW_WKRÓTCE), liczy sugerowaną
+  // ilość na zadany horyzont pokrycia (avg_mies * mies − stan − w drodze), sortuje wg pilności
+  // i greedy dokłada do pojemności CBM — do 100%, bez przekroczenia i bez cięcia pozycji na części.
+  // Zakres: gdy wybrany producent (kontener nieskonsolidowany) → tylko jego produkty.
+  const autoFill = () => {
+    if (!showEdit) return;
+    if (capacity <= 0) { toast("Najpierw wybierz typ kontenera — potrzebna pojemność CBM", "warning"); return; }
+    const months = Math.max(0.5, parseFloat(coverMonths.replace(",", ".")) || 6);
+
+    const usedSkus = new Set(items.map((i) => i.sku).filter(Boolean));
+    const mfrId = !isConsolidated && manufacturerId ? Number(manufacturerId) : null;
+
+    const candidates = products
+      .filter((p) => URGENCY_RANK[p.status] !== undefined)
+      .filter((p) => (p.avg_monthly_weighted || 0) >= 1 && (p.cbm_per_unit || 0) > 0)
+      .filter((p) => !usedSkus.has(p.sku))
+      .filter((p) => mfrId === null || p.manufacturer_id === mfrId)
+      .map((p) => {
+        const qty = Math.max(1, Math.round((p.avg_monthly_weighted || 0) * months - (p.stock || 0) - (p.stock_in_transit || 0)));
+        return { p, qty, cbm: qty * (p.cbm_per_unit || 0) };
+      })
+      .filter((c) => c.qty > 0)
+      .sort((a, b) => (URGENCY_RANK[a.p.status] - URGENCY_RANK[b.p.status]) || (a.p.days_until_empty - b.p.days_until_empty));
+
+    let remaining = capacity - totalCbm;
+    if (remaining <= 1e-6) { toast("Kontener już pełny — brak wolnego miejsca na autosugestię", "info"); return; }
+
+    const additions: ItemDraft[] = [];
+    for (const c of candidates) {
+      if (c.cbm <= remaining + 1e-9) {
+        additions.push({ sku: c.p.sku, quantity: String(c.qty), unit_cost: c.p.purchase_price ? String(c.p.purchase_price) : "", lotRef: "" });
+        remaining -= c.cbm;
+      }
+      // mniejsze/mniej pilne pozycje niżej mogą jeszcze domknąć lukę — nie przerywamy pętli
+    }
+
+    if (additions.length === 0) {
+      toast(mfrId !== null ? "Brak produktów tego producenta do dołożenia" : "Brak produktów do zamówienia mieszczących się w wolnej przestrzeni", "info");
+      return;
+    }
+
+    setItems((prev) => {
+      const kept = prev.filter((i) => i.sku || (parseInt(i.quantity, 10) || 0) > 0);
+      return [...kept, ...additions];
+    });
+
+    const pct = ((capacity - remaining) / capacity) * 100;
+    toast(`Dodano ${additions.length} ${additions.length === 1 ? "pozycję" : "pozycji"} · wypełnienie ${pct.toFixed(0)}%`, "ok");
   };
 
   // ── Loty (skonsolidowany kontener) ─────────────────────────
@@ -405,7 +459,21 @@ export default function ContainerFormModal({
               </div>
             </Section>
 
-            <Section title={`Produkty (${items.length})`} required action={showEdit ? <button onClick={addItem} style={btnGhostMini}><I.Plus size={11} /> Dodaj pozycję</button> : undefined}>
+            <Section title={`Produkty (${items.length})`} required action={showEdit ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }} title="Horyzont pokrycia sugerowanej ilości (miesiące sprzedaży)">
+                  <input type="number" min={0.5} step={0.5} value={coverMonths} onChange={(e) => setCoverMonths(e.target.value)}
+                    style={{ width: 46, padding: "4px 6px", fontSize: 11, textAlign: "right", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-hi)", outline: "none", fontFamily: "var(--font-mono)" }} />
+                  <span style={{ fontSize: 10.5, color: "var(--text-lo)" }}>mies.</span>
+                </div>
+                <button onClick={autoFill} disabled={capacity <= 0}
+                  title={capacity <= 0 ? "Wybierz typ kontenera, aby dobrać ilości do pojemności CBM" : "Dobierz produkty do zamówienia i dopełnij kontener do 100% CBM"}
+                  style={{ ...btnGhostMini, opacity: capacity <= 0 ? 0.45 : 1, borderColor: capacity > 0 ? "var(--accent)" : "var(--border-soft)", color: capacity > 0 ? "var(--accent)" : "var(--text-lo)" }}>
+                  <I.Sparkles size={11} /> Uzupełnij automatycznie
+                </button>
+                <button onClick={addItem} style={btnGhostMini}><I.Plus size={11} /> Dodaj pozycję</button>
+              </div>
+            ) : undefined}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {itemDetails.map((item, idx) => (
                   <ItemRow key={idx} item={item} sortedProducts={sortedProducts} manufacturers={manufacturers} disabled={!showEdit} showFin={showFin}
