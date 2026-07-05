@@ -26,6 +26,8 @@ import EanScanner from "@/components/ean-scanner";
 import Assistant from "@/components/assistant";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
+import { SimulatorModal } from "@/components/simulator";
+import type { Product } from "@/components/products-ui";
 import {
   AppearancePanel, useTweaks, applyTweaks, TWEAK_DEFAULTS, type TweakValues,
 } from "@/components/tweaks-panel";
@@ -83,6 +85,8 @@ export default function Page() {
   const [pendingManufacturerId, setPendingManufacturerId] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
+  const [showSimulator, setShowSimulator] = useState(false);
+  const [simProducts, setSimProducts] = useState<Product[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [freshness, setFreshness] = useState<{ sellasist?: { last: string | null }; subiekt?: { last: string | null } } | null>(null);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
@@ -180,6 +184,20 @@ export default function Page() {
     window.setTimeout(poll, 1500);
   };
 
+  // Symulator scenariuszy (dashboard → ActionsBanner). Modal otwiera się od razu,
+  // a pełną listę produktów doładowujemy w tle (raz na sesję).
+  const openSimulator = async () => {
+    setShowSimulator(true);
+    if (simProducts) return;
+    try {
+      const data = await api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE");
+      setSimProducts((data as Product[]) || []);
+    } catch {
+      toast("Nie udało się wczytać produktów do symulatora", "error");
+      setShowSimulator(false);
+    }
+  };
+
   return (
     <UserContext.Provider value={currentUser}>
       <div style={{ display: "flex", alignItems: "flex-start", minHeight: "100dvh" }}>
@@ -212,7 +230,7 @@ export default function Page() {
             onProductClick={(p) => { setPendingProductSku(p.sku); setView("products"); }}
             onContainerClick={(c) => goContainers(c.id)}
             onAutoSuggest={() => { setPendingAutoSuggestNew(true); setView("containers"); }}
-            onSimulator={() => toast("Symulator — wkrótce (etap 6)", "info")}
+            onSimulator={openSimulator}
             onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
           />
         ) : view === "products" ? (
@@ -261,6 +279,16 @@ export default function Page() {
         onContainer={goContainers}
         onManufacturer={goManufacturer}
       />
+
+      {/* Symulator scenariuszy (odpalany z dashboardu) */}
+      {showSimulator && (
+        <SimulatorModal
+          products={simProducts ?? []}
+          loading={simProducts === null}
+          onClose={() => setShowSimulator(false)}
+          onProductClick={goProduct}
+        />
+      )}
 
       {/* Skaner EAN (przycisk skanu w headerze) */}
       <EanScanner
