@@ -212,10 +212,9 @@ export default function AutoSuggestModal({
       <div onClick={onClose} style={modalBackdrop}>
         <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 760 }}>
           {/* Header */}
-          <div style={{ padding: "14px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, position: "relative" }}>
-            <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: "var(--text-lo)" }} />
+          <div style={{ padding: "14px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--surface-2)", color: "var(--text-mid)", display: "flex", alignItems: "center", justifyContent: "center" }}><I.Wand size={16} /></div>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--accent-soft)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}><I.Wand size={16} /></div>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-hi)" }}>Auto-sugestia kontenera</div>
                 <div style={{ fontSize: 11, color: "var(--text-lo)" }}>Algorytm dobierze produkty tak, żeby wypełnić kontener do pełna</div>
@@ -254,13 +253,13 @@ function Stepper({ step, steps }: { step: number; steps: string[] }) {
         return (
           <React.Fragment key={s}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-              <div style={{ width: 24, height: 24, borderRadius: 99, background: reached ? "var(--text-mid)" : "var(--surface-2)", color: reached ? "var(--bg)" : "var(--text-lo)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, border: active ? "2px solid var(--surface-2)" : "1px solid var(--border-soft)", transition: "all 0.16s" }}>
+              <div style={{ width: 24, height: 24, borderRadius: 99, background: reached ? "var(--accent)" : "var(--surface-2)", color: reached ? "var(--accent-ink)" : "var(--text-lo)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, border: active ? "2px solid var(--accent-soft)" : "1px solid var(--border-soft)", transition: "all 0.16s" }}>
                 {reached && step > s ? <I.Activity size={11} /> : s}
               </div>
               <span style={{ fontSize: 12, fontWeight: 500, color: active ? "var(--text-hi)" : reached ? "var(--text-mid)" : "var(--text-lo)" }}>{label}</span>
             </div>
             {i < steps.length - 1 && (
-              <div style={{ flex: 1, height: 2, background: step > s ? "var(--text-mid)" : "var(--surface-2)", margin: "0 12px", transition: "background 0.2s" }} />
+              <div style={{ flex: 1, height: 2, background: step > s ? "var(--accent)" : "var(--surface-2)", margin: "0 12px", transition: "background 0.2s" }} />
             )}
           </React.Fragment>
         );
@@ -311,8 +310,8 @@ function Step1({
         )}
       </Field>
 
-      <Field label={<>Horyzont planowania: <span className="num" style={{ color: "var(--text-mid)", fontWeight: 700 }}>{monthsHorizon} mies.</span></>}>
-        <input type="range" min={3} max={12} value={monthsHorizon} onChange={(e) => setMonthsHorizon(parseInt(e.target.value, 10))} style={{ width: "100%", accentColor: "var(--text-mid)" }} />
+      <Field label={<>Horyzont planowania: <span className="num" style={{ color: "var(--accent)", fontWeight: 700 }}>{monthsHorizon} mies.</span></>}>
+        <input type="range" min={3} max={12} value={monthsHorizon} onChange={(e) => setMonthsHorizon(parseInt(e.target.value, 10))} style={{ width: "100%", accentColor: "var(--accent)" }} />
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>
           <span>3 mies (bezpiecznie)</span>
           <span className="num">{monthsHorizon}m</span>
@@ -339,7 +338,7 @@ function Step1({
         )}
       </div>
 
-      <button onClick={generate} disabled={!manufacturerId || loading} style={{ ...btnPrimaryFull, background: "var(--text-mid)", color: "var(--bg)", borderColor: "var(--text-mid)", opacity: (!manufacturerId || loading) ? 0.5 : 1, cursor: (!manufacturerId || loading) ? "not-allowed" : "pointer" }}>
+      <button onClick={generate} disabled={!manufacturerId || loading} style={{ ...btnPrimaryFull, opacity: (!manufacturerId || loading) ? 0.5 : 1, cursor: (!manufacturerId || loading) ? "not-allowed" : "pointer" }}>
         {loading ? (<><span className="pulse-soft"><I.Refresh size={14} /></span> Generuję sugestię…</>) : (<><I.Wand size={14} /> Wygeneruj sugestię</>)}
       </button>
     </div>
@@ -403,7 +402,7 @@ function Step2({
 
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => setStep(1)} style={btnSecondaryFull}><I.ArrowRight size={12} style={{ transform: "rotate(180deg)" }} /> Wstecz</button>
-        <button onClick={() => setStep(3)} style={{ ...btnPrimaryFull, background: "var(--text-mid)", color: "var(--bg)", borderColor: "var(--text-mid)" }}>Dalej: utwórz kontener <I.ArrowRight size={12} /></button>
+        <button onClick={() => setStep(3)} style={btnPrimaryFull}>Dalej: utwórz kontener <I.ArrowRight size={12} /></button>
       </div>
     </div>
   );
@@ -504,7 +503,7 @@ function Step3({
 
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => setStep(2)} disabled={busy} style={btnSecondaryFull}><I.ArrowRight size={12} style={{ transform: "rotate(180deg)" }} /> Wstecz</button>
-        <button onClick={createContainer} disabled={!containerNumber.trim() || busy} style={{ ...btnPrimaryFull, background: "var(--ok)", color: "white", borderColor: "var(--ok)", opacity: (!containerNumber.trim() || busy) ? 0.5 : 1, cursor: (!containerNumber.trim() || busy) ? "not-allowed" : "pointer" }}>
+        <button onClick={createContainer} disabled={!containerNumber.trim() || busy} style={{ ...btnPrimaryFull, opacity: (!containerNumber.trim() || busy) ? 0.5 : 1, cursor: (!containerNumber.trim() || busy) ? "not-allowed" : "pointer" }}>
           <I.Plus size={12} /> {busy ? "Tworzę…" : "Utwórz kontener"}
         </button>
       </div>
