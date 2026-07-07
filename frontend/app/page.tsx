@@ -24,6 +24,7 @@ import SettingsView from "@/components/settings";
 import CommandPalette from "@/components/command-palette";
 import EanScanner from "@/components/ean-scanner";
 import Assistant from "@/components/assistant";
+import Onboarding from "@/components/onboarding";
 import { ToastHost, toast } from "@/components/toast";
 import { I } from "@/components/ui";
 import { SimulatorModal } from "@/components/simulator";
@@ -88,6 +89,7 @@ export default function Page() {
   const [showSimulator, setShowSimulator] = useState(false);
   const [simProducts, setSimProducts] = useState<Product[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [freshness, setFreshness] = useState<{ sellasist?: { last: string | null }; subiekt?: { last: string | null } } | null>(null);
   const [t, setTweak] = useTweaks<TweakValues>(TWEAK_DEFAULTS, "magazyn_tweaks");
 
@@ -114,6 +116,16 @@ export default function Page() {
     const id = window.setInterval(loadFreshness, 5 * 60 * 1000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
+
+  // Onboarding — pokazujemy raz na użytkownika (flaga per-email w localStorage).
+  useEffect(() => {
+    if (!currentUser) { setShowOnboarding(false); return; }
+    try {
+      setShowOnboarding(!localStorage.getItem("magazyn_onboarded_" + currentUser.email));
+    } catch {
+      setShowOnboarding(false);
+    }
   }, [currentUser]);
 
   // Ctrl+K — globalna wyszukiwarka
@@ -300,6 +312,17 @@ export default function Page() {
       {/* Pływający panel wyglądu (⚙ w prawym dolnym rogu) — stan wspólny z headerem */}
       <AppearancePanel t={t} setTweak={setTweak}/>
       <Assistant/>
+
+      {/* Wprowadzenie — pełnoekranowa nakładka przy pierwszym logowaniu (raz na użytkownika) */}
+      {showOnboarding && (
+        <Onboarding
+          user={currentUser}
+          theme={t.theme}
+          onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
+          onDone={() => setShowOnboarding(false)}
+        />
+      )}
+
       <ToastHost/>
     </UserContext.Provider>
   );
