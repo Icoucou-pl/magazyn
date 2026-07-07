@@ -108,8 +108,8 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
     pwd_hash = hash_password(payload.password)
     r = await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role, is_active)
-            VALUES (:e, :h, :n, :r, TRUE) RETURNING {USER_COLS}
+            INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role, is_active, show_onboarding)
+            VALUES (:e, :h, :n, :r, TRUE, TRUE) RETURNING {USER_COLS}
         """),
         {"e": payload.email.strip(), "h": pwd_hash, "n": payload.full_name, "r": payload.role}
     )
@@ -118,6 +118,24 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
 
     await log_audit(db, admin, "USER_CREATED", "user", str(u.id), f"{payload.email} ({payload.role})")
     return _row_to_user_out(dict(u._mapping), reveal_super=_is_super(admin.email))
+
+
+@router.post("/users/onboarding/enable-all")
+async def enable_onboarding_all(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Włącza wprowadzenie (onboarding) dla WSZYSTKICH kont — pokaże się każdemu przy następnym logowaniu."""
+    r = await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET show_onboarding = TRUE"))
+    await db.commit()
+    await log_audit(db, admin, "ONBOARDING_ENABLED_ALL", "user", "*", "włączono wprowadzenie wszystkim")
+    return {"updated": r.rowcount}
+
+
+@router.post("/users/onboarding/disable-all")
+async def disable_onboarding_all(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Wyłącza wprowadzenie (onboarding) dla WSZYSTKICH kont."""
+    r = await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET show_onboarding = FALSE"))
+    await db.commit()
+    await log_audit(db, admin, "ONBOARDING_DISABLED_ALL", "user", "*", "wyłączono wprowadzenie wszystkim")
+    return {"updated": r.rowcount}
 
 
 @router.patch("/users/{uid}", response_model=UserOut)
