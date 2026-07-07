@@ -14,6 +14,17 @@ import { download } from "@/lib/api";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 
+// ── Formatery walut/dat kontenerów (płatności per lot: USD/CNY) ──
+const CUR_SYM: Record<string, string> = { USD: "$", CNY: "¥", EUR: "€", PLN: "zł" };
+const fmtCur = (n?: number | null, cur = "USD"): string => {
+  if (n == null) return "—";
+  const v = new Intl.NumberFormat("pl-PL", { maximumFractionDigits: 2 }).format(n);
+  const sym = CUR_SYM[cur] || cur;
+  return cur === "PLN" ? `${v} ${sym}` : `${sym}${v}`;
+};
+const fmtDatePL = (iso?: string | null): string =>
+  iso ? new Date(iso).toLocaleDateString("pl-PL") : "—";
+
 // ── Typy ─────────────────────────────────────────────────────
 export type ContainerItem = {
   id: number; sku: string; quantity: number; unit_cost: number | null;
@@ -26,6 +37,12 @@ export type ContainerLot = {
   manufacturer_name: string | null;
   manufacturer_color: string | null;
   order_number: string | null;
+  waluta_towaru?: string | null;
+  zaliczka_procent?: number | null;
+  zaliczka_kwota?: number | null;
+  zaliczka_data?: string | null;
+  balance_kwota?: number | null;
+  zaplacono_data?: string | null;
   total_units: number; total_cbm: number; total_value: number;
 };
 export type Attachment = { id: number; filename: string; file_type: string | null; file_size: string | null; uploaded_at: string };
@@ -41,6 +58,17 @@ export type Container = {
   manufacturer_color: string | null;
   is_consolidated?: boolean;
   lots?: ContainerLot[];
+  koszt_transportu?: number | null;
+  koszt_spedycji?: number | null;
+  oplata_spedycji?: number | null;
+  folder?: string | null;
+  subiekt_nr?: string | null;
+  waluta_towaru?: string | null;
+  zaliczka_procent?: number | null;
+  zaliczka_kwota?: number | null;
+  zaliczka_data?: string | null;
+  balance_kwota?: number | null;
+  zaplacono_data?: string | null;
   order_date: string;
   eta_date: string;
   status: string;                       // status ręczny (z bazy)
@@ -257,6 +285,13 @@ function ContainerCardBody({
   const showFin = can(user, "viewFinancials");
   const cap = c.container_capacity_cbm ?? 0;
   const fill = c.fill_percentage ?? 0;
+  const lots = c.lots ?? [];
+  const consolidated = !!c.is_consolidated && lots.length > 0;
+  const hasCostsDocs = c.koszt_transportu != null || c.koszt_spedycji != null || c.oplata_spedycji != null || !!c.folder || !!c.subiekt_nr;
+  const lotHasPay = (l: ContainerLot) => l.zaliczka_kwota != null || l.balance_kwota != null || !!l.zaliczka_data || !!l.zaplacono_data || l.zaliczka_procent != null;
+  const hasContainerPay = c.zaliczka_kwota != null || c.balance_kwota != null || !!c.zaliczka_data || !!c.zaplacono_data || c.zaliczka_procent != null;
+  const lotsWithPay = lots.filter(lotHasPay);
+  const sectionLabelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 };
   return (
     <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }} className="fade-in">
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 18, alignItems: "flex-start" }} className="container-body-grid">
@@ -282,6 +317,43 @@ function ContainerCardBody({
           </div>
         </div>
       )}
+
+      {hasCostsDocs && (
+        <div>
+          <div style={sectionLabelStyle}>Spedycja i dokumenty</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+            {showFin && <MoneyCell label="Koszt transportu" value={fmtCur(c.koszt_transportu, "USD")} />}
+            {showFin && <MoneyCell label="Koszt spedycji" value={fmtCur(c.koszt_spedycji, "USD")} />}
+            {showFin && <MoneyCell label="Opłata spedycji" value={fmtCur(c.oplata_spedycji, "USD")} sub="rachunek − transport" muted />}
+            <MoneyCell label="Folder" value={c.folder || "—"} />
+            <MoneyCell label="Subiekt" value={c.subiekt_nr || "—"} />
+          </div>
+        </div>
+      )}
+
+      {consolidated
+        ? lotsWithPay.length > 0 && (
+          <div>
+            <div style={sectionLabelStyle}>Płatności — loty</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {lots.map((l) => lotHasPay(l) && (
+                <div key={l.id} style={{ padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                    <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
+                    {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
+                  </div>
+                  <PaymentBlock cur={l.waluta_towaru || "USD"} zProc={l.zaliczka_procent} zKwota={l.zaliczka_kwota} zData={l.zaliczka_data} balance={l.balance_kwota} zaplacono={l.zaplacono_data} showFin={showFin} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+        : hasContainerPay && (
+          <div>
+            <div style={sectionLabelStyle}>Płatność</div>
+            <PaymentBlock cur={c.waluta_towaru || "USD"} zProc={c.zaliczka_procent} zKwota={c.zaliczka_kwota} zData={c.zaliczka_data} balance={c.balance_kwota} zaplacono={c.zaplacono_data} showFin={showFin} />
+          </div>
+        )}
 
       <div>
         <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Pozycje ({c.items.length})</div>
@@ -358,6 +430,34 @@ function DataCell({ label, value, sub }: { label: string; value: React.ReactNode
       <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
       <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function MoneyCell({ label, value, sub, muted }: { label: string; value: React.ReactNode; sub?: string; muted?: boolean }) {
+  return (
+    <div style={{ padding: "8px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 7 }}>
+      <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div className="num" style={{ fontSize: 13, fontWeight: 600, color: muted ? "var(--text-mid)" : "var(--text-hi)", marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function PaymentBlock({ cur, zProc, zKwota, zData, balance, zaplacono, showFin }: {
+  cur: string;
+  zProc?: number | null; zKwota?: number | null; zData?: string | null;
+  balance?: number | null; zaplacono?: string | null; showFin: boolean;
+}) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+      <MoneyCell
+        label={`Zaliczka${zProc != null ? ` · ${fmtNum(zProc)}%` : ""}`}
+        value={showFin ? fmtCur(zKwota, cur) : "•••••"}
+        sub={zData ? `wpł. ${fmtDatePL(zData)}` : `waluta: ${cur}`}
+      />
+      <MoneyCell label="Balance" value={showFin ? fmtCur(balance, cur) : "•••••"} sub={`waluta: ${cur}`} />
+      <MoneyCell label="Zapłacono" value={fmtDatePL(zaplacono)} muted />
     </div>
   );
 }

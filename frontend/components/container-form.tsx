@@ -20,7 +20,16 @@ import { computeContainerFill } from "./auto-suggest";
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
 type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string };
-type LotDraft = { manufacturer_id: string; order_number: string };
+type LotDraft = {
+  manufacturer_id: string; order_number: string;
+  waluta_towaru: string; zaliczka_procent: string; zaliczka_kwota: string;
+  zaliczka_data: string; balance_kwota: string; zaplacono_data: string;
+};
+const emptyLot = (): LotDraft => ({
+  manufacturer_id: "", order_number: "",
+  waluta_towaru: "USD", zaliczka_procent: "", zaliczka_kwota: "",
+  zaliczka_data: "", balance_kwota: "", zaplacono_data: "",
+});
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -52,9 +61,16 @@ export default function ContainerFormModal({
   const isNew = !initial;
 
   // Mapowanie lot_id (z bazy) → indeks w tablicy lotów (formularz operuje na indeksach).
+  const numStr = (n?: number | null) => (n == null ? "" : String(n));
   const initialLots: LotDraft[] = (initial?.lots || []).map((l) => ({
     manufacturer_id: l.manufacturer_id ? String(l.manufacturer_id) : "",
     order_number: l.order_number || "",
+    waluta_towaru: l.waluta_towaru || "USD",
+    zaliczka_procent: numStr(l.zaliczka_procent),
+    zaliczka_kwota: numStr(l.zaliczka_kwota),
+    zaliczka_data: l.zaliczka_data || "",
+    balance_kwota: numStr(l.balance_kwota),
+    zaplacono_data: l.zaplacono_data || "",
   }));
   const lotIdToIdx = new Map<number, number>();
   (initial?.lots || []).forEach((l, i) => lotIdToIdx.set(l.id, i));
@@ -68,7 +84,19 @@ export default function ContainerFormModal({
   const [status, setStatus] = useState(initial?.status || "ORDERED");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [isConsolidated, setIsConsolidated] = useState(!!initial?.is_consolidated && initialLots.length > 0);
-  const [lots, setLots] = useState<LotDraft[]>(initialLots.length ? initialLots : [{ manufacturer_id: "", order_number: "" }]);
+  const [lots, setLots] = useState<LotDraft[]>(initialLots.length ? initialLots : [emptyLot()]);
+  // Koszty spedycji + dokumenty (zawsze na kontenerze, USD)
+  const [kosztTransportu, setKosztTransportu] = useState(numStr(initial?.koszt_transportu));
+  const [kosztSpedycji, setKosztSpedycji] = useState(numStr(initial?.koszt_spedycji));
+  const [folder, setFolder] = useState(initial?.folder || "");
+  const [subiektNr, setSubiektNr] = useState(initial?.subiekt_nr || "");
+  // Płatność kontenera nieskonsolidowanego (jeden dostawca)
+  const [walutaTowaru, setWalutaTowaru] = useState(initial?.waluta_towaru || "USD");
+  const [zaliczkaProcent, setZaliczkaProcent] = useState(numStr(initial?.zaliczka_procent));
+  const [zaliczkaKwota, setZaliczkaKwota] = useState(numStr(initial?.zaliczka_kwota));
+  const [zaliczkaData, setZaliczkaData] = useState(initial?.zaliczka_data || "");
+  const [balanceKwota, setBalanceKwota] = useState(numStr(initial?.balance_kwota));
+  const [zaplaconoData, setZaplaconoData] = useState(initial?.zaplacono_data || "");
   const [items, setItems] = useState<ItemDraft[]>(
     initial?.items?.map((i) => ({
       sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "",
@@ -170,7 +198,7 @@ export default function ContainerFormModal({
   };
 
   // ── Loty (skonsolidowany kontener) ─────────────────────────
-  const addLot = () => setLots([...lots, { manufacturer_id: "", order_number: "" }]);
+  const addLot = () => setLots([...lots, emptyLot()]);
   const updateLot = (idx: number, field: keyof LotDraft, value: string) => {
     const next = [...lots];
     next[idx] = { ...next[idx], [field]: value };
@@ -190,7 +218,7 @@ export default function ContainerFormModal({
   };
   const toggleConsolidated = (on: boolean) => {
     setIsConsolidated(on);
-    if (on && lots.length === 0) setLots([{ manufacturer_id: "", order_number: "" }]);
+    if (on && lots.length === 0) setLots([emptyLot()]);
   };
 
   const guessType = (name: string) => {
@@ -227,6 +255,9 @@ export default function ContainerFormModal({
       if (unassigned.length > 0) { toast(`Przypisz lot do każdej pozycji (bez przypisania: ${unassigned.length})`, "warning"); return; }
     }
 
+    const numOrNull = (s: string) => (s.trim() === "" ? null : Number(s));
+    const dateOrNull = (s: string) => (s.trim() === "" ? null : s);
+
     const payload = {
       container_number: containerNumber.trim(),
       order_number: isConsolidated ? null : (orderNumber.trim() || null),
@@ -237,7 +268,28 @@ export default function ContainerFormModal({
       status,
       notes: notes.trim() || null,
       is_consolidated: isConsolidated,
-      lots: isConsolidated ? lots.map((l) => ({ manufacturer_id: l.manufacturer_id ? Number(l.manufacturer_id) : null, order_number: l.order_number.trim() || null })) : [],
+      // koszty spedycji + dokumenty (zawsze na kontenerze)
+      koszt_transportu: numOrNull(kosztTransportu),
+      koszt_spedycji: numOrNull(kosztSpedycji),
+      folder: folder.trim() || null,
+      subiekt_nr: subiektNr.trim() || null,
+      // płatność kontenera nieskonsolidowanego (przy konsolidacji → null, dane w lotach)
+      waluta_towaru: isConsolidated ? null : walutaTowaru,
+      zaliczka_procent: isConsolidated ? null : numOrNull(zaliczkaProcent),
+      zaliczka_kwota: isConsolidated ? null : numOrNull(zaliczkaKwota),
+      zaliczka_data: isConsolidated ? null : dateOrNull(zaliczkaData),
+      balance_kwota: isConsolidated ? null : numOrNull(balanceKwota),
+      zaplacono_data: isConsolidated ? null : dateOrNull(zaplaconoData),
+      lots: isConsolidated ? lots.map((l) => ({
+        manufacturer_id: l.manufacturer_id ? Number(l.manufacturer_id) : null,
+        order_number: l.order_number.trim() || null,
+        waluta_towaru: l.waluta_towaru || "USD",
+        zaliczka_procent: numOrNull(l.zaliczka_procent),
+        zaliczka_kwota: numOrNull(l.zaliczka_kwota),
+        zaliczka_data: dateOrNull(l.zaliczka_data),
+        balance_kwota: numOrNull(l.balance_kwota),
+        zaplacono_data: dateOrNull(l.zaplacono_data),
+      })) : [],
       items: validItems.map((i) => ({
         sku: i.sku, quantity: parseInt(i.quantity, 10), unit_cost: i.unit_cost ? parseFloat(i.unit_cost) : null,
         lot_ref: isConsolidated && i.lotRef !== "" ? Number(i.lotRef) : null,
@@ -368,25 +420,73 @@ export default function ContainerFormModal({
 
             {isConsolidated && (
               <Section title={`Loty — dostawcy i PO (${lots.length})`} required action={showEdit ? <button onClick={addLot} style={btnGhostMini}><I.Plus size={11} /> Dodaj lot</button> : undefined}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {lots.map((lot, idx) => {
                     const lotUnits = itemDetails.filter((it) => it.lotRef === String(idx)).reduce((s, it) => s + it.qty, 0);
                     return (
-                      <div key={idx} style={{ display: "grid", gridTemplateColumns: "34px minmax(0, 1fr) 150px 30px", gap: 6, alignItems: "center", padding: 8, background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
-                        <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", textAlign: "center" }}>#{idx + 1}</span>
-                        <select value={lot.manufacturer_id} onChange={(e) => updateLot(idx, "manufacturer_id", e.target.value)} disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }}>
-                          <option value="">— dostawca —</option>
-                          {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                        </select>
-                        <input value={lot.order_number} onChange={(e) => updateLot(idx, "order_number", e.target.value)} placeholder="Nr PO" disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)" }} />
-                        <button onClick={() => removeLot(idx)} disabled={!showEdit} title="Usuń lot" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, height: 32 }}><I.Close size={12} /></button>
-                        <div style={{ gridColumn: "2 / -1", fontSize: 10, color: "var(--text-lo)" }} className="num">{lotUnits} szt przypisanych</div>
+                      <div key={idx} style={{ padding: 10, background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "34px minmax(0, 1fr) 150px 30px", gap: 6, alignItems: "center" }}>
+                          <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", textAlign: "center" }}>#{idx + 1}</span>
+                          <select value={lot.manufacturer_id} onChange={(e) => updateLot(idx, "manufacturer_id", e.target.value)} disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }}>
+                            <option value="">— dostawca —</option>
+                            {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                          </select>
+                          <input value={lot.order_number} onChange={(e) => updateLot(idx, "order_number", e.target.value)} placeholder="Nr PO" disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)" }} />
+                          <button onClick={() => removeLot(idx)} disabled={!showEdit} title="Usuń lot" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, height: 32 }}><I.Close size={12} /></button>
+                        </div>
+                        {showFin && (
+                          <PaymentInputs v={lot} disabled={!showEdit} onChange={(f, val) => updateLot(idx, f as keyof LotDraft, val)} />
+                        )}
+                        <div style={{ fontSize: 10, color: "var(--text-lo)" }} className="num">{lotUnits} szt przypisanych</div>
                       </div>
                     );
                   })}
                 </div>
               </Section>
             )}
+
+            {!isConsolidated && showFin && (
+              <Section title="Płatność (dostawca)">
+                <PaymentInputs
+                  v={{ waluta_towaru: walutaTowaru, zaliczka_procent: zaliczkaProcent, zaliczka_kwota: zaliczkaKwota, zaliczka_data: zaliczkaData, balance_kwota: balanceKwota, zaplacono_data: zaplaconoData }}
+                  disabled={!showEdit}
+                  onChange={(f, val) => {
+                    if (f === "waluta_towaru") setWalutaTowaru(val);
+                    else if (f === "zaliczka_procent") setZaliczkaProcent(val);
+                    else if (f === "zaliczka_kwota") setZaliczkaKwota(val);
+                    else if (f === "zaliczka_data") setZaliczkaData(val);
+                    else if (f === "balance_kwota") setBalanceKwota(val);
+                    else if (f === "zaplacono_data") setZaplaconoData(val);
+                  }}
+                />
+              </Section>
+            )}
+
+            <Section title="Spedycja i dokumenty">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                {showFin && (
+                  <Field label="Koszt transportu (USD)">
+                    <input type="number" step="0.01" min="0" value={kosztTransportu} onChange={(e) => setKosztTransportu(e.target.value)} placeholder="np. 2500" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                  </Field>
+                )}
+                {showFin && (
+                  <Field label="Koszt spedycji (USD)">
+                    <input type="number" step="0.01" min="0" value={kosztSpedycji} onChange={(e) => setKosztSpedycji(e.target.value)} placeholder="cały rachunek, np. 3000" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                    {showFin && kosztSpedycji.trim() !== "" && kosztTransportu.trim() !== "" && (
+                      <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
+                        Opłata spedycji: <strong style={{ color: "var(--text-mid)" }}>${(Number(kosztSpedycji) - Number(kosztTransportu)).toLocaleString("pl-PL")}</strong>
+                      </span>
+                    )}
+                  </Field>
+                )}
+                <Field label="Folder">
+                  <input value={folder} onChange={(e) => setFolder(e.target.value.toUpperCase())} placeholder="np. C120" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                </Field>
+                <Field label="Subiekt">
+                  <input value={subiektNr} onChange={(e) => setSubiektNr(e.target.value)} placeholder="numer + cyfra" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                </Field>
+              </div>
+            </Section>
 
             <Section title="Status">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 6 }}>
@@ -595,6 +695,38 @@ function Field({ label, required, children }: { label: string; required?: boolea
         {label}{required && <span style={{ color: "var(--critical)", marginLeft: 3 }}>*</span>}
       </label>
       {children}
+    </div>
+  );
+}
+
+// Wspólny blok pól płatności (per lot lub per kontener nieskonsolidowany).
+type PayVals = { waluta_towaru: string; zaliczka_procent: string; zaliczka_kwota: string; zaliczka_data: string; balance_kwota: string; zaplacono_data: string };
+function PaymentInputs({ v, onChange, disabled }: { v: PayVals; onChange: (field: keyof PayVals, value: string) => void; disabled?: boolean }) {
+  const mini: React.CSSProperties = { ...inputStyle, padding: "6px 8px", fontSize: 12 };
+  const monoMini: React.CSSProperties = { ...mini, fontFamily: "var(--font-mono)", textAlign: "right" };
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6 }}>
+      <Field label="Waluta towaru">
+        <select value={v.waluta_towaru} onChange={(e) => onChange("waluta_towaru", e.target.value)} disabled={disabled} style={mini}>
+          <option value="USD">USD $</option>
+          <option value="CNY">CNY ¥</option>
+        </select>
+      </Field>
+      <Field label="Zaliczka %">
+        <input type="number" step="1" min="0" value={v.zaliczka_procent} onChange={(e) => onChange("zaliczka_procent", e.target.value)} placeholder="np. 30" disabled={disabled} style={monoMini} />
+      </Field>
+      <Field label="Zaliczka kwota">
+        <input type="number" step="0.01" min="0" value={v.zaliczka_kwota} onChange={(e) => onChange("zaliczka_kwota", e.target.value)} placeholder="np. 4200" disabled={disabled} style={monoMini} />
+      </Field>
+      <Field label="Zaliczka — data">
+        <input type="date" value={v.zaliczka_data} onChange={(e) => onChange("zaliczka_data", e.target.value)} disabled={disabled} style={mini} />
+      </Field>
+      <Field label="Balance">
+        <input type="number" step="0.01" min="0" value={v.balance_kwota} onChange={(e) => onChange("balance_kwota", e.target.value)} placeholder="np. 32000" disabled={disabled} style={monoMini} />
+      </Field>
+      <Field label="Zapłacono — data">
+        <input type="date" value={v.zaplacono_data} onChange={(e) => onChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
+      </Field>
     </div>
   );
 }
