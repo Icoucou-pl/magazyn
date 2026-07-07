@@ -9,7 +9,7 @@
 // ============================================================
 
 import React, { useEffect, useState } from "react";
-import { getUser, logout, api } from "@/lib/api";
+import { getUser, logout, setUser, api } from "@/lib/api";
 import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
 import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
@@ -118,14 +118,10 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
-  // Onboarding — pokazujemy raz na użytkownika (flaga per-email w localStorage).
+  // Onboarding — sterowane flagą z bazy (show_onboarding na userze).
+  // Admin włącza wszystkim w Ustawieniach → każdy widzi przy następnym logowaniu.
   useEffect(() => {
-    if (!currentUser) { setShowOnboarding(false); return; }
-    try {
-      setShowOnboarding(!localStorage.getItem("magazyn_onboarded_" + currentUser.email));
-    } catch {
-      setShowOnboarding(false);
-    }
+    setShowOnboarding(!!currentUser?.show_onboarding);
   }, [currentUser]);
 
   // Ctrl+K — globalna wyszukiwarka
@@ -156,6 +152,18 @@ export default function Page() {
     logout();
     setCurrentUser(null);
     setView("dashboard");
+  };
+
+  // Zamknięcie wprowadzenia (Dalej do końca lub Pomiń) — zapis „obejrzane" do bazy,
+  // plus aktualizacja usera w sesji, żeby po odświeżeniu już nie wyskakiwało.
+  const finishOnboarding = () => {
+    setShowOnboarding(false);
+    if (currentUser?.show_onboarding) {
+      const updated = { ...currentUser, show_onboarding: false };
+      setCurrentUser(updated);
+      setUser(updated);
+      api.patch("/auth/me/onboarding", { show_onboarding: false }).catch(() => { /* cicho — najwyżej pokaże się raz więcej */ });
+    }
   };
 
   // Odśwież dane Sellasista — uruchamia bieg w tle (backend) i polluje status,
@@ -316,10 +324,9 @@ export default function Page() {
       {/* Wprowadzenie — pełnoekranowa nakładka przy pierwszym logowaniu (raz na użytkownika) */}
       {showOnboarding && (
         <Onboarding
-          user={currentUser}
           theme={t.theme}
           onToggleTheme={() => setTweak("theme", t.theme === "light" ? "dark" : "light")}
-          onDone={() => setShowOnboarding(false)}
+          onDone={finishOnboarding}
         />
       )}
 
