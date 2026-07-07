@@ -725,6 +725,16 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
   const toggleMode = (id: number, mode: "perms" | "reset") =>
     setExpanded(e => (e?.id === id && e.mode === mode) ? null : { id, mode });
 
+  const onboardingAll = async (val: boolean) => {
+    const what = val ? "włączyć wprowadzenie wszystkim" : "wyłączyć wprowadzenie wszystkim";
+    if (!window.confirm(`Na pewno ${what}? Zmiana obejmie wszystkie konta — każdy zobaczy (lub przestanie widzieć) ekran powitalny przy następnym logowaniu.`)) return;
+    try {
+      const r = await api.post(`/users/onboarding/${val ? "enable" : "disable"}-all`) as { updated?: number } | null;
+      toast(`${val ? "Włączono" : "Wyłączono"} wprowadzenie — ${r?.updated ?? 0} kont`, "ok");
+      load();
+    } catch { toast("Nie udało się zmienić ustawienia wprowadzenia", "error"); }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
@@ -737,7 +747,11 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
         <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
           <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{items.length}</span> użytkowników w systemie
         </span>
-        <button onClick={() => setCreating(true)} style={btnPrimary}><I.Plus size={12}/> Dodaj użytkownika</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button onClick={() => onboardingAll(true)} style={btnSecondary} title="Pokaż wprowadzenie wszystkim przy następnym logowaniu">Włącz wprowadzenie wszystkim</button>
+          <button onClick={() => onboardingAll(false)} style={btnGhostMini}>Wyłącz</button>
+          <button onClick={() => setCreating(true)} style={btnPrimary}><I.Plus size={12}/> Dodaj użytkownika</button>
+        </div>
       </div>
 
       {creating && <NewUserForm viewerSuper={viewerSuper} onSaved={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)}/>}
@@ -1062,6 +1076,47 @@ function PwdHint({ ok, label }: { ok: boolean; label: string }) {
 // ============================================================
 // MOJE KONTO
 // ============================================================
+// Samodzielne włączenie/wyłączenie wprowadzenia dla bieżącego użytkownika.
+function OnboardingSelfCard() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const me = await api.get("/auth/me");
+        setOn(!!(me as { show_onboarding?: boolean })?.show_onboarding);
+      } catch { setOn(false); }
+    })();
+  }, []);
+
+  const toggle = async () => {
+    if (on === null || busy) return;
+    const nextVal = !on;
+    setBusy(true);
+    try {
+      await api.patch("/auth/me/onboarding", { show_onboarding: nextVal });
+      setOn(nextVal);
+      toast(nextVal ? "Wprowadzenie pokaże się przy następnym logowaniu" : "Wprowadzenie wyłączone", "ok");
+    } catch { toast("Nie udało się zmienić ustawienia", "error"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", padding: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Wprowadzenie (onboarding)</h3>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--text-lo)" }}>
+            Włącz, aby ekran powitalny pokazał się ponownie przy następnym logowaniu.
+          </p>
+        </div>
+        <Toggle on={!!on} disabled={on === null || busy} onClick={toggle}/>
+      </div>
+    </div>
+  );
+}
+
 function AccountPanel() {
   const user = useUser() as CtxUser;
   const name = user?.full_name || user?.name || user?.email || "";
@@ -1120,6 +1175,8 @@ function AccountPanel() {
           <button onClick={change} disabled={busy} style={btnPrimary}>{busy ? "Zmienianie…" : "Zmień hasło"}</button>
         </div>
       </div>
+
+      <OnboardingSelfCard/>
 
       <SessionsPanel/>
     </div>

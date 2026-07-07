@@ -21,6 +21,7 @@ export type User = {
   role: string; // 'ADMIN' | 'IMPORT' | 'VIEWER'
   isSuper?: boolean;
   perms?: Record<string, boolean>;
+  show_onboarding?: boolean;
 };
 
 type IconCmp = (props: IconProps) => React.ReactElement;
