@@ -50,6 +50,10 @@ class AdminPasswordReset(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+class OnboardingSet(BaseModel):
+    show_onboarding: bool
+
+
 class UserOut(BaseModel):
     id: int
     email: str
