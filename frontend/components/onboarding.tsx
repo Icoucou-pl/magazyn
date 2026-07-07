@@ -9,7 +9,6 @@
 // ============================================================
 
 import React, { useEffect, useState } from "react";
-import type { User } from "@/components/header";
 
 const TOTAL = 7;
 
@@ -192,22 +191,16 @@ const Ico = {
 };
 
 type OnboardingProps = {
-  user: User;
   onDone: () => void;
   theme?: string;
   onToggleTheme?: () => void;
 };
 
-export default function Onboarding({ user, onDone, theme, onToggleTheme }: OnboardingProps) {
+export default function Onboarding({ onDone, theme, onToggleTheme }: OnboardingProps) {
   const [cur, setCur] = useState(0);
 
-  const finish = () => {
-    try {
-      localStorage.setItem("magazyn_onboarded", "1");
-      if (user?.email) localStorage.setItem("magazyn_onboarded_" + user.email, "1");
-    } catch { /* prywatny tryb / brak dostępu — trudno */ }
-    onDone();
-  };
+  // Persystencja „obejrzane" idzie do bazy (page.tsx → PATCH /auth/me/onboarding).
+  const finish = () => onDone();
 
   const advance = (dir: number) => {
     const n = cur + dir;
