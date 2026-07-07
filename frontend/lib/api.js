@@ -68,8 +68,11 @@ async function request(method, path, body, opts = {}) {
     body: payload,
   });
 
-  // 401 → sesja nieważna: wyczyść i powiadom shell
-  if (res.status === 401) {
+  // 401 → sesja nieważna: wyczyść i powiadom shell.
+  // WYJĄTEK: /auth/login — tam 401 oznacza „nieprawidłowe dane logowania", a nie
+  // „wygasłą sesję". Taki 401 przepuszczamy do ogólnej obsługi niżej, żeby pokazać
+  // komunikat z backendu (np. „Nieprawidłowy email lub hasło").
+  if (res.status === 401 && path !== "/auth/login") {
     clearSession();
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("magazyn:unauthorized"));
