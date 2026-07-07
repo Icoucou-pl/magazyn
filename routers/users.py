@@ -66,9 +66,11 @@ async def _guard_target(db: AsyncSession, uid: int, admin: CurrentUser, *, for_d
     requester_super = _is_super(admin.email)
 
     if _is_super(target_email):
-        if for_delete:
-            raise HTTPException(403, "Konto super-administratora jest chronione")
+        # Dla nie-super konto super-admina jest NIEWIDOCZNE: zwracamy 404 (jak dla
+        # nieistniejącego id), a nie 403 — 403 potwierdziłoby, że takie konto istnieje.
         if not requester_super:
+            raise HTTPException(404, "Użytkownik nie znaleziony")
+        if for_delete:
             raise HTTPException(403, "Konto super-administratora jest chronione")
         # super-admin może edytować własne konto (poza usunięciem)
     elif target_role == "ADMIN" and not requester_super:
@@ -82,12 +84,19 @@ async def list_users(admin: CurrentUser = Depends(require_admin), db: AsyncSessi
     """Lista wszystkich użytkowników - tylko admin.
     last_activity = czas ostatniej zmiany dokonanej przez tego użytkownika (z audytu)."""
     reveal = _is_super(admin.email)
+    se = _super_email()
+    # Dla nie-super wiersz super-admina jest całkowicie niewidoczny — wycinamy go
+    # już w SQL (nie tylko flagę is_super_admin), więc konto nie pojawia się na liście.
+    hide_super = bool(se) and not reveal
+    where_clause = "WHERE LOWER(u.email) <> :se" if hide_super else ""
+    params = {"se": se} if hide_super else {}
     r = await db.execute(text(f"""
         SELECT {", ".join("u." + c for c in USER_COLS.split(", "))},
             (SELECT MAX(a.created_at) FROM {settings.TABLE_AUDIT_LOG} a WHERE a.user_id = u.id) AS last_activity
         FROM {settings.TABLE_USERS} u
+        {where_clause}
         ORDER BY u.created_at DESC
-    """))
+    """), params)
     return [_row_to_user_out(dict(row._mapping), reveal_super=reveal) for row in r]
 
 
@@ -108,8 +117,8 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
     pwd_hash = hash_password(payload.password)
     r = await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role, is_active, show_onboarding)
-            VALUES (:e, :h, :n, :r, TRUE, TRUE) RETURNING {USER_COLS}
+            INSERT INTO {settings.TABLE_USERS} (email, password_hash, full_name, role, is_active)
+            VALUES (:e, :h, :n, :r, TRUE) RETURNING {USER_COLS}
         """),
         {"e": payload.email.strip(), "h": pwd_hash, "n": payload.full_name, "r": payload.role}
     )
@@ -118,24 +127,6 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
 
     await log_audit(db, admin, "USER_CREATED", "user", str(u.id), f"{payload.email} ({payload.role})")
     return _row_to_user_out(dict(u._mapping), reveal_super=_is_super(admin.email))
-
-
-@router.post("/users/onboarding/enable-all")
-async def enable_onboarding_all(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Włącza wprowadzenie (onboarding) dla WSZYSTKICH kont — pokaże się każdemu przy następnym logowaniu."""
-    r = await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET show_onboarding = TRUE"))
-    await db.commit()
-    await log_audit(db, admin, "ONBOARDING_ENABLED_ALL", "user", "*", "włączono wprowadzenie wszystkim")
-    return {"updated": r.rowcount}
-
-
-@router.post("/users/onboarding/disable-all")
-async def disable_onboarding_all(admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Wyłącza wprowadzenie (onboarding) dla WSZYSTKICH kont."""
-    r = await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET show_onboarding = FALSE"))
-    await db.commit()
-    await log_audit(db, admin, "ONBOARDING_DISABLED_ALL", "user", "*", "wyłączono wprowadzenie wszystkim")
-    return {"updated": r.rowcount}
 
 
 @router.patch("/users/{uid}", response_model=UserOut)
