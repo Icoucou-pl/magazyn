@@ -14,7 +14,7 @@ from security import (
     verify_password, hash_password, validate_password_strength,
     create_jwt_token, get_current_user,
 )
-from models import CurrentUser, LoginRequest, LoginResponse, UserOut, PasswordChange, SessionOut
+from models import CurrentUser, LoginRequest, LoginResponse, UserOut, PasswordChange, SessionOut, OnboardingSet
 from audit import log_audit
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -102,6 +102,18 @@ async def get_me(user: CurrentUser = Depends(get_current_user), db: AsyncSession
         perms=_parse_perms(data.get("permissions")), show_onboarding=bool(data.get("show_onboarding")),
         is_super_admin=bool(super_email and data["email"].lower() == super_email),
     )
+
+
+@router.patch("/auth/me/onboarding", status_code=204)
+async def set_my_onboarding(payload: OnboardingSet, user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Bieżący użytkownik sam ustawia swoją flagę wprowadzenia.
+    Front woła to z show_onboarding=false po obejrzeniu/pominięciu, albo =true dla powtórki."""
+    await db.execute(
+        text(f"UPDATE {settings.TABLE_USERS} SET show_onboarding = :v WHERE id = :id"),
+        {"v": payload.show_onboarding, "id": user.id},
+    )
+    await db.commit()
+    return None
 
 
 @router.put("/auth/me/password", status_code=204)
