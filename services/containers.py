@@ -66,6 +66,8 @@ async def fetch_attachments(db: AsyncSession, container_id: int) -> List[Attachm
 async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> List[ContainerLotOut]:
     r = await db.execute(text(f"""
         SELECT l.id, l.manufacturer_id, l.order_number, l.position,
+               l.waluta_towaru, l.zaliczka_procent, l.zaliczka_kwota, l.zaliczka_data,
+               l.balance_kwota, l.zaplacono_data,
                m.name AS manufacturer_name, m.color AS manufacturer_color
         FROM {settings.TABLE_CONTAINER_LOTS} l
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
@@ -80,6 +82,12 @@ async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> L
             id=d["id"], manufacturer_id=d["manufacturer_id"],
             manufacturer_name=d["manufacturer_name"], manufacturer_color=d["manufacturer_color"],
             order_number=d["order_number"],
+            waluta_towaru=(d["waluta_towaru"] or "USD"),
+            zaliczka_procent=(float(d["zaliczka_procent"]) if d["zaliczka_procent"] is not None else None),
+            zaliczka_kwota=(float(d["zaliczka_kwota"]) if d["zaliczka_kwota"] is not None else None),
+            zaliczka_data=d["zaliczka_data"],
+            balance_kwota=(float(d["balance_kwota"]) if d["balance_kwota"] is not None else None),
+            zaplacono_data=d["zaplacono_data"],
             total_units=t["u"], total_cbm=round(t["cbm"], 3), total_value=round(t["val"], 2),
         ))
     return out
@@ -92,6 +100,9 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         SELECT
             c.id, c.container_number, c.order_number, c.container_type_id, c.manufacturer_id,
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
+            c.koszt_transportu, c.koszt_spedycji, c.folder, c.subiekt_nr,
+            c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_data,
+            c.balance_kwota, c.zaplacono_data,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
@@ -128,6 +139,17 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "effective_status": row["status"], "is_auto": False, "customs_days_left": None,
                 "is_consolidated": bool(row["is_consolidated"]),
                 "lots": [], "_lot_totals": {},
+                "koszt_transportu": (float(row["koszt_transportu"]) if row["koszt_transportu"] is not None else None),
+                "koszt_spedycji": (float(row["koszt_spedycji"]) if row["koszt_spedycji"] is not None else None),
+                "oplata_spedycji": None,   # liczone niżej: koszt_spedycji − koszt_transportu
+                "folder": row["folder"],
+                "subiekt_nr": row["subiekt_nr"],
+                "waluta_towaru": row["waluta_towaru"] or "USD",
+                "zaliczka_procent": (float(row["zaliczka_procent"]) if row["zaliczka_procent"] is not None else None),
+                "zaliczka_kwota": (float(row["zaliczka_kwota"]) if row["zaliczka_kwota"] is not None else None),
+                "zaliczka_data": row["zaliczka_data"],
+                "balance_kwota": (float(row["balance_kwota"]) if row["balance_kwota"] is not None else None),
+                "zaplacono_data": row["zaplacono_data"],
                 "notes": row["notes"],
                 "items": [], "attachments": [],
                 "total_units": 0, "total_cbm": 0.0, "fill_percentage": None, "total_value": 0.0,
@@ -163,6 +185,9 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         c.pop("_lot_totals", None)
         c["total_cbm"] = round(c["total_cbm"], 3)
         c["total_value"] = round(c["total_value"], 2)
+        # opłata dla spedycji = cały rachunek spedytora − sam koszt transportu (fracht)
+        if c["koszt_spedycji"] is not None and c["koszt_transportu"] is not None:
+            c["oplata_spedycji"] = round(c["koszt_spedycji"] - c["koszt_transportu"], 2)
         if c["container_capacity_cbm"] and c["container_capacity_cbm"] > 0:
             c["fill_percentage"] = round((c["total_cbm"] / c["container_capacity_cbm"]) * 100, 1)
         eff, is_auto, days_left = compute_effective_status(c["status"], c["eta_date"])
