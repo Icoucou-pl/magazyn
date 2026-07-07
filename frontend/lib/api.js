@@ -40,6 +40,13 @@ export function setSession(token, user) {
   } catch {}
 }
 
+export function setUser(user) {
+  if (typeof window === "undefined") return;
+  try {
+    if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {}
+}
+
 export function clearSession() {
   if (typeof window === "undefined") return;
   try {
