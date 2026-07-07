@@ -70,7 +70,7 @@ export const STATUS_FULL_META: Record<string, StatusMetaFull> = {
   IN_PRODUCTION: { label: "W produkcji", icon: I.Factory, fg: "var(--anomaly)", bg: "var(--anomaly-soft)", accent: "var(--anomaly)" },
   IN_TRANSIT: { label: "W drodze", icon: I.Ship, fg: "var(--info)", bg: "var(--info-soft)", accent: "var(--info)" },
   CUSTOMS: { label: "Odprawa celna", icon: I.Customs, fg: "var(--warning)", bg: "var(--warning-soft)", accent: "var(--warning)" },
-  DELIVERED: { label: "Dostarczone", icon: I.Activity, fg: "var(--ok)", bg: "var(--ok-soft)", accent: "var(--ok)" },
+  DELIVERED: { label: "Dostarczone", icon: I.Container, fg: "var(--ok)", bg: "var(--ok-soft)", accent: "var(--ok)" },
 };
 
 // Status do wyświetlenia: efektywny z backendu, a gdy go brak — ręczny.

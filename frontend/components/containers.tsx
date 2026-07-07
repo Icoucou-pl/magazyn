@@ -104,12 +104,34 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
 
   const summary = useMemo(() => {
     const inFlight = containers.filter((c) => eff(c) !== "DELIVERED");
+
+    // Granice tygodnia (pn–nd) i miesiąca — w czasie lokalnym.
+    const now = new Date();
+    const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const today0 = startOfDay(now);
+    const dow = (today0.getDay() + 6) % 7;                                        // pn=0 … nd=6
+    const weekStart = new Date(today0); weekStart.setDate(today0.getDate() - dow);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 7); // [weekStart, weekEnd)
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);           // [monthStart, monthEnd)
+    const inRange = (iso: string, from: Date, to: Date) => {
+      const d = startOfDay(new Date(iso));
+      return d >= from && d < to;
+    };
+
+    // Najbliższa dostawa: najwcześniejsze ETA wśród niedostarczonych (efektywnie).
+    const next = inFlight
+      .map((c) => ({ c, days: Math.ceil((startOfDay(new Date(c.eta_date)).getTime() - today0.getTime()) / 86400000) }))
+      .sort((a, b) => a.days - b.days)[0] ?? null;
+
     return {
       inFlight: inFlight.length,
       inFlightValue: inFlight.reduce((s, c) => s + c.total_value, 0),
       totalUnits: inFlight.reduce((s, c) => s + c.total_units, 0),
-      avgFill: inFlight.length > 0 ? Math.round(inFlight.reduce((s, c) => s + (c.fill_percentage ?? 0), 0) / inFlight.length) : 0,
-      attachments: containers.reduce((s, c) => s + (c.attachments?.length || 0), 0),
+      thisWeek: containers.filter((c) => inRange(c.eta_date, weekStart, weekEnd)).length,
+      thisMonth: containers.filter((c) => inRange(c.eta_date, monthStart, monthEnd)).length,
+      nextDays: next ? next.days : null,
+      nextNumber: next ? next.c.container_number : null,
     };
   }, [containers]);
 
@@ -136,7 +158,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
     return (
       <div className="pulse-soft" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
-          {[0, 1, 2, 3].map((i) => <div key={i} style={{ height: 78, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />)}
+          {[0, 1, 2, 3, 4].map((i) => <div key={i} style={{ height: 78, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />)}
         </div>
         <div style={{ height: 56, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />
         {[0, 1, 2].map((i) => <div key={i} style={{ height: 72, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />)}
@@ -148,9 +170,15 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
         <MiniStat label="Aktywne kontenery" value={summary.inFlight} sub="nie dostarczone" icon={<I.Ship size={14} />} />
-        <MiniStat label="Wartość w drodze" value={showFin ? fmtPLNk(summary.inFlightValue) : "•••••"} sub={`${summary.totalUnits} szt łącznie`} icon={<I.ArrowDown size={14} />} />
-        <MiniStat label="Średnie wypełnienie" value={`${summary.avgFill}%`} sub="CBM / pojemność" icon={<I.Activity size={14} />} />
-        <MiniStat label="Załączniki" value={summary.attachments} sub="proforma, BL, PL" icon={<I.External size={14} />} />
+        <MiniStat label="Wartość zamówiona" value={showFin ? fmtPLNk(summary.inFlightValue) : "•••••"} sub={`${summary.totalUnits} szt · przed dostawą`} icon={<I.Wallet size={14} />} />
+        <MiniStat
+          label="Najbliższa dostawa"
+          value={summary.nextDays === null ? "—" : summary.nextDays === 0 ? "dziś" : summary.nextDays < 0 ? `${Math.abs(summary.nextDays)}d po ETA` : `za ${summary.nextDays}d`}
+          sub={summary.nextNumber ? `#${summary.nextNumber}` : "brak w drodze"}
+          icon={<I.ArrowDown size={14} />}
+        />
+        <MiniStat label="Dostawy w tym tygodniu" value={summary.thisWeek} sub="wg ETA (pn–nd)" icon={<I.Calendar size={14} />} />
+        <MiniStat label="Dostawy w tym miesiącu" value={summary.thisMonth} sub="wg ETA" icon={<I.Calendar size={14} />} />
       </div>
 
       <ContainersToolbar
