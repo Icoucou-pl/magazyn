@@ -133,24 +133,34 @@ def _month_clause(rok: int, miesiac: int):
     return clause, date_from, date_to, f"{_MONTHS_PL[miesiac]} {rok}"
 
 
-async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Optional[str] = None,
-                        producent: Optional[str] = None, shop: Optional[str] = None) -> dict:
-    """Finanse jednego miesiąca kalendarzowego — ten sam silnik co /finance/overview
-    (przewalutowanie NBP, whitelist statusów INCLUDED_STATUS_FILTER, koszt z Subiekta).
-    symbol → jeden SKU. producent → jedna marka (ILIKE). shop → jeden sklep
-    ('amh'/'acti'/'veluxa', slug znormalizowany przez wywołującego); puste = suma wszystkich sklepów.
-    Zwraca czysty dict (nie Pydantic) — pod asystenta.
-    UWAGA: koszt/marża dla Acti/Veluxa liczone z cen Subiektu (AMH) — mogą być zawyżone (znany TODO);
-    dla shop='acti'/'veluxa' zwracamy koszt_niepewny=True. Przychód i sztuki zawsze dokładne."""
+def _parse_iso_date(v) -> Optional[date]:
+    """'RRRR-MM-DD' → date; None gdy puste/złe."""
+    if not v:
+        return None
     try:
-        rok = int(rok)
-        miesiac = int(miesiac)
-    except (TypeError, ValueError):
-        return {"blad": "rok/miesiąc muszą być liczbami", "rok": rok, "miesiac": miesiac}
-    if not (2000 <= rok <= 2100) or not (1 <= miesiac <= 12):
-        return {"blad": "zły rok (2000-2100) lub miesiąc (1-12)", "rok": rok, "miesiac": miesiac}
+        return date.fromisoformat(str(v).strip()[:10])
+    except ValueError:
+        return None
 
-    clause, date_from, date_to, label = _month_clause(rok, miesiac)
+
+def _range_label(df: date, dt: date) -> str:
+    """Ładna polska etykieta zakresu (dt = ostatni dzień WŁĄCZNIE)."""
+    if df == dt:
+        return f"{df.day} {_MONTHS_PL[df.month]} {df.year}"
+    if df.year == dt.year:
+        return f"{df.day} {_MONTHS_PL[df.month]} – {dt.day} {_MONTHS_PL[dt.month]} {dt.year}"
+    return f"{df.isoformat()} – {dt.isoformat()}"
+
+
+async def _range_finance(db: AsyncSession, date_from: date, date_to_excl: date, label: str,
+                         symbol: Optional[str] = None, producent: Optional[str] = None,
+                         shop: Optional[str] = None) -> dict:
+    """Rdzeń finansów za zakres [date_from; date_to_excl) — date_to_excl WYŁĄCZNE.
+    Ten sam silnik co /finance/overview (NBP, whitelist statusów, koszt z Subiekta).
+    Współdzielony przez month_finance (miesiąc) i range_finance (dzień/tydzień/dowolny zakres).
+    UWAGA: koszt/marża Acti/Veluxa z cen Subiektu (AMH) → koszt_niepewny=True; przychód i sztuki dokładne."""
+    d = settings.COL_ORDER_DATE
+    clause = f"o.{d} >= DATE '{date_from.isoformat()}' AND o.{d} < DATE '{date_to_excl.isoformat()}'"
     params: dict = {}
     parts: list = []
     sklep = (shop or "").strip().lower()
@@ -173,8 +183,7 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
             return {
                 "blad": (f"nie znam producenta „{prod}” — to może być sklep (AMH/Acti/Veluxa) albo literówka; "
                          f"jeśli chcesz całość, wywołaj bez producenta"),
-                "producent_nieznany": True, "producent": prod,
-                "rok": rok, "miesiac": miesiac, "etykieta": label,
+                "producent_nieznany": True, "producent": prod, "etykieta": label,
             }
         parts.append("m.name ILIKE :prod")
         params["prod"] = f"%{prod}%"
@@ -211,8 +220,8 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
     } for r in rows]
 
     out = {
-        "rok": rok, "miesiac": miesiac, "etykieta": label, "waluta": "PLN",
-        "od": date_from.isoformat(), "do_wyl": date_to.isoformat(),
+        "etykieta": label, "waluta": "PLN",
+        "od": date_from.isoformat(), "do_wyl": date_to_excl.isoformat(),
         "przychod_netto": round(total_net, 2), "przychod_brutto": round(total_gross, 2),
         "koszt": round(total_cost, 2), "marza": round(margin, 2), "marza_proc": round(mpct, 1),
         "zamowienia": total_orders, "sztuki": total_units,
@@ -230,6 +239,48 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
             out["koszt_niepewny"] = True
             out["uwaga"] = "koszt i marża dla Acti/Veluxa liczone z cen Subiektu (AMH) — mogą być zawyżone"
     return out
+
+
+async def range_finance(db: AsyncSession, od, do=None, symbol: Optional[str] = None,
+                        producent: Optional[str] = None, shop: Optional[str] = None) -> dict:
+    """Finanse za dowolny zakres dat (dzień/tydzień/okres). od,do = 'RRRR-MM-DD', OBIE WŁĄCZNIE
+    (dzień → do puste albo równe od). Max ~400 dni."""
+    df = _parse_iso_date(od)
+    dt = _parse_iso_date(do) or df
+    if df is None or dt is None:
+        return {"blad": "podaj datę początkową (i opcjonalnie końcową) w formacie RRRR-MM-DD"}
+    if dt < df:
+        df, dt = dt, df
+    if (dt - df).days > 400:
+        return {"blad": "zakres za długi (max ~400 dni) — zawęź albo użyj finanse_miesiac"}
+    label = _range_label(df, dt)
+    return await _range_finance(db, df, dt + timedelta(days=1), label,
+                                symbol=symbol, producent=producent, shop=shop)
+
+
+async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Optional[str] = None,
+                        producent: Optional[str] = None, shop: Optional[str] = None) -> dict:
+    """Finanse jednego miesiąca kalendarzowego — ten sam silnik co /finance/overview
+    (przewalutowanie NBP, whitelist statusów INCLUDED_STATUS_FILTER, koszt z Subiekta).
+    symbol → jeden SKU. producent → jedna marka (ILIKE). shop → jeden sklep
+    ('amh'/'acti'/'veluxa', slug znormalizowany przez wywołującego); puste = suma wszystkich sklepów.
+    Zwraca czysty dict (nie Pydantic) — pod asystenta.
+    UWAGA: koszt/marża dla Acti/Veluxa liczone z cen Subiektu (AMH) — mogą być zawyżone (znany TODO);
+    dla shop='acti'/'veluxa' zwracamy koszt_niepewny=True. Przychód i sztuki zawsze dokładne."""
+    try:
+        rok = int(rok)
+        miesiac = int(miesiac)
+    except (TypeError, ValueError):
+        return {"blad": "rok/miesiąc muszą być liczbami", "rok": rok, "miesiac": miesiac}
+    if not (2000 <= rok <= 2100) or not (1 <= miesiac <= 12):
+        return {"blad": "zły rok (2000-2100) lub miesiąc (1-12)", "rok": rok, "miesiac": miesiac}
+
+    _, date_from, date_to, label = _month_clause(rok, miesiac)
+    res = await _range_finance(db, date_from, date_to, label,
+                               symbol=symbol, producent=producent, shop=shop)
+    res["rok"] = rok
+    res["miesiac"] = miesiac
+    return res
 
 
 @router.get("/finance/overview", response_model=FinanceOverview)
