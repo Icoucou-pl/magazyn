@@ -134,13 +134,14 @@ def _month_clause(rok: int, miesiac: int):
 
 
 async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Optional[str] = None,
-                        producent: Optional[str] = None) -> dict:
+                        producent: Optional[str] = None, shop: Optional[str] = None) -> dict:
     """Finanse jednego miesiąca kalendarzowego — ten sam silnik co /finance/overview
     (przewalutowanie NBP, whitelist statusów INCLUDED_STATUS_FILTER, koszt z Subiekta).
-    symbol → tylko jeden SKU. producent → tylko dany producent (dopasowanie ILIKE po nazwie).
+    symbol → jeden SKU. producent → jedna marka (ILIKE). shop → jeden sklep
+    ('amh'/'acti'/'veluxa', slug znormalizowany przez wywołującego); puste = suma wszystkich sklepów.
     Zwraca czysty dict (nie Pydantic) — pod asystenta.
-    UWAGA: koszt/marża dla Acti/Veluxa nadal z cen Subiektu (znany TODO) — dlatego zwracamy
-    pozycje_bez_kosztu, żeby marżę można było zastrzec. Przychód i sztuki są dokładne."""
+    UWAGA: koszt/marża dla Acti/Veluxa liczone z cen Subiektu (AMH) — mogą być zawyżone (znany TODO);
+    dla shop='acti'/'veluxa' zwracamy koszt_niepewny=True. Przychód i sztuki zawsze dokładne."""
     try:
         rok = int(rok)
         miesiac = int(miesiac)
@@ -152,6 +153,10 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
     clause, date_from, date_to, label = _month_clause(rok, miesiac)
     params: dict = {}
     parts: list = []
+    sklep = (shop or "").strip().lower()
+    if sklep in ("amh", "acti", "veluxa"):
+        parts.append("o.shop = :shop")
+        params["shop"] = sklep
     sym = (symbol or "").strip()
     if sym:
         parts.append(f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sym))")
@@ -219,6 +224,11 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
         out["sku"] = sym.upper()
     if prod:
         out["producent"] = prod
+    if sklep in ("amh", "acti", "veluxa"):
+        out["sklep"] = sklep
+        if sklep in ("acti", "veluxa"):
+            out["koszt_niepewny"] = True
+            out["uwaga"] = "koszt i marża dla Acti/Veluxa liczone z cen Subiektu (AMH) — mogą być zawyżone"
     return out
 
 
