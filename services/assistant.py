@@ -5,9 +5,9 @@ Zasada: model NIGDY nie wymyśla liczb. Na pytanie po polsku wybiera narzędzie
 wynik w zdanie. Dostawcę (Groq / Gemini / Ollama / Anthropic) ustawiamy zmiennymi
 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL — bez ruszania kodu.
 
-Narzędzia są TYLKO-DO-ODCZYTU i nie zwracają pól finansowych (zero ryzyka wycieku
-marż/kosztów przez asystenta). Pod przyszłe narzędzia finansowe respektowalibyśmy
-uprawnienie viewFinancials.
+Narzędzia finansowe respektują uprawnienie assistantFinancials (osobne od viewFinancials,
+które steruje widocznością finansów w UI) — dzięki temu ktoś może widzieć PLN w interfejsie,
+a mimo to nie pytać o finanse asystenta.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from services.usage import log_usage
 MAX_ROUNDS = 4            # ile razy max model może poprosić o narzędzie w jednej turze
 LLM_TIMEOUT = 30          # sekundy na pojedyncze wywołanie LLM
 
-# Prompt rozbity na 3 części: BAZA (magazyn — dla wszystkich), FINANSE (tylko viewFinancials — nie
+# Prompt rozbity na 3 części: BAZA (magazyn — dla wszystkich), FINANSE (tylko assistantFinancials — nie
 # doklejamy osobom bez uprawnień, oszczędza tokeny) i OGON (formatowanie). Montaż w run_chat.
 _PROMPT_BASE = (
     "Jesteś asystentem magazynowym aplikacji „Magazyn” firmy i-coucou. "
@@ -274,7 +274,7 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
-    # --- PACZKA 2: finanse (wymagają uprawnienia viewFinancials) ---
+    # --- PACZKA 2: finanse (wymagają uprawnienia assistantFinancials) ---
     {
         "type": "function",
         "function": {
@@ -813,7 +813,7 @@ _MIES_PL = ["styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec",
 
 
 def _brak_uprawnien() -> Dict[str, Any]:
-    return {"brak_uprawnien": True, "komunikat": "Użytkownik nie ma uprawnień do danych finansowych (viewFinancials)."}
+    return {"brak_uprawnien": True, "komunikat": "Użytkownik nie ma uprawnień do danych finansowych w asystencie (assistantFinancials)."}
 
 
 def _okres(val: Any) -> str:
@@ -863,7 +863,7 @@ async def _tool_stan_per_firma(db: AsyncSession, user: CurrentUser, sku: str) ->
 
 
 async def _tool_wartosc_magazynu(db: AsyncSession, user: CurrentUser, sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     shop = _norm_shop(sklep)
     prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
@@ -874,7 +874,7 @@ async def _tool_wartosc_magazynu(db: AsyncSession, user: CurrentUser, sklep: Any
 
 
 async def _tool_finanse_ogolne(db: AsyncSession, user: CurrentUser, okres: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     from routers.finance import finance_overview
     ov = (await finance_overview(period=_okres(okres), db=db, user=user)).model_dump(mode="json")
@@ -893,7 +893,7 @@ async def _tool_finanse_ogolne(db: AsyncSession, user: CurrentUser, okres: Any =
 
 
 async def _tool_finanse_produktu(db: AsyncSession, user: CurrentUser, sku: str, okres: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     from fastapi import HTTPException
     from routers.finance import finance_product
@@ -919,7 +919,7 @@ async def _tool_finanse_produktu(db: AsyncSession, user: CurrentUser, sku: str, 
 
 
 async def _tool_sprzedaz_wg_kanalu(db: AsyncSession, user: CurrentUser, sku: Optional[str] = None, okres: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     period = _okres(okres)
     if sku:
@@ -935,7 +935,7 @@ async def _tool_sprzedaz_wg_kanalu(db: AsyncSession, user: CurrentUser, sku: Opt
 
 
 async def _tool_cashflow(db: AsyncSession, user: CurrentUser, miesiace: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     from routers.calendar import cashflow
     try:
@@ -1001,7 +1001,7 @@ async def _tool_lista_zakupow(db: AsyncSession, user: CurrentUser, sklep: Any = 
     from routers.anomalies import shopping_list
     shop = _norm_shop(sklep)
     groups = await shopping_list(shop=shop, db=db)
-    can_fin = has_perm(user, "viewFinancials")
+    can_fin = has_perm(user, "assistantFinancials")
     out = []
     for g in groups:
         gd = g if isinstance(g, dict) else {}
@@ -1066,7 +1066,7 @@ def _num(v: Any) -> float:
 async def _tool_finanse_miesiac(db: AsyncSession, user: CurrentUser, rok: Any = None,
                                 miesiac: Any = None, sku: Optional[str] = None,
                                 producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     from routers.finance import month_finance
     r, m = _parse_rok(rok), _parse_miesiac(miesiac)
@@ -1080,7 +1080,7 @@ async def _tool_finanse_miesiac(db: AsyncSession, user: CurrentUser, rok: Any = 
 async def _tool_porownaj_miesiace(db: AsyncSession, user: CurrentUser, rok_a: Any = None, miesiac_a: Any = None,
                                   rok_b: Any = None, miesiac_b: Any = None, sku: Optional[str] = None,
                                   producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     from routers.finance import month_finance
     ra, ma = _parse_rok(rok_a), _parse_miesiac(miesiac_a)
@@ -1114,7 +1114,7 @@ async def _tool_porownaj_miesiace(db: AsyncSession, user: CurrentUser, rok_a: An
 async def _tool_finanse_zakres(db: AsyncSession, user: CurrentUser, od: Any = None, do: Any = None,
                                sku: Optional[str] = None, producent: Optional[str] = None,
                                sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "viewFinancials"):
+    if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
     from routers.finance import range_finance
     if not od:
@@ -1144,7 +1144,7 @@ _DISPATCH = {
     # PACZKA 3 — firmy/sklepy
     "firmy": _tool_firmy,
     "stan_per_firma": _tool_stan_per_firma,
-    # PACZKA 2 — finanse (viewFinancials)
+    # PACZKA 2 — finanse (assistantFinancials)
     "wartosc_magazynu": _tool_wartosc_magazynu,
     "finanse_ogolne": _tool_finanse_ogolne,
     "finanse_produktu": _tool_finanse_produktu,
@@ -1192,7 +1192,7 @@ def _llm_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-# Narzędzia finansowe — ładowane do modelu TYLKO dla użytkowników z viewFinancials.
+# Narzędzia finansowe — ładowane do modelu TYLKO dla użytkowników z assistantFinancials.
 # Reszta dostaje mniejszy zestaw (magazyn/logistyka) → mniej tokenów wejściowych i zero rund „brak uprawnień”.
 _FINANCE_TOOL_NAMES = frozenset({
     "wartosc_magazynu", "finanse_ogolne", "finanse_produktu",
@@ -1203,16 +1203,16 @@ _FINANCE_TOOL_NAMES = frozenset({
 
 def _tools_for(user: CurrentUser) -> List[Dict[str, Any]]:
     """Zestaw narzędzi wysyłany do modelu zależnie od uprawnień."""
-    if has_perm(user, "viewFinancials"):
+    if has_perm(user, "assistantFinancials"):
         return TOOLS
     return [t for t in TOOLS if (t.get("function") or {}).get("name") not in _FINANCE_TOOL_NAMES]
 
 
 def _system_prompt_for(user: CurrentUser) -> str:
-    """Prompt składany per-user: baza zawsze, dodatek finansowy tylko z viewFinancials,
+    """Prompt składany per-user: baza zawsze, dodatek finansowy tylko z assistantFinancials,
     plus dzisiejsza data (do „wczoraj/ten tydzień”)."""
     parts = [_PROMPT_BASE]
-    if has_perm(user, "viewFinancials"):
+    if has_perm(user, "assistantFinancials"):
         parts.append(_PROMPT_FINANCE)
     parts.append(_PROMPT_TAIL)
     parts.append(f" Dzisiejsza data: {date.today().isoformat()}. "
