@@ -17,6 +17,7 @@ export const PERMISSIONS = [
   { key: "export",         label: "Eksport danych",        desc: "Pobieranie list do CSV",                    group: "Dane" },
   { key: "generatePO",     label: "Generowanie zamówień",  desc: "Tworzenie PO / auto-sugestia",              group: "Zamówienia" },
   { key: "viewFinancials", label: "Dane finansowe (PLN)",  desc: "Widzi wartości, ceny, cashflow",            group: "Widoczność" },
+  { key: "assistantFinancials", label: "Dane finansowe – asystent", desc: "Może pytać asystenta o finanse (niezależnie od PLN w UI)", group: "Widoczność" },
   { key: "viewForecast",   label: "Prognoza",              desc: "Dostęp do macierzy prognozy",               group: "Widoczność" },
   { key: "manageUsers",    label: "Zarządzanie userami",   desc: "Dodawanie, role, uprawnienia",              group: "Administracja" },
   { key: "viewAudit",      label: "Dziennik audytu",       desc: "Podgląd historii zdarzeń",                  group: "Administracja" },
@@ -24,9 +25,9 @@ export const PERMISSIONS = [
 
 // Domyślne uprawnienia per rola — nadpisywalne per użytkownik
 export const ROLE_PERMS = {
-  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewForecast: true,  manageUsers: false, viewAudit: false },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewForecast: true,  manageUsers: false, viewAudit: false },
+  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
