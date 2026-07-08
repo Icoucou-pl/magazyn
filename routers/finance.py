@@ -158,6 +158,19 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
         params["sym"] = sym
     prod = (producent or "").strip()
     if prod:
+        # Producent istnieje? Inaczej „0 sprzedaży” myli się z „nie znam marki”.
+        # Typowy błąd: AMH/Acti/Veluxa to SKLEPY, nie producenci → filtr trafiał w pustkę i zwracał zero.
+        exists = (await db.execute(
+            text(f"SELECT 1 FROM {settings.TABLE_MANUFACTURERS} WHERE name ILIKE :prod LIMIT 1"),
+            {"prod": f"%{prod}%"},
+        )).first()
+        if not exists:
+            return {
+                "blad": (f"nie znam producenta „{prod}” — to może być sklep (AMH/Acti/Veluxa) albo literówka; "
+                         f"jeśli chcesz całość, wywołaj bez producenta"),
+                "producent_nieznany": True, "producent": prod,
+                "rok": rok, "miesiac": miesiac, "etykieta": label,
+            }
         parts.append("m.name ILIKE :prod")
         params["prod"] = f"%{prod}%"
     extra = ("AND " + " AND ".join(parts)) if parts else ""
