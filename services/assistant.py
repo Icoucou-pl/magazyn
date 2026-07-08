@@ -31,7 +31,9 @@ from services.usage import log_usage
 MAX_ROUNDS = 4            # ile razy max model może poprosić o narzędzie w jednej turze
 LLM_TIMEOUT = 30          # sekundy na pojedyncze wywołanie LLM
 
-SYSTEM_PROMPT = (
+# Prompt rozbity na 3 części: BAZA (magazyn — dla wszystkich), FINANSE (tylko viewFinancials — nie
+# doklejamy osobom bez uprawnień, oszczędza tokeny) i OGON (formatowanie). Montaż w run_chat.
+_PROMPT_BASE = (
     "Jesteś asystentem magazynowym aplikacji „Magazyn” firmy i-coucou. "
     "Odpowiadasz wyłącznie po polsku, krótko i konkretnie — jak kolega z pracy. "
     "ZAWSZE używaj narzędzi, żeby pobrać liczby z bazy: stany, prognozy, sprzedaż, listę do zamówienia, kontenery. "
@@ -49,18 +51,22 @@ SYSTEM_PROMPT = (
     "Firmy/sklepy to AMH (i-coucou), Acti i Veluxa. Gdy pytanie dotyczy jednego sklepu (np. „sprzedaż Veluxy”, „co domówić dla Acti”, „martwy stan Acti”, „stan SZP0 w Acti”), "
     "podaj parametr sklep = amh|acti|veluxa do narzędzi, które go przyjmują. Bez wskazania sklepu liczby są sumą wszystkich. "
     "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
+    "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
+)
+
+_PROMPT_FINANCE = (
     "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu, cashflow). "
     "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
-    "Oba mają trzy opcjonalne filtry: sklep (amh|acti|veluxa), producent (marka mebli) i sku (jeden produkt). "
+    "Do sprzedaży za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat („wczoraj”, „ten tydzień”, „od 1 do 7 lipca”) użyj finanse_zakres(od, do) w formacie RRRR-MM-DD — dla jednego dnia „do” pomiń. "
+    "Narzędzia finansowe za okres mają opcjonalne filtry: sklep (amh|acti|veluxa), producent (marka mebli) i sku (jeden produkt). "
     "AMH, Acti i Veluxa to SKLEPY — podawaj je w parametrze sklep, NIGDY w producent. Bez sklepu = suma wszystkich sklepów (cała firma). "
     "„Sprzedaż AMH za maj” → finanse_miesiac(rok=2026, miesiac=5, sklep='amh'). „Porównaj Acti lipiec do czerwca” → porownaj_miesiace(..., sklep='acti'). "
     "Gdy wynik ma koszt_niepewny=true (Acti/Veluxa), zastrzeż, że marża i koszt mogą być zawyżone (ceny zakupu z Subiektu AMH). "
     "Jeśli narzędzie zwróci producent_nieznany, nie mów „zero sprzedaży” — powiedz, że nie znasz takiej marki i policz bez tego filtra. "
-    "Gdy w pytaniu o miesiąc brakuje roku, przyjmij bieżący rok. "
-    "Jeśli narzędzie finansowe zwróci „brak_uprawnien”, powiedz krótko, że użytkownik nie ma dostępu do danych finansowych — nie podawaj żadnych kwot. "
-    "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
-    "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”)."
+    "Gdy w pytaniu o miesiąc/okres brakuje roku, przyjmij bieżący rok. "
 )
+
+_PROMPT_TAIL = "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”)."
 
 TOOLS: List[Dict[str, Any]] = [
     {
@@ -350,6 +356,27 @@ TOOLS: List[Dict[str, Any]] = [
                     "sku": {"type": "string", "description": "opcjonalne SKU — porównanie tylko tego produktu"},
                 },
                 "required": ["rok_a", "miesiac_a", "rok_b", "miesiac_b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finanse_zakres",
+            "description": ("Finanse za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat (np. „sprzedaż wczoraj”, "
+                            "„ten tydzień”, „od 1 do 7 lipca”): przychód, koszt, marża, sztuki, zamówienia, kanały. "
+                            "Daty w formacie RRRR-MM-DD; dla jednego dnia „do” pomiń. Te same filtry sklep/producent/sku. "
+                            "Dane finansowe — wymaga uprawnień."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "od": {"type": "string", "description": "data początkowa RRRR-MM-DD (włącznie)"},
+                    "do": {"type": "string", "description": "data końcowa RRRR-MM-DD (włącznie); pomiń dla pojedynczego dnia"},
+                    "sklep": {"type": "string", "description": "opcjonalny sklep: amh | acti | veluxa (bez tego = wszystkie razem)"},
+                    "producent": {"type": "string", "description": "opcjonalna marka/producent mebli (to NIE sklep)"},
+                    "sku": {"type": "string", "description": "opcjonalne SKU — tylko ten produkt"},
+                },
+                "required": ["od"],
             },
         },
     },
@@ -1084,6 +1111,20 @@ async def _tool_porownaj_miesiace(db: AsyncSession, user: CurrentUser, rok_a: An
     }
 
 
+async def _tool_finanse_zakres(db: AsyncSession, user: CurrentUser, od: Any = None, do: Any = None,
+                               sku: Optional[str] = None, producent: Optional[str] = None,
+                               sklep: Any = None) -> Dict[str, Any]:
+    if not has_perm(user, "viewFinancials"):
+        return _brak_uprawnien()
+    from routers.finance import range_finance
+    if not od:
+        return {"blad": "podaj datę „od” (RRRR-MM-DD); dla jednego dnia „do” pomiń"}
+    sym = (str(sku).strip().upper() or None) if sku else None
+    prod = (str(producent).strip() or None) if producent else None
+    return await range_finance(db, str(od).strip(), (str(do).strip() if do else None),
+                               symbol=sym, producent=prod, shop=_norm_shop(sklep))
+
+
 _DISPATCH = {
     "pobierz_stan": _tool_pobierz_stan,
     "prognoza_wyczerpania": _tool_prognoza,
@@ -1109,6 +1150,7 @@ _DISPATCH = {
     "finanse_produktu": _tool_finanse_produktu,
     "finanse_miesiac": _tool_finanse_miesiac,
     "porownaj_miesiace": _tool_porownaj_miesiace,
+    "finanse_zakres": _tool_finanse_zakres,
     "sprzedaz_wg_kanalu": _tool_sprzedaz_wg_kanalu,
     "cashflow": _tool_cashflow,
     # PACZKA 4 — dodatki
@@ -1150,11 +1192,39 @@ def _llm_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-async def _llm_call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+# Narzędzia finansowe — ładowane do modelu TYLKO dla użytkowników z viewFinancials.
+# Reszta dostaje mniejszy zestaw (magazyn/logistyka) → mniej tokenów wejściowych i zero rund „brak uprawnień”.
+_FINANCE_TOOL_NAMES = frozenset({
+    "wartosc_magazynu", "finanse_ogolne", "finanse_produktu",
+    "finanse_miesiac", "porownaj_miesiace", "finanse_zakres",
+    "sprzedaz_wg_kanalu", "cashflow",
+})
+
+
+def _tools_for(user: CurrentUser) -> List[Dict[str, Any]]:
+    """Zestaw narzędzi wysyłany do modelu zależnie od uprawnień."""
+    if has_perm(user, "viewFinancials"):
+        return TOOLS
+    return [t for t in TOOLS if (t.get("function") or {}).get("name") not in _FINANCE_TOOL_NAMES]
+
+
+def _system_prompt_for(user: CurrentUser) -> str:
+    """Prompt składany per-user: baza zawsze, dodatek finansowy tylko z viewFinancials,
+    plus dzisiejsza data (do „wczoraj/ten tydzień”)."""
+    parts = [_PROMPT_BASE]
+    if has_perm(user, "viewFinancials"):
+        parts.append(_PROMPT_FINANCE)
+    parts.append(_PROMPT_TAIL)
+    parts.append(f" Dzisiejsza data: {date.today().isoformat()}. "
+                 "„Wczoraj”, „dziś”, „ten tydzień”, „w tym miesiącu”, „bieżący rok” licz względem niej.")
+    return "".join(parts)
+
+
+async def _llm_call(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
     payload = {
         "model": settings.LLM_MODEL,
         "messages": messages,
-        "tools": TOOLS,
+        "tools": tools,
         "tool_choice": "auto",
         "temperature": 0.2,
         "max_tokens": 600,
@@ -1171,7 +1241,8 @@ async def _llm_call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
 async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, str]]) -> Dict[str, Any]:
     """Pełna tura: system prompt + historia → pętla tool-callingu → odpowiedź po polsku.
     Zwraca {answer, tools} gdzie tools to lista odpalonych narzędzi (do chipów w UI)."""
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    tools_for_user = _tools_for(user)
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": _system_prompt_for(user)}]
     for m in history:
         role = m.get("role")
         if role in ("user", "assistant") and m.get("content"):
@@ -1186,7 +1257,7 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
     try:
         for _ in range(MAX_ROUNDS):
             try:
-                data = await _llm_call(messages)
+                data = await _llm_call(messages, tools_for_user)
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     return {"answer": "Asystent jest chwilowo przeciążony (limit zapytań) — spróbuj za chwilę.", "tools": tools_used}
