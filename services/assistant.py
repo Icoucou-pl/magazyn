@@ -51,11 +51,11 @@ SYSTEM_PROMPT = (
     "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
     "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu, cashflow). "
     "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
-    "Oba przyjmują opcjonalnie sku (jeden produkt) albo producent (jedna marka/producent mebli). "
-    "UWAGA: AMH, Acti i Veluxa to SKLEPY/FIRMY, a NIE producenci — NIGDY nie podawaj ich w parametrze producent. "
-    "finanse_miesiac i porownaj_miesiace liczą sprzedaż CAŁEGO biznesu za miesiąc i NIE filtrują po sklepie; "
-    "„sprzedaż AMH za maj” traktuj po prostu jako całość i wywołaj bez producenta i bez sklepu. "
-    "Jeśli narzędzie zwróci producent_nieznany, nie mów „zero sprzedaży” — powiedz, że nie znasz takiej marki i policz całość bez filtra. "
+    "Oba mają trzy opcjonalne filtry: sklep (amh|acti|veluxa), producent (marka mebli) i sku (jeden produkt). "
+    "AMH, Acti i Veluxa to SKLEPY — podawaj je w parametrze sklep, NIGDY w producent. Bez sklepu = suma wszystkich sklepów (cała firma). "
+    "„Sprzedaż AMH za maj” → finanse_miesiac(rok=2026, miesiac=5, sklep='amh'). „Porównaj Acti lipiec do czerwca” → porownaj_miesiace(..., sklep='acti'). "
+    "Gdy wynik ma koszt_niepewny=true (Acti/Veluxa), zastrzeż, że marża i koszt mogą być zawyżone (ceny zakupu z Subiektu AMH). "
+    "Jeśli narzędzie zwróci producent_nieznany, nie mów „zero sprzedaży” — powiedz, że nie znasz takiej marki i policz bez tego filtra. "
     "Gdy w pytaniu o miesiąc brakuje roku, przyjmij bieżący rok. "
     "Jeśli narzędzie finansowe zwróci „brak_uprawnien”, powiedz krótko, że użytkownik nie ma dostępu do danych finansowych — nie podawaj żadnych kwot. "
     "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
@@ -323,8 +323,9 @@ TOOLS: List[Dict[str, Any]] = [
                 "properties": {
                     "rok": {"type": "integer", "description": "rok, np. 2026"},
                     "miesiac": {"type": "integer", "description": "miesiąc 1-12 (lub nazwa po polsku, np. „lipiec”)"},
+                    "sklep": {"type": "string", "description": "opcjonalny sklep: amh | acti | veluxa (bez tego = wszystkie sklepy razem)"},
+                    "producent": {"type": "string", "description": "opcjonalna marka/producent mebli (to NIE sklep) — finanse tylko tej marki"},
                     "sku": {"type": "string", "description": "opcjonalne SKU — finanse tylko tego produktu"},
-                    "producent": {"type": "string", "description": "opcjonalny producent (np. „Veluxa”) — finanse tylko tej marki"},
                 },
                 "required": ["rok", "miesiac"],
             },
@@ -344,8 +345,9 @@ TOOLS: List[Dict[str, Any]] = [
                     "miesiac_a": {"type": "integer", "description": "pierwszy (nowszy) miesiąc 1-12 lub nazwa po polsku"},
                     "rok_b": {"type": "integer", "description": "rok drugiego (odniesienia) miesiąca"},
                     "miesiac_b": {"type": "integer", "description": "drugi (odniesienia) miesiąc 1-12 lub nazwa po polsku"},
+                    "sklep": {"type": "string", "description": "opcjonalny sklep: amh | acti | veluxa (bez tego = wszystkie sklepy razem)"},
+                    "producent": {"type": "string", "description": "opcjonalna marka/producent mebli (to NIE sklep) — porównanie tylko tej marki"},
                     "sku": {"type": "string", "description": "opcjonalne SKU — porównanie tylko tego produktu"},
-                    "producent": {"type": "string", "description": "opcjonalny producent (np. „Veluxa”) — porównanie tylko tej marki"},
                 },
                 "required": ["rok_a", "miesiac_a", "rok_b", "miesiac_b"],
             },
@@ -1036,7 +1038,7 @@ def _num(v: Any) -> float:
 
 async def _tool_finanse_miesiac(db: AsyncSession, user: CurrentUser, rok: Any = None,
                                 miesiac: Any = None, sku: Optional[str] = None,
-                                producent: Optional[str] = None) -> Dict[str, Any]:
+                                producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
     if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     from routers.finance import month_finance
@@ -1045,12 +1047,12 @@ async def _tool_finanse_miesiac(db: AsyncSession, user: CurrentUser, rok: Any = 
         return {"blad": "podaj rok (np. 2026) i miesiąc (1-12 lub nazwa po polsku, np. „lipiec”)"}
     sym = (str(sku).strip().upper() or None) if sku else None
     prod = (str(producent).strip() or None) if producent else None
-    return await month_finance(db, r, m, symbol=sym, producent=prod)
+    return await month_finance(db, r, m, symbol=sym, producent=prod, shop=_norm_shop(sklep))
 
 
 async def _tool_porownaj_miesiace(db: AsyncSession, user: CurrentUser, rok_a: Any = None, miesiac_a: Any = None,
                                   rok_b: Any = None, miesiac_b: Any = None, sku: Optional[str] = None,
-                                  producent: Optional[str] = None) -> Dict[str, Any]:
+                                  producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
     if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     from routers.finance import month_finance
@@ -1060,8 +1062,9 @@ async def _tool_porownaj_miesiace(db: AsyncSession, user: CurrentUser, rok_a: An
         return {"blad": "podaj oba miesiące: rok_a+miesiac_a oraz rok_b+miesiac_b (miesiąc 1-12 lub nazwa)"}
     sym = (str(sku).strip().upper() or None) if sku else None
     prod = (str(producent).strip() or None) if producent else None
-    a = await month_finance(db, ra, ma, symbol=sym, producent=prod)
-    b = await month_finance(db, rb, mb, symbol=sym, producent=prod)
+    shp = _norm_shop(sklep)
+    a = await month_finance(db, ra, ma, symbol=sym, producent=prod, shop=shp)
+    b = await month_finance(db, rb, mb, symbol=sym, producent=prod, shop=shp)
 
     def diff(key: str) -> Dict[str, Any]:
         va, vb = _num(a.get(key)), _num(b.get(key))
