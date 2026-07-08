@@ -15,7 +15,7 @@ odwzorowanie frontowego can(user, "viewFinancials"). Override per-user wygrywa n
 """
 
 from datetime import date, timedelta
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -116,6 +116,97 @@ def _margin(net: float, cost: float) -> tuple:
     margin = net - cost
     pct = (margin / net * 100.0) if net > 0 else 0.0
     return margin, pct
+
+
+_MONTHS_PL = ["", "styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec",
+              "lipiec", "sierpień", "wrzesień", "październik", "listopad", "grudzień"]
+
+
+def _month_clause(rok: int, miesiac: int):
+    """(period_clause, date_from, date_to, label) dla jednego miesiąca kalendarzowego.
+    Filtr po zakresie dat [1. dnia miesiąca; 1. dnia kolejnego) — indeksowalny.
+    rok/miesiac są już zwalidowane do int, więc interpolacja literałów DATE jest bezpieczna."""
+    d = settings.COL_ORDER_DATE
+    date_from = date(rok, miesiac, 1)
+    date_to = date(rok + 1, 1, 1) if miesiac == 12 else date(rok, miesiac + 1, 1)
+    clause = f"o.{d} >= DATE '{date_from.isoformat()}' AND o.{d} < DATE '{date_to.isoformat()}'"
+    return clause, date_from, date_to, f"{_MONTHS_PL[miesiac]} {rok}"
+
+
+async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Optional[str] = None,
+                        producent: Optional[str] = None) -> dict:
+    """Finanse jednego miesiąca kalendarzowego — ten sam silnik co /finance/overview
+    (przewalutowanie NBP, whitelist statusów INCLUDED_STATUS_FILTER, koszt z Subiekta).
+    symbol → tylko jeden SKU. producent → tylko dany producent (dopasowanie ILIKE po nazwie).
+    Zwraca czysty dict (nie Pydantic) — pod asystenta.
+    UWAGA: koszt/marża dla Acti/Veluxa nadal z cen Subiektu (znany TODO) — dlatego zwracamy
+    pozycje_bez_kosztu, żeby marżę można było zastrzec. Przychód i sztuki są dokładne."""
+    try:
+        rok = int(rok)
+        miesiac = int(miesiac)
+    except (TypeError, ValueError):
+        return {"blad": "rok/miesiąc muszą być liczbami", "rok": rok, "miesiac": miesiac}
+    if not (2000 <= rok <= 2100) or not (1 <= miesiac <= 12):
+        return {"blad": "zły rok (2000-2100) lub miesiąc (1-12)", "rok": rok, "miesiac": miesiac}
+
+    clause, date_from, date_to, label = _month_clause(rok, miesiac)
+    params: dict = {}
+    parts: list = []
+    sym = (symbol or "").strip()
+    if sym:
+        parts.append(f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sym))")
+        params["sym"] = sym
+    prod = (producent or "").strip()
+    if prod:
+        parts.append("m.name ILIKE :prod")
+        params["prod"] = f"%{prod}%"
+    extra = ("AND " + " AND ".join(parts)) if parts else ""
+
+    base = _base_cte(clause, extra)
+    rows = (await db.execute(text(base + """
+        SELECT channel,
+            COALESCE(SUM(net),   0)::float                                    AS net,
+            COALESCE(SUM(gross), 0)::float                                    AS gross,
+            COALESCE(SUM(cost),  0)::float                                    AS cost,
+            COALESCE(SUM(qty),   0)::int                                      AS units,
+            COUNT(DISTINCT order_id)::int                                     AS orders,
+            COALESCE(SUM(CASE WHEN cost_missing THEN qty ELSE 0 END), 0)::int AS units_no_cost
+        FROM base
+        GROUP BY channel
+        ORDER BY net DESC
+    """), params)).mappings().all()
+
+    total_net = sum(to_float(r["net"]) for r in rows)
+    total_gross = sum(to_float(r["gross"]) for r in rows)
+    total_cost = sum(to_float(r["cost"]) for r in rows)
+    total_units = sum(int(r["units"]) for r in rows)
+    total_orders = sum(int(r["orders"]) for r in rows)
+    items_no_cost = sum(int(r["units_no_cost"]) for r in rows)
+    margin, mpct = _margin(total_net, total_cost)
+    aov = (total_net / total_orders) if total_orders else 0.0
+
+    channels = [{
+        "channel": r["channel"],
+        "revenue_net": round(to_float(r["net"]), 2),
+        "units": int(r["units"]),
+        "share_pct": round(to_float(r["net"]) / total_net * 100.0, 1) if total_net > 0 else 0.0,
+    } for r in rows]
+
+    out = {
+        "rok": rok, "miesiac": miesiac, "etykieta": label, "waluta": "PLN",
+        "od": date_from.isoformat(), "do_wyl": date_to.isoformat(),
+        "przychod_netto": round(total_net, 2), "przychod_brutto": round(total_gross, 2),
+        "koszt": round(total_cost, 2), "marza": round(margin, 2), "marza_proc": round(mpct, 1),
+        "zamowienia": total_orders, "sztuki": total_units,
+        "srednia_wartosc_zamowienia": round(aov, 2),
+        "pozycje_bez_kosztu": items_no_cost,
+        "kanaly": channels,
+    }
+    if sym:
+        out["sku"] = sym.upper()
+    if prod:
+        out["producent"] = prod
+    return out
 
 
 @router.get("/finance/overview", response_model=FinanceOverview)
