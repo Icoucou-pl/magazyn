@@ -6,7 +6,7 @@ Python używał późniejszej definicji. Tu zostają TYLKO efektywne wersje (te 
 """
 
 from datetime import date, datetime
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
 
 from pydantic import BaseModel, Field
 
@@ -299,6 +299,21 @@ class AttachmentCreate(BaseModel):
     file_size: Optional[str] = None
 
 
+class ContainerFirmaShare(BaseModel):
+    """Udział jednej firmy (sklepu) w kontenerze.
+
+    Liczony z pozycji kontenera: container_items.sku -> product_attrs.firma_id -> firmy.slug.
+    SKU bez firma_id trafia do AMH (NULL = AMH, zgodnie z ProductSummary.firma_id).
+    Dzięki temu KPI "W drodze" i lista dostaw mogą być filtrowane per sklep bez
+    dodatkowego zapytania — kontener fizycznie bywa mieszany (zwłaszcza skonsolidowany)."""
+    slug: str
+    name: Optional[str] = None
+    color: Optional[str] = None
+    items: int = 0          # ile pozycji (SKU) danej firmy
+    units: int = 0          # ile sztuk
+    value: float = 0.0      # wartość PLN tych pozycji
+
+
 class ContainerOut(BaseModel):
     id: int
     container_number: str
@@ -337,6 +352,22 @@ class ContainerOut(BaseModel):
     total_cbm: float
     fill_percentage: Optional[float]
     total_value: float
+    firma_breakdown: Dict[str, ContainerFirmaShare] = {}   # slug -> udział firmy w kontenerze
+
+
+class TopSellerOut(BaseModel):
+    """Top sprzedaży — TYLKO sztuki, zero pól finansowych.
+    Dzięki temu karta jest widoczna dla wszystkich (nie wymaga viewFinancials)."""
+    sku: str
+    name: str
+    status: str
+    stock: int
+    days_until_empty: int
+    sales_1m: int              # sztuki sprzedane w ostatnich 30 dniach (wg wybranego sklepu)
+    sales_yoy_30d: int         # te same 30 dni rok temu — do strzałki trendu
+    avg_monthly: float
+    manufacturer_name: Optional[str] = None
+    manufacturer_color: Optional[str] = None
 
 
 # ===== ANOMALIE / PROJEKCJE / IMPORT / LISTA ZAKUPÓW =====
