@@ -14,7 +14,7 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate,
 )
 from security import get_current_user, has_perm
 from services.products import fetch_products, get_product
@@ -64,7 +64,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 
 @router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
     # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
@@ -104,10 +104,15 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     else:
         name_ov = (e.name_override if e else None)
 
+    # Etykieta SAMPLE: produkt zamawiany próbnie. Wypada z auto-sugestii, listy zakupów i anomalii.
+    is_sample = payload.is_sample if payload.is_sample is not None else (bool(e.is_sample) if e else False)
+    # Ręczny stan sampla — liczy się tylko dla SKU bez innego źródła stanu (patrz SALES_QUERY, src_pri = 4).
+    sample_stock = payload.sample_stock if payload.sample_stock is not None else (int(e.sample_stock or 0) if e else 0)
+
     await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, updated_at)
-            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, CURRENT_TIMESTAMP)
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, :is_sample, :sample_stock, CURRENT_TIMESTAMP)
             ON CONFLICT (sku) DO UPDATE SET
                 cbm_per_unit = EXCLUDED.cbm_per_unit,
                 manufacturer_id = EXCLUDED.manufacturer_id,
@@ -117,9 +122,12 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
                 forced_status = EXCLUDED.forced_status,
                 cena_zakupu = EXCLUDED.cena_zakupu,
                 name_override = EXCLUDED.name_override,
+                is_sample = EXCLUDED.is_sample,
+                sample_stock = EXCLUDED.sample_stock,
                 updated_at = CURRENT_TIMESTAMP
         """),
-        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced, "cena": cena, "name_ov": name_ov}
+        {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced,
+         "cena": cena, "name_ov": name_ov, "is_sample": is_sample, "sample_stock": sample_stock}
     )
     await db.commit()
     return _mask_financials([await get_product(db, sku)], user)[0]
@@ -340,3 +348,68 @@ async def top_sellers(
         )
         for p in ranked
     ]
+
+
+@router.post("/samples", response_model=ProductSummary, status_code=201)
+async def create_sample(payload: SampleCreate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Tworzy SAMPLE — produkt, którego nie ma ani w Subiekcie, ani w Sellasiscie.
+
+    Wiersz laduje w app_product_attrs z is_sample=TRUE; katalog (SALES_QUERY, zrodlo pri 4)
+    podnosi go wtedy do rangi normalnego produktu: mozna mu nadac CBM, producenta i cene,
+    a w kontenerze przestaje zajmowac 0 m3.
+
+    Jesli SKU juz istnieje w katalogu (np. sprzedawany na Acti), NIE uzywaj tego endpointu —
+    wystarczy PUT /products/{sku}/attrs z is_sample=true (etykieta na istniejacym produkcie).
+    """
+    if not has_perm(user, "editProducts"):
+        raise HTTPException(403, "Brak uprawnienia: editProducts")
+
+    sku = payload.sku.strip()
+    if not sku:
+        raise HTTPException(400, "SKU nie moze byc puste")
+
+    dup = await db.execute(
+        text(f"SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:sku)) AND COALESCE(is_sample, FALSE)"),
+        {"sku": sku},
+    )
+    if dup.first():
+        raise HTTPException(409, f"Sample {sku} juz istnieje")
+
+    cena = None
+    if payload.cena_zakupu is not None and payload.cena_zakupu > 0:
+        if not has_perm(user, "viewFinancials"):
+            raise HTTPException(403, "Brak uprawnien do ustawiania ceny zakupu (viewFinancials)")
+        cena = round(float(payload.cena_zakupu), 2)
+
+    ean = payload.ean.strip() if payload.ean and payload.ean.strip() else None
+
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS}
+                (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean,
+                 cena_zakupu, name_override, is_sample, sample_stock, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, FALSE, :ean, :cena, :name, TRUE, :stock, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET
+                cbm_per_unit = EXCLUDED.cbm_per_unit,
+                manufacturer_id = EXCLUDED.manufacturer_id,
+                firma_id = EXCLUDED.firma_id,
+                ean = EXCLUDED.ean,
+                cena_zakupu = EXCLUDED.cena_zakupu,
+                name_override = EXCLUDED.name_override,
+                is_sample = TRUE,
+                sample_stock = EXCLUDED.sample_stock,
+                updated_at = CURRENT_TIMESTAMP
+        """),
+        {
+            "sku": sku,
+            "cbm": payload.cbm_per_unit,
+            "mfr": payload.manufacturer_id or None,
+            "firma": payload.firma_id or None,
+            "ean": ean,
+            "cena": cena,
+            "name": payload.name.strip()[:255],
+            "stock": payload.sample_stock,
+        },
+    )
+    await db.commit()
+    return _mask_financials([await get_product(db, sku)], user)[0]

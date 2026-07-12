@@ -30,12 +30,12 @@ async def stats(db: AsyncSession = Depends(get_db)):
 @router.get("/classification")
 async def classification(shop: str = "", db: AsyncSession = Depends(get_db)):
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
-    counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0}
+    counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0, "SAMPLE": 0}
     dead_stock_value = 0.0
     for r in products_result:
         row = dict(r._mapping)
         s = classify_product(row)
-        counts[s] += 1
+        counts[s] = counts.get(s, 0) + 1
         if s == "DEAD_STOCK":
             dead_stock_value += row["stock"] * row.get("price", 0)
     return {"counts": counts, "dead_stock_value_pln": round(dead_stock_value, 2), "total": sum(counts.values())}
