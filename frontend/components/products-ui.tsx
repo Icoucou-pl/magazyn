@@ -27,7 +27,7 @@ export type Product = {
   purchase_price: number;
   cena_zakupu_manual?: number | null;
   stock_in_transit: number;
-  product_status: "ACTIVE" | "ACTIVE_NO_STOCK" | "DEAD_STOCK" | "INACTIVE";
+  product_status: "ACTIVE" | "ACTIVE_NO_STOCK" | "DEAD_STOCK" | "INACTIVE" | "SAMPLE";
   cbm_per_unit: number;
   manufacturer_id: number | null;
   manufacturer_name: string | null;
@@ -37,6 +37,8 @@ export type Product = {
   firma_color: string | null;
   seasonality_enabled: boolean;
   is_favorite: boolean;
+  is_sample: boolean;      // etykieta: produkt próbny — poza auto-sugestią, listą zakupów i anomaliami
+  sample_stock: number;    // ręczny stan; liczy się tylko dla SKU spoza Subiektu i Sellasista
   ean: string | null;
   forced_status: string | null;
   lead_time_days: number;
@@ -58,7 +60,7 @@ export type Manufacturer = { id: number; name: string; color: string; email?: st
 export type Firma = { id: number; slug: string; name: string; color: string };
 
 // ── Stałe ────────────────────────────────────────────────────
-export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, OK: 3, DEAD_STOCK: 4 };
+export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, OK: 3, SAMPLE: 4, DEAD_STOCK: 5 };
 
 type ColId =
   | "fav" | "sku" | "name" | "mfr" | "stock" | "inTransit"
@@ -101,6 +103,7 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
   { id: "favorites", label: "Obserwowane", icon: <I.StarFill size={11} /> },
   { id: "critical", label: "Krytyczne" },
   { id: "dead", label: "Dead stock" },
+  { id: "sample", label: "Sample", icon: <I.Flask size={11} /> },
   { id: "all", label: "Wszystkie" },
 ];
 
@@ -114,7 +117,12 @@ const SHOPS: Array<{ v: string; l: string; title: string }> = [
 ];
 
 // ── Helpery wyświetlania ─────────────────────────────────────
-export const displayStatus = (p: Product): string => (p.product_status === "DEAD_STOCK" ? "DEAD_STOCK" : p.status);
+// Status w tabeli: SAMPLE i DEAD_STOCK to statusy KATALOGOWE — wygrywają z urgencją zakupową
+// (sample nie jest "krytyczny", bo i tak nie wchodzi do listy zakupów ani auto-sugestii).
+export const displayStatus = (p: Product): string =>
+  p.product_status === "SAMPLE" ? "SAMPLE"
+    : p.product_status === "DEAD_STOCK" ? "DEAD_STOCK"
+      : p.status;
 export const monthsDisplay = (v: number): string => (!isFinite(v) || v > 99 ? "∞" : v.toFixed(1));
 
 // ── Preferencja "pokaż nieaktywne" (trwała, współdzielona) ────
@@ -142,7 +150,7 @@ export function Portal({ children }: { children: React.ReactNode }) {
 // ── Toolbar ──────────────────────────────────────────────────
 export function ProductsToolbar({
   search, setSearch, filter, setFilter, counts, resultCount, onPickCols, visibleColsCount, onImport, onExport,
-  showInactive, setShowInactive, shop, setShop,
+  showInactive, setShowInactive, shop, setShop, onAddSample,
 }: {
   search: string; setSearch: (v: string) => void;
   filter: string; setFilter: (v: string) => void;
@@ -151,6 +159,7 @@ export function ProductsToolbar({
   onImport: () => void; onExport: () => void;
   showInactive?: boolean; setShowInactive?: (v: boolean) => void;
   shop?: string; setShop?: (v: string) => void;
+  onAddSample?: () => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -213,6 +222,17 @@ export function ProductsToolbar({
             <span style={{ width: 11, height: 11, borderRadius: 99, background: "var(--surface-1)" }} />
           </span>
           Nieaktywne
+        </button>
+      )}
+
+      {onAddSample && showEdit && (
+        <button onClick={onAddSample} title="Dodaj sample — SKU, którego nie ma w Subiekcie ani Sellasiście"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 11px", fontSize: 12, fontWeight: 600,
+            background: "transparent", color: "var(--anomaly)", border: "1px solid var(--anomaly)",
+            borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap",
+          }}>
+          <I.Flask size={12} /> Dodaj sample
         </button>
       )}
 
@@ -391,7 +411,9 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
 export function StatusPillExt({ status, size = "md" }: { status: string; size?: "sm" | "md" }) {
   const meta = STATUS_META[status] || (status === "DEAD_STOCK"
     ? { label: "DEAD STOCK", bg: "var(--surface-3)", fg: "var(--text-lo)", dot: "var(--text-disabled)" }
-    : null);
+    : status === "SAMPLE"
+      ? { label: "SAMPLE", bg: "var(--anomaly-soft)", fg: "var(--anomaly)", dot: "var(--anomaly)" }
+      : null);
   if (!meta) return null;
   return <Pill bg={meta.bg} fg={meta.fg} dot={meta.dot} size={size}>{meta.label}</Pill>;
 }
@@ -657,3 +679,134 @@ const bulkBtn: React.CSSProperties = {
   display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 11px", fontSize: 12, fontWeight: 600,
   background: "var(--surface-2)", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 7, cursor: "pointer",
 };
+
+// ── Modal: dodaj SAMPLE ──────────────────────────────────────
+// Tworzy SKU, którego nie ma ani w Subiekcie, ani w Sellasiście (POST /api/samples).
+// Produkt JUŻ istniejący (np. sprzedawany na Acti) nie potrzebuje tego modala —
+// wystarczy zaznaczyć checkbox "Sample" w szczegółach produktu.
+export function AddSampleModal({
+  manufacturers, firmy, showFin, onClose, onCreated,
+}: {
+  manufacturers: Manufacturer[];
+  firmy: Firma[];
+  showFin: boolean;
+  onClose: () => void;
+  onCreated: (sku: string) => void;
+}) {
+  const [sku, setSku] = useState("");
+  const [name, setName] = useState("");
+  const [mfrId, setMfrId] = useState("");
+  const [firmaId, setFirmaId] = useState("");
+  const [cbm, setCbm] = useState("");
+  const [cena, setCena] = useState("");
+  const [stock, setStock] = useState("0");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!sku.trim() || !name.trim()) { toast("SKU i nazwa są wymagane", "warning"); return; }
+    setSaving(true);
+    try {
+      await api.post("/samples", {
+        sku: sku.trim(),
+        name: name.trim(),
+        manufacturer_id: mfrId === "" ? null : Number(mfrId),
+        firma_id: firmaId === "" ? null : Number(firmaId),
+        cbm_per_unit: parseFloat(cbm.replace(",", ".")) || 0,
+        sample_stock: parseInt(stock, 10) || 0,
+        ...(showFin && cena.trim() ? { cena_zakupu: parseFloat(cena.replace(",", ".")) || 0 } : {}),
+      });
+      toast(`Sample ${sku.trim()} dodany`, "ok");
+      onCreated(sku.trim());
+      onClose();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Nie udało się dodać sampla", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fieldStyle: React.CSSProperties = {
+    width: "100%", padding: "8px 10px", fontSize: 13, background: "var(--bg)",
+    color: "var(--text-hi)", border: "1px solid var(--border-soft)", borderRadius: 8, outline: "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase",
+    color: "var(--text-lo)", display: "block", marginBottom: 5,
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{
+        width: "100%", maxWidth: 520, background: "var(--surface-1)",
+        border: "1px solid var(--border)", borderRadius: "var(--r-lg)", overflow: "hidden",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border-soft)" }}>
+          <span style={{ color: "var(--anomaly)", display: "inline-flex" }}><I.Flask size={16} /></span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>Dodaj sample</div>
+            <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 1 }}>
+              SKU spoza Subiektu i Sellasista — dostanie status SAMPLE i wypadnie z auto-sugestii
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-lo)", display: "flex", padding: 4 }}><I.Close size={16} /></button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: 18 }}>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={labelStyle}>SKU *</label>
+            <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="np. SMP-2026-01" style={{ ...fieldStyle, fontFamily: "var(--font-mono, monospace)" }} />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={labelStyle}>Nazwa *</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="np. Fotel masujący — próbka" style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Producent</label>
+            <select value={mfrId} onChange={(e) => setMfrId(e.target.value)} style={fieldStyle}>
+              <option value="">— brak —</option>
+              {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>Firma</label>
+            <select value={firmaId} onChange={(e) => setFirmaId(e.target.value)} style={fieldStyle}>
+              <option value="">AMH (domyślnie)</option>
+              {firmy.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>CBM / szt</label>
+            <input value={cbm} onChange={(e) => setCbm(e.target.value)} placeholder="0.000" inputMode="decimal" style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Stan (szt)</label>
+            <input value={stock} onChange={(e) => setStock(e.target.value)} inputMode="numeric" style={fieldStyle} />
+          </div>
+          {showFin && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={labelStyle}>Cena zakupu (PLN netto)</label>
+              <input value={cena} onChange={(e) => setCena(e.target.value)} placeholder="0.00" inputMode="decimal" style={fieldStyle} />
+            </div>
+          )}
+          <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--text-lo)", lineHeight: 1.5 }}>
+            Podaj CBM — bez niego sample zajmuje w kontenerze 0 m³ i wypełnienie będzie zaniżone.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border-soft)" }}>
+          <button onClick={onClose} style={{
+            padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: "pointer",
+            background: "transparent", color: "var(--text-mid)", border: "1px solid var(--border-soft)",
+          }}>Anuluj</button>
+          <button onClick={save} disabled={saving} style={{
+            padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: saving ? "default" : "pointer",
+            background: "var(--anomaly)", color: "var(--bg)", border: "none", opacity: saving ? 0.6 : 1,
+          }}>{saving ? "Zapisuję…" : "Dodaj sample"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}

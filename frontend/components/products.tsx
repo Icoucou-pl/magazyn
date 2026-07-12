@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, can } from "@/lib/permissions";
 import {
-  ProductsToolbar, ProductsTable, ColPickerModal, BulkBar,
+  ProductsToolbar, ProductsTable, ColPickerModal, BulkBar, AddSampleModal,
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
   readShowInactive, writeShowInactive,
   type Product, type Manufacturer, type Firma,
@@ -59,6 +59,7 @@ export default function ProductsView({
   const [visibleCols, setVisibleCols] = useState(DEFAULT_COLS);
   const [showColPicker, setShowColPicker] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showAddSample, setShowAddSample] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
 
   const existingSkus = useMemo(() => new Set(products.map((p) => p.sku.trim().toLowerCase())), [products]);
@@ -67,9 +68,10 @@ export default function ProductsView({
     setLoading(true);
     // INACTIVE (stan 0 + zero sprzedaży 12m) domyślnie POMIJANE — zaśmiecały listę,
     // liczniki i wyszukiwanie w liście. Wchodzą tylko po włączeniu toggla "Nieaktywne".
+    // SAMPLE jedzie zawsze — to status katalogowy (etykieta), a nie śmieć jak INACTIVE.
     const include = showInactive
-      ? "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"
-      : "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK";
+      ? "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE"
+      : "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,SAMPLE";
     const shopQ = shop ? `&shop=${shop}` : "";
     const [prod, mfr] = await Promise.allSettled([
       api.get(`/products?include=${include}${shopQ}`),
@@ -138,6 +140,7 @@ export default function ProductsView({
       if (filter === "favorites") arr = arr.filter((p) => p.is_favorite);
       if (filter === "critical") arr = arr.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
       if (filter === "dead") arr = arr.filter((p) => p.product_status === "DEAD_STOCK");
+      if (filter === "sample") arr = arr.filter((p) => p.is_sample);
     }
     if (sort.key) {
       const key = sort.key;
@@ -157,6 +160,7 @@ export default function ProductsView({
     favorites: products.filter((p) => p.is_favorite).length,
     critical: products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ").length,
     dead: products.filter((p) => p.product_status === "DEAD_STOCK").length,
+    sample: products.filter((p) => p.is_sample).length,
     all: products.length,
   }), [products]);
 
@@ -212,6 +216,7 @@ export default function ProductsView({
         onPickCols={() => setShowColPicker(true)}
         onImport={() => setShowImport(true)}
         onExport={onExport}
+        onAddSample={() => setShowAddSample(true)}
         visibleColsCount={visibleCols.length}
       />
       <ProductsTable
@@ -248,6 +253,15 @@ export default function ProductsView({
           onClose={() => setShowImport(false)}
           existingSkus={existingSkus}
           onImported={reload}
+        />
+      )}
+      {showAddSample && (
+        <AddSampleModal
+          manufacturers={manufacturers}
+          firmy={firmy}
+          showFin={showFin}
+          onClose={() => setShowAddSample(false)}
+          onCreated={() => { setFilter("sample"); reload(); }}
         />
       )}
       {selectedProduct && (
