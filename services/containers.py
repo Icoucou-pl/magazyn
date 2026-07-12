@@ -21,6 +21,11 @@ except Exception:  # brak bazy tzdata na obrazie — fallback do czasu serwera
     _TZ_PL = None
 
 
+# Slug firmy przypisywany pozycjom bez firma_id (NULL = AMH, hub/reseller).
+DEFAULT_FIRMA_SLUG = "amh"
+DEFAULT_FIRMA_NAME = "AMH"
+
+
 def _today_pl() -> date:
     if _TZ_PL is not None:
         try:
@@ -108,13 +113,16 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
             p.{settings.COL_PRODUCT_NAME} AS product_name,
             COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0) AS purchase_price,
-            COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit
+            COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
+            pa.firma_id,
+            f.slug AS firma_slug, f.name AS firma_name, f.color AS firma_color
         FROM {settings.TABLE_CONTAINERS} c
         LEFT JOIN {settings.TABLE_CONTAINER_TYPES} ct ON ct.id = c.container_type_id
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
         LEFT JOIN {settings.TABLE_CONTAINER_ITEMS} ci ON ci.container_id = c.id
         LEFT JOIN {settings.TABLE_PRODUCTS} p ON p.{settings.COL_PRODUCT_SKU} = ci.sku
         LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = ci.sku
+        LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
         {where}
         ORDER BY c.eta_date DESC, c.id DESC, ci.id ASC
     """), {"status": status} if status else {})
@@ -153,6 +161,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "notes": row["notes"],
                 "items": [], "attachments": [],
                 "total_units": 0, "total_cbm": 0.0, "fill_percentage": None, "total_value": 0.0,
+                "firma_breakdown": {},
             }
         if row["item_id"] is not None:
             cbm_pu = float(row["cbm_per_unit"]) if row["cbm_per_unit"] else 0
@@ -169,6 +178,21 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             containers_dict[cid]["total_units"] += row["quantity"]
             containers_dict[cid]["total_cbm"] += tcb
             containers_dict[cid]["total_value"] += eff_cost * row["quantity"]
+            # Rozbicie per firma (sklep). Kontener nie ma własnej firmy — wynika ona
+            # z właściciela SKU. SKU bez firma_id => AMH (NULL = AMH).
+            slug = (row["firma_slug"] or DEFAULT_FIRMA_SLUG).strip().lower()
+            fb = containers_dict[cid]["firma_breakdown"].setdefault(slug, {
+                "slug": slug,
+                "name": row["firma_name"] or (DEFAULT_FIRMA_NAME if slug == DEFAULT_FIRMA_SLUG else slug.upper()),
+                "color": row["firma_color"],
+                "items": 0, "units": 0, "value": 0.0,
+            })
+            if fb["color"] is None and row["firma_color"]:
+                fb["color"] = row["firma_color"]
+            fb["items"] += 1
+            fb["units"] += row["quantity"]
+            fb["value"] += eff_cost * row["quantity"]
+
             lid = row["lot_id"]
             if lid is not None:
                 lt = containers_dict[cid]["_lot_totals"].setdefault(lid, {"u": 0, "cbm": 0.0, "val": 0.0})
@@ -185,6 +209,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         c.pop("_lot_totals", None)
         c["total_cbm"] = round(c["total_cbm"], 3)
         c["total_value"] = round(c["total_value"], 2)
+        for fb in c["firma_breakdown"].values():
+            fb["value"] = round(fb["value"], 2)
         # opłata dla spedycji = cały rachunek spedytora − sam koszt transportu (fracht)
         if c["koszt_spedycji"] is not None and c["koszt_transportu"] is not None:
             c["oplata_spedycji"] = round(c["koszt_spedycji"] - c["koszt_transportu"], 2)
