@@ -1,8 +1,16 @@
 "use client";
 // ============================================================
 // MAGAZYN — Dashboard (etap 1). Port dashboard.jsx → .tsx.
-//   Wygląd 1:1 z mocka, dane z realnego API (Promise.allSettled):
-//   /stock-value-history · /classification · /containers · /anomalies · /shopping-list · /favorites
+//   Dane z realnego API (Promise.allSettled):
+//   /stock-value-history · /classification · /containers · /anomalies · /shopping-list · /top-sellers
+//
+//   Konwencja list: każda karta pokazuje 5 wierszy, reszta po kliknięciu "Wszystkie"
+//   (rozwijanie W MIEJSCU, bez nawigacji). Patrz: ExpandFooter + useExpandable.
+//
+//   Sklep (AMH/Acti/Veluxa) filtruje też kontenery: kontener nie ma własnej firmy,
+//   więc backend dokleja firma_breakdown (slug -> {items, units, value}) liczone
+//   z pozycji: sku -> product_attrs.firma_id. KPI "W drodze" pokazuje wtedy wartość
+//   TYLKO towaru danej firmy, a lista dostaw — kontenery, które ten towar wiozą.
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -22,6 +30,14 @@ type Classification = {
   dead_stock_value_pln: number;
   total: number;
 };
+type FirmaShare = {
+  slug: string;
+  name: string | null;
+  color: string | null;
+  items: number;
+  units: number;
+  value: number;
+};
 type ContainerOut = {
   id: number;
   container_number: string;
@@ -36,6 +52,7 @@ type ContainerOut = {
   items: unknown[];
   total_units: number;
   total_value: number;
+  firma_breakdown?: Record<string, FirmaShare>;   // slug -> udział firmy (może nie przyjść ze starego backendu)
 };
 type Anomaly = {
   sku: string; name: string;
@@ -54,7 +71,11 @@ type ShoppingGroup = {
   products: ShoppingProduct[];
   total_skus: number;
 };
-type FavProduct = { sku: string; name: string; status: string; stock: number; days_until_empty: number };
+type TopSeller = {
+  sku: string; name: string; status: string; stock: number; days_until_empty: number;
+  sales_1m: number; sales_yoy_30d: number; avg_monthly: number;
+  manufacturer_name: string | null; manufacturer_color: string | null;
+};
 
 type ClickTarget = { sku: string; name?: string };
 
@@ -236,12 +257,13 @@ function StockValueChart({ points, metric = "value", height = 220 }: { points: S
 
 // ── KPI grid ─────────────────────────────────────────────────
 function KpiGrid({
-  history, classification, inTransitValue, inTransitCount,
+  history, classification, inTransitValue, inTransitCount, shop,
 }: {
   history: StockHistory | null;
   classification: Classification | null;
   inTransitValue: number;
   inTransitCount: number;
+  shop: string;                    // "" = wszystkie sklepy
 }) {
   const user = useUser();
   const showFin = can(user, "viewFinancials");
@@ -250,6 +272,10 @@ function KpiGrid({
   const change90 = pts.length > 1 ? ((stockValue - pts[0].value) / (pts[0].value || 1)) * 100 : undefined;
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
   const c = classification?.counts;
+  // Przy wybranym sklepie "W drodze" = wartość TYLKO towaru tej firmy w całym pipeline.
+  const transitSub = shop
+    ? `${inTransitCount} kontenerów · towar ${shop.toUpperCase()}`
+    : `${inTransitCount} kontenerów`;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
@@ -259,9 +285,9 @@ function KpiGrid({
         <KpiCard label="Wartość magazynu" value="•••••" sub="ukryte — brak uprawnień" tone="neutral" icon={<I.Box size={14} />} />
       )}
       {showFin ? (
-        <KpiCard label="W drodze" value={fmtPLNk(inTransitValue)} sub={`${inTransitCount} kontenerów`} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="W drodze" value={fmtPLNk(inTransitValue)} sub={transitSub} tone="info" icon={<I.Ship size={14} />} />
       ) : (
-        <KpiCard label="W drodze" value="•••••" sub={`${inTransitCount} kontenerów`} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="W drodze" value="•••••" sub={transitSub} tone="info" icon={<I.Ship size={14} />} />
       )}
       <KpiCard label="Aktywne SKU" value={fmtNum(c?.ACTIVE)} sub={`${fmtNum(c?.ACTIVE_NO_STOCK)} bez stanu`} tone="ok" icon={<I.Activity size={14} />} />
       <KpiCard label="Dead stock" value={fmtNum(c?.DEAD_STOCK)} sub={fmtPLNk(classification?.dead_stock_value_pln)} tone="warning" icon={<I.Alert size={14} />} />
@@ -331,15 +357,48 @@ function ValueChartCard({ points, canFin }: { points: StockPoint[]; canFin: bool
   );
 }
 
+// ── Rozwijanie list w miejscu (5 wierszy → wszystkie) ────────
+const ROW_LIMIT = 5;
+
+function useExpandable<T>(list: T[], limit: number = ROW_LIMIT) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? list : list.slice(0, limit);
+  const hidden = Math.max(0, list.length - limit);
+  return { shown, hidden, open, toggle: () => setOpen((v) => !v) };
+}
+
+function ExpandFooter({ hidden, open, onToggle }: { hidden: number; open: boolean; onToggle: () => void }) {
+  if (hidden === 0) return null;
+  return (
+    <button onClick={onToggle} style={{
+      width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+      padding: "10px 18px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+      background: "transparent", color: "var(--text-mid)",
+      border: "none", borderTop: "1px solid var(--border-soft)",
+    }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; e.currentTarget.style.color = "var(--text-hi)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-mid)"; }}>
+      {open ? "Pokaż mniej" : <>Wszystkie <span className="num">({hidden} więcej)</span></>}
+      <span style={{ display: "inline-flex", transform: open ? "rotate(180deg)" : "none", transition: "transform 0.18s" }}>
+        <I.ChevronD size={13} />
+      </span>
+    </button>
+  );
+}
+
+// Kontener rozwinięty do pełnej listy nie może rozjechać strony — scroll po przekroczeniu.
+const listScroll = (open: boolean): React.CSSProperties =>
+  open ? { maxHeight: 420, overflowY: "auto" } : {};
+
 // ── Pożary ───────────────────────────────────────────────────
 function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProductClick?: (p: ClickTarget) => void }) {
+  const { shown, hidden, open, toggle } = useExpandable(fires);
   return (
     <Card>
-      <CardHeader icon={<I.Flame size={16} />} title="Pożary" hint={`${fires.length} pozycji`} accent="var(--critical)"
-        action={<button style={btnGhost}>Wszystkie <I.ChevronR size={12} /></button>} />
-      <div>
-        {fires.map((p, i) => (
-          <HoverRow key={p.sku} onClick={() => onProductClick?.(p)} style={i === fires.length - 1 ? { borderBottom: "none" } : undefined}>
+      <CardHeader icon={<I.Flame size={16} />} title="Pożary" hint={`${fires.length} pozycji`} accent="var(--critical)" />
+      <div style={listScroll(open)}>
+        {shown.map((p, i) => (
+          <HoverRow key={p.sku} onClick={() => onProductClick?.(p)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
             <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
               <StatusPill status={p.status} size="sm" />
               <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>
@@ -361,32 +420,52 @@ function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProd
         ))}
         {fires.length === 0 && <EmptyRow text="Brak pilnych pozycji" />}
       </div>
+      <ExpandFooter hidden={hidden} open={open} onToggle={toggle} />
     </Card>
   );
 }
 
 // ── Najbliższe dostawy ───────────────────────────────────────
-function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: ContainerOut[]; onContainerClick?: (c: ContainerOut) => void }) {
+function DeliveriesCard({
+  deliveries, shop, onContainerClick,
+}: {
+  deliveries: ContainerOut[];
+  shop: string;                       // "" = wszystkie sklepy
+  onContainerClick?: (c: ContainerOut) => void;
+}) {
   const showFin = can(useUser(), "viewFinancials");
+  const { shown, hidden, open, toggle } = useExpandable(deliveries);
   return (
     <Card>
-      <CardHeader icon={<I.Ship size={16} />} title="Najbliższe dostawy" hint={`${deliveries.length} kontenerów`} accent="var(--info)"
-        action={<button style={btnGhost}>Kalendarz <I.ChevronR size={12} /></button>} />
-      <div>
-        {deliveries.map((c, i) => {
+      <CardHeader icon={<I.Ship size={16} />} title="Najbliższe dostawy"
+        hint={shop ? `${deliveries.length} kontenerów z towarem ${shop.toUpperCase()}` : `${deliveries.length} kontenerów`}
+        accent="var(--info)" />
+      <div style={listScroll(open)}>
+        {shown.map((c, i) => {
           const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
           const eStatus = c.effective_status ?? c.status;
           const meta = CONTAINER_STATUS_META[eStatus];
+          // Przy wybranym sklepie pokazujemy UDZIAŁ tej firmy w kontenerze, nie całość
+          // (kontener bywa mieszany — zwłaszcza skonsolidowany).
+          const share = shop ? c.firma_breakdown?.[shop] : undefined;
+          const itemsCount = c.items.length;
           return (
-            <HoverRow key={c.id} onClick={() => onContainerClick?.(c)} style={i === deliveries.length - 1 ? { borderBottom: "none" } : undefined}>
+            <HoverRow key={c.id} onClick={() => onContainerClick?.(c)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
               <div style={{ width: 4, height: 32, background: meta?.dot ?? "var(--text-lo)", borderRadius: 2, flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{c.container_number}</span>
                   {c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />}
+                  {share && (
+                    <Pill bg="var(--surface-2)" fg={share.color ?? "var(--text-mid)"} size="sm" dot={share.color ?? undefined}>
+                      {share.name ?? share.slug.toUpperCase()}
+                    </Pill>
+                  )}
                 </div>
                 <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
-                  {c.items.length} pozycji · {fmtNum(c.total_units)} szt · {showFin ? fmtPLNk(c.total_value) : "•••"}
+                  {share
+                    ? <>{share.items}/{itemsCount} pozycji · {fmtNum(share.units)} szt · {showFin ? fmtPLNk(share.value) : "•••"}</>
+                    : <>{itemsCount} pozycji · {fmtNum(c.total_units)} szt · {showFin ? fmtPLNk(c.total_value) : "•••"}</>}
                 </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -398,8 +477,9 @@ function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: Containe
             </HoverRow>
           );
         })}
-        {deliveries.length === 0 && <EmptyRow text="Brak nadchodzących dostaw" />}
+        {deliveries.length === 0 && <EmptyRow text={shop ? `Brak dostaw z towarem ${shop.toUpperCase()}` : "Brak nadchodzących dostaw"} />}
       </div>
+      <ExpandFooter hidden={hidden} open={open} onToggle={toggle} />
     </Card>
   );
 }
@@ -408,12 +488,13 @@ function DeliveriesCard({ deliveries, onContainerClick }: { deliveries: Containe
 function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; onProductClick?: (p: ClickTarget) => void }) {
   const sevColor: Record<string, string> = { high: "var(--critical)", medium: "var(--warning)", low: "var(--text-mid)" };
   const sevLabel: Record<string, string> = { high: "WYS", medium: "ŚR", low: "NIS" };
+  const { shown, hidden, open, toggle } = useExpandable(anomalies);
   return (
     <Card>
       <CardHeader icon={<I.Activity size={16} />} title="Anomalie" hint={`${anomalies.length} wykrytych`} accent="var(--anomaly)" />
-      <div>
-        {anomalies.map((a, i) => (
-          <HoverRow key={`${a.sku}-${i}`} onClick={() => onProductClick?.(a)} style={i === anomalies.length - 1 ? { borderBottom: "none" } : undefined}>
+      <div style={listScroll(open)}>
+        {shown.map((a, i) => (
+          <HoverRow key={`${a.sku}-${i}`} onClick={() => onProductClick?.(a)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
             <span className="mono" style={{
               padding: "2px 6px", fontSize: 10, fontWeight: 700,
               background: "color-mix(in oklch, " + (sevColor[a.severity] || "var(--text-mid)") + " 18%, transparent)",
@@ -431,6 +512,7 @@ function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; on
         ))}
         {anomalies.length === 0 && <EmptyRow text="Brak anomalii" />}
       </div>
+      <ExpandFooter hidden={hidden} open={open} onToggle={toggle} />
     </Card>
   );
 }
@@ -492,30 +574,57 @@ function ShoppingListCard({
   );
 }
 
-// ── Obserwowane ──────────────────────────────────────────────
-function WatchedCard({ watched, onProductClick }: { watched: FavProduct[]; onProductClick?: (p: ClickTarget) => void }) {
+// ── Top sprzedaży (sztuki, bez PLN — widoczne dla wszystkich) ─
+function TopSellersCard({ top, shop, onProductClick }: { top: TopSeller[]; shop: string; onProductClick?: (p: ClickTarget) => void }) {
+  const { shown, hidden, open, toggle } = useExpandable(top);
+  const max = top.length ? Math.max(...top.map((p) => p.sales_1m)) : 0;
   return (
     <Card>
-      <CardHeader icon={<I.StarFill size={14} />} title="Obserwowane" hint={`${watched.length} produktów`} accent="var(--accent)" />
-      <div>
-        {watched.map((p, i) => (
-          <HoverRow key={p.sku} onClick={() => onProductClick?.(p)} style={i === watched.length - 1 ? { borderBottom: "none" } : undefined}>
-            <span style={{ color: "var(--accent)", flexShrink: 0 }}><I.StarFill size={13} /></span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{p.sku}</span>
-                <StatusPill status={p.status} size="sm" />
+      <CardHeader icon={<I.TrendUp size={16} />} title="Top sprzedaży"
+        hint={shop ? `30 dni · szt · ${shop.toUpperCase()}` : "30 dni · szt · wszystkie sklepy"}
+        accent="var(--ok)" />
+      <div style={listScroll(open)}>
+        {shown.map((p, i) => {
+          const yoy = p.sales_yoy_30d;
+          const pct = yoy > 0 ? ((p.sales_1m - yoy) / yoy) * 100 : null;
+          const up = pct !== null && pct >= 0;
+          const bar = max > 0 ? Math.max(2, (p.sales_1m / max) * 100) : 0;
+          return (
+            <HoverRow key={p.sku} onClick={() => onProductClick?.(p)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
+              <span className="num" style={{
+                width: 20, flexShrink: 0, textAlign: "center", fontSize: 11, fontWeight: 700,
+                color: i < 3 ? "var(--ok)" : "var(--text-lo)",
+              }}>{i + 1}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{p.sku}</span>
+                  <StatusPill status={p.status} size="sm" />
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                <div style={{ marginTop: 5, height: 3, borderRadius: 2, background: "var(--surface-2)", overflow: "hidden" }}>
+                  <div style={{ width: `${bar}%`, height: "100%", background: "var(--ok)", borderRadius: 2 }} />
+                </div>
               </div>
-              <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-            </div>
-            <div style={{ textAlign: "right", flexShrink: 0 }}>
-              <div className="num" style={{ fontSize: 12, fontWeight: 600 }}>{p.stock} szt</div>
-              <div className="num" style={{ fontSize: 10, color: "var(--text-lo)" }}>{p.days_until_empty < 365 ? `${p.days_until_empty}d` : "∞"}</div>
-            </div>
-          </HoverRow>
-        ))}
-        {watched.length === 0 && <EmptyRow text="Brak obserwowanych" />}
+              <div style={{ textAlign: "right", flexShrink: 0, minWidth: 74 }}>
+                <div className="num" style={{ fontSize: 13, fontWeight: 600 }}>{fmtNum(p.sales_1m)} szt</div>
+                {pct === null ? (
+                  <div style={{ fontSize: 10, color: "var(--text-lo)" }}>brak r/r</div>
+                ) : (
+                  <div className="num" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 600, color: up ? "var(--ok)" : "var(--critical)" }}>
+                    {up ? <I.TrendUp size={10} /> : <I.TrendDown size={10} />}
+                    {fmtPct(pct)} r/r
+                  </div>
+                )}
+                <div className="num" style={{ fontSize: 10, color: "var(--text-lo)" }}>
+                  stan {fmtNum(p.stock)} · {p.days_until_empty < 365 ? `${p.days_until_empty}d` : "∞"}
+                </div>
+              </div>
+            </HoverRow>
+          );
+        })}
+        {top.length === 0 && <EmptyRow text="Brak sprzedaży w ostatnich 30 dniach" />}
       </div>
+      <ExpandFooter hidden={hidden} open={open} onToggle={toggle} />
     </Card>
   );
 }
@@ -605,19 +714,19 @@ export default function Dashboard({
   const [containers, setContainers] = useState<ContainerOut[]>([]);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
-  const [favorites, setFavorites] = useState<FavProduct[]>([]);
+  const [topSellers, setTopSellers] = useState<TopSeller[]>([]);
   const [shop, setShop] = useState("");
   const cacheRef = useRef<Record<string, {
     history: StockHistory | null; classification: Classification | null;
-    containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; favorites: FavProduct[];
+    containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
   }>>({});
 
   const applyBundle = (b: {
     history: StockHistory | null; classification: Classification | null;
-    containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; favorites: FavProduct[];
+    containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
   }) => {
     setHistory(b.history); setClassification(b.classification); setContainers(b.containers);
-    setAnomalies(b.anomalies); setShopping(b.shopping); setFavorites(b.favorites);
+    setAnomalies(b.anomalies); setShopping(b.shopping); setTopSellers(b.topSellers);
   };
 
   useEffect(() => {
@@ -632,27 +741,27 @@ export default function Dashboard({
       setLoading(true);
       const q = shop ? `&shop=${shop}` : "";
       const q1 = shop ? `?shop=${shop}` : "";
-      const [h, cls, cont, ano, shp, fav] = await Promise.allSettled([
+      const [h, cls, cont, ano, shp, top] = await Promise.allSettled([
         api.get(`/stock-value-history?days=90${q}`),
         api.get(`/classification${q1}`),
         api.get("/containers"),
         api.get(`/anomalies${q1}`),
         api.get(`/shopping-list${q1}`),
-        api.get(`/favorites${q1}`),
+        api.get(`/top-sellers?limit=20${q}`),
       ]);
       if (!alive) return;
       let failed = false;
       const bundle = {
         history: null as StockHistory | null, classification: null as Classification | null,
         containers: [] as ContainerOut[], anomalies: [] as Anomaly[],
-        shopping: [] as ShoppingGroup[], favorites: [] as FavProduct[],
+        shopping: [] as ShoppingGroup[], topSellers: [] as TopSeller[],
       };
       if (h.status === "fulfilled") bundle.history = h.value as StockHistory; else failed = true;
       if (cls.status === "fulfilled") bundle.classification = cls.value as Classification; else failed = true;
       if (cont.status === "fulfilled") bundle.containers = (cont.value as ContainerOut[]) || []; else failed = true;
       if (ano.status === "fulfilled") bundle.anomalies = (ano.value as Anomaly[]) || []; else failed = true;
       if (shp.status === "fulfilled") bundle.shopping = (shp.value as ShoppingGroup[]) || []; else failed = true;
-      if (fav.status === "fulfilled") bundle.favorites = (fav.value as FavProduct[]) || []; else failed = true;
+      if (top.status === "fulfilled") bundle.topSellers = (top.value as TopSeller[]) || []; else failed = true;
       if (!failed) cacheRef.current[shop] = bundle;
       applyBundle(bundle);
       if (failed) {
@@ -663,27 +772,47 @@ export default function Dashboard({
     return () => { alive = false; };
   }, [shop]);
 
-  // Nadchodzące dostawy: kontenery niedostarczone, najbliższe wg ETA
-  const deliveries = useMemo(
-    () => containers.filter((c) => (c.effective_status ?? c.status) !== "DELIVERED")
-      .sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime())
-      .slice(0, 6),
-    [containers],
-  );
+  // Pipeline zaopatrzenia: WSZYSTKIE niedostarczone kontenery
+  // (zamówione + w produkcji + w drodze + odprawa), nie tylko IN_TRANSIT.
+  //
+  // Przy wybranym sklepie kontener nie znika, tylko liczy się jego UDZIAŁ:
+  //  · lista dostaw  → kontenery, które wiozą towar tej firmy (kontener przypływa cały),
+  //  · KPI "W drodze" → suma wartości WYŁĄCZNIE pozycji tej firmy.
+  // Gdyby backend nie przysłał firma_breakdown (stary deploy), spadamy na całość — bez wysypki.
+  const pipeline = useMemo(() => {
+    const undelivered = containers
+      .filter((c) => (c.effective_status ?? c.status) !== "DELIVERED")
+      .sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime());
 
-  // W drodze (KPI): suma wartości i liczba WSZYSTKICH niedostarczonych kontenerów
-  // (zamówione + w produkcji + w drodze + odprawa) — cały pipeline zaopatrzenia, nie tylko IN_TRANSIT.
-  const inTransit = useMemo(() => {
-    const t = containers.filter((c) => (c.effective_status ?? c.status) !== "DELIVERED");
-    return { value: t.reduce((s, c) => s + (c.total_value || 0), 0), count: t.length };
-  }, [containers]);
+    if (!shop) {
+      return {
+        deliveries: undelivered,
+        value: undelivered.reduce((s, c) => s + (c.total_value || 0), 0),
+        count: undelivered.length,
+      };
+    }
+    const hasBreakdown = undelivered.some((c) => c.firma_breakdown && Object.keys(c.firma_breakdown).length > 0);
+    if (!hasBreakdown) {
+      return {
+        deliveries: undelivered,
+        value: undelivered.reduce((s, c) => s + (c.total_value || 0), 0),
+        count: undelivered.length,
+      };
+    }
+    const mine = undelivered.filter((c) => (c.firma_breakdown?.[shop]?.units ?? 0) > 0);
+    return {
+      deliveries: mine,
+      value: mine.reduce((s, c) => s + (c.firma_breakdown?.[shop]?.value ?? 0), 0),
+      count: mine.length,
+    };
+  }, [containers, shop]);
 
-  // Pożary: najpilniejsze pozycje z listy zakupów (KRYTYCZNY/ZAMÓW TERAZ) wg dni do końca
+  // Pożary: pozycje z listy zakupów (KRYTYCZNY/ZAMÓW TERAZ) wg dni do końca — pełna lista,
+  // karta sama limituje do 5 wierszy i rozwija resztę w miejscu.
   const fires = useMemo(() => {
     const all = shopping.flatMap((g) => g.products);
     return all.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ")
-      .sort((a, b) => a.days_until_empty - b.days_until_empty)
-      .slice(0, 8);
+      .sort((a, b) => a.days_until_empty - b.days_until_empty);
   }, [shopping]);
 
   const SHOPS: Array<{ v: string; l: string }> = [
@@ -716,17 +845,17 @@ export default function Dashboard({
       {shopSelector}
       {loading ? <DashboardSkeleton gap={gap} /> : (
         <>
-          <KpiGrid history={history} classification={classification} inTransitValue={inTransit.value} inTransitCount={inTransit.count} />
+          <KpiGrid history={history} classification={classification} inTransitValue={pipeline.value} inTransitCount={pipeline.count} shop={shop} />
           {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             <FiresCard fires={fires} onProductClick={onProductClick} />
-            <DeliveriesCard deliveries={deliveries} onContainerClick={onContainerClick} />
+            <DeliveriesCard deliveries={pipeline.deliveries} shop={shop} onContainerClick={onContainerClick} />
           </div>
           <ShoppingListCard groups={shopping} showEdit={showEdit} onShowOrderPdf={onShowOrderPdf} onAutoSuggest={onAutoSuggest} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             <AnomaliesCard anomalies={anomalies} onProductClick={onProductClick} />
-            <WatchedCard watched={favorites} onProductClick={onProductClick} />
+            <TopSellersCard top={topSellers} shop={shop} onProductClick={onProductClick} />
           </div>
         </>
       )}
