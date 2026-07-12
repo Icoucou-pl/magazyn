@@ -14,7 +14,7 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult, CurrentUser,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut,
 )
 from security import get_current_user, has_perm
 from services.products import fetch_products, get_product
@@ -304,3 +304,39 @@ async def list_favorites(shop: str = "", db: AsyncSession = Depends(get_db), use
     """Zwraca tylko ulubione produkty."""
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
     return _mask_financials([p for p in products if p.is_favorite], user)
+
+
+@router.get("/top-sellers", response_model=List[TopSellerOut])
+async def top_sellers(
+    shop: str = Query(""),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Top sprzedaży wg SZTUK z ostatnich 30 dni (sales_1m), malejąco.
+
+    shop="" = suma wszystkich sklepów; "amh"/"acti"/"veluxa" = sprzedaz danego sklepu.
+    Model wyjsciowy nie zawiera zadnych pol finansowych, wiec endpoint jest dostepny
+    dla kazdego zalogowanego uzytkownika (bez viewFinancials) i nie wymaga maskowania.
+    """
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
+    ranked = sorted(
+        (p for p in products if p.sales_1m > 0),
+        key=lambda p: (p.sales_1m, p.avg_monthly_weighted),
+        reverse=True,
+    )[:limit]
+    return [
+        TopSellerOut(
+            sku=p.sku,
+            name=p.name,
+            status=p.status,
+            stock=p.stock,
+            days_until_empty=p.days_until_empty,
+            sales_1m=p.sales_1m,
+            sales_yoy_30d=p.sales_yoy_30d,
+            avg_monthly=p.avg_monthly_weighted,
+            manufacturer_name=p.manufacturer_name,
+            manufacturer_color=p.manufacturer_color,
+        )
+        for p in ranked
+    ]
