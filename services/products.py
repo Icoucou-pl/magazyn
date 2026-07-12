@@ -15,10 +15,19 @@ from models import ProductSummary, IncomingDelivery
 
 
 def classify_product(row: dict) -> str:
-    """Status produktu. Ręczne wymuszenie (forced_status) ma najwyższy priorytet."""
+    """Status produktu. Ręczne wymuszenie (forced_status) ma najwyższy priorytet.
+
+    SAMPLE to etykieta, nie wynik obliczeń: produkt oznaczony is_sample dostaje status SAMPLE
+    niezależnie od stanu i sprzedaży. Dzięki temu wypada z auto-sugestii, listy zakupów i anomalii
+    (te czytają wyłącznie ACTIVE / ACTIVE_NO_STOCK) i nie zaśmieca dead stocku zerową sprzedażą.
+    Gdy sample się przyjmie — odznaczasz etykietę i produkt wraca do normalnej klasyfikacji.
+    """
     forced = row.get("forced_status")
     if forced and forced in ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"):
         return forced
+
+    if row.get("is_sample", False):
+        return "SAMPLE"
 
     # Status liczony GLOBALNIE (ze wszystkich sklepów), niezależnie od wybranej zakładki:
     # produkt aktywny gdziekolwiek jest aktywny wszędzie. Liczby per-sklep (stock, sales_*)
@@ -113,6 +122,8 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
         firma_color=row.get("firma_color"),
         seasonality_enabled=row.get("seasonality_enabled", False),
         is_favorite=row.get("is_favorite", False),
+        is_sample=bool(row.get("is_sample", False)),
+        sample_stock=int(row.get("sample_stock") or 0),
         ean=row.get("ean"),
         forced_status=row.get("forced_status"),
         lead_time_days=row["lead_time_days"],
