@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 # ===== TYPY =====
 ContainerStatus = Literal["ORDERED", "IN_PRODUCTION", "IN_TRANSIT", "DELIVERED"]
-ProductStatus = Literal["ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"]
+ProductStatus = Literal["ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"]
 UserRole = Literal["ADMIN", "IMPORT", "VIEWER"]
 
 
@@ -127,6 +127,8 @@ class ProductSummary(BaseModel):
     firma_color: Optional[str] = None
     seasonality_enabled: bool
     is_favorite: bool = False
+    is_sample: bool = False            # etykieta: produkt zamawiany próbnie (wypada z auto-sugestii i listy zakupów)
+    sample_stock: int = 0              # ręczny licznik sztuk — używany tylko gdy SKU nie ma innego źródła stanu
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # gdy ustawione: produkt ma wymuszony status
     lead_time_days: int
@@ -155,10 +157,26 @@ class ProductAttrsUpdate(BaseModel):
     manufacturer_id: Optional[int] = None
     firma_id: Optional[int] = None
     seasonality_enabled: Optional[bool] = None
+    is_sample: Optional[bool] = None      # None = nie zmieniaj; True/False = ustaw etykietę sample
+    sample_stock: Optional[int] = Field(None, ge=0)   # ręczny stan sampla
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # "ACTIVE","ACTIVE_NO_STOCK","DEAD_STOCK","INACTIVE", lub None (auto)
     cena_zakupu: Optional[float] = None  # None = nie zmieniaj; <=0 = wyczyść override (→ Subiekt); >0 = ustaw. Wymaga viewFinancials.
     name_override: Optional[str] = None  # None = nie zmieniaj; "" = wyczyść (→ nazwa z Subiektu/zamówień); tekst = ustaw ręczną nazwę.
+
+
+class SampleCreate(BaseModel):
+    """Nowy sample — SKU, którego nie ma ani w Subiekcie, ani w Sellasiście.
+    Tworzy wiersz w app_product_attrs z is_sample=TRUE; katalog (SALES_QUERY, pri 4)
+    podnosi go wtedy do rangi normalnego produktu."""
+    sku: str = Field(..., min_length=1, max_length=120)
+    name: str = Field(..., min_length=1, max_length=255)
+    manufacturer_id: Optional[int] = None
+    firma_id: Optional[int] = None
+    cbm_per_unit: float = Field(0, ge=0)
+    cena_zakupu: Optional[float] = Field(None, ge=0)
+    sample_stock: int = Field(0, ge=0)
+    ean: Optional[str] = None
 
 
 # ===== PRODUCENCI =====

@@ -68,6 +68,20 @@ catalog AS (
     FROM {settings.TABLE_EXTERNAL_STOCK}
     WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''
     GROUP BY sku_canon
+    UNION ALL
+    -- 4. źródło: SAMPLE — produkty zamawiane próbnie, nieobecne ani w Subiekcie, ani w Sellasiście.
+    --    Bez tego SKU nie istnieje w katalogu, więc nie da się mu nadać CBM ani producenta,
+    --    a w kontenerze zajmuje 0 m³ (zaniżone wypełnienie).
+    --    Uwaga: to źródło ma NAJWYŻSZE pri, więc gdy sample kiedyś wejdzie do Subiektu (pri 1)
+    --    albo się sprzeda w Sellasiście (pri 2), dedup automatycznie weźmie prawdziwe źródło.
+    SELECT LOWER(TRIM(pas.sku)) AS sku_canon,
+           pas.sku AS sku_raw,
+           COALESCE(NULLIF(TRIM(pas.name_override), ''), pas.sku) AS nazwa,
+           0::numeric AS stan,
+           0::numeric AS cena,
+           4 AS pri
+    FROM {settings.TABLE_PRODUCT_ATTRS} pas
+    WHERE COALESCE(pas.is_sample, FALSE) AND pas.sku IS NOT NULL AND TRIM(pas.sku) <> ''
 ),
 catalog_dedup AS (
     SELECT DISTINCT ON (sku_canon)
@@ -104,8 +118,17 @@ SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
     COALESCE(NULLIF(TRIM(pa.name_override), ''), p.{settings.COL_PRODUCT_NAME}) AS name,
     pa.name_override AS name_override_manual,
-    (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) ELSE 0 END + COALESCE(es.qty, 0))::int AS stock,
-    (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(esg.qty, 0))::int AS stock_global,
+    -- Sample istniejący TYLKO w app_product_attrs (src_pri = 4) nie ma źródła stanu
+    -- (nie zna go ani Subiekt, ani Sellasist) — stan bierze się z ręcznego licznika sample_stock.
+    -- Sample, który JEST w Subiekcie/Sellasiście (pri 1-3), ma stan z prawdziwego źródła.
+    (CASE WHEN p.src_pri = 4
+          THEN COALESCE(pa.sample_stock, 0)
+          ELSE (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) ELSE 0 END + COALESCE(es.qty, 0))
+     END)::int AS stock,
+    (CASE WHEN p.src_pri = 4
+          THEN COALESCE(pa.sample_stock, 0)
+          ELSE (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(esg.qty, 0))
+     END)::int AS stock_global,
     COALESCE(NULLIF(pa.cena_zakupu, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     pa.cena_zakupu::float AS cena_zakupu_manual,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
@@ -121,6 +144,9 @@ SELECT
     pa.ean AS ean,
     pa.forced_status AS forced_status,
     COALESCE(pa.force_visible, FALSE) AS force_visible,
+    COALESCE(pa.is_sample, FALSE) AS is_sample,
+    COALESCE(pa.sample_stock, 0)::int AS sample_stock,
+    p.src_pri::int AS src_pri,
     COALESCE(sp.qty_1m, 0)::int AS sales_1m_total,
     COALESCE(sp.qty_2m, 0)::int AS sales_2m_total,
     COALESCE(sp.qty_3m, 0)::int AS sales_3m_total,
@@ -143,6 +169,9 @@ WHERE (
     :shop = ''
     OR (:shop = 'amh' AND p.src_pri = 1)
     OR (:shop <> '' AND :shop <> 'amh' AND (es.qty IS NOT NULL OR sp.sku_normalized IS NOT NULL))
+    -- Czysty sample (pri 4) nie ma ani stanu w Sellasiście, ani sprzedaży, więc wypadłby
+    -- z każdej zakładki sklepu. Pokazujemy go w zakładce jego firmy (brak firmy → AMH).
+    OR (p.src_pri = 4 AND :shop = LOWER(COALESCE(f.slug, 'amh')))
 )
 ORDER BY p.{settings.COL_PRODUCT_SKU};
 """
