@@ -144,20 +144,14 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
     )
 
 
-async def auto_deliver_containers(db: AsyncSession):
-    """Automatycznie oznacza kontenery IN_TRANSIT jako DELIVERED gdy ETA minęła."""
-    await db.execute(text(f"""
-        UPDATE {settings.TABLE_CONTAINERS}
-        SET status = 'DELIVERED', updated_at = CURRENT_TIMESTAMP
-        WHERE status = 'IN_TRANSIT' AND eta_date <= CURRENT_DATE
-    """))
-    await db.commit()
-
-
 async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> List[ProductSummary]:
     """Pobiera produkty z metrykami, filtrowane po statusie (include_set).
-    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = sprzedaż i stan tylko danego sklepu (Faza 3)."""
-    await auto_deliver_containers(db)
+    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = sprzedaż i stan tylko danego sklepu (Faza 3).
+
+    Uwaga: status dostawy kontenerów liczy się WYŁĄCZNIE miękko przez
+    compute_effective_status (ETA → odprawa celna → auto-dostawa). Nie ruszamy
+    tu kolumny `status` w bazie — dawny auto_deliver_containers przepisywał
+    IN_TRANSIT→DELIVERED w dniu ETA i tym samym zjadał okno odprawy."""
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     products = [dict(r._mapping) for r in products_result]
 
