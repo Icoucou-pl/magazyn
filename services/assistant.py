@@ -61,6 +61,8 @@ _PROMPT_FINANCE = (
     "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu, cashflow). "
     "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
     "Do sprzedaży za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat („wczoraj”, „ten tydzień”, „od 1 do 7 lipca”) użyj finanse_zakres(od, do) w formacie RRRR-MM-DD — dla jednego dnia „do” pomiń. "
+    "Gdy finanse_zakres zwróci swieze=true, ZAWSZE prowadź odpowiedź LICZBĄ WSZYSTKICH zamówień (pole zamowien_razem) i wartością brutto wszystkich, a przychód netto/marżę podaj jako "
+    "„zrealizowane do tej pory” z jednym zdaniem, że reszta paczek jest jeszcze w drodze i kwoty urosną. NIGDY nie podawaj zamowienia_zrealizowane jako „liczby zamówień” — to tylko doręczone. "
     "Narzędzia finansowe za okres mają opcjonalne filtry: sklep (amh|acti|veluxa), producent (marka mebli) i sku (jeden produkt). "
     "AMH, Acti i Veluxa to SKLEPY — podawaj je w parametrze sklep, NIGDY w producent. Bez sklepu = suma wszystkich sklepów (cała firma). "
     "„Sprzedaż AMH za maj” → finanse_miesiac(rok=2026, miesiac=5, sklep='amh'). „Porównaj Acti lipiec do czerwca” → porownaj_miesiace(..., sklep='acti'). "
@@ -686,6 +688,30 @@ def _parse_date(val: Any) -> Optional[date]:
     return None
 
 
+async def _orders_context(db: AsyncSession, od: date, do: date, shop: str) -> Dict[str, Any]:
+    """Liczba WSZYSTKICH zamówień + wartość brutto + świeżość (<14 dni) dla dnia/zakresu i sklepu.
+    Używane, by sprzedaż za świeży dzień pokazywać z liczbą wszystkich zamówień, a nie tylko zrealizowanych."""
+    o = settings.TABLE_ORDERS
+    dcol = settings.COL_ORDER_DATE
+    params: Dict[str, Any] = {"od": od, "do": do}
+    where = f"WHERE ord.{dcol}::date BETWEEN :od AND :do"
+    if shop:
+        where += " AND ord.shop = :shop"
+        params["shop"] = shop
+    row = (await db.execute(text(
+        f"SELECT COUNT(*) AS c, COALESCE(SUM(ord.total), 0)::float AS s FROM {o} ord {where}"
+    ), params)).mappings().first()
+    dni = (date.today() - do).days
+    swieze = dni < 14
+    return {
+        "zamowien_razem": int(row["c"]),
+        "wartosc_brutto_wszystkich": round(row["s"] or 0, 2),
+        "dni_od_konca_zakresu": dni,
+        "swieze": swieze,
+        "podsumuj_po": ("liczba_zamowien" if swieze else "kwotowo"),
+    }
+
+
 async def _tool_martwy_stan(db: AsyncSession, user: CurrentUser, producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
     prods = await fetch_products(db, {"DEAD_STOCK"}, _norm_shop(sklep))
     if producent:
@@ -1172,8 +1198,33 @@ async def _tool_finanse_zakres(db: AsyncSession, user: CurrentUser, od: Any = No
         return {"blad": "podaj datę „od” (RRRR-MM-DD); dla jednego dnia „do” pomiń"}
     sym = (str(sku).strip().upper() or None) if sku else None
     prod = (str(producent).strip() or None) if producent else None
-    return await range_finance(db, str(od).strip(), (str(do).strip() if do else None),
-                               symbol=sym, producent=prod, shop=_norm_shop(sklep))
+    shop = _norm_shop(sklep)
+    res = await range_finance(db, str(od).strip(), (str(do).strip() if do else None),
+                              symbol=sym, producent=prod, shop=shop)
+    if not isinstance(res, dict) or "blad" in res:
+        return res
+    # Doklej liczbę WSZYSTKICH zamówień + świeżość, żeby sprzedaż za świeży dzień nie była mylona
+    # z liczbą zrealizowanych. Bez filtra sku/producent (kontekst dotyczy całego dnia/sklepu).
+    if not sym and not prod:
+        od_d = _parse_date(od)
+        do_d = _parse_date(do) or od_d
+        if od_d:
+            if do_d < od_d:
+                od_d, do_d = do_d, od_d
+            ctx = await _orders_context(db, od_d, do_d, shop)
+            res["zamowienia_zrealizowane"] = res.pop("zamowienia", None)   # 45 = tylko doręczone
+            res.update(ctx)                                                # zamowien_razem = 115 (wszystkie)
+            if ctx["swieze"]:
+                res["uwaga"] = (
+                    "ŚWIEŻY zakres (<14 dni): przychód netto/brutto/marża to TYLKO zamówienia już zrealizowane "
+                    f"({res.get('zamowienia_zrealizowane')} z {ctx['zamowien_razem']}). Reszta paczek jest jeszcze w drodze, "
+                    "statusy się nie ustały, więc kwoty urosną. W odpowiedzi PODAJ jako główną liczbę WSZYSTKICH zamówień "
+                    "(zamowien_razem) i wartość brutto wszystkich, a przychód/marżę opisz jako 'zrealizowane do tej pory'. "
+                    "NIE przedstawiaj zamowienia_zrealizowane jako 'liczby zamówień'."
+                )
+            else:
+                res["uwaga"] = "Zakres domknięty (>14 dni) — sprzedaż zrealizowana jest miarodajna."
+    return res
 
 
 async def _tool_zamowienia_wg_statusu(db: AsyncSession, user: CurrentUser,
