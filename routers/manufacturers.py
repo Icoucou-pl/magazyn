@@ -19,7 +19,10 @@ async def list_manufacturers(db: AsyncSession = Depends(get_db), user: CurrentUs
     r = await db.execute(text(f"""
         SELECT m.id, m.name, m.color, m.notes, m.email, m.contact,
             (SELECT COUNT(*) FROM {settings.TABLE_PRODUCT_ATTRS} pa WHERE pa.manufacturer_id = m.id) AS sku_count,
-            (SELECT COUNT(*) FROM {settings.TABLE_CONTAINERS} c WHERE c.manufacturer_id = m.id AND c.status <> 'DELIVERED') AS open_orders
+            (SELECT COUNT(*) FROM {settings.TABLE_CONTAINERS} c
+                WHERE c.manufacturer_id = m.id
+                  AND c.status <> 'DELIVERED'
+                  AND c.eta_date + {int(settings.CONTAINER_CUSTOMS_DAYS)} >= CURRENT_DATE) AS open_orders
         FROM {settings.TABLE_MANUFACTURERS} m
         ORDER BY m.name
     """))
