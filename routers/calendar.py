@@ -42,13 +42,14 @@ async def calendar_events(db: AsyncSession = Depends(get_db), user: CurrentUser 
             })
 
     for c in containers:
-        if c.status != "DELIVERED":
+        eff = c.effective_status or c.status
+        if eff != "DELIVERED":
             events.append({
                 "date": c.eta_date.isoformat(), "type": "DELIVERY",
                 "container_id": c.id, "container_number": c.container_number,
                 "order_number": c.order_number, "manufacturer_name": c.manufacturer_name,
                 "manufacturer_color": c.manufacturer_color, "total_units": c.total_units,
-                "container_status": c.status,
+                "container_status": eff,
             })
 
     return events
@@ -70,7 +71,7 @@ async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db), user: Cu
         })
 
     for c in containers:
-        if c.status == "DELIVERED":
+        if (c.effective_status or c.status) == "DELIVERED":
             continue
         eta = c.eta_date
         idx = (eta.year - today.year) * 12 + (eta.month - today.month)
