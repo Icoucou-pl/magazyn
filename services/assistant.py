@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from config import included_status_clause
+from config import sales_channel_case
 from models import CurrentUser
 from security import has_perm
 from services.products import fetch_products
@@ -65,6 +66,10 @@ _PROMPT_FINANCE = (
     "„Sprzedaż AMH za maj” → finanse_miesiac(rok=2026, miesiac=5, sklep='amh'). „Porównaj Acti lipiec do czerwca” → porownaj_miesiace(..., sklep='acti'). "
     "UWAGA — sprzedaż z narzędzi finansowych to ZREALIZOWANA sprzedaż (tylko statusy doręczone). Do LICZBY zamówień danego dnia, podziału po statusie, "
     "opłacone/nieopłacone i liczby pobrań (COD) użyj zamowienia_wg_statusu(data_od, sklep). Różnica między liczbą zamówień a „sprzedażą” jest normalna (statusy). "
+    "PORÓWNYWANIE/PODSUMOWANIE DNI: dla dni/zakresów z ostatnich 14 dni (pole swieze=true) prowadź po LICZBIE zamówień i wartości brutto wszystkich, "
+    "NIGDY nie mów „X razy więcej” na podstawie zrealizowanych — bo świeże dni mają jeszcze paczki w trasie, statusy się nie ustały. Dodaj krótką notkę: "
+    "„do 14 dni wstecz porównuję po liczbie zamówień, powyżej — kwotowo”. Dla zakresów starszych niż 14 dni (swieze=false) podsumowuj kwotowo (zrealizowane netto/marża). "
+    "Płatności z zamowienia_wg_statusu są już rozłączne i poprawne: opłacone (z Klaudią jako opłaconą), nieopłacone (bez Klaudii i bez pobrań), pobrania_cod osobno — używaj tych pól wprost. "
     "Gdy wynik ma koszt_niepewny=true (Acti/Veluxa), zastrzeż, że marża i koszt mogą być zawyżone (ceny zakupu z Subiektu AMH). "
     "Jeśli narzędzie zwróci producent_nieznany, nie mów „zero sprzedaży” — powiedz, że nie znasz takiej marki i policz bez tego filtra. "
     "Gdy w pytaniu o miesiąc/okres brakuje roku, przyjmij bieżący rok. "
@@ -1200,13 +1205,29 @@ async def _tool_zamowienia_wg_statusu(db: AsyncSession, user: CurrentUser,
         f"SELECT COALESCE(NULLIF(TRIM(ord.{scol}), ''), '(brak)') AS k, COUNT(*) AS c "
         f"FROM {o} ord {where} GROUP BY 1 ORDER BY c DESC"
     ), params)).mappings().all()
+
+    # Rozłączne kubełki płatności. Reguły ustalone z użytkownikiem:
+    #  - kanał Klaudia (drop/Klaudia) traktujemy ZAWSZE jak opłacone (płacą z dużym opóźnieniem, w bazie unpaid),
+    #  - pobranie (COD) jest osobnym kubełkiem i NIE wlicza się do nieopłaconych,
+    #  - nieopłacone = unpaid, ale bez Klaudii i bez COD.
+    klaudia = f"({sales_channel_case('ord')}) = 'Klaudia'"
+    cod = "ord.payment_name ILIKE '%pobran%'"
+    buckets = (await db.execute(text(
+        f"SELECT "
+        f"  COUNT(*) FILTER (WHERE {klaudia}) AS klaudia, "
+        f"  COUNT(*) FILTER (WHERE {cod} AND NOT ({klaudia})) AS cod, "
+        f"  COUNT(*) FILTER (WHERE ord.payment_status = 'paid' AND NOT ({klaudia}) AND NOT ({cod})) AS paid, "
+        f"  COUNT(*) FILTER (WHERE ord.payment_status = 'unpaid' AND NOT ({klaudia}) AND NOT ({cod})) AS unpaid "
+        f"FROM {o} ord {where}"
+    ), params)).mappings().first()
+    oplacone = int(buckets["paid"]) + int(buckets["klaudia"])   # Klaudia liczona jako opłacona
+    nieoplacone = int(buckets["unpaid"])
+    pobrania = int(buckets["cod"])
+
     pay = (await db.execute(text(
         f"SELECT COALESCE(NULLIF(TRIM(ord.payment_status), ''), '(brak)') AS k, COUNT(*) AS c "
         f"FROM {o} ord {where} GROUP BY 1 ORDER BY c DESC"
     ), params)).mappings().all()
-    cod = (await db.execute(text(
-        f"SELECT COUNT(*) AS c FROM {o} ord {where} AND ord.payment_name ILIKE '%pobran%'"
-    ), params)).mappings().first()
 
     realized_clause = included_status_clause("ord")   # ta sama whitelista statusów co finanse (per-sklep)
     zrealizowane = None
@@ -1216,20 +1237,26 @@ async def _tool_zamowienia_wg_statusu(db: AsyncSession, user: CurrentUser,
         ), params)).mappings().first()
         zrealizowane = int(zr["c"])
 
-    pay_map = {r["k"]: int(r["c"]) for r in pay}
+    # Świeżość: dzień/zakres krótszy niż 14 dni wstecz jeszcze się „realizuje” (statusy się nie ustały)
+    dni_od_konca = (date.today() - do).days
+    swieze = dni_od_konca < 14
+
     return {
         "od": od.isoformat(), "do": do.isoformat(), "sklep": shop or "wszystkie",
         "zamowien_razem": int(total["c"]),
         "zrealizowane_sprzedaz": zrealizowane,
-        "oplacone": pay_map.get("paid", 0),
-        "nieoplacone": pay_map.get("unpaid", 0),
-        "pobrania_cod": int(cod["c"]),
+        "oplacone": oplacone,
+        "nieoplacone": nieoplacone,
+        "pobrania_cod": pobrania,
         "wartosc_brutto_wszystkich": round(total["s"] or 0, 2),
+        "dni_od_konca_zakresu": dni_od_konca,
+        "swieze": swieze,
+        "podsumuj_po": ("liczba_zamowien" if swieze else "kwotowo"),
         "wg_statusu": [{"status": r["k"], "liczba": int(r["c"])} for r in st],
         "wg_platnosci": [{"platnosc": r["k"], "liczba": int(r["c"])} for r in pay],
-        "uwaga": ("zamowien_razem = WSZYSTKIE zamówienia z dnia (każdy status). "
-                  "zrealizowane_sprzedaz = tylko statusy doręczone (jak w finansach). "
-                  "'nieoplacone' (payment_status=unpaid) to co innego niż status 'Nieopłacone' w wg_statusu."),
+        "uwaga": ("Płatności rozłączne: opłacone = paid + kanał Klaudia (Klaudia zawsze jako opłacona); "
+                  "nieopłacone = unpaid bez Klaudii i bez pobrań; pobrania_cod osobno. "
+                  "Gdy swieze=true (koniec zakresu <14 dni temu) porównuj/podsumowuj po LICZBIE zamówień, nie po zrealizowanych — statusy jeszcze się nie ustały."),
     }
 
 
