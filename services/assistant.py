@@ -5,23 +5,25 @@ Zasada: model NIGDY nie wymyśla liczb. Na pytanie po polsku wybiera narzędzie
 wynik w zdanie. Dostawcę (Groq / Gemini / Ollama / Anthropic) ustawiamy zmiennymi
 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL — bez ruszania kodu.
 
-Narzędzia finansowe respektują uprawnienie assistantFinancials (osobne od viewFinancials,
-które steruje widocznością finansów w UI) — dzięki temu ktoś może widzieć PLN w interfejsie,
-a mimo to nie pytać o finanse asystenta.
+Narzędzia są TYLKO-DO-ODCZYTU i nie zwracają pól finansowych (zero ryzyka wycieku
+marż/kosztów przez asystenta). Pod przyszłe narzędzia finansowe respektowalibyśmy
+uprawnienie viewFinancials.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from config import included_status_clause
 from models import CurrentUser
 from security import has_perm
 from services.products import fetch_products
@@ -31,9 +33,7 @@ from services.usage import log_usage
 MAX_ROUNDS = 4            # ile razy max model może poprosić o narzędzie w jednej turze
 LLM_TIMEOUT = 30          # sekundy na pojedyncze wywołanie LLM
 
-# Prompt rozbity na 3 części: BAZA (magazyn — dla wszystkich), FINANSE (tylko assistantFinancials — nie
-# doklejamy osobom bez uprawnień, oszczędza tokeny) i OGON (formatowanie). Montaż w run_chat.
-_PROMPT_BASE = (
+SYSTEM_PROMPT = (
     "Jesteś asystentem magazynowym aplikacji „Magazyn” firmy i-coucou. "
     "Odpowiadasz wyłącznie po polsku, krótko i konkretnie — jak kolega z pracy. "
     "ZAWSZE używaj narzędzi, żeby pobrać liczby z bazy: stany, prognozy, sprzedaż, listę do zamówienia, kontenery. "
@@ -51,22 +51,17 @@ _PROMPT_BASE = (
     "Firmy/sklepy to AMH (i-coucou), Acti i Veluxa. Gdy pytanie dotyczy jednego sklepu (np. „sprzedaż Veluxy”, „co domówić dla Acti”, „martwy stan Acti”, „stan SZP0 w Acti”), "
     "podaj parametr sklep = amh|acti|veluxa do narzędzi, które go przyjmują. Bez wskazania sklepu liczby są sumą wszystkich. "
     "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
-    "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
-)
-
-_PROMPT_FINANCE = (
     "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu, cashflow). "
-    "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
-    "Do sprzedaży za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat („wczoraj”, „ten tydzień”, „od 1 do 7 lipca”) użyj finanse_zakres(od, do) w formacie RRRR-MM-DD — dla jednego dnia „do” pomiń. "
-    "Narzędzia finansowe za okres mają opcjonalne filtry: sklep (amh|acti|veluxa), producent (marka mebli) i sku (jeden produkt). "
-    "AMH, Acti i Veluxa to SKLEPY — podawaj je w parametrze sklep, NIGDY w producent. Bez sklepu = suma wszystkich sklepów (cała firma). "
-    "„Sprzedaż AMH za maj” → finanse_miesiac(rok=2026, miesiac=5, sklep='amh'). „Porównaj Acti lipiec do czerwca” → porownaj_miesiace(..., sklep='acti'). "
-    "Gdy wynik ma koszt_niepewny=true (Acti/Veluxa), zastrzeż, że marża i koszt mogą być zawyżone (ceny zakupu z Subiektu AMH). "
-    "Jeśli narzędzie zwróci producent_nieznany, nie mów „zero sprzedaży” — powiedz, że nie znasz takiej marki i policz bez tego filtra. "
-    "Gdy w pytaniu o miesiąc/okres brakuje roku, przyjmij bieżący rok. "
+    "Do pytań o obrót/przychód w rozbiciu na miesiące (np. „obrót w każdym miesiącu od stycznia”) użyj finanse_ogolne z okres=ytd i pola obrot_miesieczny. "
+    "WAŻNE: narzędzia finansowe (finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu) liczą ZREALIZOWANĄ sprzedaż — tylko zamówienia w statusach doręczonych (whitelist), "
+    "dla CAŁEJ firmy łącznie (NIE per sklep) i tylko dla gotowych okresów (ytd/365/90/30/prev_year), bez pojedynczego dnia. "
+    "Nie twierdź, że te dane są „dla AMH” ani „z konkretnego dnia” — bo nimi nie są. "
+    "Do liczby ZAMÓWIEŃ w danym dniu/zakresie, podziału po statusie, opłacone/nieopłacone i liczby pobrań (COD) — użyj zamowienia_wg_statusu (można podać sklep). "
+    "Jeśli liczba zamówień z zamowienia_wg_statusu różni się od „sprzedaży” z finansów, to normalne: finanse liczą tylko doręczone, a zamowienia_wg_statusu wszystkie statusy. "
+    "Jeśli narzędzie finansowe zwróci „brak_uprawnien”, powiedz krótko, że użytkownik nie ma dostępu do danych finansowych — nie podawaj żadnych kwot. "
+    "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
+    "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”)."
 )
-
-_PROMPT_TAIL = "SKU zapisuj wielkimi literami. Daty podawaj po ludzku (np. „14 lipca”)."
 
 TOOLS: List[Dict[str, Any]] = [
     {
@@ -274,7 +269,7 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
-    # --- PACZKA 2: finanse (wymagają uprawnienia assistantFinancials) ---
+    # --- PACZKA 2: finanse (wymagają uprawnienia viewFinancials) ---
     {
         "type": "function",
         "function": {
@@ -293,7 +288,8 @@ TOOLS: List[Dict[str, Any]] = [
         "function": {
             "name": "finanse_ogolne",
             "description": ("Zbiorcze finanse za okres: przychód netto/brutto, koszt, marża, liczba zamówień i sztuk, średnia wartość "
-                            "zamówienia, top kanały i top producenci. Dane finansowe — wymaga uprawnień."),
+                            "zamówienia, top kanały, top producenci ORAZ obrót miesiąc po miesiącu (obrot_miesieczny). "
+                            "Do pytań „obrót/przychód w każdym miesiącu”, „ile utargu w styczniu/lutym…”. Dane finansowe — wymaga uprawnień."),
             "parameters": {
                 "type": "object",
                 "properties": {"okres": {"type": "string", "description": "ytd | 365 | 90 | 30 | prev_year (domyślnie ytd)"}},
@@ -314,69 +310,6 @@ TOOLS: List[Dict[str, Any]] = [
                     "okres": {"type": "string", "description": "ytd | 365 | 90 | 30 | prev_year (domyślnie ytd)"},
                 },
                 "required": ["sku"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "finanse_miesiac",
-            "description": ("Finanse za KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”): "
-                            "przychód netto/brutto, koszt, marża, sztuki, zamówienia i rozbicie na kanały. "
-                            "Bez SKU — całość biznesu; z SKU — jeden produkt. Dane finansowe — wymaga uprawnień."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "rok": {"type": "integer", "description": "rok, np. 2026"},
-                    "miesiac": {"type": "integer", "description": "miesiąc 1-12 (lub nazwa po polsku, np. „lipiec”)"},
-                    "sklep": {"type": "string", "description": "opcjonalny sklep: amh | acti | veluxa (bez tego = wszystkie sklepy razem)"},
-                    "producent": {"type": "string", "description": "opcjonalna marka/producent mebli (to NIE sklep) — finanse tylko tej marki"},
-                    "sku": {"type": "string", "description": "opcjonalne SKU — finanse tylko tego produktu"},
-                },
-                "required": ["rok", "miesiac"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "porownaj_miesiace",
-            "description": ("Porównuje DWA miesiące kalendarzowe obok siebie z różnicami (Δ zł i %): przychód, marża, koszt, "
-                            "sztuki, zamówienia. Do pytań typu „lipiec vs czerwiec”, „porównaj maj do kwietnia”. "
-                            "Bez SKU — całość; z SKU — jeden produkt. Dane finansowe — wymaga uprawnień."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "rok_a": {"type": "integer", "description": "rok pierwszego (nowszego) miesiąca"},
-                    "miesiac_a": {"type": "integer", "description": "pierwszy (nowszy) miesiąc 1-12 lub nazwa po polsku"},
-                    "rok_b": {"type": "integer", "description": "rok drugiego (odniesienia) miesiąca"},
-                    "miesiac_b": {"type": "integer", "description": "drugi (odniesienia) miesiąc 1-12 lub nazwa po polsku"},
-                    "sklep": {"type": "string", "description": "opcjonalny sklep: amh | acti | veluxa (bez tego = wszystkie sklepy razem)"},
-                    "producent": {"type": "string", "description": "opcjonalna marka/producent mebli (to NIE sklep) — porównanie tylko tej marki"},
-                    "sku": {"type": "string", "description": "opcjonalne SKU — porównanie tylko tego produktu"},
-                },
-                "required": ["rok_a", "miesiac_a", "rok_b", "miesiac_b"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "finanse_zakres",
-            "description": ("Finanse za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat (np. „sprzedaż wczoraj”, "
-                            "„ten tydzień”, „od 1 do 7 lipca”): przychód, koszt, marża, sztuki, zamówienia, kanały. "
-                            "Daty w formacie RRRR-MM-DD; dla jednego dnia „do” pomiń. Te same filtry sklep/producent/sku. "
-                            "Dane finansowe — wymaga uprawnień."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "od": {"type": "string", "description": "data początkowa RRRR-MM-DD (włącznie)"},
-                    "do": {"type": "string", "description": "data końcowa RRRR-MM-DD (włącznie); pomiń dla pojedynczego dnia"},
-                    "sklep": {"type": "string", "description": "opcjonalny sklep: amh | acti | veluxa (bez tego = wszystkie razem)"},
-                    "producent": {"type": "string", "description": "opcjonalna marka/producent mebli (to NIE sklep)"},
-                    "sku": {"type": "string", "description": "opcjonalne SKU — tylko ten produkt"},
-                },
-                "required": ["od"],
             },
         },
     },
@@ -490,6 +423,26 @@ TOOLS: List[Dict[str, Any]] = [
             "name": "statystyki",
             "description": ("Ogólne liczby magazynu: liczba produktów, produkty ze stanem, liczba zamówień z 12 miesięcy."),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "zamowienia_wg_statusu",
+            "description": ("Rozbicie zamówień dla dnia lub zakresu dat: liczba wszystkich zamówień, ile zrealizowanych (statusy doręczone, "
+                            "jak w finansach), ile opłaconych/nieopłaconych (payment_status paid/unpaid), ile za pobraniem (COD), "
+                            "oraz pełny podział po statusie i po statusie płatności. Opcjonalnie per sklep. "
+                            "Do pytań „ile zamówień wczoraj”, „ile anulowanych/nieopłaconych”, „ile za pobraniem”, „ile zrealizowanych”. "
+                            "Dane finansowe/operacyjne — wymaga uprawnień."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_od": {"type": "string", "description": "data (RRRR-MM-DD lub DD.MM.RRRR); można też 'wczoraj'/'dzisiaj'"},
+                    "data_do": {"type": "string", "description": "opcjonalna data końcowa; brak = ten sam dzień co data_od"},
+                    "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa"},
+                },
+                "required": ["data_od"],
+            },
         },
     },
 ]
@@ -813,12 +766,48 @@ _MIES_PL = ["styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec",
 
 
 def _brak_uprawnien() -> Dict[str, Any]:
-    return {"brak_uprawnien": True, "komunikat": "Użytkownik nie ma uprawnień do danych finansowych w asystencie (assistantFinancials)."}
+    return {"brak_uprawnien": True, "komunikat": "Użytkownik nie ma uprawnień do danych finansowych (viewFinancials)."}
 
 
 def _okres(val: Any) -> str:
     p = str(val).strip().lower() if val else "ytd"
     return p if p in _FIN_OKRESY else "ytd"
+
+
+def _obrot_miesieczny(monthly: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sumuje przychód netto per (rok, miesiąc), bo moduł Finanse zwraca punkty per miesiąc × kanał."""
+    agg: Dict[tuple, float] = {}
+    for pt in monthly:
+        key = (int(pt.get("year") or 0), int(pt.get("month") or 0))
+        agg[key] = agg.get(key, 0.0) + (pt.get("revenue_net") or 0.0)
+    return [
+        {"rok": y, "miesiac": _MIES_PL[m] if 0 <= m <= 11 else m, "nr_miesiaca": m + 1,
+         "przychod_netto": round(v, 2)}
+        for (y, m), v in sorted(agg.items())
+    ]
+
+
+def _parse_date(val: Any) -> Optional[date]:
+    """Parsuje datę z: RRRR-MM-DD, DD.MM.RRRR, DD.MM (bieżący rok), oraz 'wczoraj'/'dzisiaj'."""
+    if not val:
+        return None
+    s = str(val).strip().lower()
+    if s in ("dzisiaj", "dziś", "dzis", "today"):
+        return date.today()
+    if s in ("wczoraj", "yesterday"):
+        return date.today() - timedelta(days=1)
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    m = re.match(r"^(\d{1,2})[.\-/](\d{1,2})$", s)   # DD.MM → bieżący rok
+    if m:
+        try:
+            return date(date.today().year, int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return None
+    return None
 
 
 async def _tool_firmy(db: AsyncSession, user: CurrentUser) -> Dict[str, Any]:
@@ -863,7 +852,7 @@ async def _tool_stan_per_firma(db: AsyncSession, user: CurrentUser, sku: str) ->
 
 
 async def _tool_wartosc_magazynu(db: AsyncSession, user: CurrentUser, sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
+    if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     shop = _norm_shop(sklep)
     prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
@@ -874,7 +863,7 @@ async def _tool_wartosc_magazynu(db: AsyncSession, user: CurrentUser, sklep: Any
 
 
 async def _tool_finanse_ogolne(db: AsyncSession, user: CurrentUser, okres: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
+    if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     from routers.finance import finance_overview
     ov = (await finance_overview(period=_okres(okres), db=db, user=user)).model_dump(mode="json")
@@ -888,12 +877,13 @@ async def _tool_finanse_ogolne(db: AsyncSession, user: CurrentUser, okres: Any =
                        for c in ov.get("channels", [])[:6]],
         "top_producenci": [{"producent": m["name"], "przychod_netto": m["revenue_net"], "marza_proc": m["margin_pct"]}
                            for m in ov.get("manufacturers", [])[:6]],
+        "obrot_miesieczny": _obrot_miesieczny(ov.get("monthly", [])),
         "pozycje_bez_kosztu": ov.get("items_without_cost"),
     }
 
 
 async def _tool_finanse_produktu(db: AsyncSession, user: CurrentUser, sku: str, okres: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
+    if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     from fastapi import HTTPException
     from routers.finance import finance_product
@@ -919,7 +909,7 @@ async def _tool_finanse_produktu(db: AsyncSession, user: CurrentUser, sku: str, 
 
 
 async def _tool_sprzedaz_wg_kanalu(db: AsyncSession, user: CurrentUser, sku: Optional[str] = None, okres: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
+    if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     period = _okres(okres)
     if sku:
@@ -935,7 +925,7 @@ async def _tool_sprzedaz_wg_kanalu(db: AsyncSession, user: CurrentUser, sku: Opt
 
 
 async def _tool_cashflow(db: AsyncSession, user: CurrentUser, miesiace: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
+    if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
     from routers.calendar import cashflow
     try:
@@ -1001,7 +991,7 @@ async def _tool_lista_zakupow(db: AsyncSession, user: CurrentUser, sklep: Any = 
     from routers.anomalies import shopping_list
     shop = _norm_shop(sklep)
     groups = await shopping_list(shop=shop, db=db)
-    can_fin = has_perm(user, "assistantFinancials")
+    can_fin = has_perm(user, "viewFinancials")
     out = []
     for g in groups:
         gd = g if isinstance(g, dict) else {}
@@ -1048,81 +1038,68 @@ async def _tool_statystyki(db: AsyncSession, user: CurrentUser) -> Dict[str, Any
     }
 
 
-def _parse_rok(val: Any) -> Optional[int]:
-    try:
-        n = int(str(val).strip())
-    except (TypeError, ValueError):
-        return None
-    return n if 2000 <= n <= 2100 else None
-
-
-def _num(v: Any) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-async def _tool_finanse_miesiac(db: AsyncSession, user: CurrentUser, rok: Any = None,
-                                miesiac: Any = None, sku: Optional[str] = None,
-                                producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
+async def _tool_zamowienia_wg_statusu(db: AsyncSession, user: CurrentUser,
+                                      data_od: str, data_do: Any = None, sklep: Any = None) -> Dict[str, Any]:
+    if not has_perm(user, "viewFinancials"):
         return _brak_uprawnien()
-    from routers.finance import month_finance
-    r, m = _parse_rok(rok), _parse_miesiac(miesiac)
-    if r is None or m is None:
-        return {"blad": "podaj rok (np. 2026) i miesiąc (1-12 lub nazwa po polsku, np. „lipiec”)"}
-    sym = (str(sku).strip().upper() or None) if sku else None
-    prod = (str(producent).strip() or None) if producent else None
-    return await month_finance(db, r, m, symbol=sym, producent=prod, shop=_norm_shop(sklep))
+    od = _parse_date(data_od)
+    if not od:
+        return {"blad": "Podaj datę w formacie RRRR-MM-DD (np. 2026-07-14) lub DD.MM.RRRR."}
+    do = _parse_date(data_do) or od
+    if do < od:
+        od, do = do, od
+    shop = _norm_shop(sklep)
 
+    o = settings.TABLE_ORDERS
+    dcol = settings.COL_ORDER_DATE
+    scol = settings.COL_ORDER_STATUS
+    params: Dict[str, Any] = {"od": od, "do": do}
+    where = f"WHERE ord.{dcol}::date BETWEEN :od AND :do"
+    if shop:
+        where += " AND ord.shop = :shop"
+        params["shop"] = shop
 
-async def _tool_porownaj_miesiace(db: AsyncSession, user: CurrentUser, rok_a: Any = None, miesiac_a: Any = None,
-                                  rok_b: Any = None, miesiac_b: Any = None, sku: Optional[str] = None,
-                                  producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
-        return _brak_uprawnien()
-    from routers.finance import month_finance
-    ra, ma = _parse_rok(rok_a), _parse_miesiac(miesiac_a)
-    rb, mb = _parse_rok(rok_b), _parse_miesiac(miesiac_b)
-    if None in (ra, ma, rb, mb):
-        return {"blad": "podaj oba miesiące: rok_a+miesiac_a oraz rok_b+miesiac_b (miesiąc 1-12 lub nazwa)"}
-    sym = (str(sku).strip().upper() or None) if sku else None
-    prod = (str(producent).strip() or None) if producent else None
-    shp = _norm_shop(sklep)
-    a = await month_finance(db, ra, ma, symbol=sym, producent=prod, shop=shp)
-    b = await month_finance(db, rb, mb, symbol=sym, producent=prod, shop=shp)
+    total = (await db.execute(text(
+        f"SELECT COUNT(*) AS c, COALESCE(SUM(ord.total), 0)::float AS s FROM {o} ord {where}"
+    ), params)).mappings().first()
+    st = (await db.execute(text(
+        f"SELECT COALESCE(NULLIF(TRIM(ord.{scol}), ''), '(brak)') AS k, COUNT(*) AS c "
+        f"FROM {o} ord {where} GROUP BY 1 ORDER BY c DESC"
+    ), params)).mappings().all()
+    pay = (await db.execute(text(
+        f"SELECT COALESCE(NULLIF(TRIM(ord.payment_status), ''), '(brak)') AS k, COUNT(*) AS c "
+        f"FROM {o} ord {where} GROUP BY 1 ORDER BY c DESC"
+    ), params)).mappings().all()
+    cod = (await db.execute(text(
+        f"SELECT COUNT(*) AS c FROM {o} ord {where} AND ord.payment_name ILIKE '%pobran%'"
+    ), params)).mappings().first()
 
-    def diff(key: str) -> Dict[str, Any]:
-        va, vb = _num(a.get(key)), _num(b.get(key))
-        d = round(va - vb, 2)
-        return {"a": va, "b": vb, "roznica": d, "zmiana_proc": (round(d / vb * 100.0, 1) if vb else None)}
+    # „Zrealizowane” = ta sama whitelista statusów co finanse (per-sklep) — pozwala pogodzić
+    # liczbę wszystkich zamówień z liczbą „sprzedaży” z modułu Finanse.
+    realized_clause = included_status_clause("ord")
+    zrealizowane = None
+    if realized_clause:
+        zr = (await db.execute(text(
+            f"SELECT COUNT(*) AS c FROM {o} ord {where} {realized_clause}"
+        ), params)).mappings().first()
+        zrealizowane = int(zr["c"])
+
+    pay_map = {r["k"]: int(r["c"]) for r in pay}
 
     return {
-        "a": a, "b": b,
-        "roznica": {
-            "przychod_netto": diff("przychod_netto"),
-            "marza": diff("marza"),
-            "marza_proc": diff("marza_proc"),
-            "koszt": diff("koszt"),
-            "sztuki": diff("sztuki"),
-            "zamowienia": diff("zamowienia"),
-        },
+        "od": od.isoformat(), "do": do.isoformat(), "sklep": shop or "wszystkie",
+        "zamowien_razem": int(total["c"]),
+        "zrealizowane_sprzedaz": zrealizowane,          # = miara z finansów (statusy doręczone)
+        "oplacone": pay_map.get("paid", 0),
+        "nieoplacone": pay_map.get("unpaid", 0),
+        "pobrania_cod": int(cod["c"]),
+        "wartosc_brutto_wszystkich": round(total["s"] or 0, 2),
+        "wg_statusu": [{"status": r["k"], "liczba": int(r["c"])} for r in st],
+        "wg_platnosci": [{"platnosc": r["k"], "liczba": int(r["c"])} for r in pay],
+        "uwaga": ("zamowien_razem = WSZYSTKIE zamówienia z dnia (każdy status). "
+                  "zrealizowane_sprzedaz = tylko statusy doręczone (jak w finansach). "
+                  "Uwaga: 'nieopłacone' po płatności (payment_status=unpaid) to co innego niż status 'Nieopłacone' w wg_statusu."),
     }
-
-
-async def _tool_finanse_zakres(db: AsyncSession, user: CurrentUser, od: Any = None, do: Any = None,
-                               sku: Optional[str] = None, producent: Optional[str] = None,
-                               sklep: Any = None) -> Dict[str, Any]:
-    if not has_perm(user, "assistantFinancials"):
-        return _brak_uprawnien()
-    from routers.finance import range_finance
-    if not od:
-        return {"blad": "podaj datę „od” (RRRR-MM-DD); dla jednego dnia „do” pomiń"}
-    sym = (str(sku).strip().upper() or None) if sku else None
-    prod = (str(producent).strip() or None) if producent else None
-    return await range_finance(db, str(od).strip(), (str(do).strip() if do else None),
-                               symbol=sym, producent=prod, shop=_norm_shop(sklep))
 
 
 _DISPATCH = {
@@ -1144,13 +1121,10 @@ _DISPATCH = {
     # PACZKA 3 — firmy/sklepy
     "firmy": _tool_firmy,
     "stan_per_firma": _tool_stan_per_firma,
-    # PACZKA 2 — finanse (assistantFinancials)
+    # PACZKA 2 — finanse (viewFinancials)
     "wartosc_magazynu": _tool_wartosc_magazynu,
     "finanse_ogolne": _tool_finanse_ogolne,
     "finanse_produktu": _tool_finanse_produktu,
-    "finanse_miesiac": _tool_finanse_miesiac,
-    "porownaj_miesiace": _tool_porownaj_miesiace,
-    "finanse_zakres": _tool_finanse_zakres,
     "sprzedaz_wg_kanalu": _tool_sprzedaz_wg_kanalu,
     "cashflow": _tool_cashflow,
     # PACZKA 4 — dodatki
@@ -1162,6 +1136,7 @@ _DISPATCH = {
     "szukaj": _tool_szukaj,
     "swiezosc_danych": _tool_swiezosc_danych,
     "statystyki": _tool_statystyki,
+    "zamowienia_wg_statusu": _tool_zamowienia_wg_statusu,
 }
 
 
@@ -1192,39 +1167,11 @@ def _llm_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-# Narzędzia finansowe — ładowane do modelu TYLKO dla użytkowników z assistantFinancials.
-# Reszta dostaje mniejszy zestaw (magazyn/logistyka) → mniej tokenów wejściowych i zero rund „brak uprawnień”.
-_FINANCE_TOOL_NAMES = frozenset({
-    "wartosc_magazynu", "finanse_ogolne", "finanse_produktu",
-    "finanse_miesiac", "porownaj_miesiace", "finanse_zakres",
-    "sprzedaz_wg_kanalu", "cashflow",
-})
-
-
-def _tools_for(user: CurrentUser) -> List[Dict[str, Any]]:
-    """Zestaw narzędzi wysyłany do modelu zależnie od uprawnień."""
-    if has_perm(user, "assistantFinancials"):
-        return TOOLS
-    return [t for t in TOOLS if (t.get("function") or {}).get("name") not in _FINANCE_TOOL_NAMES]
-
-
-def _system_prompt_for(user: CurrentUser) -> str:
-    """Prompt składany per-user: baza zawsze, dodatek finansowy tylko z assistantFinancials,
-    plus dzisiejsza data (do „wczoraj/ten tydzień”)."""
-    parts = [_PROMPT_BASE]
-    if has_perm(user, "assistantFinancials"):
-        parts.append(_PROMPT_FINANCE)
-    parts.append(_PROMPT_TAIL)
-    parts.append(f" Dzisiejsza data: {date.today().isoformat()}. "
-                 "„Wczoraj”, „dziś”, „ten tydzień”, „w tym miesiącu”, „bieżący rok” licz względem niej.")
-    return "".join(parts)
-
-
-async def _llm_call(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def _llm_call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     payload = {
         "model": settings.LLM_MODEL,
         "messages": messages,
-        "tools": tools,
+        "tools": TOOLS,
         "tool_choice": "auto",
         "temperature": 0.2,
         "max_tokens": 600,
@@ -1241,8 +1188,7 @@ async def _llm_call(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]])
 async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, str]]) -> Dict[str, Any]:
     """Pełna tura: system prompt + historia → pętla tool-callingu → odpowiedź po polsku.
     Zwraca {answer, tools} gdzie tools to lista odpalonych narzędzi (do chipów w UI)."""
-    tools_for_user = _tools_for(user)
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": _system_prompt_for(user)}]
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in history:
         role = m.get("role")
         if role in ("user", "assistant") and m.get("content"):
@@ -1257,7 +1203,7 @@ async def run_chat(db: AsyncSession, user: CurrentUser, history: List[Dict[str, 
     try:
         for _ in range(MAX_ROUNDS):
             try:
-                data = await _llm_call(messages, tools_for_user)
+                data = await _llm_call(messages)
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     return {"answer": "Asystent jest chwilowo przeciążony (limit zapytań) — spróbuj za chwilę.", "tools": tools_used}
