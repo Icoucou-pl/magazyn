@@ -22,13 +22,13 @@ export type ContainerType = { id: number; name: string; capacity_cbm: number; so
 type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string };
 type LotDraft = {
   manufacturer_id: string; order_number: string;
-  waluta_towaru: string; zaliczka_procent: string; zaliczka_kwota: string;
-  zaliczka_data: string; balance_kwota: string; zaplacono_data: string;
+  waluta_towaru: string; zaliczka_procent: string; zaliczka_kwota: string; zaliczka_waluta: string;
+  zaliczka_data: string; balance_kwota: string; balance_waluta: string; zaplacono_data: string;
 };
 const emptyLot = (): LotDraft => ({
   manufacturer_id: "", order_number: "",
-  waluta_towaru: "USD", zaliczka_procent: "", zaliczka_kwota: "",
-  zaliczka_data: "", balance_kwota: "", zaplacono_data: "",
+  waluta_towaru: "USD", zaliczka_procent: "", zaliczka_kwota: "", zaliczka_waluta: "USD",
+  zaliczka_data: "", balance_kwota: "", balance_waluta: "USD", zaplacono_data: "",
 });
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
@@ -68,8 +68,10 @@ export default function ContainerFormModal({
     waluta_towaru: l.waluta_towaru || "USD",
     zaliczka_procent: numStr(l.zaliczka_procent),
     zaliczka_kwota: numStr(l.zaliczka_kwota),
+    zaliczka_waluta: l.zaliczka_waluta || l.waluta_towaru || "USD",
     zaliczka_data: l.zaliczka_data || "",
     balance_kwota: numStr(l.balance_kwota),
+    balance_waluta: l.balance_waluta || l.waluta_towaru || "USD",
     zaplacono_data: l.zaplacono_data || "",
   }));
   const lotIdToIdx = new Map<number, number>();
@@ -85,17 +87,21 @@ export default function ContainerFormModal({
   const [notes, setNotes] = useState(initial?.notes || "");
   const [isConsolidated, setIsConsolidated] = useState(!!initial?.is_consolidated && initialLots.length > 0);
   const [lots, setLots] = useState<LotDraft[]>(initialLots.length ? initialLots : [emptyLot()]);
-  // Koszty spedycji + dokumenty (zawsze na kontenerze, USD)
-  const [kosztTransportu, setKosztTransportu] = useState(numStr(initial?.koszt_transportu));
-  const [kosztSpedycji, setKosztSpedycji] = useState(numStr(initial?.koszt_spedycji));
+  // Koszty spedycji + dokumenty (zawsze na kontenerze)
+  const [kosztTransportu, setKosztTransportu] = useState(numStr(initial?.koszt_transportu));            // USD
+  const [kosztSpedycji, setKosztSpedycji] = useState(numStr(initial?.koszt_spedycji));                  // USD
+  const [kosztTransportuMagazyn, setKosztTransportuMagazyn] = useState(numStr(initial?.koszt_transportu_magazyn)); // PLN
   const [folder, setFolder] = useState(initial?.folder || "");
   const [subiektNr, setSubiektNr] = useState(initial?.subiekt_nr || "");
-  // Płatność kontenera nieskonsolidowanego (jeden dostawca)
-  const [walutaTowaru, setWalutaTowaru] = useState(initial?.waluta_towaru || "USD");
+  // Płatność kontenera nieskonsolidowanego (jeden dostawca).
+  // walutaTowaru: waluta domyślna/pierwotna (seed) — nie edytowana w UI, wysyłana z powrotem bez zmian.
+  const [walutaTowaru] = useState(initial?.waluta_towaru || "USD");
   const [zaliczkaProcent, setZaliczkaProcent] = useState(numStr(initial?.zaliczka_procent));
   const [zaliczkaKwota, setZaliczkaKwota] = useState(numStr(initial?.zaliczka_kwota));
+  const [zaliczkaWaluta, setZaliczkaWaluta] = useState(initial?.zaliczka_waluta || initial?.waluta_towaru || "USD");
   const [zaliczkaData, setZaliczkaData] = useState(initial?.zaliczka_data || "");
   const [balanceKwota, setBalanceKwota] = useState(numStr(initial?.balance_kwota));
+  const [balanceWaluta, setBalanceWaluta] = useState(initial?.balance_waluta || initial?.waluta_towaru || "USD");
   const [zaplaconoData, setZaplaconoData] = useState(initial?.zaplacono_data || "");
   const [items, setItems] = useState<ItemDraft[]>(
     initial?.items?.map((i) => ({
@@ -271,14 +277,17 @@ export default function ContainerFormModal({
       // koszty spedycji + dokumenty (zawsze na kontenerze)
       koszt_transportu: numOrNull(kosztTransportu),
       koszt_spedycji: numOrNull(kosztSpedycji),
+      koszt_transportu_magazyn: numOrNull(kosztTransportuMagazyn),   // PLN
       folder: folder.trim() || null,
       subiekt_nr: subiektNr.trim() || null,
       // płatność kontenera nieskonsolidowanego (przy konsolidacji → null, dane w lotach)
       waluta_towaru: isConsolidated ? null : walutaTowaru,
       zaliczka_procent: isConsolidated ? null : numOrNull(zaliczkaProcent),
       zaliczka_kwota: isConsolidated ? null : numOrNull(zaliczkaKwota),
+      zaliczka_waluta: isConsolidated ? null : zaliczkaWaluta,
       zaliczka_data: isConsolidated ? null : dateOrNull(zaliczkaData),
       balance_kwota: isConsolidated ? null : numOrNull(balanceKwota),
+      balance_waluta: isConsolidated ? null : balanceWaluta,
       zaplacono_data: isConsolidated ? null : dateOrNull(zaplaconoData),
       lots: isConsolidated ? lots.map((l) => ({
         manufacturer_id: l.manufacturer_id ? Number(l.manufacturer_id) : null,
@@ -286,8 +295,10 @@ export default function ContainerFormModal({
         waluta_towaru: l.waluta_towaru || "USD",
         zaliczka_procent: numOrNull(l.zaliczka_procent),
         zaliczka_kwota: numOrNull(l.zaliczka_kwota),
+        zaliczka_waluta: l.zaliczka_waluta || "USD",
         zaliczka_data: dateOrNull(l.zaliczka_data),
         balance_kwota: numOrNull(l.balance_kwota),
+        balance_waluta: l.balance_waluta || "USD",
         zaplacono_data: dateOrNull(l.zaplacono_data),
       })) : [],
       items: validItems.map((i) => ({
@@ -448,14 +459,15 @@ export default function ContainerFormModal({
             {!isConsolidated && showFin && (
               <Section title="Płatność (dostawca)">
                 <PaymentInputs
-                  v={{ waluta_towaru: walutaTowaru, zaliczka_procent: zaliczkaProcent, zaliczka_kwota: zaliczkaKwota, zaliczka_data: zaliczkaData, balance_kwota: balanceKwota, zaplacono_data: zaplaconoData }}
+                  v={{ zaliczka_procent: zaliczkaProcent, zaliczka_kwota: zaliczkaKwota, zaliczka_waluta: zaliczkaWaluta, zaliczka_data: zaliczkaData, balance_kwota: balanceKwota, balance_waluta: balanceWaluta, zaplacono_data: zaplaconoData }}
                   disabled={!showEdit}
                   onChange={(f, val) => {
-                    if (f === "waluta_towaru") setWalutaTowaru(val);
-                    else if (f === "zaliczka_procent") setZaliczkaProcent(val);
+                    if (f === "zaliczka_procent") setZaliczkaProcent(val);
                     else if (f === "zaliczka_kwota") setZaliczkaKwota(val);
+                    else if (f === "zaliczka_waluta") setZaliczkaWaluta(val);
                     else if (f === "zaliczka_data") setZaliczkaData(val);
                     else if (f === "balance_kwota") setBalanceKwota(val);
+                    else if (f === "balance_waluta") setBalanceWaluta(val);
                     else if (f === "zaplacono_data") setZaplaconoData(val);
                   }}
                 />
@@ -477,6 +489,11 @@ export default function ContainerFormModal({
                         Opłata spedycji: <strong style={{ color: "var(--text-mid)" }}>${(Number(kosztSpedycji) - Number(kosztTransportu)).toLocaleString("pl-PL")}</strong>
                       </span>
                     )}
+                  </Field>
+                )}
+                {showFin && (
+                  <Field label="Transport do magazynu (PLN)">
+                    <input type="number" step="0.01" min="0" value={kosztTransportuMagazyn} onChange={(e) => setKosztTransportuMagazyn(e.target.value)} placeholder="z portu do magazynu, np. 1800" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                   </Field>
                 )}
                 <Field label="Folder">
@@ -700,33 +717,49 @@ function Field({ label, required, children }: { label: string; required?: boolea
 }
 
 // Wspólny blok pól płatności (per lot lub per kontener nieskonsolidowany).
-type PayVals = { waluta_towaru: string; zaliczka_procent: string; zaliczka_kwota: string; zaliczka_data: string; balance_kwota: string; zaplacono_data: string };
+type PayVals = {
+  zaliczka_procent: string; zaliczka_kwota: string; zaliczka_waluta: string; zaliczka_data: string;
+  balance_kwota: string; balance_waluta: string; zaplacono_data: string;
+};
+const CUR_OPTS = [["USD", "USD $"], ["CNY", "CNY ¥"], ["PLN", "PLN zł"]] as const;
 function PaymentInputs({ v, onChange, disabled }: { v: PayVals; onChange: (field: keyof PayVals, value: string) => void; disabled?: boolean }) {
   const mini: React.CSSProperties = { ...inputStyle, padding: "6px 8px", fontSize: 12 };
   const monoMini: React.CSSProperties = { ...mini, fontFamily: "var(--font-mono)", textAlign: "right" };
+  const curSel: React.CSSProperties = { ...mini, padding: "6px 6px" };
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6 }}>
-      <Field label="Waluta towaru">
-        <select value={v.waluta_towaru} onChange={(e) => onChange("waluta_towaru", e.target.value)} disabled={disabled} style={mini}>
-          <option value="USD">USD $</option>
-          <option value="CNY">CNY ¥</option>
-        </select>
-      </Field>
-      <Field label="Zaliczka %">
-        <input type="number" step="1" min="0" value={v.zaliczka_procent} onChange={(e) => onChange("zaliczka_procent", e.target.value)} placeholder="np. 30" disabled={disabled} style={monoMini} />
-      </Field>
-      <Field label="Zaliczka kwota">
-        <input type="number" step="0.01" min="0" value={v.zaliczka_kwota} onChange={(e) => onChange("zaliczka_kwota", e.target.value)} placeholder="np. 4200" disabled={disabled} style={monoMini} />
-      </Field>
-      <Field label="Zaliczka — data">
-        <input type="date" value={v.zaliczka_data} onChange={(e) => onChange("zaliczka_data", e.target.value)} disabled={disabled} style={mini} />
-      </Field>
-      <Field label="Balance">
-        <input type="number" step="0.01" min="0" value={v.balance_kwota} onChange={(e) => onChange("balance_kwota", e.target.value)} placeholder="np. 32000" disabled={disabled} style={monoMini} />
-      </Field>
-      <Field label="Zapłacono — data">
-        <input type="date" value={v.zaplacono_data} onChange={(e) => onChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
-      </Field>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* Zaliczka: % · kwota · waluta · data */}
+      <div style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr) 88px minmax(0, 1fr)", gap: 6 }}>
+        <Field label="Zaliczka %">
+          <input type="number" step="1" min="0" value={v.zaliczka_procent} onChange={(e) => onChange("zaliczka_procent", e.target.value)} placeholder="30" disabled={disabled} style={monoMini} />
+        </Field>
+        <Field label="Zaliczka kwota">
+          <input type="number" step="0.01" min="0" value={v.zaliczka_kwota} onChange={(e) => onChange("zaliczka_kwota", e.target.value)} placeholder="np. 4200" disabled={disabled} style={monoMini} />
+        </Field>
+        <Field label="Waluta">
+          <select value={v.zaliczka_waluta} onChange={(e) => onChange("zaliczka_waluta", e.target.value)} disabled={disabled} style={curSel}>
+            {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+          </select>
+        </Field>
+        <Field label="Zaliczka — data">
+          <input type="date" value={v.zaliczka_data} onChange={(e) => onChange("zaliczka_data", e.target.value)} disabled={disabled} style={mini} />
+        </Field>
+      </div>
+      {/* Balance: kwota · waluta · data */}
+      <div style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr) 88px minmax(0, 1fr)", gap: 6 }}>
+        <div />
+        <Field label="Balance">
+          <input type="number" step="0.01" min="0" value={v.balance_kwota} onChange={(e) => onChange("balance_kwota", e.target.value)} placeholder="np. 32000" disabled={disabled} style={monoMini} />
+        </Field>
+        <Field label="Waluta">
+          <select value={v.balance_waluta} onChange={(e) => onChange("balance_waluta", e.target.value)} disabled={disabled} style={curSel}>
+            {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+          </select>
+        </Field>
+        <Field label="Zapłacono — data">
+          <input type="date" value={v.zaplacono_data} onChange={(e) => onChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
+        </Field>
+      </div>
     </div>
   );
 }

@@ -40,8 +40,10 @@ export type ContainerLot = {
   waluta_towaru?: string | null;
   zaliczka_procent?: number | null;
   zaliczka_kwota?: number | null;
+  zaliczka_waluta?: string | null;
   zaliczka_data?: string | null;
   balance_kwota?: number | null;
+  balance_waluta?: string | null;
   zaplacono_data?: string | null;
   total_units: number; total_cbm: number; total_value: number;
 };
@@ -61,13 +63,16 @@ export type Container = {
   koszt_transportu?: number | null;
   koszt_spedycji?: number | null;
   oplata_spedycji?: number | null;
+  koszt_transportu_magazyn?: number | null;   // PLN — z portu do magazynu
   folder?: string | null;
   subiekt_nr?: string | null;
   waluta_towaru?: string | null;
   zaliczka_procent?: number | null;
   zaliczka_kwota?: number | null;
+  zaliczka_waluta?: string | null;
   zaliczka_data?: string | null;
   balance_kwota?: number | null;
+  balance_waluta?: string | null;
   zaplacono_data?: string | null;
   order_date: string;
   eta_date: string;
@@ -216,7 +221,16 @@ export function ContainerCard({
   const consolidated = !!c.is_consolidated && lots.length > 0;
 
   return (
-    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "hidden", transition: "border-color 0.12s" }}
+    <div style={{
+        background: "var(--surface-1)",
+        border: `1px solid ${expanded ? `color-mix(in oklch, ${meta.accent} 45%, var(--border))` : "var(--border-soft)"}`,
+        borderRadius: "var(--r-lg)",
+        overflow: "hidden",
+        transition: "border-color 0.14s, box-shadow 0.14s",
+        boxShadow: expanded ? `0 10px 30px -12px color-mix(in oklch, ${meta.accent} 42%, transparent)` : "none",
+        position: "relative",
+        zIndex: expanded ? 1 : 0,
+      }}
       onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.borderColor = "var(--border)"; }}
       onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.borderColor = "var(--border-soft)"; }}>
       <div onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", cursor: "pointer", position: "relative", background: expanded ? "var(--surface-2)" : "transparent", transition: "background 0.12s", borderBottom: expanded ? "1px solid var(--border-soft)" : "none" }}>
@@ -287,10 +301,8 @@ function ContainerCardBody({
   const fill = c.fill_percentage ?? 0;
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
-  const hasCostsDocs = c.koszt_transportu != null || c.koszt_spedycji != null || c.oplata_spedycji != null || !!c.folder || !!c.subiekt_nr;
-  const lotHasPay = (l: ContainerLot) => l.zaliczka_kwota != null || l.balance_kwota != null || !!l.zaliczka_data || !!l.zaplacono_data || l.zaliczka_procent != null;
-  const hasContainerPay = c.zaliczka_kwota != null || c.balance_kwota != null || !!c.zaliczka_data || !!c.zaplacono_data || c.zaliczka_procent != null;
-  const lotsWithPay = lots.filter(lotHasPay);
+  // Sekcje finansowe są teraz zawsze widoczne po rozwinięciu (przy showFin) — bez chowania gdy brak danych.
+  const showDocs = showFin || !!c.folder || !!c.subiekt_nr;
   const sectionLabelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 };
   return (
     <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }} className="fade-in">
@@ -318,42 +330,41 @@ function ContainerCardBody({
         </div>
       )}
 
-      {hasCostsDocs && (
+      {showDocs && (
         <div>
           <div style={sectionLabelStyle}>Spedycja i dokumenty</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
             {showFin && <MoneyCell label="Koszt transportu" value={fmtCur(c.koszt_transportu, "USD")} />}
             {showFin && <MoneyCell label="Koszt spedycji" value={fmtCur(c.koszt_spedycji, "USD")} />}
             {showFin && <MoneyCell label="Opłata spedycji" value={fmtCur(c.oplata_spedycji, "USD")} sub="rachunek − transport" muted />}
+            {showFin && <MoneyCell label="Transport do magazynu" value={fmtCur(c.koszt_transportu_magazyn, "PLN")} sub="port → magazyn" />}
             <MoneyCell label="Folder" value={c.folder || "—"} />
             <MoneyCell label="Subiekt" value={c.subiekt_nr || "—"} />
           </div>
         </div>
       )}
 
-      {consolidated
-        ? lotsWithPay.length > 0 && (
-          <div>
-            <div style={sectionLabelStyle}>Płatności — loty</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {lots.map((l) => lotHasPay(l) && (
-                <div key={l.id} style={{ padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-                    <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
-                    {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
-                  </div>
-                  <PaymentBlock cur={l.waluta_towaru || "USD"} zProc={l.zaliczka_procent} zKwota={l.zaliczka_kwota} zData={l.zaliczka_data} balance={l.balance_kwota} zaplacono={l.zaplacono_data} showFin={showFin} />
+      {showFin && (consolidated ? (
+        <div>
+          <div style={sectionLabelStyle}>Płatności — loty</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {lots.map((l) => (
+              <div key={l.id} style={{ padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                  <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
+                  {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
                 </div>
-              ))}
-            </div>
+                <PaymentBlock zCur={l.zaliczka_waluta || l.waluta_towaru || "USD"} bCur={l.balance_waluta || l.waluta_towaru || "USD"} zProc={l.zaliczka_procent} zKwota={l.zaliczka_kwota} zData={l.zaliczka_data} balance={l.balance_kwota} zaplacono={l.zaplacono_data} showFin={showFin} />
+              </div>
+            ))}
           </div>
-        )
-        : hasContainerPay && (
-          <div>
-            <div style={sectionLabelStyle}>Płatność</div>
-            <PaymentBlock cur={c.waluta_towaru || "USD"} zProc={c.zaliczka_procent} zKwota={c.zaliczka_kwota} zData={c.zaliczka_data} balance={c.balance_kwota} zaplacono={c.zaplacono_data} showFin={showFin} />
-          </div>
-        )}
+        </div>
+      ) : (
+        <div>
+          <div style={sectionLabelStyle}>Płatność</div>
+          <PaymentBlock zCur={c.zaliczka_waluta || c.waluta_towaru || "USD"} bCur={c.balance_waluta || c.waluta_towaru || "USD"} zProc={c.zaliczka_procent} zKwota={c.zaliczka_kwota} zData={c.zaliczka_data} balance={c.balance_kwota} zaplacono={c.zaplacono_data} showFin={showFin} />
+        </div>
+      ))}
 
       <div>
         <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Pozycje ({c.items.length})</div>
@@ -444,8 +455,8 @@ function MoneyCell({ label, value, sub, muted }: { label: string; value: React.R
   );
 }
 
-function PaymentBlock({ cur, zProc, zKwota, zData, balance, zaplacono, showFin }: {
-  cur: string;
+function PaymentBlock({ zCur, bCur, zProc, zKwota, zData, balance, zaplacono, showFin }: {
+  zCur: string; bCur: string;
   zProc?: number | null; zKwota?: number | null; zData?: string | null;
   balance?: number | null; zaplacono?: string | null; showFin: boolean;
 }) {
@@ -453,10 +464,10 @@ function PaymentBlock({ cur, zProc, zKwota, zData, balance, zaplacono, showFin }
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
       <MoneyCell
         label={`Zaliczka${zProc != null ? ` · ${fmtNum(zProc)}%` : ""}`}
-        value={showFin ? fmtCur(zKwota, cur) : "•••••"}
-        sub={zData ? `wpł. ${fmtDatePL(zData)}` : `waluta: ${cur}`}
+        value={showFin ? fmtCur(zKwota, zCur) : "•••••"}
+        sub={zData ? `wpł. ${fmtDatePL(zData)} · ${zCur}` : `waluta: ${zCur}`}
       />
-      <MoneyCell label="Balance" value={showFin ? fmtCur(balance, cur) : "•••••"} sub={`waluta: ${cur}`} />
+      <MoneyCell label="Balance" value={showFin ? fmtCur(balance, bCur) : "•••••"} sub={`waluta: ${bCur}`} />
       <MoneyCell label="Zapłacono" value={fmtDatePL(zaplacono)} muted />
     </div>
   );
