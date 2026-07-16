@@ -216,12 +216,14 @@ class ContainerItemIn(BaseModel):
 class ContainerLotIn(BaseModel):
     manufacturer_id: Optional[int] = None
     order_number: Optional[str] = None
-    # płatności per lot (waluta towaru: USD/CNY, kwoty wpisywane ręcznie)
-    waluta_towaru: Optional[str] = None
+    # płatności per lot; waluta osobno dla zaliczki i balance (USD/CNY/PLN)
+    waluta_towaru: Optional[str] = None       # domyślna/pierwotna waluta (seed) — nie edytowana w UI
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
+    zaliczka_waluta: Optional[str] = None
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
+    balance_waluta: Optional[str] = None
     zaplacono_data: Optional[date] = None
 
 
@@ -235,17 +237,20 @@ class ContainerCreate(BaseModel):
     status: ContainerStatus = "ORDERED"
     notes: Optional[str] = None
     is_consolidated: bool = False
-    # koszty spedycji + dokumenty (zawsze na kontenerze, USD)
-    koszt_transportu: Optional[float] = None
-    koszt_spedycji: Optional[float] = None
+    # koszty spedycji + dokumenty (zawsze na kontenerze)
+    koszt_transportu: Optional[float] = None            # USD
+    koszt_spedycji: Optional[float] = None              # USD (cały rachunek)
+    koszt_transportu_magazyn: Optional[float] = None    # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
     # płatności dla kontenera nieskonsolidowanego (jeden dostawca)
-    waluta_towaru: Optional[str] = None
+    waluta_towaru: Optional[str] = None                 # domyślna/pierwotna waluta (seed)
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
+    zaliczka_waluta: Optional[str] = None
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
+    balance_waluta: Optional[str] = None
     zaplacono_data: Optional[date] = None
     lots: List[ContainerLotIn] = []
     items: List[ContainerItemIn] = Field(..., min_length=1)
@@ -263,13 +268,16 @@ class ContainerUpdate(BaseModel):
     is_consolidated: Optional[bool] = None
     koszt_transportu: Optional[float] = None
     koszt_spedycji: Optional[float] = None
+    koszt_transportu_magazyn: Optional[float] = None    # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
     waluta_towaru: Optional[str] = None
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
+    zaliczka_waluta: Optional[str] = None
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
+    balance_waluta: Optional[str] = None
     zaplacono_data: Optional[date] = None
     lots: Optional[List[ContainerLotIn]] = None
     items: Optional[List[ContainerItemIn]] = None
@@ -295,8 +303,10 @@ class ContainerLotOut(BaseModel):
     waluta_towaru: Optional[str] = "USD"
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
+    zaliczka_waluta: Optional[str] = "USD"
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
+    balance_waluta: Optional[str] = "USD"
     zaplacono_data: Optional[date] = None
     total_units: int = 0
     total_cbm: float = 0
@@ -353,15 +363,18 @@ class ContainerOut(BaseModel):
     # koszty spedycji + dokumenty (kontener)
     koszt_transportu: Optional[float] = None
     koszt_spedycji: Optional[float] = None
-    oplata_spedycji: Optional[float] = None   # = koszt_spedycji − koszt_transportu (liczone)
+    oplata_spedycji: Optional[float] = None            # = koszt_spedycji − koszt_transportu (liczone)
+    koszt_transportu_magazyn: Optional[float] = None   # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
     # płatności kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = "USD"
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
+    zaliczka_waluta: Optional[str] = "USD"
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
+    balance_waluta: Optional[str] = "USD"
     zaplacono_data: Optional[date] = None
     notes: Optional[str]
     items: List[ContainerItemOut]
