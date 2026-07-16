@@ -32,6 +32,7 @@ def _mask_container_financials(containers, user):
         c.koszt_transportu = None
         c.koszt_spedycji = None
         c.oplata_spedycji = None
+        c.koszt_transportu_magazyn = None
         c.zaliczka_kwota = None
         c.balance_kwota = None
         for it in c.items:
@@ -52,14 +53,17 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
             text(f"""
                 INSERT INTO {settings.TABLE_CONTAINER_LOTS}
                 (container_id, manufacturer_id, order_number, position,
-                 waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_data, balance_kwota, zaplacono_data)
-                VALUES (:c, :m, :o, :p, :wal, :zp, :zk, :zd, :bal, :pd)
+                 waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
+                 balance_kwota, balance_waluta, zaplacono_data)
+                VALUES (:c, :m, :o, :p, :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :pd)
                 RETURNING id
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
              "wal": (lot.waluta_towaru or "USD"),
-             "zp": lot.zaliczka_procent, "zk": lot.zaliczka_kwota, "zd": lot.zaliczka_data,
-             "bal": lot.balance_kwota, "pd": lot.zaplacono_data},
+             "zp": lot.zaliczka_procent, "zk": lot.zaliczka_kwota,
+             "zwal": (lot.zaliczka_waluta or lot.waluta_towaru or "USD"), "zd": lot.zaliczka_data,
+             "bal": lot.balance_kwota, "bwal": (lot.balance_waluta or lot.waluta_towaru or "USD"),
+             "pd": lot.zaplacono_data},
         )
         ids.append(rr.scalar_one())
     return ids
@@ -89,7 +93,7 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
         "Nr kontenera", "Nr zamówienia", "Producent", "Typ", "Status",
         "Data zamówienia", "ETA", "SKU", "Nazwa produktu",
         "Ilość", "Cena jednostkowa", "Wartość", "CBM total",
-        "Folder", "Subiekt", "Koszt transportu", "Koszt spedycji", "Opłata spedycji",
+        "Folder", "Subiekt", "Koszt transportu", "Koszt spedycji", "Opłata spedycji", "Transport do magazynu (PLN)",
     ]
     ws.append(headers)
 
@@ -122,9 +126,10 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
                 (c.koszt_transportu if c.koszt_transportu is not None else ""),
                 (c.koszt_spedycji if c.koszt_spedycji is not None else ""),
                 (c.oplata_spedycji if c.oplata_spedycji is not None else ""),
+                (c.koszt_transportu_magazyn if c.koszt_transportu_magazyn is not None else ""),
             ])
 
-    column_widths = [16, 16, 18, 8, 14, 14, 14, 12, 35, 8, 14, 14, 10, 10, 12, 16, 15, 15]
+    column_widths = [16, 16, 18, 8, 14, 14, 14, 12, 35, 8, 14, 14, 10, 10, 12, 16, 15, 15, 22]
     for i, width in enumerate(column_widths, 1):
         ws.column_dimensions[chr(64 + i)].width = width
     ws.freeze_panes = "A2"
@@ -163,11 +168,12 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
         text(f"""
             INSERT INTO {settings.TABLE_CONTAINERS}
             (container_number, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
-             koszt_transportu, koszt_spedycji, folder, subiekt_nr,
-             waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_data, balance_kwota, zaplacono_data)
+             koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr,
+             waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
+             balance_kwota, balance_waluta, zaplacono_data)
             VALUES (:n, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
-                    :kt, :ks, :fol, :sub,
-                    :wal, :zp, :zk, :zd, :bal, :pd)
+                    :kt, :ks, :ktm, :fol, :sub,
+                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :pd)
             RETURNING id
         """),
         {"n": payload.container_number,
@@ -177,13 +183,16 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
          "od": payload.order_date, "eta": payload.eta_date,
          "st": payload.status, "no": payload.notes, "cons": cons,
          "kt": payload.koszt_transportu, "ks": payload.koszt_spedycji,
+         "ktm": payload.koszt_transportu_magazyn,   # PLN — zawsze na kontenerze
          "fol": (payload.folder or None), "sub": (payload.subiekt_nr or None),
          # płatności na kontenerze tylko dla wariantu nieskonsolidowanego; przy konsolidacji siedzą w lotach
          "wal": (None if cons else (payload.waluta_towaru or "USD")),
          "zp": (None if cons else payload.zaliczka_procent),
          "zk": (None if cons else payload.zaliczka_kwota),
+         "zwal": (None if cons else (payload.zaliczka_waluta or payload.waluta_towaru or "USD")),
          "zd": (None if cons else payload.zaliczka_data),
          "bal": (None if cons else payload.balance_kwota),
+         "bwal": (None if cons else (payload.balance_waluta or payload.waluta_towaru or "USD")),
          "pd": (None if cons else payload.zaplacono_data)}
     )
     cid = r.scalar_one()
@@ -238,6 +247,8 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         updates.append("koszt_transportu = :kt"); params["kt"] = payload.koszt_transportu
     if "koszt_spedycji" in fset:
         updates.append("koszt_spedycji = :ks"); params["ks"] = payload.koszt_spedycji
+    if "koszt_transportu_magazyn" in fset:
+        updates.append("koszt_transportu_magazyn = :ktm"); params["ktm"] = payload.koszt_transportu_magazyn
     if "folder" in fset:
         updates.append("folder = :fol"); params["fol"] = (payload.folder or None)
     if "subiekt_nr" in fset:
@@ -249,8 +260,10 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         ("waluta_towaru", "wal", (payload.waluta_towaru or "USD")),
         ("zaliczka_procent", "zp", payload.zaliczka_procent),
         ("zaliczka_kwota", "zk", payload.zaliczka_kwota),
+        ("zaliczka_waluta", "zwal", (payload.zaliczka_waluta or payload.waluta_towaru or "USD")),
         ("zaliczka_data", "zd", payload.zaliczka_data),
         ("balance_kwota", "bal", payload.balance_kwota),
+        ("balance_waluta", "bwal", (payload.balance_waluta or payload.waluta_towaru or "USD")),
         ("zaplacono_data", "pd", payload.zaplacono_data),
     ]
     if cons is True:
