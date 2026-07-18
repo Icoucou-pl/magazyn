@@ -17,12 +17,34 @@ router = APIRouter(prefix="/api", tags=["calendar"])
 
 
 @router.get("/calendar")
-async def calendar_events(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+async def calendar_events(
+    favorites_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Zdarzenia kalendarza: ORDER/EMPTY (z produktów) + DELIVERY (z kontenerów).
+
+    favorites_only=True → zdarzenia ORDER/EMPTY tylko dla obserwowanych SKU (is_favorite);
+    dostawy są ZAWSZE widoczne, niezależnie od tego przełącznika.
+
+    Data dostawy = data wejścia do magazynu, czyli ręczne „dostarczono" (delivered_date),
+    a gdy go brak — ETA + odprawa celna (CONTAINER_CUSTOMS_DAYS). Kontenery auto-domknięte
+    po ETA+N (bez ręcznej daty) już fizycznie weszły do magazynu, więc nie zaśmiecają kalendarza.
+    """
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
     containers = await fetch_containers(db)
 
+    # Ręczne daty dostawy (ustawiane tylko przy ręcznym DELIVERED; auto-dostawa ma NULL).
+    deliv_rows = await db.execute(
+        text(f"SELECT id, delivered_date FROM {settings.TABLE_CONTAINERS} WHERE delivered_date IS NOT NULL")
+    )
+    delivered_map = {r._mapping["id"]: r._mapping["delivered_date"] for r in deliv_rows}
+    customs = int(settings.CONTAINER_CUSTOMS_DAYS)
+
     events = []
     for p in products:
+        if favorites_only and not p.is_favorite:
+            continue
         if p.status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and p.avg_monthly_weighted >= 1:
             # Sugerowana ilość zamówienia — ta sama reguła co /shopping-list
             # (pokrycie na 6 miesięcy minus stan i to, co już w drodze).
@@ -43,14 +65,20 @@ async def calendar_events(db: AsyncSession = Depends(get_db), user: CurrentUser 
 
     for c in containers:
         eff = c.effective_status or c.status
-        if eff != "DELIVERED":
-            events.append({
-                "date": c.eta_date.isoformat(), "type": "DELIVERY",
-                "container_id": c.id, "container_number": c.container_number,
-                "order_number": c.order_number, "manufacturer_name": c.manufacturer_name,
-                "manufacturer_color": c.manufacturer_color, "total_units": c.total_units,
-                "container_status": eff,
-            })
+        manual = delivered_map.get(c.id)
+        if manual is not None:
+            deliv_date = manual                                   # ręczne „dostarczono"
+        elif eff != "DELIVERED":
+            deliv_date = c.eta_date + timedelta(days=customs)     # ETA + odprawa celna
+        else:
+            continue                                             # auto-domknięte po ETA+N — już w magazynie
+        events.append({
+            "date": deliv_date.isoformat(), "type": "DELIVERY",
+            "container_id": c.id, "container_number": c.container_number,
+            "order_number": c.order_number, "manufacturer_name": c.manufacturer_name,
+            "manufacturer_color": c.manufacturer_color, "total_units": c.total_units,
+            "container_status": eff,
+        })
 
     return events
 
