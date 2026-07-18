@@ -18,11 +18,13 @@ import {
 } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import AutoSuggestModal from "./auto-suggest";
+import OrderPdfModal from "./order-pdf";
 import type { Product, Manufacturer } from "./products-ui";
 
 export default function ContainersView({ density, openId, onOpenedId, openNewAutoSuggest, onOpenedNewAutoSuggest }: { density?: string; openId?: number | null; onOpenedId?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void }) {
   const gap = density === "compact" ? 10 : 14;
   const showFin = can(useUser(), "viewFinancials");
+  const canPO = can(useUser(), "generatePO");
 
   const [containers, setContainers] = useState<Container[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,6 +38,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
   const [products, setProducts] = useState<Product[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Container | null>(null);
+  const [poContainer, setPoContainer] = useState<Container | null>(null);
   const [autoSuggestOpen, setAutoSuggestOpen] = useState(false);
 
   const reload = useCallback(async () => {
@@ -206,7 +209,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
               onToggle={() => toggleExpand(c.id)}
               onEdit={() => openEdit(c)}
               onAdvance={() => advance(c)}
-              onGeneratePO={() => toast("Generator PO — wkrótce (etap 6)", "info")}
+              onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
             />
           ))}
         </div>
@@ -229,6 +232,13 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
           products={products}
           onClose={() => setAutoSuggestOpen(false)}
           onCreated={reload}
+        />
+      )}
+      {poContainer && (
+        <OrderPdfModal
+          container={poContainer}
+          manufacturers={manufacturers}
+          onClose={() => setPoContainer(null)}
         />
       )}
     </div>

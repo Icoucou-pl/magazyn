@@ -492,7 +492,7 @@ export default function ContainerFormModal({
                   </Field>
                 )}
                 {showFin && (
-                  <Field label="Transport do magazynu (PLN)">
+                  <Field label="Transport do magazynu (PLN)" labelStyle={{ fontSize: 9, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
                     <input type="number" step="0.01" min="0" value={kosztTransportuMagazyn} onChange={(e) => setKosztTransportuMagazyn(e.target.value)} placeholder="z portu do magazynu, np. 1800" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                   </Field>
                 )}
@@ -705,10 +705,10 @@ function Section({ title, action, children, required }: { title: string; action?
   );
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function Field({ label, required, children, labelStyle }: { label: string; required?: boolean; children: React.ReactNode; labelStyle?: React.CSSProperties }) {
   return (
     <div>
-      <label style={{ display: "block", fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+      <label style={{ display: "block", fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5, ...labelStyle }}>
         {label}{required && <span style={{ color: "var(--critical)", marginLeft: 3 }}>*</span>}
       </label>
       {children}
