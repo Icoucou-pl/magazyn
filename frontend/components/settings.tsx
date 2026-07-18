@@ -13,7 +13,7 @@ import { I, Card, Pill, Avatar } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
-import { useUser, isAdmin, canEdit, PERMISSIONS, ROLE_PERMS } from "@/lib/permissions";
+import { useUser, isAdmin, canEdit, can, PERMISSIONS, ROLE_PERMS } from "@/lib/permissions";
 import UsagePanel from "./usage-panel";
 
 // ── Typy ─────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ type PermDef = { key: string; label: string; desc: string; group: string };
 const PERMS = PERMISSIONS as unknown as PermDef[];
 const ROLE_DEF = ROLE_PERMS as unknown as Record<string, Record<string, boolean>>;
 
-type SectionId = "manufacturers" | "firmy" | "container_types" | "users" | "account" | "audit" | "freshness" | "usage";
+type SectionId = "manufacturers" | "firmy" | "cn_sku" | "container_types" | "users" | "account" | "audit" | "freshness" | "usage";
 type SectionDef = { id: SectionId; label: string; icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; desc: string };
 
 type CtxUser = {
@@ -52,6 +52,7 @@ const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "manufacturers",   label: "Producenci",      icon: I.Factory,  desc: "Dostawcy, kolory, kontakty" },
   { id: "firmy",            label: "Firmy",           icon: I.Cart,     desc: "Sklepy AMH/Acti/Veluxa, konfiguracja API" },
   { id: "container_types", label: "Typy kontenerów", icon: I.Ship,     desc: "Pojemność CBM, sortowanie" },
+  { id: "cn_sku",          label: "Chińskie SKU",    icon: I.Scan,     desc: "Odpowiedniki SKU dla fabryk — pod zamówienia (PO)" },
   { id: "users",           label: "Użytkownicy",     icon: I.Activity, desc: "Konta, role, uprawnienia" },
   { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
   { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Historia zmian w systemie" },
@@ -134,6 +135,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
     if (s.id === "users") return admin;
     if (s.id === "audit") return superUser;
     if (s.id === "usage") return admin || superUser;
+    if (s.id === "cn_sku") return can(user, "generatePO");
     return true;
   });
   const [section, setSection] = useState<SectionId>(
@@ -190,6 +192,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
           {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer}/>}
           {section === "firmy"           && <FirmaePanel/>}
           {section === "container_types" && <ContainerTypesPanel/>}
+          {section === "cn_sku"          && <CnSkuPanel/>}
           {section === "users"           && <UsersPanel currentUserId={user?.id}/>}
           {section === "account"         && <AccountPanel/>}
           {section === "audit"           && <AuditLogPanel/>}
@@ -529,6 +532,233 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
           <div style={{ height: "100%", width: `${pct}%`, background: "var(--accent)", borderRadius: 99, transition: "width 0.3s" }}/>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CHIŃSKIE SKU (mapowanie SKU → kod fabryczny, pod generator PO)
+// ============================================================
+type CnSkuRowT = {
+  id: number; sku: string; cn_sku: string;
+  product_name?: string | null;
+  manufacturer_id?: number | null;
+  manufacturer_name?: string | null;
+  manufacturer_color?: string | null;
+};
+
+// Parsuje wklejkę z Excela: linie, komórki rozdzielone tab / ; / , / 2+ spacje.
+// Bierze pierwsze dwie niepuste komórki (SKU, CN-SKU). Pomija nagłówek i linie < 2 komórek.
+function parseCnSkuPaste(text: string): { sku: string; cn_sku: string }[] {
+  const out: { sku: string; cn_sku: string }[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const cells = line.split(/\t|;|,|\s{2,}/).map(c => c.trim()).filter(Boolean);
+    if (cells.length < 2) continue;
+    const sku = cells[0], cn = cells[1];
+    if (/^sku$/i.test(sku) || /^cn[\s_-]?sku$/i.test(cn)) continue; // wiersz nagłówka
+    out.push({ sku, cn_sku: cn });
+  }
+  return out;
+}
+
+function CnSkuPanel() {
+  const user = useUser() as CtxUser;
+  const showEdit = can(user, "generatePO");
+  const [rows, setRows] = useState<CnSkuRowT[]>([]);
+  const [mfrs, setMfrs] = useState<Manufacturer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [mfrFilter, setMfrFilter] = useState<number | "all">("all");
+  const [creating, setCreating] = useState(false);
+  const [newSku, setNewSku] = useState("");
+  const [newCn, setNewCn] = useState("");
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [data, m] = await Promise.all([api.get("/cn-sku"), api.get("/manufacturers")]);
+      setRows(Array.isArray(data) ? (data as CnSkuRowT[]) : []);
+      setMfrs(Array.isArray(m) ? (m as Manufacturer[]) : []);
+    } catch { toast("Nie udało się pobrać listy CN-SKU", "error"); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const filtered = useMemo(() => {
+    const qq = q.trim().toLowerCase();
+    return rows.filter(r => {
+      if (mfrFilter !== "all" && r.manufacturer_id !== mfrFilter) return false;
+      if (!qq) return true;
+      return r.sku.toLowerCase().includes(qq)
+        || r.cn_sku.toLowerCase().includes(qq)
+        || (r.product_name || "").toLowerCase().includes(qq);
+    });
+  }, [rows, q, mfrFilter]);
+
+  const withCn = rows.length;
+
+  const addRow = async () => {
+    const sku = newSku.trim(), cn = newCn.trim();
+    if (!sku || !cn) { toast("Podaj SKU i CN-SKU", "warning"); return; }
+    setBusy(true);
+    try {
+      await api.post("/cn-sku", { sku, cn_sku: cn });
+      toast("Dodano CN-SKU", "ok");
+      setNewSku(""); setNewCn(""); setCreating(false); load();
+    } catch { toast("Nie udało się dodać", "error"); }
+    finally { setBusy(false); }
+  };
+
+  const submitPaste = async () => {
+    const parsed = parseCnSkuPaste(pasteText);
+    if (parsed.length === 0) { toast("Nie znaleziono par SKU + CN-SKU", "warning"); return; }
+    setBusy(true);
+    try {
+      const res = await api.post("/cn-sku/bulk", { rows: parsed }) as { inserted: number; updated: number };
+      toast(`Wgrano: ${res.inserted} nowych, ${res.updated} zaktualizowanych`, "ok");
+      setPasteText(""); setShowPaste(false); load();
+    } catch { toast("Import nie powiódł się", "error"); }
+    finally { setBusy(false); }
+  };
+
+  const previewCount = parseCnSkuPaste(pasteText).length;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
+          <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{withCn}</span> odpowiedników
+          {filtered.length !== withCn && <> · <span className="num" style={{ color: "var(--text-hi)" }}>{filtered.length}</span> po filtrze</>}
+        </span>
+        {showEdit && (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => { setShowPaste(v => !v); setCreating(false); }} style={btnSecondary}><I.Plus size={12}/> Wklej z Excela</button>
+            <button onClick={() => { setCreating(v => !v); setShowPaste(false); }} style={btnPrimary}><I.Plus size={12}/> Dodaj CN-SKU</button>
+          </div>
+        )}
+      </div>
+
+      {showEdit && showPaste && (
+        <div style={{ padding: 14, background: "var(--surface-2)", border: "1px solid var(--accent)", borderRadius: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--text-mid)", marginBottom: 8 }}>
+            Wklej dwie kolumny z Excela: <strong>SKU</strong> i <strong>CN-SKU</strong> (tab, przecinek lub średnik jako separator). Istniejące SKU zostaną zaktualizowane.
+          </div>
+          <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={8}
+            placeholder={"A3cz\tTF-4521\nD2cz_s\tTF-2814\n..."}
+            style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12, resize: "vertical" }}/>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+            <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
+              Rozpoznano par: <span className="num" style={{ color: "var(--text-hi)" }}>{previewCount}</span>
+            </span>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => { setShowPaste(false); setPasteText(""); }} disabled={busy} style={btnSecondary}>Anuluj</button>
+              <button onClick={submitPaste} disabled={busy || previewCount === 0} style={btnPrimary}>{busy ? "…" : `Wgraj ${previewCount || ""}`}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEdit && creating && (
+        <div style={{ padding: 14, background: "var(--surface-2)", border: "1px solid var(--accent)", borderRadius: 10, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 200px" }}>
+            <SettingsField label="SKU (Twój kod)">
+              <input value={newSku} onChange={(e) => setNewSku(e.target.value)} autoFocus placeholder="np. A3cz" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}/>
+            </SettingsField>
+          </div>
+          <div style={{ flex: "1 1 200px" }}>
+            <SettingsField label="CN-SKU (kod fabryczny)">
+              <input value={newCn} onChange={(e) => setNewCn(e.target.value)} placeholder="np. TF-4521"
+                onKeyDown={(e) => { if (e.key === "Enter") addRow(); }}
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}/>
+            </SettingsField>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => { setCreating(false); setNewSku(""); setNewCn(""); }} disabled={busy} style={btnSecondary}>Anuluj</button>
+            <button onClick={addRow} disabled={busy} style={btnPrimary}>{busy ? "…" : "Dodaj"}</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: "1 1 200px" }}>
+          <I.Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-lo)" }}/>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Szukaj SKU / CN-SKU / nazwy…"
+            style={{ ...inputStyle, paddingLeft: 30 }}/>
+        </div>
+        <select value={String(mfrFilter)} onChange={(e) => setMfrFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
+          style={{ ...inputStyle, flex: "0 0 auto", minWidth: 180 }}>
+          <option value="all">Wszyscy dostawcy</option>
+          {mfrs.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </div>
+
+      {loading && !rows.length ? (
+        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
+          {rows.length === 0 ? "Brak odpowiedników. Dodaj ręcznie lub wklej z Excela." : "Nic nie pasuje do filtra."}
+        </div>
+      ) : (
+        <div style={{ border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1.1fr) minmax(0, 2fr) minmax(130px, 1.3fr) 40px",
+            gap: 10, padding: "8px 12px", background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)",
+            fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            <span>SKU</span><span>Produkt / dostawca</span><span>CN-SKU</span><span/>
+          </div>
+          {filtered.map(r => <CnSkuRow key={r.id} row={r} showEdit={showEdit} onChanged={load}/>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CnSkuRow({ row, showEdit, onChanged }: { row: CnSkuRowT; showEdit: boolean; onChanged: () => void }) {
+  const [cn, setCn] = useState(row.cn_sku);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setCn(row.cn_sku); }, [row.cn_sku]);
+
+  const save = async () => {
+    const v = cn.trim();
+    if (!v || v === row.cn_sku) { setCn(row.cn_sku); return; }
+    setBusy(true);
+    try { await api.patch(`/cn-sku/${row.id}`, { sku: row.sku, cn_sku: v }); toast("Zapisano", "ok"); onChanged(); }
+    catch { toast("Nie udało się zapisać", "error"); setCn(row.cn_sku); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!window.confirm(`Usunąć odpowiednik CN-SKU dla „${row.sku}"? (nie rusza produktu w magazynie)`)) return;
+    setBusy(true);
+    try { await api.del(`/cn-sku/${row.id}`); toast("Usunięto", "ok"); onChanged(); }
+    catch { toast("Nie udało się usunąć", "error"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1.1fr) minmax(0, 2fr) minmax(130px, 1.3fr) 40px",
+      gap: 10, padding: "8px 12px", alignItems: "center", borderBottom: "1px solid var(--border-soft)" }}>
+      <span className="mono" style={{ fontSize: 12, color: "var(--text-hi)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{row.sku}</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {row.product_name || <span style={{ color: "var(--text-lo)", fontStyle: "italic" }}>— spoza bazy —</span>}
+        </div>
+        {row.manufacturer_name && (
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
+            <span style={{ width: 7, height: 7, borderRadius: 99, background: row.manufacturer_color || "var(--text-lo)", flex: "0 0 auto" }}/>
+            <span style={{ fontSize: 10.5, color: "var(--text-lo)" }}>{row.manufacturer_name}</span>
+          </div>
+        )}
+      </div>
+      <input value={cn} onChange={(e) => setCn(e.target.value)} onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setCn(row.cn_sku); }}
+        disabled={!showEdit || busy}
+        style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12, padding: "6px 8px" }}/>
+      {showEdit
+        ? <button onClick={remove} disabled={busy} title="Usuń" style={{ ...btnGhostMini, color: "var(--critical)", padding: "6px 8px" }}><I.Close size={13}/></button>
+        : <span/>}
     </div>
   );
 }
