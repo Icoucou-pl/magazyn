@@ -150,7 +150,7 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
         cn_sku: info?.cn || it.sku,
         hasCn: !!info?.cn,
         name: plName,
-        en_name: info?.en || plName,
+        en_name: info?.en || "",   // EN: pusto gdy brak angielskiej nazwy (bez fallbacku na PL)
         quantity: it.quantity || 0,
         unit_cost: it.unit_cost != null ? it.unit_cost : 0,
         selected: true,
@@ -204,7 +204,8 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
       ...selected.map((r, idx) => {
         const sku = lang === "pl" ? r.sku : r.cn_sku;
         const name = lang === "pl" ? r.name : r.en_name;
-        return `${idx + 1}. ${sku} — ${name} — ${lang === "pl" ? "ilość" : "qty"}: ${r.quantity} ${T.pdfUnits}`;
+        const namePart = name ? ` — ${name}` : "";
+        return `${idx + 1}. ${sku}${namePart} — ${lang === "pl" ? "ilość" : "qty"}: ${r.quantity} ${T.pdfUnits}`;
       }),
       "",
       ...(showPrices ? [T.emailTotal(fmtPLN(totalValue)), ""] : []),
