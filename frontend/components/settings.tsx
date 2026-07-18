@@ -540,7 +540,7 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
 // CHIŃSKIE SKU (mapowanie SKU → kod fabryczny, pod generator PO)
 // ============================================================
 type CnSkuRowT = {
-  id: number; sku: string; cn_sku: string;
+  id: number; sku: string; cn_sku: string; en_name?: string | null;
   product_name?: string | null;
   manufacturer_id?: number | null;
   manufacturer_name?: string | null;
@@ -548,16 +548,18 @@ type CnSkuRowT = {
 };
 
 // Parsuje wklejkę z Excela: linie, komórki rozdzielone tab / ; / , / 2+ spacje.
-// Bierze pierwsze dwie niepuste komórki (SKU, CN-SKU). Pomija nagłówek i linie < 2 komórek.
-function parseCnSkuPaste(text: string): { sku: string; cn_sku: string }[] {
-  const out: { sku: string; cn_sku: string }[] = [];
+// Kolumny: SKU, CN-SKU, [nazwa EN — opcjonalna]. Pomija nagłówek i linie < 2 komórek.
+function parseCnSkuPaste(text: string): { sku: string; cn_sku: string; en_name?: string }[] {
+  const out: { sku: string; cn_sku: string; en_name?: string }[] = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    const cells = line.split(/\t|;|,|\s{2,}/).map(c => c.trim()).filter(Boolean);
-    if (cells.length < 2) continue;
-    const sku = cells[0], cn = cells[1];
+    const cells = line.split(/\t|;|,|\s{2,}/).map(c => c.trim());
+    const sku = (cells[0] || "").trim();
+    const cn = (cells[1] || "").trim();
+    const en = (cells[2] || "").trim();
+    if (!sku || !cn) continue;
     if (/^sku$/i.test(sku) || /^cn[\s_-]?sku$/i.test(cn)) continue; // wiersz nagłówka
-    out.push({ sku, cn_sku: cn });
+    out.push({ sku, cn_sku: cn, en_name: en || undefined });
   }
   return out;
 }
@@ -573,6 +575,7 @@ function CnSkuPanel() {
   const [creating, setCreating] = useState(false);
   const [newSku, setNewSku] = useState("");
   const [newCn, setNewCn] = useState("");
+  const [newEn, setNewEn] = useState("");
   const [showPaste, setShowPaste] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -595,6 +598,7 @@ function CnSkuPanel() {
       if (!qq) return true;
       return r.sku.toLowerCase().includes(qq)
         || r.cn_sku.toLowerCase().includes(qq)
+        || (r.en_name || "").toLowerCase().includes(qq)
         || (r.product_name || "").toLowerCase().includes(qq);
     });
   }, [rows, q, mfrFilter]);
@@ -606,9 +610,9 @@ function CnSkuPanel() {
     if (!sku || !cn) { toast("Podaj SKU i CN-SKU", "warning"); return; }
     setBusy(true);
     try {
-      await api.post("/cn-sku", { sku, cn_sku: cn });
+      await api.post("/cn-sku", { sku, cn_sku: cn, en_name: newEn.trim() || null });
       toast("Dodano CN-SKU", "ok");
-      setNewSku(""); setNewCn(""); setCreating(false); load();
+      setNewSku(""); setNewCn(""); setNewEn(""); setCreating(false); load();
     } catch { toast("Nie udało się dodać", "error"); }
     finally { setBusy(false); }
   };
@@ -645,10 +649,10 @@ function CnSkuPanel() {
       {showEdit && showPaste && (
         <div style={{ padding: 14, background: "var(--surface-2)", border: "1px solid var(--accent)", borderRadius: 10 }}>
           <div style={{ fontSize: 12, color: "var(--text-mid)", marginBottom: 8 }}>
-            Wklej dwie kolumny z Excela: <strong>SKU</strong> i <strong>CN-SKU</strong> (tab, przecinek lub średnik jako separator). Istniejące SKU zostaną zaktualizowane.
+            Wklej kolumny z Excela: <strong>SKU</strong>, <strong>CN-SKU</strong> i opcjonalnie <strong>nazwa EN</strong> (tab, przecinek lub średnik jako separator). Istniejące SKU zostaną zaktualizowane; puste EN nie nadpisuje.
           </div>
           <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={8}
-            placeholder={"A3cz\tTF-4521\nD2cz_s\tTF-2814\n..."}
+            placeholder={"A3cz\tTF-4521\tAluminium Bed 3-seg, Black\nD2cz_s\tTF-2814\t...\n..."}
             style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12, resize: "vertical" }}/>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
             <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
@@ -676,8 +680,15 @@ function CnSkuPanel() {
                 style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}/>
             </SettingsField>
           </div>
+          <div style={{ flex: "1 1 220px" }}>
+            <SettingsField label="Nazwa EN (opcjonalnie)">
+              <input value={newEn} onChange={(e) => setNewEn(e.target.value)} placeholder="np. Aluminium Bed 3-seg, Black"
+                onKeyDown={(e) => { if (e.key === "Enter") addRow(); }}
+                style={inputStyle}/>
+            </SettingsField>
+          </div>
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => { setCreating(false); setNewSku(""); setNewCn(""); }} disabled={busy} style={btnSecondary}>Anuluj</button>
+            <button onClick={() => { setCreating(false); setNewSku(""); setNewCn(""); setNewEn(""); }} disabled={busy} style={btnSecondary}>Anuluj</button>
             <button onClick={addRow} disabled={busy} style={btnPrimary}>{busy ? "…" : "Dodaj"}</button>
           </div>
         </div>
@@ -704,10 +715,10 @@ function CnSkuPanel() {
         </div>
       ) : (
         <div style={{ border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1.1fr) minmax(0, 2fr) minmax(130px, 1.3fr) 40px",
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) minmax(0, 1.5fr) minmax(120px, 1.1fr) minmax(0, 1.5fr) 40px",
             gap: 10, padding: "8px 12px", background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)",
             fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-            <span>SKU</span><span>Produkt / dostawca</span><span>CN-SKU</span><span/>
+            <span>SKU</span><span>Produkt / dostawca</span><span>CN-SKU</span><span>Nazwa EN</span><span/>
           </div>
           {filtered.map(r => <CnSkuRow key={r.id} row={r} showEdit={showEdit} onChanged={load}/>)}
         </div>
@@ -718,15 +729,18 @@ function CnSkuPanel() {
 
 function CnSkuRow({ row, showEdit, onChanged }: { row: CnSkuRowT; showEdit: boolean; onChanged: () => void }) {
   const [cn, setCn] = useState(row.cn_sku);
+  const [en, setEn] = useState(row.en_name || "");
   const [busy, setBusy] = useState(false);
   useEffect(() => { setCn(row.cn_sku); }, [row.cn_sku]);
+  useEffect(() => { setEn(row.en_name || ""); }, [row.en_name]);
 
   const save = async () => {
-    const v = cn.trim();
-    if (!v || v === row.cn_sku) { setCn(row.cn_sku); return; }
+    const vCn = cn.trim(), vEn = en.trim();
+    if (!vCn) { setCn(row.cn_sku); return; }
+    if (vCn === row.cn_sku && vEn === (row.en_name || "")) return;
     setBusy(true);
-    try { await api.patch(`/cn-sku/${row.id}`, { sku: row.sku, cn_sku: v }); toast("Zapisano", "ok"); onChanged(); }
-    catch { toast("Nie udało się zapisać", "error"); setCn(row.cn_sku); }
+    try { await api.patch(`/cn-sku/${row.id}`, { sku: row.sku, cn_sku: vCn, en_name: vEn || null }); toast("Zapisano", "ok"); onChanged(); }
+    catch { toast("Nie udało się zapisać", "error"); setCn(row.cn_sku); setEn(row.en_name || ""); }
     finally { setBusy(false); }
   };
   const remove = async () => {
@@ -738,7 +752,7 @@ function CnSkuRow({ row, showEdit, onChanged }: { row: CnSkuRowT; showEdit: bool
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1.1fr) minmax(0, 2fr) minmax(130px, 1.3fr) 40px",
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) minmax(0, 1.5fr) minmax(120px, 1.1fr) minmax(0, 1.5fr) 40px",
       gap: 10, padding: "8px 12px", alignItems: "center", borderBottom: "1px solid var(--border-soft)" }}>
       <span className="mono" style={{ fontSize: 12, color: "var(--text-hi)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{row.sku}</span>
       <div style={{ minWidth: 0 }}>
@@ -756,6 +770,10 @@ function CnSkuRow({ row, showEdit, onChanged }: { row: CnSkuRowT; showEdit: bool
         onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setCn(row.cn_sku); }}
         disabled={!showEdit || busy}
         style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12, padding: "6px 8px" }}/>
+      <input value={en} onChange={(e) => setEn(e.target.value)} onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setEn(row.en_name || ""); }}
+        disabled={!showEdit || busy} placeholder="nazwa EN"
+        style={{ ...inputStyle, fontSize: 12, padding: "6px 8px" }}/>
       {showEdit
         ? <button onClick={remove} disabled={busy} title="Usuń" style={{ ...btnGhostMini, color: "var(--critical)", padding: "6px 8px" }}><I.Close size={13}/></button>
         : <span/>}
