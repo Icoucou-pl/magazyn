@@ -198,6 +198,7 @@ class ManufacturerOut(ManufacturerIn):
 class CnSkuIn(BaseModel):
     sku: str = Field(..., min_length=1, max_length=120)
     cn_sku: str = Field(..., min_length=1, max_length=120)
+    en_name: Optional[str] = Field(None, max_length=255)
 
 
 class CnSkuBulkIn(BaseModel):
@@ -208,6 +209,7 @@ class CnSkuOut(BaseModel):
     id: int
     sku: str
     cn_sku: str
+    en_name: Optional[str] = None
     product_name: Optional[str] = None
     manufacturer_id: Optional[int] = None
     manufacturer_name: Optional[str] = None
