@@ -20,6 +20,7 @@ import { fmtNum } from "@/lib/format";
 // ── Typy ─────────────────────────────────────────────────────
 type EventType = "ORDER" | "EMPTY" | "DELIVERY";
 type Mode = "month" | "week" | "day";
+type Scope = "watched" | "active";
 
 type CalEvent = {
   date: string;
@@ -90,12 +91,16 @@ function Calendar({ density }: { density?: string }) {
   const [cursor, setCursor] = useState(new Date());
   const [selected, setSelected] = useState(dKey(new Date()));
   const [filters, setFilters] = useState<Filters>({ ORDER: true, EMPTY: true, DELIVERY: true });
+  // Zakres SKU: "watched" = tylko obserwowane (gwiazdka), "active" = wszystkie aktywne.
+  // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy są zawsze widoczne.
+  const [scope, setScope] = useState<Scope>("watched");
 
   useEffect(() => {
     let mounted = true;
+    setLoading(true);
     (async () => {
       try {
-        const data = await api.get("/calendar");
+        const data = await api.get(`/calendar${scope === "watched" ? "?favorites_only=1" : ""}`);
         if (mounted) setEvents(Array.isArray(data) ? (data as CalEvent[]) : []);
       } catch {
         if (mounted) { setEvents([]); toast("Nie udało się pobrać kalendarza", "error"); }
@@ -104,7 +109,7 @@ function Calendar({ density }: { density?: string }) {
       }
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [scope]);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -213,6 +218,7 @@ function Calendar({ density }: { density?: string }) {
         eventCount={visibleCount}
         mode={mode} onMode={changeMode}
         filters={filters} setFilters={setFilters}
+        scope={scope} onScope={setScope}
         onPrev={goPrev} onNext={goNext} onToday={goToday}
       />
 
@@ -281,12 +287,14 @@ type ToolbarProps = {
   onMode: (m: Mode) => void;
   filters: Filters;
   setFilters: (f: Filters) => void;
+  scope: Scope;
+  onScope: (s: Scope) => void;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
 };
 
-function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters, onPrev, onNext, onToday }: ToolbarProps) {
+function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters, scope, onScope, onPrev, onNext, onToday }: ToolbarProps) {
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
@@ -310,6 +318,30 @@ function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters,
       }}>Dziś</button>
 
       <div style={{ flex: 1 }}/>
+
+      {/* Zakres SKU: obserwowane / aktywne (dostawy zawsze widoczne) */}
+      <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 7 }}>
+        {([
+          { key: "watched" as Scope, label: "Obserwowane", icon: true },
+          { key: "active" as Scope, label: "Aktywne", icon: false },
+        ]).map(({ key, label: lbl, icon }) => {
+          const active = scope === key;
+          return (
+            <button key={key} onClick={() => onScope(key)} title={
+              key === "watched" ? "Tylko obserwowane SKU (gwiazdka)" : "Wszystkie aktywne SKU"
+            } style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 5,
+              background: active ? "var(--surface-3)" : "transparent",
+              color: active ? "var(--text-hi)" : "var(--text-disabled)",
+              border: "none", cursor: "pointer",
+            }}>
+              {icon && <I.StarFill size={11} style={{ color: active ? "var(--accent)" : "var(--text-disabled)" }}/>}
+              {lbl}
+            </button>
+          );
+        })}
+      </div>
 
       {/* Filter chips */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
