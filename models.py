@@ -194,6 +194,31 @@ class ManufacturerOut(ManufacturerIn):
     open_orders: int = 0
 
 
+# ===== Chińskie SKU (mapowanie SKU → kod fabryczny, pod generator PO) =====
+class CnSkuIn(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=120)
+    cn_sku: str = Field(..., min_length=1, max_length=120)
+
+
+class CnSkuBulkIn(BaseModel):
+    rows: List[CnSkuIn] = Field(..., min_length=1, max_length=5000)
+
+
+class CnSkuOut(BaseModel):
+    id: int
+    sku: str
+    cn_sku: str
+    product_name: Optional[str] = None
+    manufacturer_id: Optional[int] = None
+    manufacturer_name: Optional[str] = None
+    manufacturer_color: Optional[str] = None
+
+
+class CnSkuBulkResult(BaseModel):
+    inserted: int = 0
+    updated: int = 0
+
+
 # ===== TYPY KONTENERÓW =====
 class ContainerTypeIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
