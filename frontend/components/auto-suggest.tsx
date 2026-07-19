@@ -111,17 +111,20 @@ const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
 
 export default function AutoSuggestModal({
-  manufacturers, containerTypes, products, onClose, onCreated,
+  manufacturers, containerTypes, products, onClose, onCreated, initialManufacturerId,
 }: {
   manufacturers: Manufacturer[];
   containerTypes: ContainerType[];
   products: Product[];
   onClose: () => void;
   onCreated: () => void;
+  initialManufacturerId?: number | null;   // wstępnie wybrany producent (np. z listy zakupów)
 }) {
   const showFin = can(useUser(), "viewFinancials");
   const [step, setStep] = useState(1);
-  const [manufacturerId, setManufacturerId] = useState("");
+  const [manufacturerId, setManufacturerId] = useState(
+    initialManufacturerId != null ? String(initialManufacturerId) : ""
+  );
   const [containerTypeId, setContainerTypeId] = useState<string>(containerTypes[0] ? String(containerTypes[0].id) : "");
   const [monthsHorizon, setMonthsHorizon] = useState(6);
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);

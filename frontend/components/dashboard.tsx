@@ -519,11 +519,11 @@ function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; on
 
 // ── Lista zakupów per producent ──────────────────────────────
 function ShoppingListCard({
-  groups, showEdit, onShowOrderPdf, onAutoSuggest,
+  groups, showEdit, onCreateContainer, onAutoSuggest,
 }: {
   groups: ShoppingGroup[];
   showEdit: boolean;
-  onShowOrderPdf?: (g: ShoppingGroup) => void;
+  onCreateContainer?: (manufacturerId: number | null) => void;
   onAutoSuggest?: () => void;
 }) {
   const [expanded, setExpanded] = useState<number | null>(groups[0]?.manufacturer_id ?? null);
@@ -550,7 +550,7 @@ function ShoppingListCard({
                   <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}> {fmtNum(totalQty)}</span> szt
                 </span>
                 <div style={{ flex: 1 }} />
-                <button onClick={(e) => { e.stopPropagation(); onShowOrderPdf?.(g); }} style={{ ...btnGhost, display: showEdit ? "inline-flex" : "none" }}>Generuj PO <I.External size={11} /></button>
+                <button onClick={(e) => { e.stopPropagation(); onCreateContainer?.(g.manufacturer_id); }} style={{ ...btnGhost, display: showEdit ? "inline-flex" : "none" }}>Utwórz kontener <I.Box size={11} /></button>
               </div>
               {isExpanded && (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6, padding: "4px 18px 16px" }} className="fade-in">
@@ -694,14 +694,14 @@ function DashboardSkeleton({ gap }: { gap: number }) {
 
 // ── Główny widok ─────────────────────────────────────────────
 export default function Dashboard({
-  density, onProductClick, onContainerClick, onAutoSuggest, onSimulator, onShowOrderPdf,
+  density, onProductClick, onContainerClick, onAutoSuggest, onSimulator, onCreateContainer,
 }: {
   density?: string;
   onProductClick?: (p: ClickTarget) => void;
   onContainerClick?: (c: ContainerOut) => void;
   onAutoSuggest?: () => void;
   onSimulator?: () => void;
-  onShowOrderPdf?: (g: ShoppingGroup) => void;
+  onCreateContainer?: (manufacturerId: number | null) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -854,7 +854,7 @@ export default function Dashboard({
             <FiresCard fires={fires} onProductClick={onProductClick} />
             <DeliveriesCard deliveries={pipeline.deliveries} shop={shop} onContainerClick={onContainerClick} />
           </div>
-          <ShoppingListCard groups={shopping} showEdit={showEdit} onShowOrderPdf={onShowOrderPdf} onAutoSuggest={onAutoSuggest} />
+          <ShoppingListCard groups={shopping} showEdit={showEdit} onCreateContainer={onCreateContainer} onAutoSuggest={onAutoSuggest} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             <AnomaliesCard anomalies={anomalies} onProductClick={onProductClick} />
             <TopSellersCard top={topSellers} shop={shop} onProductClick={onProductClick} />

@@ -21,7 +21,7 @@ import AutoSuggestModal from "./auto-suggest";
 import OrderPdfModal from "./order-pdf";
 import type { Product, Manufacturer } from "./products-ui";
 
-export default function ContainersView({ density, openId, onOpenedId, openNewAutoSuggest, onOpenedNewAutoSuggest }: { density?: string; openId?: number | null; onOpenedId?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void }) {
+export default function ContainersView({ density, openId, onOpenedId, openNewAutoSuggest, onOpenedNewAutoSuggest, autoSuggestMfrId }: { density?: string; openId?: number | null; onOpenedId?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void; autoSuggestMfrId?: number | null }) {
   const gap = density === "compact" ? 10 : 14;
   const showFin = can(useUser(), "viewFinancials");
   const canPO = can(useUser(), "generatePO");
@@ -40,6 +40,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
   const [editing, setEditing] = useState<Container | null>(null);
   const [poContainer, setPoContainer] = useState<Container | null>(null);
   const [autoSuggestOpen, setAutoSuggestOpen] = useState(false);
+  const [autoSuggestMfr, setAutoSuggestMfr] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -71,7 +72,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
 
   const openNew = () => { setEditing(null); setShowForm(true); };
   const openEdit = (c: Container) => { setEditing(c); setShowForm(true); };
-  const openAutoSuggest = () => { setAutoSuggestOpen(true); };
+  const openAutoSuggest = (mfrId: number | null = null) => { setAutoSuggestMfr(mfrId); setAutoSuggestOpen(true); };
 
   // Deep-link z globalnej wyszukiwarki: otwórz konkretny kontener po id
   useEffect(() => {
@@ -82,7 +83,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
 
   // Wywołanie z Dashboardu / szybkiej akcji: otwórz nowy kontener w trybie autosugestii
   useEffect(() => {
-    if (openNewAutoSuggest) { openAutoSuggest(); onOpenedNewAutoSuggest?.(); }
+    if (openNewAutoSuggest) { openAutoSuggest(autoSuggestMfrId ?? null); onOpenedNewAutoSuggest?.(); }
   }, [openNewAutoSuggest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = useMemo(() => {
@@ -202,7 +203,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
         filter={filter} setFilter={setFilter} counts={counts}
         expandedAny={expandedIds.size > 0}
         onToggleAll={toggleAll}
-        onAutoSuggest={openAutoSuggest}
+        onAutoSuggest={() => openAutoSuggest(null)}
         onNew={openNew}
         rows={containers}
       />
@@ -244,7 +245,8 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
           manufacturers={manufacturers}
           containerTypes={containerTypes}
           products={products}
-          onClose={() => setAutoSuggestOpen(false)}
+          initialManufacturerId={autoSuggestMfr}
+          onClose={() => { setAutoSuggestOpen(false); setAutoSuggestMfr(null); }}
           onCreated={reload}
         />
       )}
