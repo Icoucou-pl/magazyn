@@ -10,7 +10,7 @@
 
 import React, { useEffect, useState } from "react";
 
-const TOTAL = 7;
+const TOTAL = 6;
 
 // ── Dane demo heatmapy (deterministyczne, tak jak w mocku) ──
 const HEAT_MONTHS = ["Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
@@ -98,14 +98,6 @@ const STYLE = `
 .onb-shop-src { margin-left: auto; padding: 4px 10px; border-radius: 99px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; font-family: var(--font-mono, monospace); white-space: nowrap; flex-shrink: 0; }
 .onb-shop-note { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 12px 14px; background: var(--accent-soft); border: 1px solid color-mix(in oklch, var(--accent) 25%, transparent); border-radius: 10px; font-size: 12.5px; color: var(--text-mid); }
 .onb-shop-note b { color: var(--text-hi); }
-.onb-mini-pill { padding: 2px 8px; border-radius: 6px; background: var(--surface-3); color: var(--text-mid); font-size: 10px; font-weight: 600; font-family: var(--font-mono, monospace); }
-
-.onb-roles { display: flex; flex-direction: column; gap: 10px; margin-top: 22px; }
-.onb-role { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 12px; }
-.onb-role-dot { width: 10px; height: 10px; border-radius: 99px; flex-shrink: 0; }
-.onb-role-name { font-size: 13px; font-weight: 600; }
-.onb-role-desc { font-size: 11px; color: var(--text-lo); margin-top: 1px; }
-.onb-role-pill { margin-left: auto; padding: 3px 10px; border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
 
 .onb-chat { margin-top: 20px; background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .onb-brow { display: flex; gap: 10px; align-items: flex-start; }
@@ -273,8 +265,8 @@ export default function Onboarding({ onDone, theme, onToggleTheme }: OnboardingP
             <div className="onb-shops">
               <div className="onb-shop">
                 <div className="onb-shop-badge" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>AMH</div>
-                <div><div className="onb-shop-name">i-coucou</div><div className="onb-shop-desc">Główny sklep — stany magazynowe z Subiekt GT</div></div>
-                <span className="onb-shop-src" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>SUBIEKT GT</span>
+                <div><div className="onb-shop-name">i-coucou</div><div className="onb-shop-desc">Główny sklep — stany magazynowe z Subiekt </div></div>
+                <span className="onb-shop-src" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>SUBIEKT </span>
               </div>
               <div className="onb-shop">
                 <div className="onb-shop-badge" style={{ background: "var(--info-soft)", color: "var(--info)" }}>ACT</div>
@@ -306,7 +298,7 @@ export default function Onboarding({ onDone, theme, onToggleTheme }: OnboardingP
                 ["ok", Ico.trend(), "Finanse", "Przychód, marża, rotacja, karta produktu"],
                 ["info", Ico.wallet(), "Cashflow", "Prognoza wydatków na kontenery"],
                 ["accent", Ico.calendar(), "Kalendarz", "Terminy dostaw i płatności"],
-                ["anomaly", Ico.bot(), "Asystent AI", "Pytania po polsku, 27 narzędzi"],
+                ["anomaly", Ico.bot(), "Asystent AI", "Pytania po polsku, 32 narzędzia"],
                 ["ok", Ico.box(), "Produkty", "Tabela, filtry, akcje zbiorcze, import"],
               ] as const).map(([tone, icon, title, desc], i) => (
                 <div className="onb-feat" key={i}>
@@ -366,39 +358,14 @@ export default function Onboarding({ onDone, theme, onToggleTheme }: OnboardingP
               <span className="onb-chip">Marża na krzesłach ASTcz?</span>
             </div>
             <div className="onb-ai-meta">
-              <span>27 narzędzi</span><span className="onb-dotsep" />
+              <span>32 narzędzia</span><span className="onb-dotsep" />
               <span>realne dane z magazynu</span><span className="onb-dotsep" />
               <span>koszt każdego zapytania widoczny w panelu</span>
             </div>
           </section>
 
-          {/* 6 — Role */}
+          {/* 6 — Gotowe */}
           <section className={cls(5)}>
-            <span className="onb-badge" style={{ background: "var(--ok-soft)", color: "var(--ok)" }}>Dostęp i role</span>
-            <h1>Każdy widzi swoje</h1>
-            <p className="onb-lead">Trzy poziomy uprawnień. Twoja rola decyduje co możesz zmieniać.</p>
-            <div className="onb-roles">
-              <div className="onb-role">
-                <span className="onb-role-dot" style={{ background: "var(--accent)" }} />
-                <div><div className="onb-role-name">Admin</div><div className="onb-role-desc">Pełen dostęp: edycja, import, zarządzanie użytkownikami</div></div>
-                <span className="onb-role-pill" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>ADMIN</span>
-              </div>
-              <div className="onb-role">
-                <span className="onb-role-dot" style={{ background: "var(--info)" }} />
-                <div><div className="onb-role-name">Import</div><div className="onb-role-desc">Edycja produktów, kontenerów, importy CSV</div></div>
-                <span className="onb-role-pill" style={{ background: "var(--info-soft)", color: "var(--info)" }}>IMPORT</span>
-              </div>
-              <div className="onb-role">
-                <span className="onb-role-dot" style={{ background: "var(--text-mid)" }} />
-                <div><div className="onb-role-name">Viewer</div><div className="onb-role-desc">Tylko podgląd — bezpieczne dla całego zespołu</div></div>
-                <span className="onb-role-pill" style={{ background: "var(--surface-3)", color: "var(--text-mid)" }}>VIEWER</span>
-              </div>
-            </div>
-            <p className="onb-lead" style={{ marginTop: 16, fontSize: 13 }}>Do tego <strong>uprawnienia indywidualne</strong> — ukryjesz komuś dane finansowe (PLN) przez <span className="onb-mini-pill">viewFinancials</span>, albo dasz Viewerowi edycję produktów. Wszystko w Ustawienia → Użytkownicy.</p>
-          </section>
-
-          {/* 7 — Gotowe */}
-          <section className={cls(6)}>
             <div className="onb-hero onb-pop" style={{ background: "var(--ok-soft)", color: "var(--ok)" }}>{Ico.rocket()}</div>
             <span className="onb-badge" style={{ background: "var(--ok-soft)", color: "var(--ok)" }}>Gotowe</span>
             <h1>Możemy zaczynać<span className="onb-dot">.</span></h1>
