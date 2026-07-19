@@ -55,7 +55,7 @@ const STYLE = `
   position: relative; z-index: 1; width: 100%; max-width: 720px;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 20px;
   box-shadow: 0 30px 90px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03);
-  overflow: hidden; display: flex; flex-direction: column; min-height: 580px;
+  overflow: hidden; display: flex; flex-direction: column; min-height: 580px; max-height: calc(100dvh - 48px);
 }
 .onb-progress { height: 3px; background: var(--surface-2); flex-shrink: 0; }
 .onb-progress-fill { height: 100%; background: var(--accent); transition: width 0.4s cubic-bezier(0.4,0,0.2,1); border-radius: 0 3px 3px 0; }
@@ -146,12 +146,17 @@ const STYLE = `
 .onb-pop { animation: onb-pop 0.5s cubic-bezier(0.34,1.56,0.64,1) both; }
 
 @media (max-width: 560px) {
-  .onb-slide { padding: 16px 22px 20px; }
+  .onb-overlay { padding: 0; }
+  .onb-stage { max-width: 100%; min-height: 0; height: 100dvh; max-height: 100dvh; border-radius: 0; border: none; box-shadow: none; }
+  .onb-topbar { padding: 12px 16px; }
+  .onb-footer { padding: 14px 16px; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  .onb-slide { padding: 16px 20px 20px; }
   .onb-slide h1 { font-size: 24px; }
   .onb-lead { max-width: 100%; }
   .onb-feat-grid { grid-template-columns: 1fr; }
   .onb-step-count { display: none; }
   .onb-shop-src { display: none; }
+  .onb-skip { font-size: 12px; }
 }
 `;
 
@@ -265,8 +270,8 @@ export default function Onboarding({ onDone, theme, onToggleTheme }: OnboardingP
             <div className="onb-shops">
               <div className="onb-shop">
                 <div className="onb-shop-badge" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>AMH</div>
-                <div><div className="onb-shop-name">i-coucou</div><div className="onb-shop-desc">Główny sklep — stany magazynowe z Subiekt </div></div>
-                <span className="onb-shop-src" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>SUBIEKT </span>
+                <div><div className="onb-shop-name">i-coucou</div><div className="onb-shop-desc">Główny sklep — stany magazynowe z Subiekt GT</div></div>
+                <span className="onb-shop-src" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>SUBIEKT GT</span>
               </div>
               <div className="onb-shop">
                 <div className="onb-shop-badge" style={{ background: "var(--info-soft)", color: "var(--info)" }}>ACT</div>
