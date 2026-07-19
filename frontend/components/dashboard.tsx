@@ -739,15 +739,17 @@ export default function Dashboard({
     }
     (async () => {
       setLoading(true);
-      const q = shop ? `&shop=${shop}` : "";
-      const q1 = shop ? `?shop=${shop}` : "";
+      // Dashboard pokazuje WYŁĄCZNIE obserwowane SKU (favorites_only=1) — na sztywno, bez przełącznika.
+      // W obserwowanych trzymamy tylko to, co firmy aktualnie sprzedają, więc boxy nie krzyczą o wycofanych SKU.
+      // Kontenery (/containers) zostają globalne: wiozą fizyczny towar niezależnie od obserwacji.
+      const shopQ = shop ? `&shop=${shop}` : "";
       const [h, cls, cont, ano, shp, top] = await Promise.allSettled([
-        api.get(`/stock-value-history?days=90${q}`),
-        api.get(`/classification${q1}`),
+        api.get(`/stock-value-history?favorites_only=1&days=90${shopQ}`),
+        api.get(`/classification?favorites_only=1${shopQ}`),
         api.get("/containers"),
-        api.get(`/anomalies${q1}`),
-        api.get(`/shopping-list${q1}`),
-        api.get(`/top-sellers?limit=20${q}`),
+        api.get(`/anomalies?favorites_only=1${shopQ}`),
+        api.get(`/shopping-list?favorites_only=1${shopQ}`),
+        api.get(`/top-sellers?favorites_only=1&limit=20${shopQ}`),
       ]);
       if (!alive) return;
       let failed = false;
