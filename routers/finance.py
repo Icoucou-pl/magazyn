@@ -34,6 +34,16 @@ from security import require_view_financials
 router = APIRouter(prefix="/api", tags=["finance"])
 
 ALLOWED_PERIODS = {"ytd", "365", "90", "30", "prev_year"}
+ALLOWED_SHOPS = {"amh", "acti", "veluxa"}
+
+
+def _shop_clause(shop: Optional[str]) -> str:
+    """Zwraca "AND o.shop = '…'" dla amh/acti/veluxa; "" dla pustego = wszystkie sklepy.
+    Wartość pochodzi z zamkniętej whitelisty (ALLOWED_SHOPS), więc literał w SQL jest
+    bezpieczny — ta sama konwencja co klauzula okresu i statusów. Fragment zaczyna się od
+    'AND ', więc pasuje jako extra_where do _base_cte (i doklejenie po filtrze symbolu)."""
+    s = (shop or "").strip().lower()
+    return f"AND o.shop = '{s}'" if s in ALLOWED_SHOPS else ""
 
 
 def _period(period: str):
@@ -286,13 +296,14 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
 @router.get("/finance/overview", response_model=FinanceOverview)
 async def finance_overview(
     period: str = Query("ytd"),
+    shop: str = Query("", description="amh|acti|veluxa; puste = wszystkie sklepy"),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_view_financials),
 ):
     if period not in ALLOWED_PERIODS:
         period = "ytd"
     label, period_clause, date_from, date_to = _period(period)
-    base = _base_cte(period_clause)
+    base = _base_cte(period_clause, _shop_clause(shop))
 
     # --- Kanały (z tego wyliczamy też KPI: order=jeden kanał, więc sumy się sumują) ---
     ch_rows = (await db.execute(text(base + """
@@ -407,39 +418,81 @@ async def finance_overview(
 async def finance_product(
     symbol: str = Query(..., min_length=1),
     period: str = Query("ytd"),
+    shop: str = Query("", description="amh|acti|veluxa; puste = wszystkie sklepy"),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_view_financials),
 ):
     """Karta produktu: info + KPI finansowe + rotacja/pokrycie stanu + kanały + trend miesięczny.
-    Koszt = cena_zakupu_netto z Subiekta (bieżący, jednolity per szt.) → koszt całkowity = sztuki × koszt jedn."""
+
+    Stan liczony PER-SKLEP, dokładnie jak w Produktach (SALES_QUERY): Subiekt tylko dla
+    AMH/„Wszystkie", stan Sellasista (sellasist_stock) dla wybranego sklepu. Dzięki temu karta
+    Acti/Veluxa pokazuje stan z ich magazynu, a nie z Subiektu (AMH) — i działa też dla produktów,
+    których w ogóle nie ma w Subiekcie (3/4 asortymentu Acti/Veluxa). Koszt jednostkowy z
+    COALESCE(app_product_attrs.cena_zakupu, subiekt.cena_zakupu_netto) — to samo źródło co Produkty,
+    czyli ceny uzupełnione ręcznie dla Acti/Veluxa też wchodzą do marży."""
     if period not in ALLOWED_PERIODS:
         period = "ytd"
     label, period_clause, date_from, date_to = _period(period)
 
-    # --- Info o produkcie (Subiekt + atrybuty + lead-time) ---
+    # Normalizacja sklepu do zamkniętej whitelisty; nieznane → "" (wszystkie).
+    sklep = (shop or "").strip().lower()
+    if sklep not in ALLOWED_SHOPS:
+        sklep = ""
+
+    # --- Info o produkcie: stan per-sklep (Subiekt AMH + Sellasist danego sklepu),
+    #     LEFT JOIN po :symbol zamiast kotwicy na Subiekcie → działa dla produktów tylko-Sellasist ---
     info_row = (await db.execute(text(f"""
+        WITH ext AS (
+            SELECT COALESCE(SUM(quantity), 0) AS qty
+            FROM {settings.TABLE_EXTERNAL_STOCK}
+            WHERE sku_canon = LOWER(TRIM(:symbol))
+              AND (:shop = '' OR shop = :shop)
+        ),
+        ext_all AS (
+            SELECT COALESCE(SUM(quantity), 0) AS qty, MAX(symbol) AS symbol
+            FROM {settings.TABLE_EXTERNAL_STOCK}
+            WHERE sku_canon = LOWER(TRIM(:symbol))
+        ),
+        ord AS (
+            SELECT MAX(product_name) AS nazwa
+            FROM {settings.TABLE_ORDER_ITEMS}
+            WHERE LOWER(TRIM({settings.COL_ITEM_SKU})) = LOWER(TRIM(:symbol))
+        ),
+        subiekt AS (
+            SELECT {settings.COL_PRODUCT_NAME}       AS nazwa,
+                   {settings.COL_PRODUCT_STOCK}      AS stan,
+                   {settings.COL_PRODUCT_PRICE}      AS cena
+            FROM {settings.TABLE_PRODUCTS}
+            WHERE LOWER(TRIM({settings.COL_PRODUCT_SKU})) = LOWER(TRIM(:symbol))
+            LIMIT 1
+        )
         SELECT
-            p.{settings.COL_PRODUCT_NAME}                          AS name,
-            COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0)            AS stock,
-            COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0)::float     AS unit_cost,
-            pa.cbm_per_unit                                        AS cbm_per_unit,
-            pa.ean                                                 AS ean,
-            pa.manufacturer_id                                     AS manufacturer_id,
-            m.name                                                 AS mfr_name,
-            m.color                                                AS mfr_color,
-            lt.lead_time_days                                      AS lead_time_days
-        FROM {settings.TABLE_PRODUCTS} p
+            COALESCE(NULLIF(TRIM(pa.name_override), ''), s.nazwa, ord.nazwa, ea.symbol, :symbol) AS name,
+            (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(s.stan, 0) ELSE 0 END
+                 + ext.qty)::int                                                    AS stock,
+            COALESCE(NULLIF(pa.cena_zakupu, 0), s.cena, 0)::float                    AS unit_cost,
+            pa.cbm_per_unit                                                         AS cbm_per_unit,
+            pa.ean                                                                  AS ean,
+            pa.manufacturer_id                                                      AS manufacturer_id,
+            m.name                                                                  AS mfr_name,
+            m.color                                                                 AS mfr_color,
+            lt.lead_time_days                                                       AS lead_time_days,
+            (s.nazwa IS NOT NULL OR ea.qty > 0 OR ord.nazwa IS NOT NULL
+                 OR pa.sku IS NOT NULL)                                             AS found
+        FROM ext
+        CROSS JOIN ext_all ea
+        CROSS JOIN ord
+        LEFT JOIN subiekt s ON TRUE
         LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
-            ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+            ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(:symbol))
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m
             ON m.id = pa.manufacturer_id
         LEFT JOIN {settings.TABLE_LEAD_TIMES} lt
-            ON LOWER(TRIM(lt.sku)) = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
-        WHERE LOWER(TRIM(p.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(:symbol))
+            ON LOWER(TRIM(lt.sku)) = LOWER(TRIM(:symbol))
         LIMIT 1
-    """), {"symbol": symbol})).mappings().first()
+    """), {"symbol": symbol, "shop": sklep})).mappings().first()
 
-    if info_row is None:
+    if info_row is None or not info_row["found"]:
         raise HTTPException(status_code=404, detail=f"Nie znaleziono produktu o symbolu '{symbol}'")
 
     unit_cost = to_float(info_row["unit_cost"])
@@ -459,6 +512,9 @@ async def finance_product(
     )
 
     sym_where = f"AND LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:symbol))"
+    sc = _shop_clause(sklep)
+    if sc:
+        sym_where = f"{sym_where} {sc}"
     base = _base_cte(period_clause, sym_where)
 
     # --- Sumy sprzedaży (KPI) ---
