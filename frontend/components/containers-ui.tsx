@@ -74,6 +74,8 @@ export type Container = {
   balance_kwota?: number | null;
   balance_waluta?: string | null;
   zaplacono_data?: string | null;
+  delivered_date?: string | null;              // ręczna, potwierdzona data dostawy
+  warehouse_delivery_date?: string | null;     // KPI: delivered_date lub ETA + odprawa
   order_date: string;
   eta_date: string;
   status: string;                       // status ręczny (z bazy)
@@ -200,10 +202,11 @@ function FilterChip({ children, active, onClick, count, accent }: { children: Re
 
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
-  container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO,
+  container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered,
 }: {
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
+  onSetDelivered?: (d: string | null) => Promise<void>;
 }) {
   const eStatus = eff(c);
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
@@ -283,16 +286,17 @@ export function ContainerCard({
         )}
       </div>
 
-      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} />}
+      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} />}
     </div>
   );
 }
 
 function ContainerCardBody({
-  container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO,
+  container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered,
 }: {
   container: Container; fillColor: string; nextStatus?: string;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
+  onSetDelivered?: (d: string | null) => Promise<void>;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -313,6 +317,7 @@ function ContainerCardBody({
           <DataCell label="Sztuk" value={fmtNum(c.total_units)} />
           <DataCell label="Wartość" value={showFin ? fmtPLN(c.total_value) : "•••••"} />
           {cap > 0 && <DataCell label="CBM" value={`${c.total_cbm} / ${cap}`} sub={`${fill}% wypełnienia`} />}
+          <DeliveryCell c={c} editable={showEdit && !!onSetDelivered} onSet={onSetDelivered ?? (async () => {})} />
         </div>
         <StatusTimeline current={eff(c)} />
       </div>
@@ -431,6 +436,58 @@ function ContainerCardBody({
       </div>
 
       <style>{`@media (max-width: 720px) { .container-body-grid { grid-template-columns: 1fr !important; } }`}</style>
+    </div>
+  );
+}
+
+// KPI „Dostawa na magazyn" — data wejścia towaru do magazynu.
+//   • potwierdzona = ręcznie wpisana (delivered_date) → zielona, domyka status kontenera;
+//   • auto · szac. = wyliczona z ETA + okno odprawy celnej (gdy nikt nie klika „dostarczono").
+//   Edytowalna (dla ról z edycją): klik → date-picker; zapis potwierdza i domyka kontener.
+function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean; onSet: (d: string | null) => Promise<void> }) {
+  const [editing, setEditing] = React.useState(false);
+  const [val, setVal] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const confirmed = !!c.delivered_date;
+  const whd = c.warehouse_delivery_date || c.delivered_date || null;
+
+  const open = () => { setVal(c.delivered_date || c.warehouse_delivery_date || ""); setEditing(true); };
+  const save = async () => {
+    if (!val) return;
+    setSaving(true);
+    try { await onSet(val); setEditing(false); } catch { /* toast w rodzicu */ } finally { setSaving(false); }
+  };
+  const clear = async () => {
+    setSaving(true);
+    try { await onSet(null); setEditing(false); } catch { /* toast w rodzicu */ } finally { setSaving(false); }
+  };
+
+  if (editing) {
+    return (
+      <div style={{ padding: "8px 10px", background: "var(--surface-2)", border: "1px solid var(--accent)", borderRadius: 7, gridColumn: "1 / -1" }}>
+        <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Dostawa na magazyn</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <input type="date" value={val} onChange={(e) => setVal(e.target.value)} disabled={saving}
+            style={{ fontSize: 12, padding: "5px 8px", background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-hi)" }} />
+          <button onClick={save} disabled={saving || !val} style={{ ...btnPrimary, padding: "5px 12px", fontSize: 11, opacity: (saving || !val) ? 0.55 : 1 }}>Zapisz</button>
+          {confirmed && <button onClick={clear} disabled={saving} style={{ ...btnSecondary, padding: "5px 10px", fontSize: 11 }}>Wyczyść</button>}
+          <button onClick={() => setEditing(false)} disabled={saving} style={{ ...btnSecondary, padding: "5px 10px", fontSize: 11 }}>Anuluj</button>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 6 }}>Wpis potwierdza dostawę i domyka kontener (status „Dostarczone").</div>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={editable ? open : undefined} title={editable ? "Kliknij, aby ustawić datę dostawy" : undefined}
+      style={{ padding: "8px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 7, cursor: editable ? "pointer" : "default" }}>
+      <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", display: "flex", alignItems: "center", gap: 4 }}>
+        Dostawa na magazyn {editable && <I.Calendar size={9} style={{ color: "var(--text-disabled)" }} />}
+      </div>
+      <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{fmtDatePL(whd)}</div>
+      <div style={{ fontSize: 10, marginTop: 1, fontWeight: confirmed ? 600 : 400, color: confirmed ? "var(--ok)" : "var(--text-lo)" }}>
+        {confirmed ? "potwierdzona" : "auto · szac."}
+      </div>
     </div>
   );
 }

@@ -157,6 +157,19 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
     }
   };
 
+  // Ręczna data „Dostawa na magazyn": wpis domyka kontener (backend ustawia DELIVERED),
+  // null = zdejmij potwierdzenie → KPI wraca do auto (ETA + odprawa).
+  const setDelivered = async (c: Container, dateStr: string | null) => {
+    try {
+      await api.patch(`/containers/${c.id}`, { delivered_date: dateStr });
+      await reload();
+      toast(dateStr ? "Zapisano datę dostawy — kontener domknięty" : "Zdjęto potwierdzenie dostawy", "ok");
+    } catch {
+      toast("Nie udało się zapisać daty dostawy", "warning");
+      throw new Error("save failed");
+    }
+  };
+
   if (loading) {
     return (
       <div className="pulse-soft" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
@@ -210,6 +223,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
               onEdit={() => openEdit(c)}
               onAdvance={() => advance(c)}
               onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
+              onSetDelivered={(d) => setDelivered(c, d)}
             />
           ))}
         </div>
