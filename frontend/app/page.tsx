@@ -83,6 +83,7 @@ export default function Page() {
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
   const [pendingContainerId, setPendingContainerId] = useState<number | null>(null);
   const [pendingAutoSuggestNew, setPendingAutoSuggestNew] = useState(false);
+  const [pendingAutoSuggestMfr, setPendingAutoSuggestMfr] = useState<number | null>(null);
   const [pendingManufacturerId, setPendingManufacturerId] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
@@ -249,9 +250,9 @@ export default function Page() {
             density={t.density}
             onProductClick={(p) => { setPendingProductSku(p.sku); setView("products"); }}
             onContainerClick={(c) => goContainers(c.id)}
-            onAutoSuggest={() => { setPendingAutoSuggestNew(true); setView("containers"); }}
+            onAutoSuggest={() => { setPendingAutoSuggestMfr(null); setPendingAutoSuggestNew(true); setView("containers"); }}
             onSimulator={openSimulator}
-            onShowOrderPdf={() => toast("Generator PO — wkrótce (etap 6)", "info")}
+            onCreateContainer={(mfrId) => { setPendingAutoSuggestMfr(mfrId); setPendingAutoSuggestNew(true); setView("containers"); }}
           />
         ) : view === "products" ? (
           <ProductsView
@@ -265,7 +266,8 @@ export default function Page() {
             openId={pendingContainerId}
             onOpenedId={() => setPendingContainerId(null)}
             openNewAutoSuggest={pendingAutoSuggestNew}
-            onOpenedNewAutoSuggest={() => setPendingAutoSuggestNew(false)}
+            autoSuggestMfrId={pendingAutoSuggestMfr}
+            onOpenedNewAutoSuggest={() => { setPendingAutoSuggestNew(false); setPendingAutoSuggestMfr(null); }}
           />
         ) : view === "calendar" ? (
           <Calendar density={t.density} />
