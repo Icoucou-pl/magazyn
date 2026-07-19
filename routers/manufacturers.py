@@ -103,6 +103,106 @@ async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> Li
     ]
 
 
+# ── Sezonowość per-SKU do Prognozy ───────────────────────────
+# Krzywa sezonowa z realnej historii (ten sam zakres co _sales_season:
+# od 1 stycznia zeszłego roku do dziś — maks. 2 obserwacje na miesiąc).
+# Kaskada odporna na ogon:  SKU (dość wolumenu) → producent → globalna.
+# Mnożniki miesięczne są znormalizowane do średniej 1 (12 liczb, Sty..Gru),
+# więc sezonowość TYLKO przesuwa roczną średnią między miesiącami — nie zmienia sumy.
+_SEAS_MIN_SKU_UNITS = 24     # min. sztuk w oknie, by ufać własnej krzywej SKU
+_SEAS_MIN_SKU_MONTHS = 6     # min. liczba miesięcy z jakąkolwiek sprzedażą
+_SEAS_MIN_MFR_UNITS = 60     # min. sztuk producenta, by użyć jego krzywej zamiast globalnej
+_SEAS_CLAMP_LO = 0.35        # dolne ograniczenie mnożnika (ochrona przed pojedynczym pikiem)
+_SEAS_CLAMP_HI = 1.90        # górne ograniczenie mnożnika
+
+
+def _normalize_curve(months: list[int]) -> list[float]:
+    """12 sum miesięcznych → 12 mnożników o średniej 1. Puste/zero → płaska [1,...,1]."""
+    total = sum(months)
+    if total <= 0:
+        return [1.0] * 12
+    avg = total / 12.0
+    out: list[float] = []
+    for v in months:
+        m = v / avg
+        if m < _SEAS_CLAMP_LO:
+            m = _SEAS_CLAMP_LO
+        elif m > _SEAS_CLAMP_HI:
+            m = _SEAS_CLAMP_HI
+        out.append(round(m, 3))
+    return out
+
+
+@router.get("/forecast/seasonality")
+async def forecast_seasonality(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Mnożniki sezonowe per-SKU dla widoku Prognozy. Jeden skan historii
+    (GROUP BY sku, miesiąc), potem kaskada SKU → producent → globalna w Pythonie.
+    Zwraca: {global:[12], curves:{sku:[12]}, sources:{sku:'sku'|'mfr'|'global'}}."""
+    # 1) sprzedaż miesięczna per SKU — jedno zapytanie, tylko sztuki (bez FX)
+    sql = f"""
+        SELECT LOWER(TRIM(i.{settings.COL_ITEM_SKU}))                        AS sku,
+               EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int          AS mo,
+               COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int              AS qty
+        FROM {settings.TABLE_ORDER_ITEMS} i
+        JOIN {settings.TABLE_ORDERS} o
+            ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
+        WHERE o.{settings.COL_ORDER_DATE} >= (date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
+            {INCLUDED_STATUS_FILTER}
+            AND i.{settings.COL_ITEM_SKU} IS NOT NULL
+            AND TRIM(i.{settings.COL_ITEM_SKU}) <> ''
+        GROUP BY LOWER(TRIM(i.{settings.COL_ITEM_SKU})), EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})
+    """
+    rows = (await db.execute(text(sql))).mappings().all()
+
+    sku_months: dict[str, list[int]] = {}
+    for r in rows:
+        mo = int(r["mo"] or 0)  # 1..12
+        if mo < 1 or mo > 12:
+            continue
+        arr = sku_months.setdefault(r["sku"], [0] * 12)
+        arr[mo - 1] += int(r["qty"] or 0)
+
+    # 2) mapowanie SKU → producent (mała tabela app_product_attrs)
+    mfr_rows = (await db.execute(text(
+        f"SELECT LOWER(TRIM(sku)) AS sku, manufacturer_id FROM {settings.TABLE_PRODUCT_ATTRS} "
+        f"WHERE manufacturer_id IS NOT NULL AND sku IS NOT NULL AND TRIM(sku) <> ''"
+    ))).mappings().all()
+    sku_to_mfr: dict[str, int] = {r["sku"]: int(r["manufacturer_id"]) for r in mfr_rows}
+
+    # 3) agregaty: producent i globalny
+    mfr_months: dict[int, list[int]] = {}
+    global_months = [0] * 12
+    for sku, arr in sku_months.items():
+        for m in range(12):
+            global_months[m] += arr[m]
+        mid = sku_to_mfr.get(sku)
+        if mid is not None:
+            macc = mfr_months.setdefault(mid, [0] * 12)
+            for m in range(12):
+                macc[m] += arr[m]
+
+    global_curve = _normalize_curve(global_months)
+    mfr_curves = {mid: _normalize_curve(arr) for mid, arr in mfr_months.items()}
+
+    # 4) kaskada per SKU
+    curves: dict[str, list[float]] = {}
+    sources: dict[str, str] = {}
+    for sku, arr in sku_months.items():
+        total = sum(arr)
+        active_months = sum(1 for v in arr if v > 0)
+        if total >= _SEAS_MIN_SKU_UNITS and active_months >= _SEAS_MIN_SKU_MONTHS:
+            curves[sku] = _normalize_curve(arr)
+            sources[sku] = "sku"
+        elif (mid := sku_to_mfr.get(sku)) is not None and sum(mfr_months.get(mid, [])) >= _SEAS_MIN_MFR_UNITS:
+            curves[sku] = mfr_curves[mid]
+            sources[sku] = "mfr"
+        else:
+            curves[sku] = global_curve
+            sources[sku] = "global"
+
+    return {"global": global_curve, "curves": curves, "sources": sources, "count": len(curves)}
+
+
 @router.post("/manufacturers", response_model=ManufacturerOut, status_code=201)
 async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(
