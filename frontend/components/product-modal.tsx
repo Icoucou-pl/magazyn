@@ -386,7 +386,6 @@ function AttributesCard({
     cbm: product.cbm_per_unit ?? 0,
     nazwa: product.name_override_manual ?? "",
     ean: product.ean ?? "",
-    seasonality: product.seasonality_enabled,
     classification: product.forced_status || "AUTO",
     mfrId: product.manufacturer_id != null ? String(product.manufacturer_id) : "",
     firmaId: product.firma_id != null ? String(product.firma_id) : "",
@@ -398,7 +397,7 @@ function AttributesCard({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.seasonality_enabled, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock]);
+  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock]);
 
   const save = async () => {
     if (busy) return;
@@ -410,7 +409,6 @@ function AttributesCard({
         manufacturer_id: draft.mfrId === "" ? 0 : Number(draft.mfrId),
         firma_id: draft.firmaId === "" ? 0 : Number(draft.firmaId),
         ean: draft.ean,
-        seasonality_enabled: draft.seasonality,
         forced_status: draft.classification,
         is_sample: draft.isSample,
         sample_stock: parseInt(draft.sampleStock, 10) || 0,
@@ -478,7 +476,6 @@ function AttributesCard({
             const isForced = draft.classification !== "AUTO";
             return <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: isForced ? "var(--accent)" : "var(--text-hi)", fontWeight: 500 }}>{isForced && <span title="Wymuszony status">📌</span>}{opt?.label || draft.classification}</span>;
           }} />
-        <AttrToggle label="Sezonowość" value={draft.seasonality} editing={editing} onChange={(v) => setDraft({ ...draft, seasonality: v })} />
         {/* SAMPLE: etykieta produktu próbnego. Włączona → status SAMPLE, produkt wypada
             z auto-sugestii, listy zakupów i anomalii. Wyłączenie = "sample się przyjął". */}
         <AttrToggle label="Sample (produkt próbny)" value={draft.isSample} editing={editing} onChange={(v) => setDraft({ ...draft, isSample: v })} />

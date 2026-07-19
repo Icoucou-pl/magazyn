@@ -3,7 +3,7 @@
 // MAGAZYN — Import produktów (etap 2b). Port ImportModal z mocka.
 //   Kreator 3-krokowy: wgraj/wklej CSV → podgląd → wynik.
 //   Wpięty w POST /products/import (ImportRow[]: sku, cbm,
-//   manufacturer_name, lead_time_days, seasonality_enabled).
+//   manufacturer_name, lead_time_days, cena_zakupu).
 //   Nieznane SKU są pomijane (produkty pochodzą z Subiekta).
 //   Dry-run liczony po stronie frontu (bez zapisu).
 // ============================================================
@@ -20,17 +20,16 @@ type ParsedRow = {
   cbm?: number;
   manufacturer_name?: string;
   lead_time_days?: number;
-  seasonality_enabled?: boolean;
   cena_zakupu?: number;
   _existing: boolean;
 };
 type DetectedColumns = Record<string, string | null>;
 type ImportResult = { total: number; updated: number; skipped: number; errors: string[]; dryRun: boolean };
 
-const EXAMPLE_CSV = `sku;cbm;manufacturer_name;lead_time_days;seasonality_enabled;cena zakupu (reczna)
-FUR-7732-OAK;0.180;Tianjin Furniture;90;false;349.00
-TRN-4521-BLK;0.018;Guangzhou Lights;75;false;
-CRM-2814-WHT;0.024;Foshan Ceramics;60;true;89.90`;
+const EXAMPLE_CSV = `sku;cbm;manufacturer_name;lead_time_days;cena zakupu (reczna)
+FUR-7732-OAK;0.180;Tianjin Furniture;90;349.00
+TRN-4521-BLK;0.018;Guangzhou Lights;75;
+CRM-2814-WHT;0.024;Foshan Ceramics;60;89.90`;
 
 export default function ImportModal({
   onClose, existingSkus, onImported,
@@ -76,7 +75,6 @@ export default function ImportModal({
       const cbmIdx = headers.findIndex((h) => h === "cbm" || h === "cbm_per_unit");
       const mfrIdx = headers.findIndex((h) => h.includes("manufacturer") || h === "producent");
       const ltIdx = headers.findIndex((h) => h.includes("lead") || h === "lead_time_days");
-      const seasIdx = headers.findIndex((h) => h.includes("season"));
       // Cena zakupu (ręczna) — tylko kolumna z "reczna"/"ręczna" albo dokładnie "cena_zakupu".
       // NIE łapiemy "cena zakupu (obecna)" ani gołego "cena zakupu" (to efektywna z eksportu/XLSX).
       const cenaIdx = headers.findIndex((h) => h.includes("reczna") || h.includes("ręczna") || h === "cena_zakupu");
@@ -86,7 +84,6 @@ export default function ImportModal({
         cbm: cbmIdx >= 0 ? headers[cbmIdx] : null,
         manufacturer: mfrIdx >= 0 ? headers[mfrIdx] : null,
         lead_time: ltIdx >= 0 ? headers[ltIdx] : null,
-        seasonality: seasIdx >= 0 ? headers[seasIdx] : null,
         cena_zakupu: cenaIdx >= 0 ? headers[cenaIdx] : null,
       });
 
@@ -101,7 +98,6 @@ export default function ImportModal({
         if (cbmIdx >= 0 && cols[cbmIdx]) row.cbm = parseFloat(cols[cbmIdx].replace(",", "."));
         if (mfrIdx >= 0 && cols[mfrIdx]) row.manufacturer_name = cols[mfrIdx];
         if (ltIdx >= 0 && cols[ltIdx]) row.lead_time_days = parseInt(cols[ltIdx], 10);
-        if (seasIdx >= 0 && cols[seasIdx]) row.seasonality_enabled = ["true", "tak", "1", "yes", "on"].includes(cols[seasIdx].toLowerCase());
         if (cenaIdx >= 0 && cols[cenaIdx]) {
           const v = parseFloat(cols[cenaIdx].replace(/\s/g, "").replace(",", "."));
           if (!Number.isNaN(v)) row.cena_zakupu = v;
@@ -139,7 +135,6 @@ export default function ImportModal({
         cbm: r.cbm ?? null,
         manufacturer_name: r.manufacturer_name ?? null,
         lead_time_days: r.lead_time_days ?? null,
-        seasonality_enabled: r.seasonality_enabled ?? null,
         cena_zakupu: r.cena_zakupu ?? null,
       }));
       const res = (await api.post("/products/import", payload)) as { total: number; updated: number; skipped: number; errors: string[] };
@@ -256,7 +251,7 @@ function ImportStep1({
       <div style={{ padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
         <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Format kolumn (separator: „;", „," lub TAB)</div>
         <div className="mono" style={{ fontSize: 11, color: "var(--text-mid)", lineHeight: 1.6 }}>
-          <strong style={{ color: "var(--text-hi)" }}>sku</strong>* · cbm · manufacturer_name · lead_time_days · seasonality_enabled
+          <strong style={{ color: "var(--text-hi)" }}>sku</strong>* · cbm · manufacturer_name · lead_time_days · cena zakupu (reczna)
         </div>
         <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 6 }}>
           Tylko <strong>sku</strong> jest wymagany. Reszta opcjonalna. Nieznani producenci utworzą się automatycznie. SKU spoza bazy są pomijane.
@@ -281,7 +276,7 @@ function ImportStep2({
   const existing = rows.filter((r) => r._existing).length;
   const missing = rows.length - existing;
   const canImport = existing > 0;
-  const previewGrid = "32px 130px 70px minmax(0, 1fr) 60px 60px 60px";
+  const previewGrid = "32px 130px 70px minmax(0, 1fr) 60px 60px";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -316,7 +311,6 @@ function ImportStep2({
             <span style={{ textAlign: "right" }}>CBM</span>
             <span>Producent</span>
             <span style={{ textAlign: "right" }}>LT</span>
-            <span style={{ textAlign: "center" }}>Sez.</span>
             <span style={{ textAlign: "center" }}>Akcja</span>
           </div>
           {rows.slice(0, 50).map((r, i) => (
@@ -326,7 +320,6 @@ function ImportStep2({
               <span className="num" style={{ textAlign: "right", color: r.cbm ? "var(--text-mid)" : "var(--text-disabled)" }}>{r.cbm?.toFixed(3) || "—"}</span>
               <span style={{ color: r.manufacturer_name ? "var(--text-mid)" : "var(--text-disabled)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.manufacturer_name || "—"}</span>
               <span className="num" style={{ textAlign: "right", color: r.lead_time_days ? "var(--text-mid)" : "var(--text-disabled)" }}>{r.lead_time_days || "—"}</span>
-              <span style={{ textAlign: "center" }}>{r.seasonality_enabled ? <span style={{ color: "var(--anomaly)" }}>●</span> : <span style={{ color: "var(--text-disabled)" }}>○</span>}</span>
               <span style={{ textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: "0.04em" }}>
                 {r._existing ? <span style={{ color: "var(--info)" }}>UPD</span> : <span style={{ color: "var(--text-disabled)" }}>POMIŃ</span>}
               </span>

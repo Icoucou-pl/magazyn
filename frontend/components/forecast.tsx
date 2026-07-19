@@ -37,7 +37,9 @@ const FC_BUCKETS: Record<Bucket, { label: string; bg: string; fg: string; desc: 
 };
 
 const FC_MONTH_NAMES = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
+// Fallback offline — używany tylko gdy /forecast/seasonality nie odpowie.
 const SEASONAL_CURVE = [0.85, 0.88, 1.05, 1.15, 1.20, 1.05, 0.80, 0.78, 1.05, 1.15, 1.25, 1.10];
+const SEAS_SRC_LABEL: Record<string, string> = { sku: "własna (z historii SKU)", mfr: "producenta", global: "ogólna" };
 
 function classifyCover(stock: number, monthlySales: number): Bucket {
   if (stock <= 0) return "BRAKI";
@@ -69,7 +71,7 @@ function buildMonthCols(n: number): MonthCol[] {
 type FcCell = { stock: number; bucket: Bucket; delivery: number };
 type FcRow = { p: Product; cells: FcCell[] };
 
-function projectProduct(p: Product, monthCols: MonthCol[], useSeasonality: boolean): FcCell[] {
+function projectProduct(p: Product, monthCols: MonthCol[], curve: number[] | null): FcCell[] {
   const baseMonthly = p.avg_monthly_weighted || 0;
   const today = new Date();
   const deliveriesByMonth: Record<number, number> = {};
@@ -86,7 +88,7 @@ function projectProduct(p: Product, monthCols: MonthCol[], useSeasonality: boole
   return monthCols.map((_col, i) => {
     if (deliveriesByMonth[i]) stock += deliveriesByMonth[i];
     const monthIdx = (today.getMonth() + i) % 12;
-    const monthly = useSeasonality ? baseMonthly * SEASONAL_CURVE[monthIdx] : baseMonthly;
+    const monthly = curve ? baseMonthly * (curve[monthIdx] ?? 1) : baseMonthly;
     const endStock = Math.round(stock - monthly);
     stock = endStock;
     return { stock: endStock, bucket: classifyCover(endStock, monthly), delivery: deliveriesByMonth[i] || 0 };
@@ -135,6 +137,12 @@ export default function ForecastView({
   const [horizon, setHorizon] = useState(14);
   const [sortKey, setSortKey] = useState<"sales30" | "sales90" | "stock" | "sku">("sales30");
   const [seasonality, setSeasonality] = useState(false);
+  // Krzywe sezonowe per SKU (z /forecast/seasonality) — pobierane leniwie po włączeniu toggle
+  const [seasCurves, setSeasCurves] = useState<Record<string, number[]>>({});
+  const [seasGlobal, setSeasGlobal] = useState<number[]>(SEASONAL_CURVE);
+  const [seasSources, setSeasSources] = useState<Record<string, string>>({});
+  const [seasLoaded, setSeasLoaded] = useState(false);
+  const [seasLoading, setSeasLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState("active");
   const [colVis, setColVis] = useState<{ sales60: boolean; sales90: boolean }>({ sales60: true, sales90: true });
   const [showColMenu, setShowColMenu] = useState(false);
@@ -162,6 +170,22 @@ export default function ForecastView({
     return () => { alive = false; };
   }, []);
 
+  // Krzywe sezonowe ciągniemy dopiero, gdy ktoś realnie włączy sezonowość (jedno zapytanie, cache w stanie)
+  useEffect(() => {
+    if (!seasonality || seasLoaded || seasLoading) return;
+    setSeasLoading(true);
+    api.get("/forecast/seasonality")
+      .then((res) => {
+        const r = (res || {}) as { global?: number[]; curves?: Record<string, number[]>; sources?: Record<string, string> };
+        if (Array.isArray(r.global) && r.global.length === 12) setSeasGlobal(r.global);
+        setSeasCurves(r.curves || {});
+        setSeasSources(r.sources || {});
+        setSeasLoaded(true);
+      })
+      .catch(() => toast("Nie udało się wczytać krzywych sezonowych — używam profilu ogólnego", "warning"))
+      .finally(() => setSeasLoading(false));
+  }, [seasonality, seasLoaded, seasLoading]);
+
   const monthCols = useMemo(() => buildMonthCols(horizon), [horizon]);
   const mfr = useMemo(() => manufacturers.find((m) => m.id === mfrId), [manufacturers, mfrId]);
 
@@ -185,7 +209,10 @@ export default function ForecastView({
       if (hiddenSkus.has(p.sku)) return false;
       return passFilter(p) || extraSkus.has(p.sku);
     });
-    const mapped: FcRow[] = arr.map((p) => ({ p, cells: projectProduct(p, monthCols, seasonality) }));
+    const mapped: FcRow[] = arr.map((p) => {
+      const curve = seasonality ? (seasCurves[p.sku.trim().toLowerCase()] ?? seasGlobal) : null;
+      return { p, cells: projectProduct(p, monthCols, curve) };
+    });
     const sales90 = (p: Product) => p.sales_1m + p.sales_2m + p.sales_3m;
     mapped.sort((a, b) => {
       if (sortKey === "sales30") return b.p.sales_1m - a.p.sales_1m;
@@ -194,7 +221,7 @@ export default function ForecastView({
       return a.p.sku.localeCompare(b.p.sku);
     });
     return mapped;
-  }, [products, mfrId, monthCols, sortKey, seasonality, statusFilter, hiddenSkus, extraSkus]);
+  }, [products, mfrId, monthCols, sortKey, seasonality, seasCurves, seasGlobal, statusFilter, hiddenSkus, extraSkus]);
 
   // Produkty, które można dodać (ten sam producent, jeszcze nie na liście)
   const addable = useMemo(() => {
@@ -295,7 +322,7 @@ export default function ForecastView({
           })}
         </div>
         <div style={{ flex: 1 }} />
-        <button onClick={() => setSeasonality(!seasonality)} title="Uwzględnij sezonowość sprzedaży w prognozie" style={{
+        <button onClick={() => setSeasonality(!seasonality)} title="Sezonowość liczona z historii sprzedaży — krzywa per SKU, z fallbackiem na producenta, a dalej na profil ogólny" style={{
           display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 11px",
           background: seasonality ? "var(--anomaly-soft)" : "var(--surface-2)",
           border: `1px solid ${seasonality ? "var(--anomaly)" : "var(--border-soft)"}`,
@@ -305,7 +332,7 @@ export default function ForecastView({
           <span style={{ width: 28, height: 16, borderRadius: 99, padding: 2, background: seasonality ? "var(--anomaly)" : "var(--surface-3)", display: "inline-flex", transition: "background 0.16s" }}>
             <span style={{ width: 12, height: 12, borderRadius: 99, background: "white", transform: seasonality ? "translateX(12px)" : "translateX(0)", transition: "transform 0.16s" }} />
           </span>
-          <I.Activity size={13} /> Sezonowość
+          <I.Activity size={13} /> Sezonowość{seasonality && seasLoading ? " …" : ""}
         </button>
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value as "sales30" | "sales90" | "stock" | "sku")} style={fcSelect}>
           <option value="sales30">Sortuj: sprzedaż 30d ↓</option>
@@ -464,8 +491,11 @@ export default function ForecastView({
                   );
                 }
                 const sticky = c.id === "sku";
+                const seasTitle = sticky && seasonality && seasLoaded
+                  ? `Krzywa sezonowa: ${SEAS_SRC_LABEL[seasSources[p.sku.trim().toLowerCase()] ?? "global"]}`
+                  : undefined;
                 return (
-                  <div key={c.id} style={{
+                  <div key={c.id} title={seasTitle} style={{
                     ...fcMetaCell, textAlign: c.align,
                     justifyContent: c.align === "right" ? "flex-end" : "flex-start",
                     ...(sticky ? { position: "sticky", left: 0, background: "var(--surface-1)", zIndex: 1 } : {}),
