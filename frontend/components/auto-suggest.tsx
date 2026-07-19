@@ -142,6 +142,15 @@ export default function AutoSuggestModal({
     return () => document.removeEventListener("keydown", esc);
   }, [onClose]);
 
+  // Typy kontenerów mogą dojechać async (otwarcie prosto z Dashboardu — modal montuje się
+  // zanim /container-types wróci). Ustaw domyślny, gdy tylko lista się pojawi, żeby
+  // „Wygeneruj sugestię" działało od pierwszego kliknięcia bez ruszania formularza.
+  useEffect(() => {
+    if (!containerTypeId && containerTypes.length > 0) {
+      setContainerTypeId(String(containerTypes[0].id));
+    }
+  }, [containerTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const generate = () => {
     if (!manufacturerId || !containerTypeId) { toast("Wybierz producenta i typ kontenera", "warning"); return; }
     const ct = containerTypes.find((t) => String(t.id) === containerTypeId);
