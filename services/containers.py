@@ -100,6 +100,62 @@ async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> L
     return out
 
 
+async def fetch_attachments_bulk(db: AsyncSession, container_ids: List[int]) -> dict:
+    """Załączniki dla wielu kontenerów jednym zapytaniem (zamiast N× fetch_attachments).
+    Zwraca {container_id: [AttachmentOut,...]}; kolejność w obrębie kontenera jak w wersji per-kontener (uploaded_at DESC)."""
+    if not container_ids:
+        return {}
+    r = await db.execute(
+        text(f"SELECT container_id, id, filename, file_type, file_size, uploaded_at "
+             f"FROM {settings.TABLE_ATTACHMENTS} WHERE container_id = ANY(:ids) "
+             f"ORDER BY container_id, uploaded_at DESC"),
+        {"ids": list(container_ids)},
+    )
+    out: dict = {}
+    for row in r:
+        d = dict(row._mapping)
+        cid = d.pop("container_id")
+        out.setdefault(cid, []).append(AttachmentOut(**d))
+    return out
+
+
+async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals_by_cid: dict) -> dict:
+    """Loty dla wielu kontenerów jednym zapytaniem (zamiast N× fetch_lots).
+    Zwraca {container_id: [ContainerLotOut,...]}; kolejność w obrębie kontenera jak wcześniej (position ASC, id ASC)."""
+    if not container_ids:
+        return {}
+    r = await db.execute(text(f"""
+        SELECT l.container_id, l.id, l.manufacturer_id, l.order_number, l.position,
+               l.waluta_towaru, l.zaliczka_procent, l.zaliczka_kwota, l.zaliczka_waluta, l.zaliczka_data,
+               l.balance_kwota, l.balance_waluta, l.zaplacono_data,
+               m.name AS manufacturer_name, m.color AS manufacturer_color
+        FROM {settings.TABLE_CONTAINER_LOTS} l
+        LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
+        WHERE l.container_id = ANY(:ids)
+        ORDER BY l.container_id, l.position ASC, l.id ASC
+    """), {"ids": list(container_ids)})
+    out: dict = {}
+    for row in r:
+        d = dict(row._mapping)
+        cid = d["container_id"]
+        t = lot_totals_by_cid.get(cid, {}).get(d["id"], {"u": 0, "cbm": 0.0, "val": 0.0})
+        out.setdefault(cid, []).append(ContainerLotOut(
+            id=d["id"], manufacturer_id=d["manufacturer_id"],
+            manufacturer_name=d["manufacturer_name"], manufacturer_color=d["manufacturer_color"],
+            order_number=d["order_number"],
+            waluta_towaru=(d["waluta_towaru"] or "USD"),
+            zaliczka_procent=(float(d["zaliczka_procent"]) if d["zaliczka_procent"] is not None else None),
+            zaliczka_kwota=(float(d["zaliczka_kwota"]) if d["zaliczka_kwota"] is not None else None),
+            zaliczka_waluta=(d["zaliczka_waluta"] or d["waluta_towaru"] or "USD"),
+            zaliczka_data=d["zaliczka_data"],
+            balance_kwota=(float(d["balance_kwota"]) if d["balance_kwota"] is not None else None),
+            balance_waluta=(d["balance_waluta"] or d["waluta_towaru"] or "USD"),
+            zaplacono_data=d["zaplacono_data"],
+            total_units=t["u"], total_cbm=round(t["cbm"], 3), total_value=round(t["val"], 2),
+        ))
+    return out
+
+
 async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> List[ContainerOut]:
     """Lista kontenerów z pozycjami + załącznikami + wyliczeniami wypełnienia/wartości."""
     where = "WHERE c.status = :status" if status else ""
@@ -207,10 +263,14 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 lt["cbm"] += tcb
                 lt["val"] += eff_cost * row["quantity"]
 
-    # Załączniki + loty dla każdego kontenera
+    # Załączniki + loty: dwa zbiorcze zapytania zamiast 2× (liczba kontenerów) round-tripów do bazy (był N+1).
+    cids = list(containers_dict.keys())
+    attachments_by_cid = await fetch_attachments_bulk(db, cids)
+    lot_totals_by_cid = {cid: containers_dict[cid]["_lot_totals"] for cid in cids}
+    lots_by_cid = await fetch_lots_bulk(db, cids, lot_totals_by_cid)
     for cid in containers_dict:
-        containers_dict[cid]["attachments"] = await fetch_attachments(db, cid)
-        containers_dict[cid]["lots"] = await fetch_lots(db, cid, containers_dict[cid]["_lot_totals"])
+        containers_dict[cid]["attachments"] = attachments_by_cid.get(cid, [])
+        containers_dict[cid]["lots"] = lots_by_cid.get(cid, [])
 
     for c in containers_dict.values():
         c.pop("_lot_totals", None)
