@@ -15,14 +15,19 @@ router = APIRouter(prefix="/api", tags=["anomalies"])
 
 
 @router.get("/anomalies", response_model=List[Anomaly])
-async def detect_anomalies(shop: str = "", db: AsyncSession = Depends(get_db)):
+async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
     """
     Wykrywanie anomalii - rozsądna czułość:
     - sales_spike: 1m > 1.5x średniej z poprzednich 3m, ALE 1m >= 5 (żeby nie spam dla małych)
     - sales_drop: 1m < 0.4x średniej z poprzednich 3m, ALE poprzedni miesiąc był >= 5
     - stock_drain: stan = 0 i sprzedaż 1m >= 10
+
+    favorites_only=True → tylko obserwowane SKU (is_favorite). Dashboard woła z True,
+    żeby anomalie nie krzyczały o produktach, których już nie sprzedajemy.
     """
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
+    if favorites_only:
+        products = [p for p in products if p.is_favorite]
     anomalies = []
 
     for p in products:
@@ -61,9 +66,15 @@ async def detect_anomalies(shop: str = "", db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/shopping-list", response_model=List[ShoppingListGroup])
-async def shopping_list(shop: str = "", db: AsyncSession = Depends(get_db)):
-    """Grupy produktów do zamówienia per producent."""
+async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
+    """Grupy produktów do zamówienia per producent.
+
+    favorites_only=True → tylko obserwowane SKU (is_favorite). Zasila boxy „Pożary"
+    i „Lista zakupów" na Dashboardzie, gdzie chcemy widzieć wyłącznie to, co sprzedajemy.
+    """
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
+    if favorites_only:
+        products = [p for p in products if p.is_favorite]
     needing = [p for p in products if p.status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and p.avg_monthly_weighted >= 1]
 
     mfr_result = await db.execute(text(f"SELECT id, name, color, email FROM {settings.TABLE_MANUFACTURERS}"))

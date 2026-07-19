@@ -28,12 +28,19 @@ async def stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/classification")
-async def classification(shop: str = "", db: AsyncSession = Depends(get_db)):
+async def classification(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
+    """Zliczenie SKU wg statusu + wartość dead stocku.
+
+    favorites_only=True → liczymy tylko obserwowane SKU (is_favorite). Dashboard woła z True,
+    więc KPI „Aktywne SKU" i „Dead stock" dotyczą wyłącznie sprzedawanego asortymentu.
+    """
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0, "SAMPLE": 0}
     dead_stock_value = 0.0
     for r in products_result:
         row = dict(r._mapping)
+        if favorites_only and not row.get("is_favorite", False):
+            continue
         s = classify_product(row)
         counts[s] = counts.get(s, 0) + 1
         if s == "DEAD_STOCK":

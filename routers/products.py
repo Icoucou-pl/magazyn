@@ -318,16 +318,20 @@ async def list_favorites(shop: str = "", db: AsyncSession = Depends(get_db), use
 async def top_sellers(
     shop: str = Query(""),
     limit: int = Query(20, ge=1, le=100),
+    favorites_only: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
     """Top sprzedaży wg SZTUK z ostatnich 30 dni (sales_1m), malejąco.
 
     shop="" = suma wszystkich sklepów; "amh"/"acti"/"veluxa" = sprzedaz danego sklepu.
+    favorites_only=True → tylko obserwowane SKU (is_favorite); Dashboard woła z True.
     Model wyjsciowy nie zawiera zadnych pol finansowych, wiec endpoint jest dostepny
     dla kazdego zalogowanego uzytkownika (bez viewFinancials) i nie wymaga maskowania.
     """
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
+    if favorites_only:
+        products = [p for p in products if p.is_favorite]
     ranked = sorted(
         (p for p in products if p.sales_1m > 0),
         key=lambda p: (p.sales_1m, p.avg_monthly_weighted),

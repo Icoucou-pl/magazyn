@@ -118,16 +118,22 @@ async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db), user: Cu
 
 
 @router.get("/stock-value-history")
-async def stock_value_history(days: int = 90, shop: str = "", db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """
     Symulacja wartości magazynu w czasie - bazuje na obecnym stanie + sprzedaży.
     To jest aproksymacja, bo Subiekt nie trzyma historii stanu - rekonstruujemy z danych zamówień.
     shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = wartość i stan tylko danego magazynu
     (sprzedaż wstecz filtrowana po sklepie; dostawy doliczane tylko dla magazynu, który fizycznie ma dany SKU).
+
+    favorites_only=True → wartość i sztuki liczone TYLKO dla obserwowanych SKU (is_favorite).
+    Dashboard woła z True: KPI „Wartość magazynu" i wykres pokazują żywy, sprzedawany asortyment,
+    a nie cały magazyn (price_map/stock_map budowane są z przefiltrowanej listy, więc reszta odpada sama).
     """
     # DEAD_STOCK też ma stan (i wartość!), więc wchodzi do wykresu — inaczej świeży import bez sprzedaży
     # (klasyfikowany jako DEAD_STOCK) byłby niewidoczny, a jego dostawa nigdy by się nie doliczyła.
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"}, shop)
+    if favorites_only:
+        products = [p for p in products if p.is_favorite]
 
     today = date.today()
 
