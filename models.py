@@ -306,6 +306,7 @@ class ContainerUpdate(BaseModel):
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = None
     zaplacono_data: Optional[date] = None
+    delivered_date: Optional[date] = None    # ręczna data dostawy na magazyn (domyka status)
     lots: Optional[List[ContainerLotIn]] = None
     items: Optional[List[ContainerItemIn]] = None
 
@@ -403,6 +404,8 @@ class ContainerOut(BaseModel):
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = "USD"
     zaplacono_data: Optional[date] = None
+    delivered_date: Optional[date] = None            # ręczna, potwierdzona data dostawy (jeśli jest)
+    warehouse_delivery_date: Optional[date] = None   # KPI: delivered_date lub ETA + odprawa celna
     notes: Optional[str]
     items: List[ContainerItemOut]
     attachments: List[AttachmentOut] = []
