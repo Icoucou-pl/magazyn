@@ -4,7 +4,7 @@ Logika kontenerów: pobieranie kontenerów z pozycjami, załącznikami i wylicze
 """
 
 from typing import List, Optional, Tuple
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -109,7 +109,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
             c.koszt_transportu, c.koszt_spedycji, c.koszt_transportu_magazyn, c.folder, c.subiekt_nr,
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
-            c.balance_kwota, c.balance_waluta, c.zaplacono_data,
+            c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.delivered_date,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
@@ -163,6 +163,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "balance_kwota": (float(row["balance_kwota"]) if row["balance_kwota"] is not None else None),
                 "balance_waluta": (row["balance_waluta"] or row["waluta_towaru"] or "USD"),
                 "zaplacono_data": row["zaplacono_data"],
+                "delivered_date": row["delivered_date"],
+                "warehouse_delivery_date": None,   # liczone niżej: delivered_date lub ETA + odprawa
                 "notes": row["notes"],
                 "items": [], "attachments": [],
                 "total_units": 0, "total_cbm": 0.0, "fill_percentage": None, "total_value": 0.0,
@@ -225,6 +227,12 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         c["effective_status"] = eff
         c["is_auto"] = is_auto
         c["customs_days_left"] = days_left
+        # Data wejścia do magazynu (KPI „Dostawa na magazyn"):
+        #   ręczna delivered_date (potwierdzona) albo szacowana = ETA + okno odprawy celnej.
+        if c["delivered_date"] is not None:
+            c["warehouse_delivery_date"] = c["delivered_date"]
+        elif c["eta_date"] is not None:
+            c["warehouse_delivery_date"] = c["eta_date"] + timedelta(days=max(0, int(settings.CONTAINER_CUSTOMS_DAYS)))
 
     return [ContainerOut(**c) for c in containers_dict.values()]
 
