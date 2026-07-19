@@ -192,32 +192,60 @@ async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bo
         qty = float(r._mapping["qty"] or 0)
         deliveries_by_sku.setdefault(sku_norm, {})[deliv_date] = qty
 
+    # ── Rekonstrukcja wstecz: O(dni × produkty + zdarzenia) zamiast O(dni × produkty × daty_sprzedaży) ──
+    # Wynik identyczny co do grosza ze starą potrójną pętlą — dla każdego dnia stan liczymy tą samą regułą
+    # (stan_dziś + sprzedaż(d→dziś) − dostawy(d→dziś), clamp do 0 per-SKU). Różnica: zamiast dla KAŻDEGO dnia
+    # skanować od nowa wszystkie daty sprzedaży każdego SKU, trzymamy bieżący stan per-SKU i przesuwamy go
+    # tylko o ruch z danego dnia. Sumowanie idzie w tej samej kolejności co wcześniej (kolejność stock_map),
+    # więc float i round() wychodzą bit-w-bit tak samo. Ruch SKU spoza katalogu (stock_map) jest ignorowany — jak dawniej.
+
+    # Ruch pogrupowany po dacie: {data: {sku: qty}} — tylko dla SKU obecnych w katalogu.
+    sales_on_day: dict = {}
+    for sku_norm, per_date in sales_by_sku.items():
+        if sku_norm not in stock_map:
+            continue
+        for sale_d, qty in per_date.items():
+            day_bucket = sales_on_day.setdefault(sale_d, {})
+            day_bucket[sku_norm] = day_bucket.get(sku_norm, 0) + qty
+    deliveries_on_day: dict = {}
+    for sku_norm, per_date in deliveries_by_sku.items():
+        if sku_norm not in stock_map:
+            continue
+        for deliv_d, qty in per_date.items():
+            day_bucket = deliveries_on_day.setdefault(deliv_d, {})
+            day_bucket[sku_norm] = day_bucket.get(sku_norm, 0) + qty
+
+    # Stan bieżący per-SKU (na „dziś"), kolejność jak w stock_map. Sprzedaż/dostawy z datą > dziś
+    # (rzadkie, np. zamówienie z przyszłą datą) doliczamy na starcie — dokładnie jak stary warunek `> d` dla d = dziś.
+    raw = {sku_norm: stock_map[sku_norm] for sku_norm in stock_map}
+    for sale_d, per_sku in sales_on_day.items():
+        if sale_d > today:
+            for sku_norm, qty in per_sku.items():
+                raw[sku_norm] += qty
+    for deliv_d, per_sku in deliveries_on_day.items():
+        if deliv_d > today:
+            for sku_norm, qty in per_sku.items():
+                raw[sku_norm] -= qty
+
     points = []
-    for offset in range(days, -1, -1):
+    for offset in range(0, days + 1):
         d = today - timedelta(days=offset)
         total_value = 0
         total_units = 0
-        for sku_norm in stock_map:
-            stock_today = stock_map[sku_norm]
-            price = price_map.get(sku_norm, 0)
-            sold_between = 0
-            if sku_norm in sales_by_sku:
-                for sale_d, qty in sales_by_sku[sku_norm].items():
-                    if sale_d > d:
-                        sold_between += qty
-            delivered_between = 0
-            if sku_norm in deliveries_by_sku:
-                for deliv_d, qty in deliveries_by_sku[sku_norm].items():
-                    if deliv_d > d:
-                        delivered_between += qty
-            # stan(d) = dzisiaj + sprzedaż(d→dziś) − dostawy(d→dziś); clamp do 0
-            # (nowy SKU / niespójność danych nie może dać ujemnego stanu i wartości).
-            stock_at_d = stock_today + sold_between - delivered_between
-            if stock_at_d < 0:
-                stock_at_d = 0
-            total_value += stock_at_d * price
+        # clamp do 0 per-SKU tylko przy sumowaniu; `raw` zostaje bez clampu, żeby krok wstecz był poprawny
+        for sku_norm, stock_at_d in raw.items():
+            if stock_at_d <= 0:
+                continue
+            total_value += stock_at_d * price_map.get(sku_norm, 0)
             total_units += stock_at_d
         points.append({"date": d.isoformat(), "value": round(total_value, 2), "units": round(total_units)})
+        # przejście do dnia d−1: stan wtedy był wyższy o sprzedaż z dnia d i niższy o dostawy z dnia d
+        for sku_norm, qty in sales_on_day.get(d, {}).items():
+            raw[sku_norm] += qty
+        for sku_norm, qty in deliveries_on_day.get(d, {}).items():
+            raw[sku_norm] -= qty
+
+    points.reverse()  # chronologicznie (najstarszy → najnowszy), tak jak w starej wersji
 
     if not has_perm(user, "viewFinancials"):
         for pt in points:
