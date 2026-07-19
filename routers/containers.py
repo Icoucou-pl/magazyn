@@ -274,9 +274,20 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
             if col in fset:
                 updates.append(f"{col} = :{ph}"); params[ph] = val
 
-    # Data dostawy: przy ręcznym ustawieniu DELIVERED zapisz dzisiejszą (jeśli nie ma);
-    # przy cofnięciu statusu wyczyść (wróci do auto: ETA + odprawa celna).
-    if payload.status is not None:
+    # Data dostawy na magazyn (delivered_date):
+    #   • gdy front przysyła delivered_date wprost → to źródło prawdy; ręczny wpis DOMYKA
+    #     status (blokuje na DELIVERED), żeby kontener wypadł z „aktywnych" bez czekania na
+    #     auto-dostawę z ETA (scenariusz: ktoś był na urlopie i klika datę z ręki później).
+    #     Wyczyszczenie (null) zdejmuje ręczną datę → KPI wraca do auto (ETA + odprawa).
+    #   • w przeciwnym razie datą steruje zmiana statusu (jak dotąd).
+    if "delivered_date" in fset:
+        if payload.delivered_date is not None:
+            updates.append("delivered_date = :dd"); params["dd"] = payload.delivered_date
+            if payload.status is None:            # brak jawnego statusu → domknij na DELIVERED
+                updates.append("status = 'DELIVERED'")
+        else:
+            updates.append("delivered_date = NULL")
+    elif payload.status is not None:
         if payload.status == "DELIVERED":
             updates.append("delivered_date = COALESCE(delivered_date, CURRENT_DATE)")
         else:
