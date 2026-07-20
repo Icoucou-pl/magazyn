@@ -175,7 +175,7 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
 async def get_product(db: AsyncSession, sku: str) -> ProductSummary:
     """Pojedynczy produkt po SKU (szuka we wszystkich statusach). Rzuca 404."""
     from fastapi import HTTPException
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"})
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"})
     for p in products:
         if p.sku == sku:
             return p
