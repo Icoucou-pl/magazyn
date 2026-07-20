@@ -169,8 +169,12 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
-            p.{settings.COL_PRODUCT_NAME} AS product_name,
-            COALESCE(p.{settings.COL_PRODUCT_PRICE}, 0) AS purchase_price,
+            COALESCE(
+                NULLIF(TRIM(p.{settings.COL_PRODUCT_NAME}), ''),
+                NULLIF(TRIM(sell.product_name), ''),
+                NULLIF(TRIM(pa.name_override), '')
+            ) AS product_name,
+            COALESCE(NULLIF(pa.cena_zakupu, 0), p.{settings.COL_PRODUCT_PRICE}, 0) AS purchase_price,
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
             pa.firma_id,
             f.slug AS firma_slug, f.name AS firma_name, f.color AS firma_color
@@ -179,6 +183,13 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
         LEFT JOIN {settings.TABLE_CONTAINER_ITEMS} ci ON ci.container_id = c.id
         LEFT JOIN {settings.TABLE_PRODUCTS} p ON p.{settings.COL_PRODUCT_SKU} = ci.sku
+        LEFT JOIN (
+            SELECT LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_canon,
+                   MAX(oi.product_name) AS product_name
+            FROM {settings.TABLE_ORDER_ITEMS} oi
+            WHERE oi.product_name IS NOT NULL AND TRIM(oi.product_name) <> ''
+            GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+        ) sell ON sell.sku_canon = LOWER(TRIM(ci.sku))
         LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = ci.sku
         LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
         {where}
