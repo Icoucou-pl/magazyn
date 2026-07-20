@@ -106,6 +106,7 @@ def _visible_products_clause(sku_raw_sql: str) -> str:
         EXISTS (SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} pav
                 WHERE LOWER(TRIM(pav.sku)) = {canon}
                   AND (COALESCE(pav.force_visible, FALSE) = TRUE
+                       OR COALESCE(pav.is_sample, FALSE) = TRUE
                        OR pav.forced_status IN ('ACTIVE', 'ACTIVE_NO_STOCK', 'DEAD_STOCK')))
         OR (
             NOT EXISTS (SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} pai
@@ -136,26 +137,70 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
     wyłącza filtr, żeby dało się je odnaleźć."""
     query_lower = f"%{q.lower()}%"
     # Pusty fragment = brak filtra (pokaż też nieaktywne); inaczej dokładamy predykat widoczności.
-    vis_prod = "" if include_inactive else f"AND {_visible_products_clause(f'p.{settings.COL_PRODUCT_SKU}')}"
+    vis_prod = "" if include_inactive else f"AND {_visible_products_clause('cd.sku')}"
     vis_ean = "" if include_inactive else f"AND {_visible_products_clause(f'oi.{settings.COL_ITEM_SKU}')}"
 
-    # 1. Produkty (SKU + nazwa)
+    # 1. Produkty (SKU + nazwa) — pełny katalog, ta sama unia 4 źródeł co SALES_QUERY.catalog:
+    #    1) Subiekt (AMH), 2) historia zamówień Sellasist (Acti/Veluxa sprzedane),
+    #    3) stany-only w magazynach Sellasist, 4) SAMPLE (app_product_attrs.is_sample).
+    #    Bez tego wyszukiwarka pokazywała tylko Subiekt — produkty Sellasistowe i sample wypadały.
+    #    Dedup przez DISTINCT ON (sku_canon) z priorytetem źródła (niższy pri wygrywa → realna nazwa).
     products_result = await db.execute(text(f"""
+        WITH catalog AS (
+            SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})) AS sku_canon,
+                   {settings.COL_PRODUCT_SKU} AS sku_raw,
+                   {settings.COL_PRODUCT_NAME} AS name,
+                   COALESCE({settings.COL_PRODUCT_STOCK}, 0) AS stock,
+                   1 AS pri
+            FROM {settings.TABLE_PRODUCTS}
+            WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL AND TRIM({settings.COL_PRODUCT_SKU}) <> ''
+            UNION ALL
+            SELECT LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_canon,
+                   MAX(oi.{settings.COL_ITEM_SKU}) AS sku_raw,
+                   MAX(oi.product_name) AS name,
+                   0::numeric AS stock,
+                   2 AS pri
+            FROM {settings.TABLE_ORDER_ITEMS} oi
+            WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
+            GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+            UNION ALL
+            SELECT sku_canon,
+                   MAX(symbol) AS sku_raw,
+                   MAX(symbol) AS name,
+                   0::numeric AS stock,
+                   3 AS pri
+            FROM {settings.TABLE_EXTERNAL_STOCK}
+            WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''
+            GROUP BY sku_canon
+            UNION ALL
+            SELECT LOWER(TRIM(pas.sku)) AS sku_canon,
+                   pas.sku AS sku_raw,
+                   COALESCE(NULLIF(TRIM(pas.name_override), ''), pas.sku) AS name,
+                   0::numeric AS stock,
+                   4 AS pri
+            FROM {settings.TABLE_PRODUCT_ATTRS} pas
+            WHERE COALESCE(pas.is_sample, FALSE) AND pas.sku IS NOT NULL AND TRIM(pas.sku) <> ''
+        ),
+        catalog_dedup AS (
+            SELECT DISTINCT ON (sku_canon)
+                   sku_raw AS sku, name, stock, sku_canon
+            FROM catalog
+            ORDER BY sku_canon, pri, stock DESC NULLS LAST, sku_raw
+        )
         SELECT
-            p.{settings.COL_PRODUCT_SKU} AS sku,
-            p.{settings.COL_PRODUCT_NAME} AS name,
-            COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) AS stock,
+            cd.sku AS sku,
+            cd.name AS name,
+            COALESCE(cd.stock, 0) AS stock,
             m.name AS manufacturer_name,
             m.color AS manufacturer_color
-        FROM {settings.TABLE_PRODUCTS} p
-        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = p.{settings.COL_PRODUCT_SKU}
+        FROM catalog_dedup cd
+        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON LOWER(TRIM(pa.sku)) = cd.sku_canon
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
-        WHERE (LOWER(p.{settings.COL_PRODUCT_SKU}) LIKE :q
-           OR LOWER(p.{settings.COL_PRODUCT_NAME}) LIKE :q)
+        WHERE (LOWER(cd.sku) LIKE :q OR LOWER(cd.name) LIKE :q)
           {vis_prod}
         ORDER BY
-            CASE WHEN LOWER(p.{settings.COL_PRODUCT_SKU}) = LOWER(:exact) THEN 0 ELSE 1 END,
-            p.{settings.COL_PRODUCT_SKU}
+            CASE WHEN LOWER(cd.sku) = LOWER(:exact) THEN 0 ELSE 1 END,
+            cd.sku
         LIMIT 15
     """), {"q": query_lower, "exact": q})
     products = [dict(r._mapping) for r in products_result]
