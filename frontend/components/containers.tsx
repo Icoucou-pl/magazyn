@@ -62,7 +62,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
       const [m, t, p] = await Promise.allSettled([
         api.get("/manufacturers"),
         api.get("/container-types"),
-        api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
+        api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE"),
       ]);
       if (m.status === "fulfilled") setManufacturers((m.value as Manufacturer[]) || []);
       if (t.status === "fulfilled") setContainerTypes((t.value as ContainerType[]) || []);
