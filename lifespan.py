@@ -227,6 +227,26 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Zaliczki (raty) kontenera/lotu — podpięte pod kontener ALBO lot (dokładnie jedno).
+        # Backfill istniejących pojedynczych zaliczek robi migracja SQL (Session pooler),
+        # tu tylko idempotentne stworzenie tabeli dla świeżych instalacji.
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_ADVANCES} (
+                id SERIAL PRIMARY KEY,
+                container_id INTEGER REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE CASCADE,
+                lot_id INTEGER REFERENCES {settings.TABLE_CONTAINER_LOTS}(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL DEFAULT 0,
+                procent NUMERIC,
+                kwota NUMERIC,
+                waluta VARCHAR(10) NOT NULL DEFAULT 'USD',
+                data DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT chk_advance_parent CHECK ((container_id IS NULL) <> (lot_id IS NULL))
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_advances_container ON {settings.TABLE_CONTAINER_ADVANCES}(container_id)"))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_advances_lot ON {settings.TABLE_CONTAINER_ADVANCES}(lot_id)"))
+
         # Załączniki kontenerów (plik trzymany w bazie jako BYTEA)
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_ATTACHMENTS} (
