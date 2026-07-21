@@ -366,6 +366,7 @@ class ContainerLotOut(BaseModel):
     zaplacono_data: Optional[date] = None
     subiekt_wbite: bool = False              # lot wbity do magazynu „w drodze" w Subiekcie
     subiekt_wbite_at: Optional[date] = None
+    firma_breakdown: Dict[str, "ContainerFirmaShare"] = {}   # udział firm w tym locie (per SKU→firma)
     total_units: int = 0
     total_cbm: float = 0
     total_value: float = 0
@@ -447,6 +448,10 @@ class ContainerOut(BaseModel):
     fill_percentage: Optional[float]
     total_value: float
     firma_breakdown: Dict[str, ContainerFirmaShare] = {}   # slug -> udział firmy w kontenerze
+
+
+# ContainerLotOut.firma_breakdown używa forward-refa do ContainerFirmaShare (zdefiniowanej niżej).
+ContainerLotOut.model_rebuild()
 
 
 class TopSellerOut(BaseModel):
