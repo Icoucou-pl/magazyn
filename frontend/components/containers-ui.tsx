@@ -247,6 +247,29 @@ export function SubiektDot({ state, onClick, size = 10 }: { state: "green" | "re
   );
 }
 
+// Przełącznik iOS-style: lewo/czerwony = w apce (kontener), prawo/zielony = w Subiekcie (magazyn w drodze).
+export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggle?: () => void; disabled?: boolean }) {
+  const clickable = !!onToggle && !disabled;
+  return (
+    <button
+      type="button"
+      onClick={clickable ? (e) => { e.stopPropagation(); onToggle!(); } : undefined}
+      disabled={!clickable}
+      title={on ? "w Subiekcie (magazyn w drodze) — kliknij, by cofnąć" : "w apce (kontener) — kliknij, gdy wbite do Subiektu"}
+      style={{
+        position: "relative", width: 40, height: 22, borderRadius: 999, border: "none", padding: 0,
+        background: on ? "var(--ok)" : "var(--critical)",
+        opacity: clickable ? 1 : 0.55, cursor: clickable ? "pointer" : "default",
+        transition: "background 0.18s", flexShrink: 0,
+      }}>
+      <span style={{
+        position: "absolute", top: 2, left: on ? 20 : 2, width: 18, height: 18, borderRadius: "50%",
+        background: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,0.35)", transition: "left 0.18s",
+      }} />
+    </button>
+  );
+}
+
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
   container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt,
@@ -393,7 +416,7 @@ function ContainerCardBody({
           <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: 4 }}>
             {consolidated ? lots.map((l) => (
               <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px" }}>
-                <SubiektDot state={l.subiekt_wbite ? "green" : "red"} onClick={showEdit && onToggleSubiekt ? () => onToggleSubiekt(l.id, !l.subiekt_wbite) : undefined} />
+                <SubiektSwitch on={!!l.subiekt_wbite} onToggle={showEdit && onToggleSubiekt ? () => onToggleSubiekt(l.id, !l.subiekt_wbite) : undefined} disabled={!showEdit} />
                 <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
                 {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
                 <span style={{ marginLeft: "auto", fontSize: 11, color: l.subiekt_wbite ? "var(--ok)" : "var(--text-lo)" }}>
@@ -402,7 +425,7 @@ function ContainerCardBody({
               </div>
             )) : (
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px" }}>
-                <SubiektDot state={c.subiekt_wbite ? "green" : "red"} onClick={showEdit && onToggleSubiekt ? () => onToggleSubiekt(null, !c.subiekt_wbite) : undefined} />
+                <SubiektSwitch on={!!c.subiekt_wbite} onToggle={showEdit && onToggleSubiekt ? () => onToggleSubiekt(null, !c.subiekt_wbite) : undefined} disabled={!showEdit} />
                 <span style={{ fontSize: 12, color: "var(--text-mid)" }}>
                   {c.subiekt_wbite ? `Wbite do magazynu „w drodze"${c.subiekt_wbite_at ? ` · ${fmtDatePL(c.subiekt_wbite_at)}` : ""}` : "Jeszcze w apce — liczone z kontenera"}
                 </span>

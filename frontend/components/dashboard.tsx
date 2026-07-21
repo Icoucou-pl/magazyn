@@ -54,7 +54,7 @@ type ContainerOut = {
   total_value: number;
   is_consolidated?: boolean;
   subiekt_wbite?: boolean | null;
-  lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null }[];
+  lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null; firma_breakdown?: Record<string, FirmaShare> }[];
   firma_breakdown?: Record<string, FirmaShare>;   // slug -> udział firmy (może nie przyjść ze starego backendu)
 };
 type Anomaly = {
@@ -119,23 +119,25 @@ function KpiCard({
         {icon && <span style={{ color: "var(--text-lo)", opacity: 0.65 }}>{icon}</span>}
       </div>
       <div>
-        <div className="num" style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", color: c, lineHeight: 1.05 }}>{value}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-          {change != null && (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 600, color: changeColor }} className="num">
-              {changePositive ? "▲" : "▼"} {Math.abs(change).toFixed(1).replace(".", ",")}%
-            </span>
-          )}
-          {sub && <span style={{ fontSize: 11, color: "var(--text-lo)" }}>{sub}</span>}
+        <div className="num" style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.02em", color: c, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 8, marginTop: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
+            {change != null && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 600, color: changeColor, flexShrink: 0 }} className="num">
+                {changePositive ? "▲" : "▼"} {Math.abs(change).toFixed(1).replace(".", ",")}%
+              </span>
+            )}
+            {sub && <span style={{ fontSize: 11, color: "var(--text-lo)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</span>}
+          </div>
+          {sparkData && sparkData.length > 1 && <Sparkline points={sparkData} color={c} />}
         </div>
       </div>
-      {sparkData && sparkData.length > 1 && <Sparkline points={sparkData} color={c} />}
     </div>
   );
 }
 
 function Sparkline({ points, color }: { points: number[]; color: string }) {
-  const w = 80, h = 24;
+  const w = 72, h = 22;
   const max = Math.max(...points), min = Math.min(...points);
   const range = max - min || 1;
   const path = points.map((v, i) => {
@@ -144,7 +146,7 @@ function Sparkline({ points, color }: { points: number[]; color: string }) {
     return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
   return (
-    <svg width={w} height={h} style={{ position: "absolute", right: 14, bottom: 12, opacity: 0.4 }}>
+    <svg width={w} height={h} style={{ opacity: 0.5, flexShrink: 0 }}>
       <path d={path} stroke={color} strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
@@ -260,23 +262,36 @@ function StockValueChart({ points, metric = "value", height = 220 }: { points: S
 
 // ── KPI grid ─────────────────────────────────────────────────
 // Podział kontenera na część „w Subiekcie" (zielona) i „w apce" (czerwona) — dla KPI i liczników.
-function splitSubiekt(c: ContainerOut) {
+// shop="" → całość; shop=slug → wartość i liczniki CZERWONE zawężone do towaru tej firmy
+// (per lot, z lot_firma_breakdown). Zielona strona (magazyn w drodze) liczona globalnie —
+// jej wartość i tak bierze się z tabeli subiektowej (AMH), a licznik pokazujemy tylko dla AMH.
+function splitSubiekt(c: ContainerOut, shop: string) {
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
+  const carries = (fb?: Record<string, FirmaShare>) => !shop || ((fb?.[shop]?.units ?? 0) > 0);
+  const redValOf = (fb: Record<string, FirmaShare> | undefined, total: number) => shop ? (fb?.[shop]?.value ?? 0) : total;
+
   if (consolidated) {
     const green = lots.filter((l) => !!l.subiekt_wbite);
     const red = lots.filter((l) => !l.subiekt_wbite);
-    const mixed = red.length > 0 && green.length > 0;
-    return {
-      redValue: red.reduce((s, l) => s + (l.total_value || 0), 0),
-      redWhole: red.length === lots.length,
-      greenWhole: green.length === lots.length,
-      looseRed: mixed ? red.length : 0,
-      looseGreen: mixed ? green.length : 0,
-    };
+    const redValue = red.reduce((s, l) => s + redValOf(l.firma_breakdown, l.total_value || 0), 0);
+    const relevant = lots.filter((l) => carries(l.firma_breakdown));
+    const redRel = red.filter((l) => carries(l.firma_breakdown));
+    const redWhole = redRel.length > 0 && redRel.length === relevant.length;
+    const looseRed = (redRel.length > 0 && redRel.length < relevant.length) ? redRel.length : 0;
+    const greenWhole = green.length === lots.length;
+    const looseGreen = (red.length > 0 && green.length > 0) ? green.length : 0;
+    return { redValue, redWhole, looseRed, greenWhole, looseGreen };
   }
   const isRed = !c.subiekt_wbite;
-  return { redValue: isRed ? (c.total_value || 0) : 0, redWhole: isRed, greenWhole: !isRed, looseRed: 0, looseGreen: 0 };
+  const rel = carries(c.firma_breakdown);
+  return {
+    redValue: isRed ? redValOf(c.firma_breakdown, c.total_value || 0) : 0,
+    redWhole: isRed && rel,
+    looseRed: 0,
+    greenWhole: !isRed,
+    looseGreen: 0,
+  };
 }
 
 const _plPick = (n: number, one: string, few: string, many: string) =>
@@ -291,7 +306,7 @@ function countLabel(containers: number, looseLots: number): string {
 
 // Kropka na liście dostaw (wariant C): zielony = w Subiekcie, czerwony = w apce, żółty = mieszany.
 function subiektRowState(c: ContainerOut): "green" | "red" | "mixed" {
-  const s = splitSubiekt(c);
+  const s = splitSubiekt(c, "");
   if (s.greenWhole) return "green";
   if (s.redWhole) return "red";
   return "mixed";
@@ -323,9 +338,15 @@ function KpiGrid({
   const magValue = isAmhScope ? mag.value : 0;
   const magSub = isAmhScope ? countLabel(mag.containers, mag.looseLots) : "tylko AMH";
   const kontSub = countLabel(kont.containers, kont.looseLots);
+  const kapital = stockValue + magValue;   // kapitał w towarze: u nas + opłacone/wbite w drodze
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+      {showFin ? (
+        <KpiCard label="Kapitał w towarze" value={fmtPLNk(kapital)} sub="magazyn + w drodze" tone="accent" icon={<I.Wallet size={14} />} />
+      ) : (
+        <KpiCard label="Kapitał w towarze" value="•••••" sub="magazyn + w drodze" tone="accent" icon={<I.Wallet size={14} />} />
+      )}
       {showFin ? (
         <KpiCard label="Wartość magazynu" value={fmtPLNk(stockValue)} change={change90} sub="vs 90 dni temu" tone="neutral" sparkData={sparkLast30} icon={<I.Box size={14} />} />
       ) : (
@@ -342,7 +363,6 @@ function KpiGrid({
         <KpiCard label="Kontenery w drodze" value="•••••" sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       )}
       <KpiCard label="Aktywne SKU" value={fmtNum(c?.ACTIVE)} sub={`${fmtNum(c?.ACTIVE_NO_STOCK)} bez stanu`} tone="ok" icon={<I.Activity size={14} />} />
-      <KpiCard label="Dead stock" value={fmtNum(c?.DEAD_STOCK)} sub={fmtPLNk(classification?.dead_stock_value_pln)} tone="warning" icon={<I.Alert size={14} />} />
     </div>
   );
 }
@@ -856,7 +876,7 @@ export default function Dashboard({
 
     let redValue = 0, redContainers = 0, redLooseLots = 0, greenContainers = 0, greenLooseLots = 0;
     for (const c of undelivered) {
-      const s = splitSubiekt(c);
+      const s = splitSubiekt(c, shop);
       redValue += s.redValue;
       if (s.redWhole) redContainers += 1;
       if (s.greenWhole) greenContainers += 1;
