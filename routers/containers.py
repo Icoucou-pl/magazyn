@@ -35,20 +35,61 @@ def _mask_container_financials(containers, user):
         c.koszt_transportu_magazyn = None
         c.zaliczka_kwota = None
         c.balance_kwota = None
+        for adv in c.advances:
+            adv.kwota = None
         for it in c.items:
             it.unit_cost = None
         for lot in c.lots:
             lot.total_value = 0.0
             lot.zaliczka_kwota = None
             lot.balance_kwota = None
+            for adv in lot.advances:
+                adv.kwota = None
     return containers
 
 
+def _advances_from(adv_list, z_proc, z_kwota, z_wal, z_data, default_cur="USD") -> List[dict]:
+    """Normalizuje zaliczki do listy dict-ów. Puste wiersze (bez kwoty/daty/%) pomijane.
+    Gdy front nie przysłał `advances`, spada na pojedynczą legacy zaliczkę (kompat ze starym
+    frontem i z danymi sprzed migracji)."""
+    out: List[dict] = []
+    for a in (adv_list or []):
+        if a.kwota is None and a.data is None and a.procent is None:
+            continue
+        out.append({"procent": a.procent, "kwota": a.kwota,
+                    "waluta": (a.waluta or default_cur), "data": a.data})
+    if not out and (z_kwota is not None or z_data is not None or z_proc is not None):
+        out.append({"procent": z_proc, "kwota": z_kwota,
+                    "waluta": (z_wal or default_cur), "data": z_data})
+    return out
+
+
+async def _insert_advances(db: AsyncSession, *, advances: List[dict],
+                           container_id: Optional[int] = None, lot_id: Optional[int] = None) -> None:
+    """Wstawia zaliczki podpięte pod kontener ALBO lot (dokładnie jedno z id)."""
+    for pos, a in enumerate(advances):
+        await db.execute(
+            text(f"""
+                INSERT INTO {settings.TABLE_CONTAINER_ADVANCES}
+                (container_id, lot_id, position, procent, kwota, waluta, data)
+                VALUES (:cid, :lid, :p, :proc, :kw, :wal, :dt)
+            """),
+            {"cid": container_id, "lid": lot_id, "p": pos,
+             "proc": a["procent"], "kw": a["kwota"], "wal": a["waluta"], "dt": a["data"]},
+        )
+
+
 async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
-    """Usuwa loty kontenera i wstawia nowe (po kolei). Zwraca listę nowych id w kolejności."""
+    """Usuwa loty kontenera i wstawia nowe (po kolei). Zwraca listę nowych id w kolejności.
+    Zaliczki lotu lecą do app_container_advances (kaskada usuwa je przy DELETE lotu);
+    1. zaliczkę mirror-ujemy do legacy zaliczka_* na locie (bezpieczny rollback)."""
     await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_LOTS} WHERE container_id = :c"), {"c": cid})
     ids: List[int] = []
     for pos, lot in enumerate(lots or []):
+        default_cur = lot.waluta_towaru or "USD"
+        advs = _advances_from(lot.advances, lot.zaliczka_procent, lot.zaliczka_kwota,
+                              lot.zaliczka_waluta, lot.zaliczka_data, default_cur)
+        first = advs[0] if advs else None
         rr = await db.execute(
             text(f"""
                 INSERT INTO {settings.TABLE_CONTAINER_LOTS}
@@ -59,13 +100,17 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
                 RETURNING id
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
-             "wal": (lot.waluta_towaru or "USD"),
-             "zp": lot.zaliczka_procent, "zk": lot.zaliczka_kwota,
-             "zwal": (lot.zaliczka_waluta or lot.waluta_towaru or "USD"), "zd": lot.zaliczka_data,
-             "bal": lot.balance_kwota, "bwal": (lot.balance_waluta or lot.waluta_towaru or "USD"),
+             "wal": default_cur,
+             "zp": (first["procent"] if first else None),
+             "zk": (first["kwota"] if first else None),
+             "zwal": (first["waluta"] if first else default_cur),
+             "zd": (first["data"] if first else None),
+             "bal": lot.balance_kwota, "bwal": (lot.balance_waluta or default_cur),
              "pd": lot.zaplacono_data},
         )
-        ids.append(rr.scalar_one())
+        lid = rr.scalar_one()
+        await _insert_advances(db, advances=advs, lot_id=lid)
+        ids.append(lid)
     return ids
 
 
@@ -164,6 +209,12 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
         raise HTTPException(400, "ETA nie może być przed datą zamówienia")
 
     cons = payload.is_consolidated
+    default_cur = payload.waluta_towaru or "USD"
+    # Zaliczki kontenera tylko dla wariantu nieskonsolidowanego (przy konsolidacji siedzą w lotach).
+    cont_advs = [] if cons else _advances_from(payload.advances, payload.zaliczka_procent,
+                                               payload.zaliczka_kwota, payload.zaliczka_waluta,
+                                               payload.zaliczka_data, default_cur)
+    first = cont_advs[0] if cont_advs else None
     r = await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_CONTAINERS}
@@ -185,17 +236,20 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
          "kt": payload.koszt_transportu, "ks": payload.koszt_spedycji,
          "ktm": payload.koszt_transportu_magazyn,   # PLN — zawsze na kontenerze
          "fol": (payload.folder or None), "sub": (payload.subiekt_nr or None),
-         # płatności na kontenerze tylko dla wariantu nieskonsolidowanego; przy konsolidacji siedzą w lotach
-         "wal": (None if cons else (payload.waluta_towaru or "USD")),
-         "zp": (None if cons else payload.zaliczka_procent),
-         "zk": (None if cons else payload.zaliczka_kwota),
-         "zwal": (None if cons else (payload.zaliczka_waluta or payload.waluta_towaru or "USD")),
-         "zd": (None if cons else payload.zaliczka_data),
+         # legacy zaliczka_* = 1. zaliczka z listy (mirror dla rollbacku); przy konsolidacji NULL
+         "wal": (None if cons else default_cur),
+         "zp": (first["procent"] if first else None),
+         "zk": (first["kwota"] if first else None),
+         "zwal": (None if cons else (first["waluta"] if first else default_cur)),
+         "zd": (first["data"] if first else None),
          "bal": (None if cons else payload.balance_kwota),
-         "bwal": (None if cons else (payload.balance_waluta or payload.waluta_towaru or "USD")),
+         "bwal": (None if cons else (payload.balance_waluta or default_cur)),
          "pd": (None if cons else payload.zaplacono_data)}
     )
     cid = r.scalar_one()
+
+    if not cons:
+        await _insert_advances(db, advances=cont_advs, container_id=cid)
 
     lot_ids = await _replace_lots(db, cid, payload.lots) if payload.is_consolidated else []
 
@@ -255,24 +309,40 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         updates.append("subiekt_nr = :sub"); params["sub"] = (payload.subiekt_nr or None)
 
     # Płatności na kontenerze: przy konsolidacji przenoszą się do lotów → czyścimy;
-    # w wariancie nieskonsolidowanym (lub partial patch bez zmiany konsolidacji) — z payloadu.
-    pay_fields = [
-        ("waluta_towaru", "wal", (payload.waluta_towaru or "USD")),
-        ("zaliczka_procent", "zp", payload.zaliczka_procent),
-        ("zaliczka_kwota", "zk", payload.zaliczka_kwota),
-        ("zaliczka_waluta", "zwal", (payload.zaliczka_waluta or payload.waluta_towaru or "USD")),
-        ("zaliczka_data", "zd", payload.zaliczka_data),
+    # w wariancie nieskonsolidowanym — waluta/balance z payloadu (sterowane fset).
+    default_cur = payload.waluta_towaru or "USD"
+    simple_pay = [
+        ("waluta_towaru", "wal", default_cur),
         ("balance_kwota", "bal", payload.balance_kwota),
-        ("balance_waluta", "bwal", (payload.balance_waluta or payload.waluta_towaru or "USD")),
+        ("balance_waluta", "bwal", (payload.balance_waluta or default_cur)),
         ("zaplacono_data", "pd", payload.zaplacono_data),
     ]
+    # Zaliczki (rata) na poziomie kontenera — tylko wariant nieskonsolidowany.
+    #   cons True         → czyścimy (dane siedzą w lotach),
+    #   cons False/None   → przebudowa gdy front przysłał `advances` albo dotknął legacy zaliczka_*.
+    # container_advs: None = nie ruszaj tabeli zaliczek; [] = wyczyść; [.] = zastąp.
+    adv_touched = ("advances" in fset) or any(
+        k in fset for k in ("zaliczka_procent", "zaliczka_kwota", "zaliczka_waluta", "zaliczka_data"))
+    container_advs: Optional[List[dict]] = None
     if cons is True:
-        for col, _ph, _val in pay_fields:
+        for col, _ph, _val in simple_pay:
             updates.append(f"{col} = NULL")
+        for col in ("zaliczka_procent", "zaliczka_kwota", "zaliczka_waluta", "zaliczka_data"):
+            updates.append(f"{col} = NULL")
+        container_advs = []
     else:
-        for col, ph, val in pay_fields:
+        for col, ph, val in simple_pay:
             if col in fset:
                 updates.append(f"{col} = :{ph}"); params[ph] = val
+        if adv_touched:
+            container_advs = _advances_from(payload.advances, payload.zaliczka_procent,
+                                            payload.zaliczka_kwota, payload.zaliczka_waluta,
+                                            payload.zaliczka_data, default_cur)
+            first = container_advs[0] if container_advs else None
+            updates.append("zaliczka_procent = :zp"); params["zp"] = (first["procent"] if first else None)
+            updates.append("zaliczka_kwota = :zk");   params["zk"] = (first["kwota"] if first else None)
+            updates.append("zaliczka_waluta = :zwal"); params["zwal"] = (first["waluta"] if first else default_cur)
+            updates.append("zaliczka_data = :zd");    params["zd"] = (first["data"] if first else None)
 
     # Data dostawy na magazyn (delivered_date):
     #   • gdy front przysyła delivered_date wprost → to źródło prawdy; ręczny wpis DOMYKA
@@ -296,6 +366,11 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
     if updates:
         updates.append("updated_at = CURRENT_TIMESTAMP")
         await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET {', '.join(updates)} WHERE id = :id"), params)
+
+    # Zaliczki kontenera w osobnej tabeli: przebuduj tylko gdy front je ruszył (albo konsolidacja czyści).
+    if container_advs is not None:
+        await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_ADVANCES} WHERE container_id = :c"), {"c": cid})
+        await _insert_advances(db, advances=container_advs, container_id=cid)
 
     if payload.items is not None:
         await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_ITEMS} WHERE container_id = :cid"), {"cid": cid})
