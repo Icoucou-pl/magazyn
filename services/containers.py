@@ -159,6 +159,7 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
         SELECT l.container_id, l.id, l.manufacturer_id, l.order_number, l.position,
                l.waluta_towaru, l.zaliczka_procent, l.zaliczka_kwota, l.zaliczka_waluta, l.zaliczka_data,
                l.balance_kwota, l.balance_waluta, l.zaplacono_data,
+               l.subiekt_wbite, l.subiekt_wbite_at,
                m.name AS manufacturer_name, m.color AS manufacturer_color
         FROM {settings.TABLE_CONTAINER_LOTS} l
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
@@ -183,6 +184,8 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
             balance_kwota=(float(d["balance_kwota"]) if d["balance_kwota"] is not None else None),
             balance_waluta=(d["balance_waluta"] or d["waluta_towaru"] or "USD"),
             zaplacono_data=d["zaplacono_data"],
+            subiekt_wbite=bool(d.get("subiekt_wbite")),
+            subiekt_wbite_at=d.get("subiekt_wbite_at"),
             total_units=t["u"], total_cbm=round(t["cbm"], 3), total_value=round(t["val"], 2),
         )
         out.setdefault(cid, []).append(lot)
@@ -206,6 +209,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.koszt_transportu, c.koszt_spedycji, c.koszt_transportu_magazyn, c.folder, c.subiekt_nr,
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
             c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.delivered_date,
+            c.subiekt_wbite, c.subiekt_wbite_at,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
@@ -271,6 +275,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "balance_waluta": (row["balance_waluta"] or row["waluta_towaru"] or "USD"),
                 "zaplacono_data": row["zaplacono_data"],
                 "delivered_date": row["delivered_date"],
+                "subiekt_wbite": bool(row["subiekt_wbite"]),
+                "subiekt_wbite_at": row["subiekt_wbite_at"],
                 "warehouse_delivery_date": None,   # liczone niżej: delivered_date lub ETA + odprawa
                 "notes": row["notes"],
                 "items": [], "attachments": [], "advances": [],
