@@ -20,15 +20,37 @@ import { computeContainerFill } from "./auto-suggest";
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
 type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string };
+type AdvanceDraft = { procent: string; kwota: string; waluta: string; data: string };
 type LotDraft = {
   manufacturer_id: string; order_number: string;
-  waluta_towaru: string; zaliczka_procent: string; zaliczka_kwota: string; zaliczka_waluta: string;
-  zaliczka_data: string; balance_kwota: string; balance_waluta: string; zaplacono_data: string;
+  waluta_towaru: string;
+  advances: AdvanceDraft[];
+  balance_kwota: string; balance_waluta: string; zaplacono_data: string;
+};
+const emptyAdvance = (cur = "USD"): AdvanceDraft => ({ procent: "", kwota: "", waluta: cur, data: "" });
+const numStrTop = (n?: number | null) => (n == null ? "" : String(n));
+// Zaliczki drafty z danych z backendu; fallback na legacy pojedynczą zaliczkę (dane sprzed migracji).
+const advDraftsFrom = (src: {
+  waluta_towaru?: string | null; advances?: { procent?: number | null; kwota?: number | null; waluta?: string | null; data?: string | null }[] | null;
+  zaliczka_procent?: number | null; zaliczka_kwota?: number | null; zaliczka_waluta?: string | null; zaliczka_data?: string | null;
+} | null | undefined): AdvanceDraft[] => {
+  const cur0 = src?.waluta_towaru || "USD";
+  const arr = (src?.advances || []).map((a) => ({
+    procent: numStrTop(a.procent), kwota: numStrTop(a.kwota),
+    waluta: a.waluta || cur0, data: a.data || "",
+  }));
+  if (arr.length) return arr;
+  if (src && (src.zaliczka_kwota != null || src.zaliczka_data || src.zaliczka_procent != null)) {
+    return [{ procent: numStrTop(src.zaliczka_procent), kwota: numStrTop(src.zaliczka_kwota),
+              waluta: src.zaliczka_waluta || cur0, data: src.zaliczka_data || "" }];
+  }
+  return [emptyAdvance(cur0)];
 };
 const emptyLot = (): LotDraft => ({
   manufacturer_id: "", order_number: "",
-  waluta_towaru: "USD", zaliczka_procent: "", zaliczka_kwota: "", zaliczka_waluta: "USD",
-  zaliczka_data: "", balance_kwota: "", balance_waluta: "USD", zaplacono_data: "",
+  waluta_towaru: "USD",
+  advances: [emptyAdvance()],
+  balance_kwota: "", balance_waluta: "USD", zaplacono_data: "",
 });
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
@@ -66,10 +88,7 @@ export default function ContainerFormModal({
     manufacturer_id: l.manufacturer_id ? String(l.manufacturer_id) : "",
     order_number: l.order_number || "",
     waluta_towaru: l.waluta_towaru || "USD",
-    zaliczka_procent: numStr(l.zaliczka_procent),
-    zaliczka_kwota: numStr(l.zaliczka_kwota),
-    zaliczka_waluta: l.zaliczka_waluta || l.waluta_towaru || "USD",
-    zaliczka_data: l.zaliczka_data || "",
+    advances: advDraftsFrom(l),
     balance_kwota: numStr(l.balance_kwota),
     balance_waluta: l.balance_waluta || l.waluta_towaru || "USD",
     zaplacono_data: l.zaplacono_data || "",
@@ -96,10 +115,7 @@ export default function ContainerFormModal({
   // Płatność kontenera nieskonsolidowanego (jeden dostawca).
   // walutaTowaru: waluta domyślna/pierwotna (seed) — nie edytowana w UI, wysyłana z powrotem bez zmian.
   const [walutaTowaru] = useState(initial?.waluta_towaru || "USD");
-  const [zaliczkaProcent, setZaliczkaProcent] = useState(numStr(initial?.zaliczka_procent));
-  const [zaliczkaKwota, setZaliczkaKwota] = useState(numStr(initial?.zaliczka_kwota));
-  const [zaliczkaWaluta, setZaliczkaWaluta] = useState(initial?.zaliczka_waluta || initial?.waluta_towaru || "USD");
-  const [zaliczkaData, setZaliczkaData] = useState(initial?.zaliczka_data || "");
+  const [advances, setAdvances] = useState<AdvanceDraft[]>(advDraftsFrom(initial));
   const [balanceKwota, setBalanceKwota] = useState(numStr(initial?.balance_kwota));
   const [balanceWaluta, setBalanceWaluta] = useState(initial?.balance_waluta || initial?.waluta_towaru || "USD");
   const [zaplaconoData, setZaplaconoData] = useState(initial?.zaplacono_data || "");
@@ -210,6 +226,9 @@ export default function ContainerFormModal({
     next[idx] = { ...next[idx], [field]: value };
     setLots(next);
   };
+  const updateLotAdvances = (idx: number, adv: AdvanceDraft[]) => {
+    setLots((prev) => prev.map((l, i) => (i === idx ? { ...l, advances: adv } : l)));
+  };
   const removeLot = (idx: number) => {
     if (lots.length <= 1) { toast("Skonsolidowany kontener musi mieć przynajmniej jeden lot", "warning"); return; }
     setLots(lots.filter((_, i) => i !== idx));
@@ -280,12 +299,12 @@ export default function ContainerFormModal({
       koszt_transportu_magazyn: numOrNull(kosztTransportuMagazyn),   // PLN
       folder: folder.trim() || null,
       subiekt_nr: subiektNr.trim() || null,
-      // płatność kontenera nieskonsolidowanego (przy konsolidacji → null, dane w lotach)
+      // płatność kontenera nieskonsolidowanego (przy konsolidacji → puste, dane w lotach)
       waluta_towaru: isConsolidated ? null : walutaTowaru,
-      zaliczka_procent: isConsolidated ? null : numOrNull(zaliczkaProcent),
-      zaliczka_kwota: isConsolidated ? null : numOrNull(zaliczkaKwota),
-      zaliczka_waluta: isConsolidated ? null : zaliczkaWaluta,
-      zaliczka_data: isConsolidated ? null : dateOrNull(zaliczkaData),
+      advances: isConsolidated ? [] : advances.map((a) => ({
+        procent: numOrNull(a.procent), kwota: numOrNull(a.kwota),
+        waluta: a.waluta || "USD", data: dateOrNull(a.data),
+      })),
       balance_kwota: isConsolidated ? null : numOrNull(balanceKwota),
       balance_waluta: isConsolidated ? null : balanceWaluta,
       zaplacono_data: isConsolidated ? null : dateOrNull(zaplaconoData),
@@ -293,10 +312,10 @@ export default function ContainerFormModal({
         manufacturer_id: l.manufacturer_id ? Number(l.manufacturer_id) : null,
         order_number: l.order_number.trim() || null,
         waluta_towaru: l.waluta_towaru || "USD",
-        zaliczka_procent: numOrNull(l.zaliczka_procent),
-        zaliczka_kwota: numOrNull(l.zaliczka_kwota),
-        zaliczka_waluta: l.zaliczka_waluta || "USD",
-        zaliczka_data: dateOrNull(l.zaliczka_data),
+        advances: l.advances.map((a) => ({
+          procent: numOrNull(a.procent), kwota: numOrNull(a.kwota),
+          waluta: a.waluta || l.waluta_towaru || "USD", data: dateOrNull(a.data),
+        })),
         balance_kwota: numOrNull(l.balance_kwota),
         balance_waluta: l.balance_waluta || "USD",
         zaplacono_data: dateOrNull(l.zaplacono_data),
@@ -433,7 +452,9 @@ export default function ContainerFormModal({
               <Section title={`Loty — dostawcy i PO (${lots.length})`} required action={showEdit ? <button onClick={addLot} style={btnGhostMini}><I.Plus size={11} /> Dodaj lot</button> : undefined}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {lots.map((lot, idx) => {
-                    const lotUnits = itemDetails.filter((it) => it.lotRef === String(idx)).reduce((s, it) => s + it.qty, 0);
+                    const lotItems = itemDetails.filter((it) => it.lotRef === String(idx));
+                    const lotUnits = lotItems.reduce((s, it) => s + it.qty, 0);
+                    const lotValue = lotItems.reduce((s, it) => s + it.value, 0);
                     return (
                       <div key={idx} style={{ padding: 10, background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 8 }}>
                         <div style={{ display: "grid", gridTemplateColumns: "34px minmax(0, 1fr) 150px 30px", gap: 6, alignItems: "center" }}>
@@ -446,7 +467,14 @@ export default function ContainerFormModal({
                           <button onClick={() => removeLot(idx)} disabled={!showEdit} title="Usuń lot" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, height: 32 }}><I.Close size={12} /></button>
                         </div>
                         {showFin && (
-                          <PaymentInputs v={lot} disabled={!showEdit} onChange={(f, val) => updateLot(idx, f as keyof LotDraft, val)} />
+                          <PaymentInputs
+                            advances={lot.advances}
+                            onAdvancesChange={(adv) => updateLotAdvances(idx, adv)}
+                            balance={{ balance_kwota: lot.balance_kwota, balance_waluta: lot.balance_waluta, zaplacono_data: lot.zaplacono_data }}
+                            onBalanceChange={(f, val) => updateLot(idx, f as keyof LotDraft, val)}
+                            disabled={!showEdit}
+                            refValue={lotValue}
+                          />
                         )}
                         <div style={{ fontSize: 10, color: "var(--text-lo)" }} className="num">{lotUnits} szt przypisanych</div>
                       </div>
@@ -459,17 +487,16 @@ export default function ContainerFormModal({
             {!isConsolidated && showFin && (
               <Section title="Płatność (dostawca)">
                 <PaymentInputs
-                  v={{ zaliczka_procent: zaliczkaProcent, zaliczka_kwota: zaliczkaKwota, zaliczka_waluta: zaliczkaWaluta, zaliczka_data: zaliczkaData, balance_kwota: balanceKwota, balance_waluta: balanceWaluta, zaplacono_data: zaplaconoData }}
-                  disabled={!showEdit}
-                  onChange={(f, val) => {
-                    if (f === "zaliczka_procent") setZaliczkaProcent(val);
-                    else if (f === "zaliczka_kwota") setZaliczkaKwota(val);
-                    else if (f === "zaliczka_waluta") setZaliczkaWaluta(val);
-                    else if (f === "zaliczka_data") setZaliczkaData(val);
-                    else if (f === "balance_kwota") setBalanceKwota(val);
+                  advances={advances}
+                  onAdvancesChange={setAdvances}
+                  balance={{ balance_kwota: balanceKwota, balance_waluta: balanceWaluta, zaplacono_data: zaplaconoData }}
+                  onBalanceChange={(f, val) => {
+                    if (f === "balance_kwota") setBalanceKwota(val);
                     else if (f === "balance_waluta") setBalanceWaluta(val);
                     else if (f === "zaplacono_data") setZaplaconoData(val);
                   }}
+                  disabled={!showEdit}
+                  refValue={totalValue}
                 />
               </Section>
             )}
@@ -717,48 +744,101 @@ function Field({ label, required, children, labelStyle }: { label: string; requi
 }
 
 // Wspólny blok pól płatności (per lot lub per kontener nieskonsolidowany).
-type PayVals = {
-  zaliczka_procent: string; zaliczka_kwota: string; zaliczka_waluta: string; zaliczka_data: string;
-  balance_kwota: string; balance_waluta: string; zaplacono_data: string;
-};
+// Wiele zaliczek (rat): każda = %/kwota/waluta/data. data = faktycznie zapłacono (puste = plan).
+// Balance zostaje osobnym polem zamykającym. Pod spodem live-podpowiedź „Σ vs wartość towaru".
+type BalanceVals = { balance_kwota: string; balance_waluta: string; zaplacono_data: string };
 const CUR_OPTS = [["USD", "USD $"], ["CNY", "CNY ¥"], ["PLN", "PLN zł"]] as const;
-function PaymentInputs({ v, onChange, disabled }: { v: PayVals; onChange: (field: keyof PayVals, value: string) => void; disabled?: boolean }) {
+
+// Suma wpłat pogrupowana po walucie (zaliczki + balance) — bez przewalutowania.
+function _sumByCur(advances: AdvanceDraft[], b: BalanceVals): Record<string, number> {
+  const m: Record<string, number> = {};
+  for (const a of advances) {
+    const v = parseFloat(a.kwota);
+    if (!isNaN(v) && v !== 0) m[a.waluta || "USD"] = (m[a.waluta || "USD"] || 0) + v;
+  }
+  const bv = parseFloat(b.balance_kwota);
+  if (!isNaN(bv) && bv !== 0) m[b.balance_waluta || "USD"] = (m[b.balance_waluta || "USD"] || 0) + bv;
+  return m;
+}
+
+function PaymentInputs({
+  advances, onAdvancesChange, balance, onBalanceChange, disabled, refValue,
+}: {
+  advances: AdvanceDraft[];
+  onAdvancesChange: (next: AdvanceDraft[]) => void;
+  balance: BalanceVals;
+  onBalanceChange: (field: keyof BalanceVals, value: string) => void;
+  disabled?: boolean;
+  refValue?: number;
+}) {
   const mini: React.CSSProperties = { ...inputStyle, padding: "6px 8px", fontSize: 12 };
   const monoMini: React.CSSProperties = { ...mini, fontFamily: "var(--font-mono)", textAlign: "right" };
   const curSel: React.CSSProperties = { ...mini, padding: "6px 6px" };
+
+  const updateAdv = (i: number, field: keyof AdvanceDraft, val: string) =>
+    onAdvancesChange(advances.map((a, idx) => (idx === i ? { ...a, [field]: val } : a)));
+  const addAdv = () => onAdvancesChange([...advances, emptyAdvance(advances[advances.length - 1]?.waluta || "USD")]);
+  const removeAdv = (i: number) => onAdvancesChange(advances.filter((_, idx) => idx !== i));
+
+  const sums = _sumByCur(advances, balance);
+  const sumsLabel = Object.entries(sums).map(([cur, v]) => `${v.toLocaleString("pl-PL")} ${cur}`).join(" + ") || "—";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {/* Zaliczka: % · kwota · waluta · data */}
-      <div style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr) 88px minmax(0, 1fr)", gap: 6 }}>
-        <Field label="Zaliczka %">
-          <input type="number" step="1" min="0" value={v.zaliczka_procent} onChange={(e) => onChange("zaliczka_procent", e.target.value)} placeholder="30" disabled={disabled} style={monoMini} />
-        </Field>
-        <Field label="Zaliczka kwota">
-          <input type="number" step="0.01" min="0" value={v.zaliczka_kwota} onChange={(e) => onChange("zaliczka_kwota", e.target.value)} placeholder="np. 4200" disabled={disabled} style={monoMini} />
-        </Field>
-        <Field label="Waluta">
-          <select value={v.zaliczka_waluta} onChange={(e) => onChange("zaliczka_waluta", e.target.value)} disabled={disabled} style={curSel}>
-            {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
-          </select>
-        </Field>
-        <Field label="Zaliczka — data">
-          <input type="date" value={v.zaliczka_data} onChange={(e) => onChange("zaliczka_data", e.target.value)} disabled={disabled} style={mini} />
-        </Field>
-      </div>
+      {/* Lista zaliczek (rat) */}
+      {advances.map((a, i) => (
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "16px 64px minmax(0, 1fr) 82px minmax(0, 1fr) 28px", gap: 6, alignItems: "end" }}>
+          <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--text-lo)", paddingBottom: 8, textAlign: "center" }}>{i + 1}</span>
+          <Field label={i === 0 ? "Zal. %" : ""}>
+            <input type="number" step="1" min="0" value={a.procent} onChange={(e) => updateAdv(i, "procent", e.target.value)} placeholder="30" disabled={disabled} style={monoMini} />
+          </Field>
+          <Field label={i === 0 ? "Kwota" : ""}>
+            <input type="number" step="0.01" min="0" value={a.kwota} onChange={(e) => updateAdv(i, "kwota", e.target.value)} placeholder="np. 4200" disabled={disabled} style={monoMini} />
+          </Field>
+          <Field label={i === 0 ? "Waluta" : ""}>
+            <select value={a.waluta} onChange={(e) => updateAdv(i, "waluta", e.target.value)} disabled={disabled} style={curSel}>
+              {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+            </select>
+          </Field>
+          <Field label={i === 0 ? "Data (zapłacono)" : ""}>
+            <input type="date" value={a.data} onChange={(e) => updateAdv(i, "data", e.target.value)} disabled={disabled} style={mini} />
+          </Field>
+          <button type="button" onClick={() => removeAdv(i)} disabled={disabled || advances.length <= 1} title="Usuń zaliczkę"
+            style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: (disabled || advances.length <= 1) ? "default" : "pointer", padding: 0, height: 32, opacity: advances.length <= 1 ? 0.4 : 1 }}>
+            <I.Close size={12} />
+          </button>
+        </div>
+      ))}
+      {!disabled && (
+        <button type="button" onClick={addAdv} style={{ ...btnGhostMini, alignSelf: "flex-start" }}>
+          <I.Plus size={11} /> Dodaj zaliczkę
+        </button>
+      )}
+
       {/* Balance: kwota · waluta · data */}
-      <div style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr) 88px minmax(0, 1fr)", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "16px 64px minmax(0, 1fr) 82px minmax(0, 1fr) 28px", gap: 6, alignItems: "end", marginTop: 2 }}>
+        <div />
         <div />
         <Field label="Balance">
-          <input type="number" step="0.01" min="0" value={v.balance_kwota} onChange={(e) => onChange("balance_kwota", e.target.value)} placeholder="np. 32000" disabled={disabled} style={monoMini} />
+          <input type="number" step="0.01" min="0" value={balance.balance_kwota} onChange={(e) => onBalanceChange("balance_kwota", e.target.value)} placeholder="np. 32000" disabled={disabled} style={monoMini} />
         </Field>
         <Field label="Waluta">
-          <select value={v.balance_waluta} onChange={(e) => onChange("balance_waluta", e.target.value)} disabled={disabled} style={curSel}>
+          <select value={balance.balance_waluta} onChange={(e) => onBalanceChange("balance_waluta", e.target.value)} disabled={disabled} style={curSel}>
             {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
           </select>
         </Field>
         <Field label="Zapłacono — data">
-          <input type="date" value={v.zaplacono_data} onChange={(e) => onChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
+          <input type="date" value={balance.zaplacono_data} onChange={(e) => onBalanceChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
         </Field>
+        <div />
+      </div>
+
+      {/* Podpowiedź: suma wpłat (per waluta) vs wartość towaru */}
+      <div style={{ fontSize: 10.5, color: "var(--text-lo)", paddingLeft: 22 }}>
+        Σ zaliczek + balance: <strong style={{ color: "var(--text-mid)" }}>{sumsLabel}</strong>
+        {refValue != null && refValue > 0 && (
+          <> · wartość towaru: <strong style={{ color: "var(--text-mid)" }}>{fmtNum(Math.round(refValue))}</strong></>
+        )}
       </div>
     </div>
   );

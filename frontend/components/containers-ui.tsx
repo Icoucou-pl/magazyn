@@ -31,6 +31,13 @@ export type ContainerItem = {
   lot_id?: number | null;
   product_name: string | null; cbm_per_unit: number; total_cbm: number;
 };
+export type ContainerAdvance = {
+  id?: number;
+  procent?: number | null;
+  kwota?: number | null;
+  waluta?: string | null;
+  data?: string | null;
+};
 export type ContainerLot = {
   id: number;
   manufacturer_id: number | null;
@@ -38,6 +45,7 @@ export type ContainerLot = {
   manufacturer_color: string | null;
   order_number: string | null;
   waluta_towaru?: string | null;
+  advances?: ContainerAdvance[] | null;
   zaliczka_procent?: number | null;
   zaliczka_kwota?: number | null;
   zaliczka_waluta?: string | null;
@@ -67,6 +75,7 @@ export type Container = {
   folder?: string | null;
   subiekt_nr?: string | null;
   waluta_towaru?: string | null;
+  advances?: ContainerAdvance[] | null;
   zaliczka_procent?: number | null;
   zaliczka_kwota?: number | null;
   zaliczka_waluta?: string | null;
@@ -359,7 +368,11 @@ function ContainerCardBody({
                   <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
                   {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
                 </div>
-                <PaymentBlock zCur={l.zaliczka_waluta || l.waluta_towaru || "USD"} bCur={l.balance_waluta || l.waluta_towaru || "USD"} zProc={l.zaliczka_procent} zKwota={l.zaliczka_kwota} zData={l.zaliczka_data} balance={l.balance_kwota} zaplacono={l.zaplacono_data} showFin={showFin} />
+                <PaymentBlock
+                  advances={advancesOf(l)}
+                  bCur={l.balance_waluta || l.waluta_towaru || "USD"}
+                  balance={l.balance_kwota} zaplacono={l.zaplacono_data} showFin={showFin}
+                />
               </div>
             ))}
           </div>
@@ -367,7 +380,11 @@ function ContainerCardBody({
       ) : (
         <div>
           <div style={sectionLabelStyle}>Płatność</div>
-          <PaymentBlock zCur={c.zaliczka_waluta || c.waluta_towaru || "USD"} bCur={c.balance_waluta || c.waluta_towaru || "USD"} zProc={c.zaliczka_procent} zKwota={c.zaliczka_kwota} zData={c.zaliczka_data} balance={c.balance_kwota} zaplacono={c.zaplacono_data} showFin={showFin} />
+          <PaymentBlock
+            advances={advancesOf(c)}
+            bCur={c.balance_waluta || c.waluta_towaru || "USD"}
+            balance={c.balance_kwota} zaplacono={c.zaplacono_data} showFin={showFin}
+          />
         </div>
       ))}
 
@@ -512,18 +529,39 @@ function MoneyCell({ label, value, sub, muted }: { label: string; value: React.R
   );
 }
 
-function PaymentBlock({ zCur, bCur, zProc, zKwota, zData, balance, zaplacono, showFin }: {
-  zCur: string; bCur: string;
-  zProc?: number | null; zKwota?: number | null; zData?: string | null;
+// Zaliczki do wyświetlenia: z nowego pola `advances`, a gdy puste — fallback na legacy
+// pojedynczą zaliczkę (dane sprzed migracji).
+function advancesOf(src: {
+  waluta_towaru?: string | null; advances?: ContainerAdvance[] | null;
+  zaliczka_procent?: number | null; zaliczka_kwota?: number | null; zaliczka_waluta?: string | null; zaliczka_data?: string | null;
+}): ContainerAdvance[] {
+  if (src.advances && src.advances.length) return src.advances;
+  if (src.zaliczka_kwota != null || src.zaliczka_data || src.zaliczka_procent != null) {
+    return [{ procent: src.zaliczka_procent, kwota: src.zaliczka_kwota, waluta: src.zaliczka_waluta || src.waluta_towaru || "USD", data: src.zaliczka_data }];
+  }
+  return [];
+}
+
+function PaymentBlock({ advances, bCur, balance, zaplacono, showFin }: {
+  advances: ContainerAdvance[]; bCur: string;
   balance?: number | null; zaplacono?: string | null; showFin: boolean;
 }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
-      <MoneyCell
-        label={`Zaliczka${zProc != null ? ` · ${fmtNum(zProc)}%` : ""}`}
-        value={showFin ? fmtCur(zKwota, zCur) : "•••••"}
-        sub={zData ? `wpł. ${fmtDatePL(zData)} · ${zCur}` : `waluta: ${zCur}`}
-      />
+      {advances.length === 0 && (
+        <MoneyCell label="Zaliczka" value={showFin ? "—" : "•••••"} sub="brak" muted />
+      )}
+      {advances.map((a, i) => {
+        const cur = a.waluta || "USD";
+        return (
+          <MoneyCell
+            key={a.id ?? i}
+            label={`Zaliczka ${i + 1}${a.procent != null ? ` · ${fmtNum(a.procent)}%` : ""}`}
+            value={showFin ? fmtCur(a.kwota, cur) : "•••••"}
+            sub={a.data ? `wpł. ${fmtDatePL(a.data)} · ${cur}` : `plan · ${cur}`}
+          />
+        );
+      })}
       <MoneyCell label="Balance" value={showFin ? fmtCur(balance, bCur) : "•••••"} sub={`waluta: ${bCur}`} />
       <MoneyCell label="Zapłacono" value={fmtDatePL(zaplacono)} muted />
     </div>
