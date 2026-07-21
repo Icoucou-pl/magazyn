@@ -27,6 +27,21 @@ async def stats(db: AsyncSession = Depends(get_db)):
     return {"total_products": r1.scalar(), "products_with_stock": r2.scalar(), "orders_last_12m": r3.scalar()}
 
 
+@router.get("/kpi/transit-warehouse")
+async def transit_warehouse(db: AsyncSession = Depends(get_db)):
+    """Wartość „magazynu w drodze" — z drugiej tabeli subiektowej (AMH, świeże ceny).
+    = Σ stan_magazyn_w_drodze × cena_jednostkowa. Liczone po WSZYSTKICH produktach."""
+    r = await db.execute(text(f"""
+        SELECT
+            COALESCE(SUM(stan_magazyn_w_drodze * cena_jednostkowa), 0) AS value_pln,
+            COUNT(*) FILTER (WHERE stan_magazyn_w_drodze > 0) AS sku_count
+        FROM {settings.TABLE_SUBIEKT_DWA}
+        WHERE stan_magazyn_w_drodze IS NOT NULL AND stan_magazyn_w_drodze > 0
+    """))
+    row = r.first()
+    return {"value_pln": round(float(row.value_pln or 0), 2), "sku_count": int(row.sku_count or 0)}
+
+
 @router.get("/classification")
 async def classification(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
     """Zliczenie SKU wg statusu + wartość dead stocku.

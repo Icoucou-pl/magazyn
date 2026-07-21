@@ -15,7 +15,7 @@ from config import settings
 from database import get_db, SessionLocal
 from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
-    AttachmentOut, AttachmentCreate, CurrentUser,
+    AttachmentOut, AttachmentCreate, CurrentUser, SubiektWbiteIn,
 )
 from security import get_current_user, require_edit_containers, require_export, has_perm
 from services.containers import fetch_containers, get_container_by_id
@@ -403,6 +403,27 @@ async def delete_container(cid: int, db: AsyncSession = Depends(get_db), user: C
 @router.post("/containers/{cid}/deliver", response_model=ContainerOut)
 async def deliver_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET status = 'DELIVERED', delivered_date = COALESCE(delivered_date, CURRENT_DATE), updated_at = CURRENT_TIMESTAMP WHERE id = :id"), {"id": cid})
+    await db.commit()
+    return await get_container_by_id(db, cid)
+
+
+@router.post("/containers/{cid}/subiekt-wbite", response_model=ContainerOut)
+async def set_subiekt_wbite(cid: int, payload: SubiektWbiteIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
+    """Kropka „dodano do Subiektu": zielona = towar wbity do magazynu „w drodze" w Subiekcie
+    (wypada z „Kontenerów w drodze", liczony z magazynu subiektowego). lot_id=None → kontener."""
+    at = "CURRENT_DATE" if payload.value else "NULL"
+    if payload.lot_id is not None:
+        r = await db.execute(
+            text(f"UPDATE {settings.TABLE_CONTAINER_LOTS} SET subiekt_wbite = :v, subiekt_wbite_at = {at} WHERE id = :lid AND container_id = :cid"),
+            {"v": payload.value, "lid": payload.lot_id, "cid": cid},
+        )
+        if r.rowcount == 0:
+            raise HTTPException(404, "Lot nie należy do tego kontenera")
+    else:
+        await db.execute(
+            text(f"UPDATE {settings.TABLE_CONTAINERS} SET subiekt_wbite = :v, subiekt_wbite_at = {at}, updated_at = CURRENT_TIMESTAMP WHERE id = :cid"),
+            {"v": payload.value, "cid": cid},
+        )
     await db.commit()
     return await get_container_by_id(db, cid)
 
