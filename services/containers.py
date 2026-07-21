@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import ContainerOut, ContainerItemOut, ContainerLotOut, AttachmentOut
+from models import ContainerOut, ContainerItemOut, ContainerLotOut, ContainerAdvanceOut, AttachmentOut
 
 # Strefa PL — żeby status liczony z ETA przeskakiwał o północy w Polsce, nie w UTC.
 try:
@@ -119,6 +119,37 @@ async def fetch_attachments_bulk(db: AsyncSession, container_ids: List[int]) -> 
     return out
 
 
+async def fetch_advances_bulk(db: AsyncSession, container_ids: List[int], lot_ids: List[int]):
+    """Zaliczki (raty) dla wielu kontenerów i lotów jednym zapytaniem.
+    Zwraca (by_container, by_lot): {parent_id: [ContainerAdvanceOut,...]} w kolejności position."""
+    by_container: dict = {}
+    by_lot: dict = {}
+    ids_c = list(container_ids or [])
+    ids_l = list(lot_ids or [])
+    if not ids_c and not ids_l:
+        return by_container, by_lot
+    r = await db.execute(text(f"""
+        SELECT id, container_id, lot_id, position, procent, kwota, waluta, data
+        FROM {settings.TABLE_CONTAINER_ADVANCES}
+        WHERE container_id = ANY(:cids) OR lot_id = ANY(:lids)
+        ORDER BY position ASC, id ASC
+    """), {"cids": (ids_c or [0]), "lids": (ids_l or [0])})
+    for row in r:
+        d = dict(row._mapping)
+        adv = ContainerAdvanceOut(
+            id=d["id"],
+            procent=(float(d["procent"]) if d["procent"] is not None else None),
+            kwota=(float(d["kwota"]) if d["kwota"] is not None else None),
+            waluta=(d["waluta"] or "USD"),
+            data=d["data"],
+        )
+        if d["container_id"] is not None:
+            by_container.setdefault(d["container_id"], []).append(adv)
+        elif d["lot_id"] is not None:
+            by_lot.setdefault(d["lot_id"], []).append(adv)
+    return by_container, by_lot
+
+
 async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals_by_cid: dict) -> dict:
     """Loty dla wielu kontenerów jednym zapytaniem (zamiast N× fetch_lots).
     Zwraca {container_id: [ContainerLotOut,...]}; kolejność w obrębie kontenera jak wcześniej (position ASC, id ASC)."""
@@ -135,11 +166,12 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
         ORDER BY l.container_id, l.position ASC, l.id ASC
     """), {"ids": list(container_ids)})
     out: dict = {}
+    lot_by_id: dict = {}
     for row in r:
         d = dict(row._mapping)
         cid = d["container_id"]
         t = lot_totals_by_cid.get(cid, {}).get(d["id"], {"u": 0, "cbm": 0.0, "val": 0.0})
-        out.setdefault(cid, []).append(ContainerLotOut(
+        lot = ContainerLotOut(
             id=d["id"], manufacturer_id=d["manufacturer_id"],
             manufacturer_name=d["manufacturer_name"], manufacturer_color=d["manufacturer_color"],
             order_number=d["order_number"],
@@ -152,7 +184,15 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
             balance_waluta=(d["balance_waluta"] or d["waluta_towaru"] or "USD"),
             zaplacono_data=d["zaplacono_data"],
             total_units=t["u"], total_cbm=round(t["cbm"], 3), total_value=round(t["val"], 2),
-        ))
+        )
+        out.setdefault(cid, []).append(lot)
+        lot_by_id[lot.id] = lot
+    # Zaliczki lotów — jedno zapytanie, doklejenie po lot_id.
+    if lot_by_id:
+        _, adv_by_lot = await fetch_advances_bulk(db, [], list(lot_by_id.keys()))
+        for lid, advs in adv_by_lot.items():
+            if lid in lot_by_id:
+                lot_by_id[lid].advances = advs
     return out
 
 
@@ -233,7 +273,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "delivered_date": row["delivered_date"],
                 "warehouse_delivery_date": None,   # liczone niżej: delivered_date lub ETA + odprawa
                 "notes": row["notes"],
-                "items": [], "attachments": [],
+                "items": [], "attachments": [], "advances": [],
                 "total_units": 0, "total_cbm": 0.0, "fill_percentage": None, "total_value": 0.0,
                 "firma_breakdown": {},
             }
@@ -279,9 +319,12 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     attachments_by_cid = await fetch_attachments_bulk(db, cids)
     lot_totals_by_cid = {cid: containers_dict[cid]["_lot_totals"] for cid in cids}
     lots_by_cid = await fetch_lots_bulk(db, cids, lot_totals_by_cid)
+    # Zaliczki na poziomie kontenera (wariant nieskonsolidowany) — jedno zapytanie.
+    adv_by_container, _ = await fetch_advances_bulk(db, cids, [])
     for cid in containers_dict:
         containers_dict[cid]["attachments"] = attachments_by_cid.get(cid, [])
         containers_dict[cid]["lots"] = lots_by_cid.get(cid, [])
+        containers_dict[cid]["advances"] = adv_by_container.get(cid, [])
 
     for c in containers_dict.values():
         c.pop("_lot_totals", None)
