@@ -52,6 +52,9 @@ type ContainerOut = {
   items: unknown[];
   total_units: number;
   total_value: number;
+  is_consolidated?: boolean;
+  subiekt_wbite?: boolean | null;
+  lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null }[];
   firma_breakdown?: Record<string, FirmaShare>;   // slug -> udział firmy (może nie przyjść ze starego backendu)
 };
 type Anomaly = {
@@ -256,13 +259,56 @@ function StockValueChart({ points, metric = "value", height = 220 }: { points: S
 }
 
 // ── KPI grid ─────────────────────────────────────────────────
+// Podział kontenera na część „w Subiekcie" (zielona) i „w apce" (czerwona) — dla KPI i liczników.
+function splitSubiekt(c: ContainerOut) {
+  const lots = c.lots ?? [];
+  const consolidated = !!c.is_consolidated && lots.length > 0;
+  if (consolidated) {
+    const green = lots.filter((l) => !!l.subiekt_wbite);
+    const red = lots.filter((l) => !l.subiekt_wbite);
+    const mixed = red.length > 0 && green.length > 0;
+    return {
+      redValue: red.reduce((s, l) => s + (l.total_value || 0), 0),
+      redWhole: red.length === lots.length,
+      greenWhole: green.length === lots.length,
+      looseRed: mixed ? red.length : 0,
+      looseGreen: mixed ? green.length : 0,
+    };
+  }
+  const isRed = !c.subiekt_wbite;
+  return { redValue: isRed ? (c.total_value || 0) : 0, redWhole: isRed, greenWhole: !isRed, looseRed: 0, looseGreen: 0 };
+}
+
+const _plPick = (n: number, one: string, few: string, many: string) =>
+  n === 1 ? one : (n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14)) ? few : many;
+// „39 kontenerów" albo „34 kontenery + 5 lotów" (luźne loty z kontenerów mieszanych).
+function countLabel(containers: number, looseLots: number): string {
+  const parts: string[] = [];
+  if (containers > 0 || looseLots === 0) parts.push(`${containers} ${_plPick(containers, "kontener", "kontenery", "kontenerów")}`);
+  if (looseLots > 0) parts.push(`${looseLots} ${_plPick(looseLots, "lot", "loty", "lotów")}`);
+  return parts.join(" + ");
+}
+
+// Kropka na liście dostaw (wariant C): zielony = w Subiekcie, czerwony = w apce, żółty = mieszany.
+function subiektRowState(c: ContainerOut): "green" | "red" | "mixed" {
+  const s = splitSubiekt(c);
+  if (s.greenWhole) return "green";
+  if (s.redWhole) return "red";
+  return "mixed";
+}
+const SUBIEKT_ROW_META = {
+  green: { color: "var(--ok)", label: "w Subiekcie" },
+  red: { color: "var(--critical)", label: "w apce" },
+  mixed: { color: "var(--warning)", label: "mieszany" },
+} as const;
+
 function KpiGrid({
-  history, classification, inTransitValue, inTransitCount, shop,
+  history, classification, kont, mag, shop,
 }: {
   history: StockHistory | null;
   classification: Classification | null;
-  inTransitValue: number;
-  inTransitCount: number;
+  kont: { value: number; containers: number; looseLots: number };
+  mag: { value: number; containers: number; looseLots: number };
   shop: string;                    // "" = wszystkie sklepy
 }) {
   const user = useUser();
@@ -272,10 +318,11 @@ function KpiGrid({
   const change90 = pts.length > 1 ? ((stockValue - pts[0].value) / (pts[0].value || 1)) * 100 : undefined;
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
   const c = classification?.counts;
-  // Przy wybranym sklepie "W drodze" = wartość TYLKO towaru tej firmy w całym pipeline.
-  const transitSub = shop
-    ? `${inTransitCount} kontenerów · towar ${shop.toUpperCase()}`
-    : `${inTransitCount} kontenerów`;
+  // Magazyn w drodze jest AMH-owy (drugi magazyn subiektowy). Przy zakładce Acti/Veluxa → 0.
+  const isAmhScope = shop === "" || shop === "amh";
+  const magValue = isAmhScope ? mag.value : 0;
+  const magSub = isAmhScope ? countLabel(mag.containers, mag.looseLots) : "tylko AMH";
+  const kontSub = countLabel(kont.containers, kont.looseLots);
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
@@ -285,9 +332,14 @@ function KpiGrid({
         <KpiCard label="Wartość magazynu" value="•••••" sub="ukryte — brak uprawnień" tone="neutral" icon={<I.Box size={14} />} />
       )}
       {showFin ? (
-        <KpiCard label="W drodze" value={fmtPLNk(inTransitValue)} sub={transitSub} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="Magazyn w drodze" value={fmtPLNk(magValue)} sub={magSub} tone="info" icon={<I.Container size={14} />} />
       ) : (
-        <KpiCard label="W drodze" value="•••••" sub={transitSub} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="Magazyn w drodze" value="•••••" sub={magSub} tone="info" icon={<I.Container size={14} />} />
+      )}
+      {showFin ? (
+        <KpiCard label="Kontenery w drodze" value={fmtPLNk(kont.value)} sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
+      ) : (
+        <KpiCard label="Kontenery w drodze" value="•••••" sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       )}
       <KpiCard label="Aktywne SKU" value={fmtNum(c?.ACTIVE)} sub={`${fmtNum(c?.ACTIVE_NO_STOCK)} bez stanu`} tone="ok" icon={<I.Activity size={14} />} />
       <KpiCard label="Dead stock" value={fmtNum(c?.DEAD_STOCK)} sub={fmtPLNk(classification?.dead_stock_value_pln)} tone="warning" icon={<I.Alert size={14} />} />
@@ -449,11 +501,14 @@ function DeliveriesCard({
           // (kontener bywa mieszany — zwłaszcza skonsolidowany).
           const share = shop ? c.firma_breakdown?.[shop] : undefined;
           const itemsCount = c.items.length;
+          const subSt = subiektRowState(c);
+          const subMeta = SUBIEKT_ROW_META[subSt];
           return (
             <HoverRow key={c.id} onClick={() => onContainerClick?.(c)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
               <div style={{ width: 4, height: 32, background: meta?.dot ?? "var(--text-lo)", borderRadius: 2, flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span title={`Magazyn w drodze: ${subMeta.label}`} style={{ width: 9, height: 9, borderRadius: 99, background: subMeta.color, flexShrink: 0, boxShadow: `0 0 0 2px color-mix(in oklch, ${subMeta.color} 22%, transparent)` }} />
                   <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{c.container_number}</span>
                   {c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />}
                   {share && (
@@ -715,18 +770,22 @@ export default function Dashboard({
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
   const [topSellers, setTopSellers] = useState<TopSeller[]>([]);
+  const [transitWh, setTransitWh] = useState<{ value_pln: number; sku_count: number } | null>(null);
   const [shop, setShop] = useState("");
   const cacheRef = useRef<Record<string, {
     history: StockHistory | null; classification: Classification | null;
     containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
+    transitWh: { value_pln: number; sku_count: number } | null;
   }>>({});
 
   const applyBundle = (b: {
     history: StockHistory | null; classification: Classification | null;
     containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
+    transitWh: { value_pln: number; sku_count: number } | null;
   }) => {
     setHistory(b.history); setClassification(b.classification); setContainers(b.containers);
     setAnomalies(b.anomalies); setShopping(b.shopping); setTopSellers(b.topSellers);
+    setTransitWh(b.transitWh);
   };
 
   useEffect(() => {
@@ -743,13 +802,14 @@ export default function Dashboard({
       // W obserwowanych trzymamy tylko to, co firmy aktualnie sprzedają, więc boxy nie krzyczą o wycofanych SKU.
       // Kontenery (/containers) zostają globalne: wiozą fizyczny towar niezależnie od obserwacji.
       const shopQ = shop ? `&shop=${shop}` : "";
-      const [h, cls, cont, ano, shp, top] = await Promise.allSettled([
-        api.get(`/stock-value-history?favorites_only=1&days=90${shopQ}`),
+      const [h, cls, cont, ano, shp, top, tw] = await Promise.allSettled([
+        api.get(`/stock-value-history?favorites_only=0&days=90${shopQ}`),
         api.get(`/classification?favorites_only=1${shopQ}`),
         api.get("/containers"),
         api.get(`/anomalies?favorites_only=1${shopQ}`),
         api.get(`/shopping-list?favorites_only=1${shopQ}`),
         api.get(`/top-sellers?favorites_only=1&limit=20${shopQ}`),
+        api.get("/kpi/transit-warehouse"),
       ]);
       if (!alive) return;
       let failed = false;
@@ -757,6 +817,7 @@ export default function Dashboard({
         history: null as StockHistory | null, classification: null as Classification | null,
         containers: [] as ContainerOut[], anomalies: [] as Anomaly[],
         shopping: [] as ShoppingGroup[], topSellers: [] as TopSeller[],
+        transitWh: null as { value_pln: number; sku_count: number } | null,
       };
       if (h.status === "fulfilled") bundle.history = h.value as StockHistory; else failed = true;
       if (cls.status === "fulfilled") bundle.classification = cls.value as Classification; else failed = true;
@@ -764,6 +825,7 @@ export default function Dashboard({
       if (ano.status === "fulfilled") bundle.anomalies = (ano.value as Anomaly[]) || []; else failed = true;
       if (shp.status === "fulfilled") bundle.shopping = (shp.value as ShoppingGroup[]) || []; else failed = true;
       if (top.status === "fulfilled") bundle.topSellers = (top.value as TopSeller[]) || []; else failed = true;
+      if (tw.status === "fulfilled") bundle.transitWh = tw.value as { value_pln: number; sku_count: number };
       if (!failed) cacheRef.current[shop] = bundle;
       applyBundle(bundle);
       if (failed) {
@@ -774,38 +836,37 @@ export default function Dashboard({
     return () => { alive = false; };
   }, [shop]);
 
-  // Pipeline zaopatrzenia: WSZYSTKIE niedostarczone kontenery
-  // (zamówione + w produkcji + w drodze + odprawa), nie tylko IN_TRANSIT.
-  //
-  // Przy wybranym sklepie kontener nie znika, tylko liczy się jego UDZIAŁ:
-  //  · lista dostaw  → kontenery, które wiozą towar tej firmy (kontener przypływa cały),
-  //  · KPI "W drodze" → suma wartości WYŁĄCZNIE pozycji tej firmy.
-  // Gdyby backend nie przysłał firma_breakdown (stary deploy), spadamy na całość — bez wysypki.
+  // Pipeline zaopatrzenia: WSZYSTKIE niedostarczone kontenery.
+  //  · lista dostaw (wariant C) → wszystkie niedostarczone (opcjonalnie zawężone do towaru sklepu),
+  //  · KPI „Kontenery w drodze" → tylko część CZERWONA (jeszcze nie w Subiekcie), wartość z kontenera,
+  //  · KPI „Magazyn w drodze" → licznik z części ZIELONEJ (wartość liczy backend z tabeli subiektowej).
+  // Liczniki: całe kontenery + luźne loty z kontenerów mieszanych (dokładne, bez dublowania).
+  // Uwaga: wartość „Kontenerów w drodze" jest globalna/AMH (nie zawężana firma_breakdown) —
+  // trójka KPI jest AMH-owa; przy sklepie zawężamy tylko listę dostaw.
   const pipeline = useMemo(() => {
     const undelivered = containers
       .filter((c) => (c.effective_status ?? c.status) !== "DELIVERED")
       .sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime());
 
-    if (!shop) {
-      return {
-        deliveries: undelivered,
-        value: undelivered.reduce((s, c) => s + (c.total_value || 0), 0),
-        count: undelivered.length,
-      };
+    let deliveries = undelivered;
+    if (shop) {
+      const hasBreakdown = undelivered.some((c) => c.firma_breakdown && Object.keys(c.firma_breakdown).length > 0);
+      if (hasBreakdown) deliveries = undelivered.filter((c) => (c.firma_breakdown?.[shop]?.units ?? 0) > 0);
     }
-    const hasBreakdown = undelivered.some((c) => c.firma_breakdown && Object.keys(c.firma_breakdown).length > 0);
-    if (!hasBreakdown) {
-      return {
-        deliveries: undelivered,
-        value: undelivered.reduce((s, c) => s + (c.total_value || 0), 0),
-        count: undelivered.length,
-      };
+
+    let redValue = 0, redContainers = 0, redLooseLots = 0, greenContainers = 0, greenLooseLots = 0;
+    for (const c of undelivered) {
+      const s = splitSubiekt(c);
+      redValue += s.redValue;
+      if (s.redWhole) redContainers += 1;
+      if (s.greenWhole) greenContainers += 1;
+      redLooseLots += s.looseRed;
+      greenLooseLots += s.looseGreen;
     }
-    const mine = undelivered.filter((c) => (c.firma_breakdown?.[shop]?.units ?? 0) > 0);
     return {
-      deliveries: mine,
-      value: mine.reduce((s, c) => s + (c.firma_breakdown?.[shop]?.value ?? 0), 0),
-      count: mine.length,
+      deliveries,
+      kont: { value: redValue, containers: redContainers, looseLots: redLooseLots },
+      green: { containers: greenContainers, looseLots: greenLooseLots },
     };
   }, [containers, shop]);
 
@@ -847,7 +908,7 @@ export default function Dashboard({
       {shopSelector}
       {loading ? <DashboardSkeleton gap={gap} /> : (
         <>
-          <KpiGrid history={history} classification={classification} inTransitValue={pipeline.value} inTransitCount={pipeline.count} shop={shop} />
+          <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots }} shop={shop} />
           {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>

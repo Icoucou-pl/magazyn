@@ -53,6 +53,8 @@ export type ContainerLot = {
   balance_kwota?: number | null;
   balance_waluta?: string | null;
   zaplacono_data?: string | null;
+  subiekt_wbite?: boolean | null;
+  subiekt_wbite_at?: string | null;
   total_units: number; total_cbm: number; total_value: number;
 };
 export type Attachment = { id: number; filename: string; file_type: string | null; file_size: string | null; uploaded_at: string };
@@ -83,6 +85,8 @@ export type Container = {
   balance_kwota?: number | null;
   balance_waluta?: string | null;
   zaplacono_data?: string | null;
+  subiekt_wbite?: boolean | null;
+  subiekt_wbite_at?: string | null;
   delivered_date?: string | null;              // ręczna, potwierdzona data dostawy
   warehouse_delivery_date?: string | null;     // KPI: delivered_date lub ETA + odprawa
   order_date: string;
@@ -209,13 +213,48 @@ function FilterChip({ children, active, onClick, count, accent }: { children: Re
   );
 }
 
+// ── Kropka „dodano do Subiektu" (magazyn w drodze) ───────────
+// Zielony = wbite do magazynu „w drodze" w Subiekcie (liczony stamtąd), czerwony = jeszcze
+// tylko w apce (liczony z kontenera). Mieszany = część lotów wbita. null dla dostarczonych.
+export function subiektSummary(c: Container): "green" | "red" | "mixed" | null {
+  if (eff(c) === "DELIVERED") return null;
+  const lots = c.lots ?? [];
+  if (c.is_consolidated && lots.length > 0) {
+    const green = lots.filter((l) => !!l.subiekt_wbite).length;
+    if (green === 0) return "red";
+    if (green === lots.length) return "green";
+    return "mixed";
+  }
+  return c.subiekt_wbite ? "green" : "red";
+}
+
+const SUBIEKT_META = {
+  green: { color: "var(--ok)", label: "w Subiekcie (magazyn w drodze)" },
+  red: { color: "var(--critical)", label: "jeszcze w apce (kontener)" },
+  mixed: { color: "var(--warning)", label: "część w Subiekcie, część w apce" },
+} as const;
+
+export function SubiektDot({ state, onClick, size = 10 }: { state: "green" | "red" | "mixed"; onClick?: () => void; size?: number }) {
+  const meta = SUBIEKT_META[state];
+  const clickable = !!onClick;
+  return (
+    <span
+      onClick={onClick ? (e) => { e.stopPropagation(); onClick(); } : undefined}
+      title={meta.label + (clickable ? " — kliknij, by zmienić" : "")}
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: size + 6, height: size + 6, cursor: clickable ? "pointer" : "default", flexShrink: 0 }}>
+      <span style={{ width: size, height: size, borderRadius: 99, background: meta.color, boxShadow: `0 0 0 2px color-mix(in oklch, ${meta.color} 22%, transparent)` }} />
+    </span>
+  );
+}
+
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
-  container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered,
+  container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt,
 }: {
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
   onSetDelivered?: (d: string | null) => Promise<void>;
+  onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
 }) {
   const eStatus = eff(c);
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
@@ -231,6 +270,7 @@ export function ContainerCard({
   const fillColor = fill > 100 ? "var(--critical)" : fill > 90 ? "var(--warning)" : fill > 70 ? "var(--ok)" : "var(--info)";
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
+  const subiektSt = subiektSummary(c);
 
   return (
     <div style={{
@@ -253,6 +293,7 @@ export function ContainerCard({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>
+            {subiektSt && <SubiektDot state={subiektSt} />}
             {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
             {consolidated
               ? lots.map((l) => <MfrChip key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
@@ -295,17 +336,18 @@ export function ContainerCard({
         )}
       </div>
 
-      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} />}
+      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} />}
     </div>
   );
 }
 
 function ContainerCardBody({
-  container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered,
+  container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt,
 }: {
   container: Container; fillColor: string; nextStatus?: string;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
   onSetDelivered?: (d: string | null) => Promise<void>;
+  onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -314,6 +356,7 @@ function ContainerCardBody({
   const fill = c.fill_percentage ?? 0;
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
+  const isDelivered = eff(c) === "DELIVERED";
   // Sekcje finansowe są teraz zawsze widoczne po rozwinięciu (przy showFin) — bez chowania gdy brak danych.
   const showDocs = showFin || !!c.folder || !!c.subiekt_nr;
   const sectionLabelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 };
@@ -341,6 +384,32 @@ function ContainerCardBody({
             <div style={{ height: "100%", width: `${Math.min(100, fill)}%`, background: fillColor, borderRadius: 99, transition: "width 0.3s" }} />
             {fill > 100 && <div style={{ position: "absolute", right: 4, top: -1, fontSize: 9, fontWeight: 700, color: "var(--critical)" }}>+{(fill - 100).toFixed(1)}% NADMIAR</div>}
           </div>
+        </div>
+      )}
+
+      {!isDelivered && (
+        <div>
+          <div style={sectionLabelStyle}>Magazyn w drodze (Subiekt)</div>
+          <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: 4 }}>
+            {consolidated ? lots.map((l) => (
+              <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px" }}>
+                <SubiektDot state={l.subiekt_wbite ? "green" : "red"} onClick={showEdit && onToggleSubiekt ? () => onToggleSubiekt(l.id, !l.subiekt_wbite) : undefined} />
+                <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
+                {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
+                <span style={{ marginLeft: "auto", fontSize: 11, color: l.subiekt_wbite ? "var(--ok)" : "var(--text-lo)" }}>
+                  {l.subiekt_wbite ? `w Subiekcie${l.subiekt_wbite_at ? ` · ${fmtDatePL(l.subiekt_wbite_at)}` : ""}` : "w apce (kontener)"}
+                </span>
+              </div>
+            )) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px" }}>
+                <SubiektDot state={c.subiekt_wbite ? "green" : "red"} onClick={showEdit && onToggleSubiekt ? () => onToggleSubiekt(null, !c.subiekt_wbite) : undefined} />
+                <span style={{ fontSize: 12, color: "var(--text-mid)" }}>
+                  {c.subiekt_wbite ? `Wbite do magazynu „w drodze"${c.subiekt_wbite_at ? ` · ${fmtDatePL(c.subiekt_wbite_at)}` : ""}` : "Jeszcze w apce — liczone z kontenera"}
+                </span>
+              </div>
+            )}
+          </div>
+          {showEdit && <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>Kliknij kropkę, gdy towar zostanie wbity do magazynu „w drodze" w Subiekcie (czerwona → zielona).</div>}
         </div>
       )}
 

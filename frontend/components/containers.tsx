@@ -171,6 +171,18 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
     }
   };
 
+  // Kropka „dodano do Subiektu": zielona = wbite do magazynu „w drodze" → liczone z Subiekta,
+  // czerwona = jeszcze w apce → liczone z kontenera. lotId=null → kontener nieskonsolidowany.
+  const toggleSubiekt = async (c: Container, lotId: number | null, value: boolean) => {
+    try {
+      await api.post(`/containers/${c.id}/subiekt-wbite`, { lot_id: lotId, value });
+      await reload();
+      toast(value ? "Oznaczono: w Subiekcie (magazyn w drodze)" : "Cofnięto: z powrotem w apce", "ok");
+    } catch {
+      toast("Nie udało się zmienić statusu Subiekta", "warning");
+    }
+  };
+
   if (loading) {
     return (
       <div className="pulse-soft" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
@@ -225,6 +237,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
               onAdvance={() => advance(c)}
               onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
               onSetDelivered={(d) => setDelivered(c, d)}
+              onToggleSubiekt={(lotId, value) => toggleSubiekt(c, lotId, value)}
             />
           ))}
         </div>
