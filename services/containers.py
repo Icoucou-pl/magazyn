@@ -259,7 +259,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "status": row["status"],
                 "effective_status": row["status"], "is_auto": False, "customs_days_left": None,
                 "is_consolidated": bool(row["is_consolidated"]),
-                "lots": [], "_lot_totals": {},
+                "lots": [], "_lot_totals": {}, "_lot_firma": {},
                 "koszt_transportu": (float(row["koszt_transportu"]) if row["koszt_transportu"] is not None else None),
                 "koszt_spedycji": (float(row["koszt_spedycji"]) if row["koszt_spedycji"] is not None else None),
                 "oplata_spedycji": None,   # liczone niżej: koszt_spedycji − koszt_transportu
@@ -319,6 +319,20 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 lt["u"] += row["quantity"]
                 lt["cbm"] += tcb
                 lt["val"] += eff_cost * row["quantity"]
+                # Rozbicie per firma także NA POZIOMIE LOTU — potrzebne, by KPI „Kontenery w drodze"
+                # zawężone do sklepu liczyło udział firmy tylko z czerwonych (niewbitych) lotów.
+                lfb_lot = containers_dict[cid]["_lot_firma"].setdefault(lid, {})
+                lfb = lfb_lot.setdefault(slug, {
+                    "slug": slug,
+                    "name": row["firma_name"] or (DEFAULT_FIRMA_NAME if slug == DEFAULT_FIRMA_SLUG else slug.upper()),
+                    "color": row["firma_color"],
+                    "items": 0, "units": 0, "value": 0.0,
+                })
+                if lfb["color"] is None and row["firma_color"]:
+                    lfb["color"] = row["firma_color"]
+                lfb["items"] += 1
+                lfb["units"] += row["quantity"]
+                lfb["value"] += eff_cost * row["quantity"]
 
     # Załączniki + loty: dwa zbiorcze zapytania zamiast 2× (liczba kontenerów) round-tripów do bazy (był N+1).
     cids = list(containers_dict.keys())
@@ -331,9 +345,17 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         containers_dict[cid]["attachments"] = attachments_by_cid.get(cid, [])
         containers_dict[cid]["lots"] = lots_by_cid.get(cid, [])
         containers_dict[cid]["advances"] = adv_by_container.get(cid, [])
+        # doklej rozbicie firm per lot (z ContainerFirmaShare-friendly dict-ów)
+        lot_firma = containers_dict[cid]["_lot_firma"]
+        for lot in containers_dict[cid]["lots"]:
+            fb = lot_firma.get(lot.id, {})
+            for share in fb.values():
+                share["value"] = round(share["value"], 2)
+            lot.firma_breakdown = fb
 
     for c in containers_dict.values():
         c.pop("_lot_totals", None)
+        c.pop("_lot_firma", None)
         c["total_cbm"] = round(c["total_cbm"], 3)
         c["total_value"] = round(c["total_value"], 2)
         for fb in c["firma_breakdown"].values():
