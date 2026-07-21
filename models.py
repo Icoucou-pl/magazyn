@@ -256,6 +256,12 @@ class ContainerAdvanceOut(BaseModel):
     data: Optional[date] = None
 
 
+class SubiektWbiteIn(BaseModel):
+    """Przełącznik kropki „dodano do Subiektu". lot_id=None → dotyczy kontenera (nieskonsolidowany)."""
+    value: bool
+    lot_id: Optional[int] = None
+
+
 class ContainerLotIn(BaseModel):
     manufacturer_id: Optional[int] = None
     order_number: Optional[str] = None
@@ -358,6 +364,8 @@ class ContainerLotOut(BaseModel):
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = "USD"
     zaplacono_data: Optional[date] = None
+    subiekt_wbite: bool = False              # lot wbity do magazynu „w drodze" w Subiekcie
+    subiekt_wbite_at: Optional[date] = None
     total_units: int = 0
     total_cbm: float = 0
     total_value: float = 0
@@ -427,6 +435,8 @@ class ContainerOut(BaseModel):
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = "USD"
     zaplacono_data: Optional[date] = None
+    subiekt_wbite: bool = False              # kontener (nieskonsolidowany) wbity do „w drodze" w Subiekcie
+    subiekt_wbite_at: Optional[date] = None
     delivered_date: Optional[date] = None            # ręczna, potwierdzona data dostawy (jeśli jest)
     warehouse_delivery_date: Optional[date] = None   # KPI: delivered_date lub ETA + odprawa celna
     notes: Optional[str]

@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     TABLE_CONTAINER_ITEMS: str = "app_container_items"
     TABLE_CONTAINER_LOTS: str = "app_container_lots"
     TABLE_CONTAINER_ADVANCES: str = "app_container_advances"
+    TABLE_SUBIEKT_DWA: str = "subiekt_dwa_magazyny"   # magazyn główny + w drodze (per SKU, świeże ceny)
     TABLE_ATTACHMENTS: str = "app_container_attachments"
     TABLE_USERS: str = "app_users"
     TABLE_AUDIT_LOG: str = "app_audit_log"

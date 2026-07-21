@@ -216,6 +216,11 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "order_number", "VARCHAR(100)")
         # Migracja: rzeczywista data dostawy (ustawiana przy DELIVERED; NULL = auto po odprawie ETA+CONTAINER_CUSTOMS_DAYS)
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "delivered_date", "DATE")
+        # Migracja: kropka „dodano do Subiektu" (magazyn w drodze) — na kontenerze i na locie.
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "subiekt_wbite", "BOOLEAN DEFAULT FALSE")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "subiekt_wbite_at", "DATE")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINER_LOTS, "subiekt_wbite", "BOOLEAN DEFAULT FALSE")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINER_LOTS, "subiekt_wbite_at", "DATE")
 
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_ITEMS} (
