@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     TABLE_CONTAINERS: str = "app_containers"
     TABLE_CONTAINER_ITEMS: str = "app_container_items"
     TABLE_CONTAINER_LOTS: str = "app_container_lots"
+    TABLE_CONTAINER_ADVANCES: str = "app_container_advances"
     TABLE_ATTACHMENTS: str = "app_container_attachments"
     TABLE_USERS: str = "app_users"
     TABLE_AUDIT_LOG: str = "app_audit_log"

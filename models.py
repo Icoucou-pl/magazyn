@@ -240,11 +240,30 @@ class ContainerItemIn(BaseModel):
     lot_ref: Optional[int] = None   # indeks lotu w tablicy lots (przy skonsolidowanym kontenerze)
 
 
+class ContainerAdvanceIn(BaseModel):
+    """Pojedyncza zaliczka (rata). data = faktycznie zapłacono; puste = zaplanowana."""
+    procent: Optional[float] = None
+    kwota: Optional[float] = None
+    waluta: Optional[str] = None
+    data: Optional[date] = None
+
+
+class ContainerAdvanceOut(BaseModel):
+    id: int
+    procent: Optional[float] = None
+    kwota: Optional[float] = None
+    waluta: Optional[str] = "USD"
+    data: Optional[date] = None
+
+
 class ContainerLotIn(BaseModel):
     manufacturer_id: Optional[int] = None
     order_number: Optional[str] = None
     # płatności per lot; waluta osobno dla zaliczki i balance (USD/CNY/PLN)
     waluta_towaru: Optional[str] = None       # domyślna/pierwotna waluta (seed) — nie edytowana w UI
+    # Wiele zaliczek (rat) — nowy model. Legacy pola zaliczka_* zostają jeszcze jeden
+    # deploy dla bezpiecznego rollbacku; backend zapisuje 1. zaliczkę też do nich.
+    advances: List[ContainerAdvanceIn] = []
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
     zaliczka_waluta: Optional[str] = None
@@ -272,6 +291,7 @@ class ContainerCreate(BaseModel):
     subiekt_nr: Optional[str] = None
     # płatności dla kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = None                 # domyślna/pierwotna waluta (seed)
+    advances: List[ContainerAdvanceIn] = []             # wiele zaliczek (rat)
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
     zaliczka_waluta: Optional[str] = None
@@ -299,6 +319,7 @@ class ContainerUpdate(BaseModel):
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
     waluta_towaru: Optional[str] = None
+    advances: Optional[List[ContainerAdvanceIn]] = None   # wiele zaliczek (rat); None = nie ruszaj
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
     zaliczka_waluta: Optional[str] = None
@@ -329,6 +350,7 @@ class ContainerLotOut(BaseModel):
     manufacturer_color: Optional[str] = None
     order_number: Optional[str] = None
     waluta_towaru: Optional[str] = "USD"
+    advances: List[ContainerAdvanceOut] = []
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
     zaliczka_waluta: Optional[str] = "USD"
@@ -397,6 +419,7 @@ class ContainerOut(BaseModel):
     subiekt_nr: Optional[str] = None
     # płatności kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = "USD"
+    advances: List[ContainerAdvanceOut] = []
     zaliczka_procent: Optional[float] = None
     zaliczka_kwota: Optional[float] = None
     zaliczka_waluta: Optional[str] = "USD"
