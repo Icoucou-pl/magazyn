@@ -7,12 +7,13 @@ Przy zamknięciu zwalnia pulę połączeń.
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI
 from sqlalchemy import text
 
 from config import settings
-from database import engine, add_column_if_missing
+from database import engine, add_column_if_missing, SessionLocal
 from security import hash_password, validate_password_strength
 
 
@@ -85,6 +86,61 @@ async def _sellasist_auto_loop():
                 print(f"[sellasist] auto: {st.get('error') or st.get('message')}")
         except Exception as e:
             print(f"[sellasist] auto błąd (pomijam, pętla działa dalej): {e}")
+
+
+SNAPSHOT_TIMES = ((7, 5, "rano"), (20, 5, "wieczor"))   # (godz, min, nazwa pory) — czas warszawski
+
+
+def _due_slots(now) -> list:
+    """Pory, które na dziś już powinny być zapisane (do uzupełnienia po restarcie apki)."""
+    return [name for h, m, name in SNAPSHOT_TIMES if (now.hour, now.minute) >= (h, m)]
+
+
+def _next_snapshot_at(now):
+    """Najbliższy moment snapshotu: dziś o 7:05/20:05, inaczej jutro o 7:05."""
+    for h, m, name in SNAPSHOT_TIMES:
+        cand = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if cand > now:
+            return cand, name
+    h, m, name = SNAPSHOT_TIMES[0]
+    return (now + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0), name
+
+
+async def _run_snapshot(slot: str, why: str):
+    """Jeden zapis snapshotu z własną sesją bazy. Błąd łapany — pętla nie umiera."""
+    from services.snapshots import store_snapshot
+    try:
+        async with SessionLocal() as db:
+            res = await store_snapshot(db, slot)
+        print(f"[snapshot] {why}: {res}")
+    except Exception as e:
+        print(f"[snapshot] błąd ({why}, {slot}): {e}")
+
+
+async def _snapshot_loop():
+    """Snapshoty KPI + stanów 2× dziennie (7:05 i 20:05), po synchronizacji z Subiektem.
+
+    Przy starcie apki uzupełnia pory, które dziś już minęły, a nie mają wpisu — dzięki temu
+    restart/deploy w newralgicznym momencie nie gubi dnia. Zapis jest idempotentny.
+    """
+    from services.snapshots import missing_slots
+    # catch-up: co powinno już dziś być, a nie ma
+    try:
+        now = _now_warsaw()
+        due = _due_slots(now)
+        if due:
+            async with SessionLocal() as db:
+                brakuje = await missing_slots(db, now.date(), due)
+            for slot in brakuje:
+                await _run_snapshot(slot, "uzupełnienie po starcie")
+    except Exception as e:
+        print(f"[snapshot] catch-up nieudany (pomijam): {e}")
+
+    while True:
+        now = _now_warsaw()
+        nxt, slot = _next_snapshot_at(now)
+        await asyncio.sleep(max(1.0, (nxt - now).total_seconds()))
+        await _run_snapshot(slot, "harmonogram")
 
 
 @asynccontextmanager
@@ -252,6 +308,43 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_advances_container ON {settings.TABLE_CONTAINER_ADVANCES}(container_id)"))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_advances_lot ON {settings.TABLE_CONTAINER_ADVANCES}(lot_id)"))
 
+        # Snapshoty KPI (4 wartości × firma × pora) — 2×/dzień. Historii nie da się odtworzyć
+        # wstecz, więc klucz unikalny pilnuje idempotencji (powtórka nadpisuje, nie duplikuje).
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_KPI_SNAPSHOTS} (
+                id SERIAL PRIMARY KEY,
+                snap_date DATE NOT NULL,
+                snap_slot VARCHAR(10) NOT NULL,
+                firma_slug VARCHAR(40) NOT NULL,
+                kapital_pln NUMERIC DEFAULT 0,
+                magazyn_pln NUMERIC DEFAULT 0,
+                magazyn_w_drodze_pln NUMERIC DEFAULT 0,
+                kontenery_pln NUMERIC DEFAULT 0,
+                captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_kpi_snap UNIQUE (snap_date, snap_slot, firma_slug)
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_kpi_snap_date ON {settings.TABLE_KPI_SNAPSHOTS}(snap_date)"))
+
+        # Snapshoty stanów per SKU — cena + trzy rozłączne stany (główny / w drodze / w kontenerze).
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_STOCK_SNAPSHOTS} (
+                id SERIAL PRIMARY KEY,
+                snap_date DATE NOT NULL,
+                snap_slot VARCHAR(10) NOT NULL,
+                sku VARCHAR(120) NOT NULL,
+                firma_slug VARCHAR(40),
+                cena_jednostkowa NUMERIC DEFAULT 0,
+                stan_glowny INTEGER DEFAULT 0,
+                stan_w_drodze INTEGER DEFAULT 0,
+                w_kontenerze INTEGER DEFAULT 0,
+                captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_stock_snap UNIQUE (snap_date, snap_slot, sku)
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_stock_snap_date ON {settings.TABLE_STOCK_SNAPSHOTS}(snap_date)"))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_stock_snap_sku ON {settings.TABLE_STOCK_SNAPSHOTS}(sku)"))
+
         # Załączniki kontenerów (plik trzymany w bazie jako BYTEA)
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_ATTACHMENTS} (
@@ -411,11 +504,12 @@ async def lifespan(app: FastAPI):
     # odświeżają się same, bez deployu i bez konfiguracji w Railway.
     fx_task = asyncio.create_task(_fx_refresh_loop())
     sellasist_task = asyncio.create_task(_sellasist_auto_loop())
+    snapshot_task = asyncio.create_task(_snapshot_loop())
 
     yield
 
     # Sprzątanie przy zamknięciu
-    for _t in (fx_task, sellasist_task):
+    for _t in (fx_task, sellasist_task, snapshot_task):
         _t.cancel()
         try:
             await _t
