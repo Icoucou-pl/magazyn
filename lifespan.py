@@ -333,13 +333,13 @@ async def lifespan(app: FastAPI):
                 snap_date DATE NOT NULL,
                 snap_slot VARCHAR(10) NOT NULL,
                 sku VARCHAR(120) NOT NULL,
-                firma_slug VARCHAR(40),
+                firma_slug VARCHAR(40) NOT NULL DEFAULT 'amh',
                 cena_jednostkowa NUMERIC DEFAULT 0,
                 stan_glowny INTEGER DEFAULT 0,
                 stan_w_drodze INTEGER DEFAULT 0,
                 w_kontenerze INTEGER DEFAULT 0,
                 captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT uq_stock_snap UNIQUE (snap_date, snap_slot, sku)
+                CONSTRAINT uq_stock_snap UNIQUE (snap_date, snap_slot, sku, firma_slug)
             )
         """))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_stock_snap_date ON {settings.TABLE_STOCK_SNAPSHOTS}(snap_date)"))
