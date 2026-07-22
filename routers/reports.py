@@ -161,18 +161,50 @@ async def _sku_snapshot(db: AsyncSession, day_lo: date, day_hi: date, newest: bo
     order_dir = "DESC" if newest else "ASC"
     slot_dir = SLOT_ORDER if newest else f"CASE snap_slot WHEN 'rano' THEN 0 ELSE 1 END"
     r = await db.execute(text(f"""
-        SELECT DISTINCT ON (sku)
+        SELECT DISTINCT ON (sku, firma_slug)
                sku, nazwa, firma_slug, cena_jednostkowa,
                stan_glowny, stan_w_drodze, w_kontenerze, snap_date, snap_slot
         FROM {settings.TABLE_STOCK_SNAPSHOTS}
         WHERE snap_date >= :a AND snap_date <= :b{slot_where}
-        ORDER BY sku, snap_date {order_dir}, {slot_dir}
+        ORDER BY sku, firma_slug, snap_date {order_dir}, {slot_dir}
     """), params)
     out = {}
     for row in r:
         d = dict(row._mapping)
         d["snap_date"] = d["snap_date"].isoformat()
-        out[(d["sku"] or "").upper()] = d
+        out[((d["sku"] or "").upper(), d["firma_slug"] or "amh")] = d
+    return out
+
+
+
+def _collapse(items: List[dict], scope: str) -> List[dict]:
+    """Zakres = konkretna firma → filtr. „Wszyscy" → jeden wiersz na SKU, stany zsumowane
+    ze wszystkich magazynów (jak w Produktach: 11 na AMH + 254 na Veluxie = 265)."""
+    if scope != "all":
+        return [r for r in items if (r.get("firma_slug") or "") == scope]
+    merged: dict = {}
+    for r in items:
+        key = (r["sku"] or "").upper()
+        m = merged.get(key)
+        if m is None:
+            m = merged[key] = dict(r)
+            m["_firmy"] = set()
+        else:
+            for f in ("stan_glowny", "stan_w_drodze", "w_kontenerze", "razem",
+                      "razem_start", "razem_end", "delta_szt"):
+                if f in m and f in r and m[f] is not None and r[f] is not None:
+                    m[f] += r[f]
+            if not m.get("nazwa"):
+                m["nazwa"] = r.get("nazwa")
+            if not m.get("cena_jednostkowa"):
+                m["cena_jednostkowa"] = r.get("cena_jednostkowa")
+        if r.get("firma_slug"):
+            m["_firmy"].add(r["firma_slug"])
+    out = []
+    for m in merged.values():
+        firmy = sorted(m.pop("_firmy", set()))
+        m["firma_slug"] = "+".join(f.upper() for f in firmy) if firmy else ""
+        out.append(m)
     return out
 
 
@@ -215,12 +247,10 @@ async def sku_report(
     picked = {s.strip().upper() for s in skus.split(",") if s.strip()}
 
     rows = []
-    for key, e in end.items():
+    for (key, firma), e in end.items():
         if favorites_only and key not in favs:
             continue
         if picked and key not in picked:
-            continue
-        if scope != "all" and (e.get("firma_slug") or "") != scope:
             continue
         cena = float(e["cena_jednostkowa"] or 0)
         gl, wd, kn = int(e["stan_glowny"] or 0), int(e["stan_w_drodze"] or 0), int(e["w_kontenerze"] or 0)
@@ -233,12 +263,13 @@ async def sku_report(
             "snap_date": e["snap_date"], "snap_slot": e["snap_slot"],
         }
         if has_compare:
-            s = start.get(key)
+            s = start.get((key, firma))
             s_razem = (int(s["stan_glowny"] or 0) + int(s["stan_w_drodze"] or 0) + int(s["w_kontenerze"] or 0)) if s else 0
             s_cena = float(s["cena_jednostkowa"] or 0) if s else cena
             row.update({"razem_start": s_razem, "razem_end": razem, "delta_szt": razem - s_razem})
         rows.append(row)
 
+    rows = _collapse(rows, scope)
     rows.sort(key=lambda x: x["razem"], reverse=True)
     totals = {
         "sku_count": len(rows),
@@ -289,8 +320,6 @@ async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str, scope: st
         if favorites_only and key not in favs:
             continue
         if picked and key not in picked:
-            continue
-        if scope != "all" and (e.get("firma_slug") or "") != scope:
             continue
         cena = float(e["cena_jednostkowa"] or 0)
         gl, wd, kn = int(e["stan_glowny"] or 0), int(e["stan_w_drodze"] or 0), int(e["w_kontenerze"] or 0)
