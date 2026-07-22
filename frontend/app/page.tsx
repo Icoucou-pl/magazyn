@@ -20,6 +20,7 @@ import Calendar from "@/components/calendar";
 import CashflowView from "@/components/cashflow";
 import ForecastView from "@/components/forecast";
 import FinanceView from "@/components/finance";
+import ReportsView from "@/components/reports";
 import SettingsView from "@/components/settings";
 import CommandPalette from "@/components/command-palette";
 import EanScanner from "@/components/ean-scanner";
@@ -280,6 +281,8 @@ export default function Page() {
           />
         ) : view === "finance" ? (
           <FinanceView density={t.density} />
+        ) : view === "reports" ? (
+          <ReportsView />
         ) : view === "settings" ? (
           <SettingsView
             initialSection={pendingManufacturerId != null ? "manufacturers" : undefined}
