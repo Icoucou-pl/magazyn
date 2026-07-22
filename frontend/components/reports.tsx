@@ -15,12 +15,11 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, download } from "@/lib/api";
 import { fmtPLNk } from "@/lib/format";
 import { I, Card } from "@/components/ui";
-import { useUser, isAdmin } from "@/lib/permissions";
 import { toast } from "@/components/toast";
 
 type KpiRow = { label: string; snap_date: string; snap_slot: string; [k: string]: string | number };
 type KpiSummary = { key: string; label: string; start: number | null; end: number | null; delta: number | null; delta_pct: number | null };
-type KpiData = { from: string; to: string; scope: string; group: string; has_data: boolean; rows: KpiRow[]; summary: KpiSummary[]; fields: { key: string; label: string }[] };
+type KpiData = { from: string; to: string; scope: string; group: string; live?: boolean; has_data: boolean; rows: KpiRow[]; summary: KpiSummary[]; fields: { key: string; label: string }[] };
 
 type SkuRow = {
   sku: string; nazwa: string; firma_slug: string; cena_jednostkowa: number;
@@ -29,7 +28,7 @@ type SkuRow = {
   razem_start?: number; razem_end?: number; delta_szt?: number;
   wartosc_start?: number; wartosc_end?: number; delta_pln?: number;
 };
-type SkuData = { from: string; to: string; is_range: boolean; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
+type SkuData = { from: string; to: string; is_range: boolean; compare?: string; live?: boolean; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
 
 const SCOPES = [{ id: "all", label: "Wszyscy" }, { id: "amh", label: "AMH" }, { id: "acti", label: "Acti" }, { id: "veluxa", label: "Veluxa" }];
 const KPI_ALL = ["kapital_pln", "magazyn_pln", "magazyn_w_drodze_pln", "kontenery_pln"];
@@ -100,6 +99,21 @@ function DateSlicer({ from, to, setFrom, setTo }: { from: string; to: string; se
   );
 }
 
+/** Przełącznik źródła: stan liczony na żywo vs zapisane snapshoty. Zielona kropka mruga w trybie live. */
+function LiveToggle({ live, setLive }: { live: boolean; setLive: (v: boolean) => void }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={labStyle}>Źródło</span>
+      <div style={segWrap}>
+        <button onClick={() => setLive(true)} style={{ ...segBtn(live), display: "inline-flex", alignItems: "center", gap: 7 }}>
+          <span className={live ? "live-dot on" : "live-dot"} />Teraz
+        </button>
+        <button onClick={() => setLive(false)} style={segBtn(!live)}>Z historii</button>
+      </div>
+    </div>
+  );
+}
+
 function Empty({ children }: { children: React.ReactNode }) {
   return (
     <Card style={{ padding: 40, textAlign: "center" }}>
@@ -112,6 +126,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 // ── Raport zbiorczy ──────────────────────────────────────────
 
 function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+  const [live, setLive] = useState(true);
   const [scope, setScope] = useState("all");
   const [group, setGroup] = useState<"day" | "month">("day");
   const [show, setShow] = useState<string[]>(KPI_ALL);
@@ -121,18 +136,21 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await api.get(`/reports/kpi-range?from=${from}&to=${to}&scope=${scope}&group=${group}`) as KpiData);
+      const url = live ? `/reports/live/kpi?scope=${scope}` : `/reports/kpi-range?from=${from}&to=${to}&scope=${scope}&group=${group}`;
+      setData(await api.get(url) as KpiData);
     } catch { setData(null); toast("Nie udało się pobrać raportu", "warning"); }
     finally { setLoading(false); }
-  }, [from, to, scope, group]);
+  }, [from, to, scope, group, live]);
   useEffect(() => { load(); }, [load]);
 
   const cols = useMemo(() => (data?.fields || []).filter((f) => show.includes(f.key)), [data, show]);
   const toggle = (k: string) => setShow((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]));
 
   const getXlsx = () =>
-    download(`/reports/kpi-range/xlsx?from=${from}&to=${to}&scope=${scope}&group=${group}&fields=${show.join(",")}`,
-             `raport_zbiorczy_${from}_${to}_${scope}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
+    download(live
+        ? `/reports/kpi-range/xlsx?live=1&scope=${scope}&fields=${show.join(",")}`
+        : `/reports/kpi-range/xlsx?from=${from}&to=${to}&scope=${scope}&group=${group}&fields=${show.join(",")}`,
+             live ? `raport_zbiorczy_teraz_${scope}.xlsx` : `raport_zbiorczy_${from}_${to}_${scope}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
 
   const printPdf = () => {
     if (!data?.has_data) { toast("Brak danych dla tego okresu", "warning"); return; }
@@ -140,7 +158,7 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
     if (!w) { toast("Włącz pop-upy dla tej strony, żeby wygenerować PDF", "warning"); return; }
     const logoUrl = `${window.location.origin}/assets/logo-black.png`;
     const scopeLabel = SCOPES.find((s) => s.id === scope)?.label || scope;
-    const okres = from === to ? from : `${from} … ${to}`;
+    const okres = live ? "stan na teraz" : (from === to ? from : `${from} … ${to}`);
     const sumRows = (data.summary || []).filter((s) => show.includes(s.key)).map((s) => `
       <tr><td class="k">${s.label}</td>
         <td class="r num">${s.end == null ? "—" : fmtPLNk(s.end)}</td>
@@ -186,19 +204,22 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Card style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-        <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        {!live && <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />}
         <div style={{ display: "flex", gap: 18, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <LiveToggle live={live} setLive={setLive} />
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={labStyle}>Zakres</span>
             <div style={segWrap}>{SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}</div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={labStyle}>Grupowanie</span>
-            <div style={segWrap}>
-              <button onClick={() => setGroup("day")} style={segBtn(group === "day")}>Dzień</button>
-              <button onClick={() => setGroup("month")} style={segBtn(group === "month")}>Miesiąc</button>
+          {!live && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={labStyle}>Grupowanie</span>
+              <div style={segWrap}>
+                <button onClick={() => setGroup("day")} style={segBtn(group === "day")}>Dzień</button>
+                <button onClick={() => setGroup("month")} style={segBtn(group === "month")}>Miesiąc</button>
+              </div>
             </div>
-          </div>
+          )}
           <div style={{ flex: 1 }} />
           <button onClick={printPdf} style={btnGhost}>PDF</button>
           <button onClick={getXlsx} style={btnDark}>Excel</button>
@@ -217,7 +238,7 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
       </Card>
 
       {loading ? <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Ładuję…</Card>
-        : !data?.has_data ? <Empty>Snapshoty zbierane są o 7:05 i 20:05 — historii nie da się odtworzyć wstecz.</Empty>
+        : !data?.has_data ? <Empty>{live ? "Brak danych do policzenia stanu." : "Snapshoty zbierane są o 7:05 i 20:05 — historii nie da się odtworzyć wstecz."}</Empty>
         : (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))", gap: 12 }}>
@@ -261,6 +282,7 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
 // ── Raport per SKU ───────────────────────────────────────────
 
 function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+  const [live, setLive] = useState(true);
   const [favOnly, setFavOnly] = useState(false);
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
@@ -270,10 +292,12 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await api.get(`/reports/sku?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}`) as SkuData);
+      const url = live ? `/reports/live/sku?favorites_only=${favOnly ? 1 : 0}`
+                       : `/reports/sku?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}`;
+      setData(await api.get(url) as SkuData);
     } catch { setData(null); toast("Nie udało się pobrać raportu", "warning"); }
     finally { setLoading(false); }
-  }, [from, to, favOnly]);
+  }, [from, to, favOnly, live]);
   useEffect(() => { load(); }, [load]);
 
   const rng = !!data?.is_range;
@@ -292,14 +316,17 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
 
   const toggleSku = (sku: string) => setPicked((p) => (p.includes(sku) ? p.filter((x) => x !== sku) : [...p, sku]));
   const getXlsx = () =>
-    download(`/reports/sku/xlsx?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`,
-             `raport_sku_${from}${rng ? `_${to}` : ""}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
+    download(live
+        ? `/reports/sku/xlsx?live=1&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`
+        : `/reports/sku/xlsx?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`,
+             live ? "raport_sku_teraz.xlsx" : `raport_sku_${from}${rng ? `_${to}` : ""}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Card style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-        <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        {!live && <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />}
         <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <LiveToggle live={live} setLive={setLive} />
           <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 220px", minWidth: 180 }}>
             <span style={labStyle}>Szukaj SKU / nazwy</span>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="np. A2-1cz" style={inputStyle} />
@@ -324,7 +351,7 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
       </Card>
 
       {loading ? <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Ładuję…</Card>
-        : !data?.has_data ? <Empty>W tym okresie nie ma snapshotów stanów. Zbierane są o 7:05 i 20:05.</Empty>
+        : !data?.has_data ? <Empty>{live ? "Brak stanów do pokazania." : "W tym okresie nie ma snapshotów stanów. Zbierane są o 7:05 i 20:05."}</Empty>
         : (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
@@ -342,7 +369,7 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
               </Card>
               {rng && (
                 <Card style={{ padding: "14px 16px" }}>
-                  <div style={labStyle}>Zmiana w okresie</div>
+                  <div style={labStyle}>{data.compare === "intraday" ? "Zmiana w ciągu dnia" : "Zmiana w okresie"}</div>
                   <div style={{ fontSize: 20, fontWeight: 650, marginTop: 6 }}><Delta abs={totals.delta} /></div>
                 </Card>
               )}
@@ -367,8 +394,8 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
                       <th style={{ ...th, textAlign: "right" }}>Razem</th>
                       <th style={{ ...th, textAlign: "right" }}>Wartość</th>
                       {rng && <>
-                        <th style={{ ...th, textAlign: "right" }}>Szt. start</th>
-                        <th style={{ ...th, textAlign: "right" }}>Szt. koniec</th>
+                        <th style={{ ...th, textAlign: "right" }}>{data.compare === "intraday" ? "Szt. rano" : "Szt. start"}</th>
+                        <th style={{ ...th, textAlign: "right" }}>{data.compare === "intraday" ? "Szt. wieczór" : "Szt. koniec"}</th>
                         <th style={{ ...th, textAlign: "right" }}>Zmiana</th>
                       </>}
                     </tr>
@@ -411,18 +438,9 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
 // ── Ekran główny ─────────────────────────────────────────────
 
 export default function ReportsView() {
-  const user = useUser();
   const [mode, setMode] = useState<null | "kpi" | "sku">(null);
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(today());
-  const [busy, setBusy] = useState(false);
-
-  const snapshotNow = async () => {
-    setBusy(true);
-    try { await api.post("/reports/snapshot?slot=wieczor", {}); toast("Zapisano snapshot", "ok"); }
-    catch { toast("Nie udało się zapisać snapshotu", "warning"); }
-    finally { setBusy(false); }
-  };
 
   const box = (id: "kpi" | "sku", title: string, desc: string, icon: React.ReactNode, formats: string) => (
     <Card style={{ padding: "22px 24px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -439,18 +457,18 @@ export default function ReportsView() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <style>{`
+        @keyframes livePulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.82); } }
+        .live-dot { width: 7px; height: 7px; border-radius: 99px; background: var(--ok); display: inline-block; }
+        .live-dot.on { animation: livePulse 1.6s ease-in-out infinite; }
+      `}</style>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 650, margin: 0, letterSpacing: "-0.02em" }}>Raporty</h1>
           <p style={{ margin: "4px 0 0", color: "var(--text-lo)", fontSize: 13 }}>
-            Dane ze snapshotów zbieranych automatycznie o 7:05 i 20:05.
+            Stan na teraz (liczony na żywo) albo z historii — snapshoty zbierane o 7:05 i 20:05.
           </p>
         </div>
-        {isAdmin(user) && (
-          <button onClick={snapshotNow} disabled={busy} style={{ ...btnGhost, padding: "6px 11px", fontSize: 11.5, opacity: busy ? 0.6 : 1 }}>
-            {busy ? "Zapisuję…" : "Zapisz snapshot teraz"}
-          </button>
-        )}
       </div>
 
       {mode === null ? (
