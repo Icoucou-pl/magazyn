@@ -132,7 +132,7 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
     """
     # 1) baza z Subiekta + przypisanie firmy (NULL firma_id = AMH)
     r = await db.execute(text(f"""
-        SELECT s.sku,
+        SELECT s.sku, s.nazwa,
                COALESCE(s.stan_magazyn_podstawowy, 0) AS stan_glowny,
                COALESCE(s.stan_magazyn_w_drodze, 0)   AS stan_w_drodze,
                COALESCE(s.cena_jednostkowa, 0)        AS cena,
@@ -149,6 +149,7 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
             continue
         by_sku[key.upper()] = {
             "sku": key,
+            "nazwa": (d.get("nazwa") or None),
             "firma_slug": d["firma_slug"] or DEFAULT_FIRMA_SLUG,
             "cena_jednostkowa": round(float(d["cena"] or 0), 2),
             "stan_glowny": int(d["stan_glowny"] or 0),
@@ -176,7 +177,7 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
             if tgt is None:
                 # SKU jedzie w kontenerze, ale nie ma go jeszcze w Subiekcie — też zapisujemy
                 tgt = by_sku[key] = {
-                    "sku": getattr(it, "sku", key), "firma_slug": DEFAULT_FIRMA_SLUG,
+                    "sku": getattr(it, "sku", key), "nazwa": None, "firma_slug": DEFAULT_FIRMA_SLUG,
                     "cena_jednostkowa": 0.0, "stan_glowny": 0, "stan_w_drodze": 0, "w_kontenerze": 0,
                 }
             tgt["w_kontenerze"] += int(getattr(it, "quantity", 0) or 0)
@@ -211,16 +212,17 @@ async def store_snapshot(db: AsyncSession, slot: str, snap_date: Optional[date] 
     for row in stock_rows:
         await db.execute(text(f"""
             INSERT INTO {settings.TABLE_STOCK_SNAPSHOTS}
-                (snap_date, snap_slot, sku, firma_slug, cena_jednostkowa, stan_glowny, stan_w_drodze, w_kontenerze, captured_at)
-            VALUES (:d, :s, :sku, :f, :cena, :gl, :wdr, :kon, CURRENT_TIMESTAMP)
+                (snap_date, snap_slot, sku, nazwa, firma_slug, cena_jednostkowa, stan_glowny, stan_w_drodze, w_kontenerze, captured_at)
+            VALUES (:d, :s, :sku, :nz, :f, :cena, :gl, :wdr, :kon, CURRENT_TIMESTAMP)
             ON CONFLICT (snap_date, snap_slot, sku) DO UPDATE SET
+                nazwa = EXCLUDED.nazwa,
                 firma_slug = EXCLUDED.firma_slug,
                 cena_jednostkowa = EXCLUDED.cena_jednostkowa,
                 stan_glowny = EXCLUDED.stan_glowny,
                 stan_w_drodze = EXCLUDED.stan_w_drodze,
                 w_kontenerze = EXCLUDED.w_kontenerze,
                 captured_at = CURRENT_TIMESTAMP
-        """), {"d": d, "s": slot, "sku": row["sku"], "f": row["firma_slug"],
+        """), {"d": d, "s": slot, "sku": row["sku"], "nz": row.get("nazwa"), "f": row["firma_slug"],
                "cena": row["cena_jednostkowa"], "gl": row["stan_glowny"],
                "wdr": row["stan_w_drodze"], "kon": row["w_kontenerze"]})
 
