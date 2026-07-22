@@ -125,64 +125,102 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
 # ── per SKU ──────────────────────────────────────────────────
 
 async def build_stock_rows(db: AsyncSession) -> List[dict]:
-    """Per SKU: cena jednostkowa + trzy rozłączne stany.
+    """Stany per SKU × FIRMA — semantyka identyczna jak w zakładce Produkty.
 
-    Podstawą jest tabela subiektowa (magazyn główny + w drodze + świeża cena).
-    `w_kontenerze` dokładamy z pozycji kontenerów należących do CZERWONYCH lotów.
+      AMH         → magazyn główny + magazyn „w drodze" z Subiektu (subiekt_dwa_magazyny)
+      Acti/Veluxa → stan z Sellasista tego sklepu (magazyn „w drodze" = 0, aż dostaną własny)
+      w_kontenerze→ sztuki z kontenerów, przypisane po firmie PRODUKTU (app_product_attrs)
+
+    Dla AMH liczymy tylko CZERWONE loty (zielone są już w magazynie „w drodze" w Subiekcie,
+    więc doliczanie ich drugi raz byłoby dublem). Dla pozostałych firm — wszystko, co płynie,
+    bo ich stan aktualizuje się dopiero po dostawie.
     """
-    # 1) baza z Subiekta + przypisanie firmy (NULL firma_id = AMH)
+    rows: Dict[tuple, dict] = {}
+
+    def slot(sku_raw: str, firma: str) -> dict:
+        key = ((sku_raw or "").strip().upper(), firma)
+        if key not in rows:
+            rows[key] = {"sku": (sku_raw or "").strip(), "nazwa": None, "firma_slug": firma,
+                         "cena_jednostkowa": 0.0, "stan_glowny": 0, "stan_w_drodze": 0, "w_kontenerze": 0}
+        return rows[key]
+
+    # 1) AMH — magazyn główny i „w drodze" z tabeli subiektowej (to magazyn AMH)
     r = await db.execute(text(f"""
-        SELECT s.sku, s.nazwa,
-               COALESCE(s.stan_magazyn_podstawowy, 0) AS stan_glowny,
-               COALESCE(s.stan_magazyn_w_drodze, 0)   AS stan_w_drodze,
-               COALESCE(s.cena_jednostkowa, 0)        AS cena,
-               LOWER(COALESCE(f.slug, '{DEFAULT_FIRMA_SLUG}')) AS firma_slug
-        FROM {settings.TABLE_SUBIEKT_DWA} s
-        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} a ON UPPER(TRIM(a.sku)) = UPPER(TRIM(s.sku))
-        LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = a.firma_id
+        SELECT sku, nazwa,
+               COALESCE(stan_magazyn_podstawowy, 0) AS gl,
+               COALESCE(stan_magazyn_w_drodze, 0)   AS wd,
+               COALESCE(cena_jednostkowa, 0)        AS cena
+        FROM {settings.TABLE_SUBIEKT_DWA}
+        WHERE sku IS NOT NULL AND TRIM(sku) <> ''
     """))
-    by_sku: Dict[str, dict] = {}
+    price_by_sku: Dict[str, float] = {}
+    name_by_sku: Dict[str, str] = {}
     for row in r:
         d = dict(row._mapping)
-        key = (d["sku"] or "").strip()
-        if not key:
-            continue
-        by_sku[key.upper()] = {
-            "sku": key,
-            "nazwa": (d.get("nazwa") or None),
-            "firma_slug": d["firma_slug"] or DEFAULT_FIRMA_SLUG,
-            "cena_jednostkowa": round(float(d["cena"] or 0), 2),
-            "stan_glowny": int(d["stan_glowny"] or 0),
-            "stan_w_drodze": int(d["stan_w_drodze"] or 0),
-            "w_kontenerze": 0,
-        }
+        t = slot(d["sku"], DEFAULT_FIRMA_SLUG)
+        t["nazwa"] = d.get("nazwa") or None
+        t["cena_jednostkowa"] = round(float(d["cena"] or 0), 2)
+        t["stan_glowny"] += int(d["gl"] or 0)
+        t["stan_w_drodze"] += int(d["wd"] or 0)
+        key = (d["sku"] or "").strip().upper()
+        price_by_sku[key] = t["cena_jednostkowa"]
+        if d.get("nazwa"):
+            name_by_sku[key] = d["nazwa"]
 
-    # 2) sztuki w czerwonych lotach (kontener jeszcze niewbity do Subiektu)
+    # 2) Acti/Veluxa — stany z Sellasista (tabela trzyma wyłącznie sklepy nie-AMH)
+    r = await db.execute(text(f"""
+        SELECT MAX(es.symbol) AS sku, LOWER(TRIM(es.shop)) AS shop,
+               SUM(es.quantity) AS qty, MAX(sk.nazwa) AS nazwa
+        FROM {settings.TABLE_EXTERNAL_STOCK} es
+        LEFT JOIN sellasist_skus sk ON sk.sku_canon = es.sku_canon
+        WHERE es.symbol IS NOT NULL AND TRIM(es.symbol) <> ''
+        GROUP BY es.sku_canon, LOWER(TRIM(es.shop))
+    """))
+    for row in r:
+        d = dict(row._mapping)
+        firma = (d["shop"] or "").strip().lower() or DEFAULT_FIRMA_SLUG
+        t = slot(d["sku"], firma)
+        t["stan_glowny"] += int(d["qty"] or 0)
+        key = (d["sku"] or "").strip().upper()
+        if not t["nazwa"]:
+            t["nazwa"] = d.get("nazwa") or name_by_sku.get(key)
+        if not t["cena_jednostkowa"]:
+            t["cena_jednostkowa"] = price_by_sku.get(key, 0.0)
+
+    # 3) Kontenery — firma z przypisania produktu (jak firma_breakdown)
+    rf = await db.execute(text(f"""
+        SELECT UPPER(TRIM(a.sku)) AS sku, LOWER(COALESCE(f.slug, '{DEFAULT_FIRMA_SLUG}')) AS slug
+        FROM {settings.TABLE_PRODUCT_ATTRS} a
+        LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = a.firma_id
+        WHERE a.sku IS NOT NULL
+    """))
+    firma_of = {row[0]: (row[1] or DEFAULT_FIRMA_SLUG) for row in rf if row[0]}
+
     for c in await fetch_containers(db):
         if (c.effective_status or c.status) == "DELIVERED":
             continue
         lots = c.lots or []
         consolidated = bool(c.is_consolidated) and len(lots) > 0
-        red_lot_ids = {l.id for l in lots if not l.subiekt_wbite} if consolidated else set()
-        if not consolidated and c.subiekt_wbite:
-            continue
+        wbite_lot = {l.id: bool(l.subiekt_wbite) for l in lots} if consolidated else {}
         for it in (c.items or []):
-            lot_id = getattr(it, "lot_id", None)
-            if consolidated and lot_id not in red_lot_ids:
-                continue
             key = (getattr(it, "sku", "") or "").strip().upper()
             if not key:
                 continue
-            tgt = by_sku.get(key)
-            if tgt is None:
-                # SKU jedzie w kontenerze, ale nie ma go jeszcze w Subiekcie — też zapisujemy
-                tgt = by_sku[key] = {
-                    "sku": getattr(it, "sku", key), "nazwa": None, "firma_slug": DEFAULT_FIRMA_SLUG,
-                    "cena_jednostkowa": 0.0, "stan_glowny": 0, "stan_w_drodze": 0, "w_kontenerze": 0,
-                }
-            tgt["w_kontenerze"] += int(getattr(it, "quantity", 0) or 0)
+            firma = firma_of.get(key, DEFAULT_FIRMA_SLUG)
+            # AMH: zielone (już w Subiekcie) pomijamy — inaczej dubel z magazynem „w drodze"
+            if firma == DEFAULT_FIRMA_SLUG:
+                wbite = wbite_lot.get(getattr(it, "lot_id", None), False) if consolidated else bool(c.subiekt_wbite)
+                if wbite:
+                    continue
+            t = slot(getattr(it, "sku", key), firma)
+            t["w_kontenerze"] += int(getattr(it, "quantity", 0) or 0)
+            if not t["nazwa"]:
+                t["nazwa"] = name_by_sku.get(key)
+            if not t["cena_jednostkowa"]:
+                t["cena_jednostkowa"] = price_by_sku.get(key, 0.0)
 
-    return list(by_sku.values())
+    return [v for v in rows.values()
+            if v["stan_glowny"] or v["stan_w_drodze"] or v["w_kontenerze"]]
 
 
 # ── zapis ────────────────────────────────────────────────────
@@ -214,9 +252,8 @@ async def store_snapshot(db: AsyncSession, slot: str, snap_date: Optional[date] 
             INSERT INTO {settings.TABLE_STOCK_SNAPSHOTS}
                 (snap_date, snap_slot, sku, nazwa, firma_slug, cena_jednostkowa, stan_glowny, stan_w_drodze, w_kontenerze, captured_at)
             VALUES (:d, :s, :sku, :nz, :f, :cena, :gl, :wdr, :kon, CURRENT_TIMESTAMP)
-            ON CONFLICT (snap_date, snap_slot, sku) DO UPDATE SET
+            ON CONFLICT (snap_date, snap_slot, sku, firma_slug) DO UPDATE SET
                 nazwa = EXCLUDED.nazwa,
-                firma_slug = EXCLUDED.firma_slug,
                 cena_jednostkowa = EXCLUDED.cena_jednostkowa,
                 stan_glowny = EXCLUDED.stan_glowny,
                 stan_w_drodze = EXCLUDED.stan_w_drodze,
