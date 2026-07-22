@@ -344,6 +344,9 @@ async def lifespan(app: FastAPI):
         """))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_stock_snap_date ON {settings.TABLE_STOCK_SNAPSHOTS}(snap_date)"))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_stock_snap_sku ON {settings.TABLE_STOCK_SNAPSHOTS}(sku)"))
+        # `nazwa` — ta sama kolumna co w subiekt_towary; w tabeli subiektowej bywa jeszcze pusta
+        await add_column_if_missing(conn, settings.TABLE_STOCK_SNAPSHOTS, "nazwa", "TEXT")
+        await add_column_if_missing(conn, settings.TABLE_SUBIEKT_DWA, "nazwa", "TEXT")
 
         # Załączniki kontenerów (plik trzymany w bazie jako BYTEA)
         await conn.execute(text(f"""
