@@ -16,7 +16,7 @@ from config import settings
 from database import get_db
 from models import CurrentUser
 from security import get_current_user, has_perm
-from services.snapshots import store_snapshot, SLOTS
+from services.snapshots import store_snapshot, build_kpi_rows, build_stock_rows, SLOTS
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -103,14 +103,27 @@ async def kpi_range(
         key_expr = "snap_date"
         label_expr = "to_char(snap_date, 'YYYY-MM-DD')"
 
-    r = await db.execute(text(f"""
-        SELECT DISTINCT ON ({key_expr})
-               {label_expr} AS label, snap_date, snap_slot,
-               kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln
-        FROM {settings.TABLE_KPI_SNAPSHOTS}
-        WHERE firma_slug = :f AND snap_date >= :a AND snap_date <= :b{slot_where}
-        ORDER BY {key_expr}, snap_date DESC, {SLOT_ORDER}
-    """), params)
+    # Jeden dzień bez wymuszonej pory → pokazujemy OBIE pory, żeby było widać ruch w ciągu dnia.
+    intraday = (a == b and not slot and group != "month")
+    if intraday:
+        r = await db.execute(text(f"""
+            SELECT to_char(snap_date, 'YYYY-MM-DD') || ' · ' ||
+                   CASE snap_slot WHEN 'rano' THEN 'rano' ELSE 'wieczór' END AS label,
+                   snap_date, snap_slot,
+                   kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln
+            FROM {settings.TABLE_KPI_SNAPSHOTS}
+            WHERE firma_slug = :f AND snap_date = :a
+            ORDER BY CASE snap_slot WHEN 'rano' THEN 0 ELSE 1 END
+        """), params)
+    else:
+        r = await db.execute(text(f"""
+            SELECT DISTINCT ON ({key_expr})
+                   {label_expr} AS label, snap_date, snap_slot,
+                   kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln
+            FROM {settings.TABLE_KPI_SNAPSHOTS}
+            WHERE firma_slug = :f AND snap_date >= :a AND snap_date <= :b{slot_where}
+            ORDER BY {key_expr}, snap_date DESC, {SLOT_ORDER}
+        """), params)
 
     rows = []
     for row in r:
@@ -179,7 +192,18 @@ async def sku_report(
     is_range = b > a
 
     end = await _sku_snapshot(db, a, b, newest=True, slot=slot)
-    start = await _sku_snapshot(db, a, b, newest=False, slot=slot) if is_range else {}
+    start: dict = {}
+    compare = "none"
+    if is_range:
+        start = await _sku_snapshot(db, a, b, newest=False, slot=slot)
+        compare = "range"
+    elif not slot:
+        # Ten sam dzień: jeśli są obie pory, porównujemy ranek z wieczorem (ruch dzienny).
+        rano = await _sku_snapshot(db, a, b, newest=False, slot="rano")
+        wieczor = await _sku_snapshot(db, a, b, newest=True, slot="wieczor")
+        if rano and wieczor:
+            start, end, compare = rano, wieczor, "intraday"
+    has_compare = compare != "none"
 
     # ulubione — flaga trzymana przy atrybutach produktu
     favs = set()
@@ -205,7 +229,7 @@ async def sku_report(
             "razem": razem, "wartosc_pln": round(razem * cena, 2),
             "snap_date": e["snap_date"], "snap_slot": e["snap_slot"],
         }
-        if is_range:
+        if has_compare:
             s = start.get(key)
             s_razem = (int(s["stan_glowny"] or 0) + int(s["stan_w_drodze"] or 0) + int(s["w_kontenerze"] or 0)) if s else 0
             s_cena = float(s["cena_jednostkowa"] or 0) if s else cena
@@ -223,12 +247,76 @@ async def sku_report(
         "units": sum(r["razem"] for r in rows),
         "value_pln": round(sum(r["wartosc_pln"] for r in rows), 2),
     }
-    if is_range:
+    if has_compare:
         totals["delta_szt"] = sum(r.get("delta_szt", 0) for r in rows)
         totals["delta_pln"] = round(sum(r.get("delta_pln", 0.0) for r in rows), 2)
 
-    return {"from": a.isoformat(), "to": b.isoformat(), "is_range": is_range,
-            "has_data": bool(rows), "rows": rows, "totals": totals}
+    return {"from": a.isoformat(), "to": b.isoformat(), "is_range": has_compare,
+            "compare": compare, "has_data": bool(rows), "rows": rows, "totals": totals}
+
+
+# ── tryb LIVE (stan na teraz, bez zapisu do bazy) ────────────
+# Te same funkcje, których używa pętla snapshotów — tylko bez INSERT-a.
+# Dzięki temu „zdjęcie na teraz" nie zaśmieca historii.
+
+async def _live_kpi(db: AsyncSession, scope: str) -> dict:
+    rows = await build_kpi_rows(db)
+    mine = next((r for r in rows if r["firma_slug"] == scope), None)
+    fields = [{"key": k, "label": l} for k, l in KPI_FIELDS]
+    if not mine:
+        return {"from": "teraz", "to": "teraz", "scope": scope, "group": "live",
+                "live": True, "has_data": False, "rows": [], "summary": [], "fields": fields}
+    row = {"label": "Teraz", "snap_date": date.today().isoformat(), "snap_slot": "live"}
+    for k, _ in KPI_FIELDS:
+        row[k] = float(mine.get(k) or 0)
+    summary = [{"key": k, "label": l, "start": None, "end": float(mine.get(k) or 0),
+                "delta": None, "delta_pct": None} for k, l in KPI_FIELDS]
+    return {"from": "teraz", "to": "teraz", "scope": scope, "group": "live",
+            "live": True, "has_data": True, "rows": [row], "summary": summary, "fields": fields}
+
+
+async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str) -> dict:
+    src = await build_stock_rows(db)
+    favs = set()
+    if favorites_only:
+        rf = await db.execute(text(f"SELECT UPPER(TRIM(sku)) FROM {settings.TABLE_PRODUCT_ATTRS} WHERE COALESCE(is_favorite, FALSE) = TRUE"))
+        favs = {r[0] for r in rf if r[0]}
+    picked = {x.strip().upper() for x in skus.split(",") if x.strip()}
+
+    rows = []
+    for e in src:
+        key = (e["sku"] or "").strip().upper()
+        if favorites_only and key not in favs:
+            continue
+        if picked and key not in picked:
+            continue
+        cena = float(e["cena_jednostkowa"] or 0)
+        gl, wd, kn = int(e["stan_glowny"] or 0), int(e["stan_w_drodze"] or 0), int(e["w_kontenerze"] or 0)
+        razem = gl + wd + kn
+        rows.append({
+            "sku": e["sku"], "nazwa": e.get("nazwa") or "", "firma_slug": e.get("firma_slug") or "",
+            "cena_jednostkowa": round(cena, 2), "stan_glowny": gl, "stan_w_drodze": wd, "w_kontenerze": kn,
+            "razem": razem, "wartosc_pln": round(razem * cena, 2),
+            "snap_date": date.today().isoformat(), "snap_slot": "live",
+        })
+    rows.sort(key=lambda x: x["wartosc_pln"], reverse=True)
+    return {"from": "teraz", "to": "teraz", "is_range": False, "compare": "none", "live": True,
+            "has_data": bool(rows), "rows": rows,
+            "totals": {"sku_count": len(rows), "units": sum(r["razem"] for r in rows),
+                       "value_pln": round(sum(r["wartosc_pln"] for r in rows), 2)}}
+
+
+@router.get("/reports/live/kpi")
+async def live_kpi(scope: str = Query("all"), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports)):
+    """Zbiorczy stan NA TERAZ — liczony na żywo, nic nie zapisuje."""
+    return await _live_kpi(db, scope)
+
+
+@router.get("/reports/live/sku")
+async def live_sku(favorites_only: bool = Query(False), skus: str = Query(""),
+                   db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports)):
+    """Stany per SKU NA TERAZ — liczone na żywo, nic nie zapisuje."""
+    return await _live_sku(db, favorites_only, skus)
 
 
 # ── eksport XLSX ─────────────────────────────────────────────
@@ -256,19 +344,22 @@ def _style_header(ws, row_idx: int, headers: List[str]):
 
 @router.get("/reports/kpi-range/xlsx")
 async def kpi_range_xlsx(
-    date_from: str = Query(..., alias="from"), date_to: str = Query("", alias="to"),
+    date_from: str = Query("", alias="from"), date_to: str = Query("", alias="to"),
     scope: str = Query("all"), group: str = Query("day"), slot: str = Query(""),
-    fields: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports),
+    fields: str = Query(""), live: bool = Query(False),
+    db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports),
 ):
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    data = await kpi_range(date_from=date_from, date_to=date_to, scope=scope, group=group, slot=slot, db=db, user=user)
+    data = (await _live_kpi(db, scope)) if live else (
+        await kpi_range(date_from=date_from, date_to=date_to, scope=scope, group=group, slot=slot, db=db, user=user))
     chosen = [k.strip() for k in fields.split(",") if k.strip()] or [k for k, _ in KPI_FIELDS]
     cols = [(k, l) for k, l in KPI_FIELDS if k in chosen]
 
     wb = Workbook(); ws = wb.active; ws.title = "Raport zbiorczy"
-    ws["A1"] = f"Raport zbiorczy magazynu — {data['from']} … {data['to']}"
+    okres_x = "stan na teraz" if data.get("live") else f"{data['from']} … {data['to']}"
+    ws["A1"] = f"Raport zbiorczy magazynu — {okres_x}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = f"Zakres: {scope.upper()} · grupowanie: {'miesiąc' if group == 'month' else 'dzień'}"
     ws["A2"].font = Font(color="808080")
@@ -288,19 +379,20 @@ async def kpi_range_xlsx(
 
 @router.get("/reports/sku/xlsx")
 async def sku_xlsx(
-    date_from: str = Query(..., alias="from"), date_to: str = Query("", alias="to"),
+    date_from: str = Query("", alias="from"), date_to: str = Query("", alias="to"),
     favorites_only: bool = Query(False), skus: str = Query(""), slot: str = Query(""),
+    live: bool = Query(False),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports),
 ):
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    data = await sku_report(date_from=date_from, date_to=date_to, favorites_only=favorites_only,
-                            skus=skus, slot=slot, db=db, user=user)
+    data = (await _live_sku(db, favorites_only, skus)) if live else (await sku_report(date_from=date_from, date_to=date_to, favorites_only=favorites_only,
+                            skus=skus, slot=slot, db=db, user=user))
     rng = data["is_range"]
 
     wb = Workbook(); ws = wb.active; ws.title = "Magazyn per SKU"
-    ws["A1"] = f"Raport magazynu per SKU — {data['from']}" + (f" … {data['to']}" if rng else "")
+    ws["A1"] = "Raport magazynu per SKU — stan na teraz" if data.get("live") else (f"Raport magazynu per SKU — {data['from']}" + (f" … {data['to']}" if rng else ""))
     ws["A1"].font = Font(bold=True, size=14)
     sub = []
     if favorites_only: sub.append("tylko obserwowane")
