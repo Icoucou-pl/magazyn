@@ -99,8 +99,8 @@ export const PRODUCT_COLS: ColDef[] = [
 export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "mfr", "stock", "inTransit", "sales_1m", "sales_2m", "avgMonth", "yoy", "yoyNext", "months", "value", "status"];
 
 const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }> = [
-  { id: "active", label: "Aktywne" },
   { id: "favorites", label: "Obserwowane", icon: <I.StarFill size={11} /> },
+  { id: "active", label: "Aktywne" },
   { id: "critical", label: "Krytyczne" },
   { id: "dead", label: "Dead stock" },
   { id: "sample", label: "Sample", icon: <I.Flask size={11} /> },
