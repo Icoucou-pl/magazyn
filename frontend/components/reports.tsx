@@ -1,276 +1,471 @@
 "use client";
 /**
- * Raporty — miesięczne zdjęcie KPI (z tabel snapshotów, zbieranych 2×/dzień).
+ * Raporty — dwa raporty oparte o snapshoty (zbierane 2×/dzień: 7:05 i 20:05).
  *
- * Format:  Widok (kafle jak na pulpicie) | PDF (przez okno druku, jak przy PO) | Excel (backend, openpyxl)
- * Zakres:  Wszyscy / AMH / Acti / Veluxa
- * Porównanie z poprzednim miesiącem — przełącznik.
+ *  [Raport zbiorczy magazynu]  — KPI w czasie; wybór dnia lub zakresu, grupowanie dzień/miesiąc,
+ *                                ptaszki „co pokazać" (raport dla księgowej bez kontenerów).
+ *  [Raport magazynu per SKU]   — stany per SKU; przy zakresie: początek vs koniec vs zmiana.
+ *                                Filtry: tylko obserwowane, wyszukiwarka, ręczny wybór SKU.
  *
- * Dane są DOKŁADNE (snapshot z danego dnia), a nie rekonstruowane wstecz — dlatego
- * miesiąc bez snapshotów pokazuje pustkę zamiast zmyślonych liczb.
+ * Podgląd jest zawsze live — pobranie pliku jest opcjonalne.
+ * Dane są dokładne (snapshot), więc okres bez zapisów pokazuje pustkę, a nie zmyślone liczby.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, download } from "@/lib/api";
 import { fmtPLNk } from "@/lib/format";
 import { I, Card } from "@/components/ui";
+import { useUser, isAdmin } from "@/lib/permissions";
 import { toast } from "@/components/toast";
 
-type Row = { key: string; label: string; value: number | null; prev: number | null; delta_pct: number | null };
-type Monthly = { month: string; scope: string; compare: boolean; snapshot_date: string | null; has_data: boolean; rows: Row[] };
+type KpiRow = { label: string; snap_date: string; snap_slot: string; [k: string]: string | number };
+type KpiSummary = { key: string; label: string; start: number | null; end: number | null; delta: number | null; delta_pct: number | null };
+type KpiData = { from: string; to: string; scope: string; group: string; has_data: boolean; rows: KpiRow[]; summary: KpiSummary[]; fields: { key: string; label: string }[] };
 
-const SCOPES = [
-  { id: "all", label: "Wszyscy" },
-  { id: "amh", label: "AMH" },
-  { id: "acti", label: "Acti" },
-  { id: "veluxa", label: "Veluxa" },
-];
-const MONTHS_PL = ["Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec", "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"];
-
-const ymOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-const labelOf = (ym: string) => {
-  const [y, m] = ym.split("-").map(Number);
-  return `${MONTHS_PL[(m || 1) - 1]} ${y}`;
+type SkuRow = {
+  sku: string; nazwa: string; firma_slug: string; cena_jednostkowa: number;
+  stan_glowny: number; stan_w_drodze: number; w_kontenerze: number;
+  razem: number; wartosc_pln: number; snap_date: string; snap_slot: string;
+  razem_start?: number; razem_end?: number; delta_szt?: number;
+  wartosc_start?: number; wartosc_end?: number; delta_pln?: number;
 };
-const shiftYm = (ym: string, delta: number) => {
-  const [y, m] = ym.split("-").map(Number);
-  const d = new Date(y, (m || 1) - 1 + delta, 1);
-  return ymOf(d);
-};
-const isCount = (key: string) => false;   // wszystkie 4 KPI są kwotowe
-const fmtVal = (r: Row) => (r.value == null ? "—" : isCount(r.key) ? String(r.value) : fmtPLNk(r.value));
+type SkuData = { from: string; to: string; is_range: boolean; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
 
-function Delta({ pct }: { pct: number | null }) {
-  if (pct == null) return <span style={{ color: "var(--text-lo)", fontSize: 11 }}>—</span>;
-  const up = pct >= 0;
-  return (
-    <span className="num" style={{ fontSize: 11, fontWeight: 650, color: up ? "var(--ok)" : "var(--critical)" }}>
-      {up ? "▲" : "▼"} {Math.abs(pct).toFixed(1).replace(".", ",")}%
-    </span>
-  );
-}
+const SCOPES = [{ id: "all", label: "Wszyscy" }, { id: "amh", label: "AMH" }, { id: "acti", label: "Acti" }, { id: "veluxa", label: "Veluxa" }];
+const KPI_ALL = ["kapital_pln", "magazyn_pln", "magazyn_w_drodze_pln", "kontenery_pln"];
 
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+const today = () => iso(new Date());
+const daysAgo = (n: number) => iso(new Date(Date.now() - n * 86400000));
+const monthStart = () => { const d = new Date(); return iso(new Date(d.getFullYear(), d.getMonth(), 1)); };
+
+const labStyle: React.CSSProperties = { fontSize: 10, fontWeight: 650, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text-lo)" };
+const segWrap: React.CSSProperties = { display: "inline-flex", background: "var(--surface-3)", borderRadius: 9, padding: 3 };
 const segBtn = (on: boolean): React.CSSProperties => ({
   border: "none", background: on ? "var(--surface-1)" : "transparent",
   boxShadow: on ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
   color: on ? "var(--text-hi)" : "var(--text-mid)",
-  padding: "6px 13px", borderRadius: 6, fontSize: 13, fontWeight: 550, cursor: "pointer",
+  padding: "6px 12px", borderRadius: 6, fontSize: 12.5, fontWeight: 550, cursor: "pointer",
 });
-const segWrap: React.CSSProperties = { display: "inline-flex", background: "var(--surface-3)", borderRadius: 9, padding: 3 };
-const labStyle: React.CSSProperties = { fontSize: 10, fontWeight: 650, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text-lo)" };
+const inputStyle: React.CSSProperties = {
+  background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 8,
+  padding: "7px 9px", fontSize: 13, color: "var(--text-hi)", fontFamily: "inherit",
+};
+const btnDark: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: 7, background: "var(--text-hi)", color: "var(--surface-1)",
+  border: "none", padding: "9px 15px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer",
+};
+const btnGhost: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: 7, background: "var(--surface-1)", color: "var(--text-mid)",
+  border: "1px solid var(--border)", padding: "9px 15px", borderRadius: 9, fontSize: 13, fontWeight: 550, cursor: "pointer",
+};
+const th: React.CSSProperties = { textAlign: "left", fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--text-lo)", fontWeight: 650, padding: "0 10px 8px", borderBottom: "1px solid var(--border-soft)", whiteSpace: "nowrap" };
+const td: React.CSSProperties = { padding: "9px 10px", borderBottom: "1px solid var(--surface-3)", fontSize: 12.5, whiteSpace: "nowrap" };
 
-export default function ReportsView() {
-  const [month, setMonth] = useState(() => ymOf(new Date()));
+function Delta({ pct, abs }: { pct?: number | null; abs?: number | null }) {
+  const v = pct != null ? pct : abs;
+  if (v == null) return <span style={{ color: "var(--text-lo)" }}>—</span>;
+  const up = v >= 0;
+  return (
+    <span className="num" style={{ fontWeight: 650, color: up ? "var(--ok)" : "var(--critical)" }}>
+      {up ? "▲" : "▼"} {pct != null ? `${Math.abs(pct).toFixed(1).replace(".", ",")}%` : fmtPLNk(Math.abs(abs || 0))}
+    </span>
+  );
+}
+
+/** Fragmentator dat — pojedynczy dzień albo zakres, z szybkimi skrótami. */
+function DateSlicer({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+  const presets: [string, () => void][] = [
+    ["Dziś", () => { setFrom(today()); setTo(today()); }],
+    ["7 dni", () => { setFrom(daysAgo(6)); setTo(today()); }],
+    ["30 dni", () => { setFrom(daysAgo(29)); setTo(today()); }],
+    ["Ten miesiąc", () => { setFrom(monthStart()); setTo(today()); }],
+  ];
+  return (
+    <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={labStyle}>Od</span>
+        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={inputStyle} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={labStyle}>Do</span>
+        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={inputStyle} />
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 2 }}>
+        {presets.map(([lab, fn]) => (
+          <button key={lab} onClick={fn} style={{ ...btnGhost, padding: "6px 10px", fontSize: 12 }}>{lab}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return (
+    <Card style={{ padding: 40, textAlign: "center" }}>
+      <div style={{ color: "var(--text-mid)", fontWeight: 600, marginBottom: 6 }}>Brak danych w tym okresie</div>
+      <div style={{ color: "var(--text-lo)", fontSize: 12.5, lineHeight: 1.6 }}>{children}</div>
+    </Card>
+  );
+}
+
+// ── Raport zbiorczy ──────────────────────────────────────────
+
+function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
   const [scope, setScope] = useState("all");
-  const [compare, setCompare] = useState(true);
-  const [fmt, setFmt] = useState<"view" | "pdf" | "xls">("view");
-  const [data, setData] = useState<Monthly | null>(null);
+  const [group, setGroup] = useState<"day" | "month">("day");
+  const [show, setShow] = useState<string[]>(KPI_ALL);
+  const [data, setData] = useState<KpiData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await api.get(`/reports/monthly?month=${month}&scope=${scope}&compare=${compare ? 1 : 0}`);
-      setData(d as Monthly);
-    } catch {
-      setData(null);
-      toast("Nie udało się pobrać raportu", "warning");
-    } finally {
-      setLoading(false);
-    }
-  }, [month, scope, compare]);
-
+      setData(await api.get(`/reports/kpi-range?from=${from}&to=${to}&scope=${scope}&group=${group}`) as KpiData);
+    } catch { setData(null); toast("Nie udało się pobrać raportu", "warning"); }
+    finally { setLoading(false); }
+  }, [from, to, scope, group]);
   useEffect(() => { load(); }, [load]);
 
-  const hero = useMemo(() => data?.rows.find((r) => r.key === "kapital_pln") || null, [data]);
-  const rest = useMemo(() => (data?.rows || []).filter((r) => r.key !== "kapital_pln"), [data]);
+  const cols = useMemo(() => (data?.fields || []).filter((f) => show.includes(f.key)), [data, show]);
+  const toggle = (k: string) => setShow((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]));
 
-  // Ręczne dorobienie snapshotu — przydaje się przy pierwszym uruchomieniu i do testu.
-  const snapshotNow = async () => {
-    setBusy(true);
-    try {
-      await api.post("/reports/snapshot?slot=wieczor", {});
-      toast("Zapisano snapshot", "ok");
-      await load();
-    } catch {
-      toast("Nie udało się zapisać snapshotu", "warning");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const getXlsx = () =>
+    download(`/reports/kpi-range/xlsx?from=${from}&to=${to}&scope=${scope}&group=${group}&fields=${show.join(",")}`,
+             `raport_zbiorczy_${from}_${to}_${scope}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
 
-  const downloadXlsx = async () => {
-    setBusy(true);
-    try {
-      await download(`/reports/monthly/xlsx?month=${month}&scope=${scope}&compare=${compare ? 1 : 0}`,
-                     `raport_${month}_${scope}.xlsx`);
-    } catch {
-      toast("Nie udało się pobrać Excela", "warning");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // PDF przez okno druku przeglądarki — ten sam wzorzec co generowanie zamówień (zero zależności).
   const printPdf = () => {
-    if (!data?.has_data) { toast("Brak danych dla tego miesiąca", "warning"); return; }
+    if (!data?.has_data) { toast("Brak danych dla tego okresu", "warning"); return; }
     const w = window.open("", "_blank", "width=900,height=1100");
     if (!w) { toast("Włącz pop-upy dla tej strony, żeby wygenerować PDF", "warning"); return; }
+    const logoUrl = `${window.location.origin}/assets/logo-black.png`;
     const scopeLabel = SCOPES.find((s) => s.id === scope)?.label || scope;
-    const rowsHtml = (data.rows || []).map((r) => `
-      <tr>
-        <td class="k">${r.label}</td>
-        <td class="r num">${r.value == null ? "—" : fmtPLNk(r.value)}</td>
-        ${compare ? `<td class="r num">${r.prev == null ? "—" : fmtPLNk(r.prev)}</td>
-        <td class="r num" style="color:${r.delta_pct == null ? "#8b909c" : r.delta_pct >= 0 ? "#16a34a" : "#e5484d"}">
-          ${r.delta_pct == null ? "—" : (r.delta_pct >= 0 ? "▲ " : "▼ ") + Math.abs(r.delta_pct).toFixed(1).replace(".", ",") + "%"}</td>` : ""}
-      </tr>`).join("");
-    w.document.write(`<!doctype html><html lang="pl"><head><meta charset="utf-8"><title>Raport ${labelOf(month)}</title>
-      <style>
-        *{box-sizing:border-box}
-        body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;color:#171a20;margin:0;padding:42px 46px}
-        .num{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
-        .brand{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #171a20;padding-bottom:14px}
-        .co{font-weight:700;font-size:15px}
-        .co small{display:block;font-weight:500;color:#8b909c;font-size:11px;margin-top:2px}
-        .rt{text-align:right;font-size:11px;color:#4b515c}
-        h2{font-size:19px;margin:22px 0 2px}
-        .sub{color:#8b909c;font-size:12px;margin-bottom:20px}
-        .hero{display:flex;justify-content:space-between;align-items:baseline;background:#f7f8fa;border:1px solid #e7e9ee;border-radius:8px;padding:14px 18px;margin-bottom:18px}
-        .hero .l{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#4b515c;font-weight:650}
-        .hero .r{font-size:26px;font-weight:700;color:#6b5cf6}
-        table{width:100%;border-collapse:collapse;font-size:13px}
-        th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#8b909c;font-weight:650;padding:0 0 8px;border-bottom:1px solid #e7e9ee}
-        th.r,td.r{text-align:right}
-        td{padding:11px 0;border-bottom:1px solid #eceef1}
-        td.k{font-weight:600}
-        .foot{margin-top:26px;padding-top:12px;border-top:1px solid #e7e9ee;font-size:10.5px;color:#8b909c;display:flex;justify-content:space-between}
-        @media print{body{padding:0}}
-      </style></head><body>
+    const okres = from === to ? from : `${from} … ${to}`;
+    const sumRows = (data.summary || []).filter((s) => show.includes(s.key)).map((s) => `
+      <tr><td class="k">${s.label}</td>
+        <td class="r num">${s.end == null ? "—" : fmtPLNk(s.end)}</td>
+        <td class="r num">${s.start == null ? "—" : fmtPLNk(s.start)}</td>
+        <td class="r num" style="color:${s.delta_pct == null ? "#8b909c" : s.delta_pct >= 0 ? "#16a34a" : "#e5484d"}">
+          ${s.delta_pct == null ? "—" : (s.delta_pct >= 0 ? "▲ " : "▼ ") + Math.abs(s.delta_pct).toFixed(1).replace(".", ",") + "%"}</td></tr>`).join("");
+    const detail = (data.rows || []).map((r) => `
+      <tr><td class="k">${r.label}</td>${cols.map((c) => `<td class="r num">${fmtPLNk(Number(r[c.key]) || 0)}</td>`).join("")}</tr>`).join("");
+    w.document.write(`<!doctype html><html lang="pl"><head><meta charset="utf-8"><title>Raport ${okres}</title><style>
+      *{box-sizing:border-box}
+      body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;color:#171a20;margin:0;padding:42px 46px}
+      .num{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+      .brand{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #171a20;padding-bottom:14px}
+      .co small{display:block;font-weight:500;color:#8b909c;font-size:11px;margin-top:6px}
+      .logo{height:30px;width:auto;display:block}
+      .rt{text-align:right;font-size:11px;color:#4b515c}
+      h2{font-size:19px;margin:22px 0 2px}
+      .sub{color:#8b909c;font-size:12px;margin-bottom:20px}
+      h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#4b515c;margin:24px 0 8px}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#8b909c;font-weight:650;padding:0 6px 8px;border-bottom:1px solid #e7e9ee}
+      th.r,td.r{text-align:right}
+      td{padding:9px 6px;border-bottom:1px solid #eceef1}
+      td.k{font-weight:600}
+      .foot{margin-top:26px;padding-top:12px;border-top:1px solid #e7e9ee;font-size:10.5px;color:#8b909c;display:flex;justify-content:space-between}
+      @media print{body{padding:0}}
+    </style></head><body>
       <div class="brand">
-        <div class="co">i-coucou / PolMeble<small>Raport magazynowy</small></div>
-        <div class="rt">${scopeLabel}<br>${labelOf(month)}</div>
+        <div class="co"><img src="${logoUrl}" alt="i-coucou" class="logo" onerror="this.style.display='none'"><small>Raport magazynowy</small></div>
+        <div class="rt">${scopeLabel}<br>${okres}</div>
       </div>
-      <h2>Raport miesięczny — ${labelOf(month)}</h2>
-      <div class="sub">Stan na koniec miesiąca${data.snapshot_date ? ` (snapshot ${data.snapshot_date})` : ""} · zakres: ${scopeLabel}${compare ? " · porównanie z poprzednim miesiącem" : ""}</div>
-      <div class="hero"><span class="l">Kapitał w towarze</span><span class="r num">${hero?.value == null ? "—" : fmtPLNk(hero.value)}</span></div>
-      <table>
-        <thead><tr><th>KPI</th><th class="r">Wartość</th>${compare ? '<th class="r">Poprzedni mies.</th><th class="r">Zmiana</th>' : ""}</tr></thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>
-      <div class="foot"><span>Wygenerowano automatycznie · Magazyn</span><span>${labelOf(month)} · ${scopeLabel}</span></div>
-      </body></html>`);
+      <h2>Raport zbiorczy magazynu</h2>
+      <div class="sub">Okres: ${okres} · zakres: ${scopeLabel}</div>
+      <h3>Podsumowanie okresu</h3>
+      <table><thead><tr><th>KPI</th><th class="r">Na koniec</th><th class="r">Na początek</th><th class="r">Zmiana</th></tr></thead><tbody>${sumRows}</tbody></table>
+      ${data.rows.length > 1 ? `<h3>Przebieg</h3><table><thead><tr><th>Okres</th>${cols.map((c) => `<th class="r">${c.label}</th>`).join("")}</tr></thead><tbody>${detail}</tbody></table>` : ""}
+      <div class="foot"><span>Wygenerowano automatycznie · Magazyn</span><span>${okres} · ${scopeLabel}</span></div>
+    </body></html>`);
     w.document.close();
     setTimeout(() => w.print(), 300);
   };
 
-  const actionLabel = fmt === "xls" ? "Pobierz Excel" : fmt === "pdf" ? "Drukuj / zapisz PDF" : "Zapisz snapshot teraz";
-  const doAction = fmt === "xls" ? downloadXlsx : fmt === "pdf" ? printPdf : snapshotNow;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Card style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        <div style={{ display: "flex", gap: 18, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={labStyle}>Zakres</span>
+            <div style={segWrap}>{SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}</div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={labStyle}>Grupowanie</span>
+            <div style={segWrap}>
+              <button onClick={() => setGroup("day")} style={segBtn(group === "day")}>Dzień</button>
+              <button onClick={() => setGroup("month")} style={segBtn(group === "month")}>Miesiąc</button>
+            </div>
+          </div>
+          <div style={{ flex: 1 }} />
+          <button onClick={printPdf} style={btnGhost}>PDF</button>
+          <button onClick={getXlsx} style={btnDark}>Excel</button>
+        </div>
+        <div>
+          <span style={labStyle}>Co pokazać w raporcie</span>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8 }}>
+            {(data?.fields || []).map((f) => (
+              <label key={f.key} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, color: "var(--text-mid)", cursor: "pointer" }}>
+                <input type="checkbox" checked={show.includes(f.key)} onChange={() => toggle(f.key)} />
+                {f.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {loading ? <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Ładuję…</Card>
+        : !data?.has_data ? <Empty>Snapshoty zbierane są o 7:05 i 20:05 — historii nie da się odtworzyć wstecz.</Empty>
+        : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))", gap: 12 }}>
+              {data.summary.filter((s) => show.includes(s.key)).map((s) => (
+                <Card key={s.key} style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 7 }}>
+                  <span style={labStyle}>{s.label}</span>
+                  <span className="num" style={{ fontSize: 23, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {s.end == null ? "—" : fmtPLNk(s.end)}
+                  </span>
+                  <span style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11, color: "var(--text-lo)" }}>
+                    <Delta pct={s.delta_pct} />{s.start != null && <span>z {fmtPLNk(s.start)}</span>}
+                  </span>
+                </Card>
+              ))}
+            </div>
+
+            {data.rows.length > 1 && (
+              <Card style={{ padding: "14px 6px 6px" }}>
+                <div style={{ padding: "0 10px 10px", ...labStyle }}>Przebieg ({data.rows.length})</div>
+                <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr><th style={th}>Okres</th>{cols.map((c) => <th key={c.key} style={{ ...th, textAlign: "right" }}>{c.label}</th>)}</tr></thead>
+                    <tbody>
+                      {data.rows.map((r) => (
+                        <tr key={r.label}>
+                          <td style={{ ...td, fontWeight: 600 }}>{r.label}</td>
+                          {cols.map((c) => <td key={c.key} className="num" style={{ ...td, textAlign: "right" }}>{fmtPLNk(Number(r[c.key]) || 0)}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+          </>
+        )}
+    </div>
+  );
+}
+
+// ── Raport per SKU ───────────────────────────────────────────
+
+function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+  const [favOnly, setFavOnly] = useState(false);
+  const [q, setQ] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const [data, setData] = useState<SkuData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setData(await api.get(`/reports/sku?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}`) as SkuData);
+    } catch { setData(null); toast("Nie udało się pobrać raportu", "warning"); }
+    finally { setLoading(false); }
+  }, [from, to, favOnly]);
+  useEffect(() => { load(); }, [load]);
+
+  const rng = !!data?.is_range;
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return (data?.rows || []).filter((r) => !needle || r.sku.toLowerCase().includes(needle) || (r.nazwa || "").toLowerCase().includes(needle));
+  }, [data, q]);
+  const chosen = useMemo(() => (picked.length ? visible.filter((r) => picked.includes(r.sku)) : visible), [visible, picked]);
+
+  const totals = useMemo(() => ({
+    count: chosen.length,
+    units: chosen.reduce((s, r) => s + r.razem, 0),
+    value: chosen.reduce((s, r) => s + r.wartosc_pln, 0),
+    delta: chosen.reduce((s, r) => s + (r.delta_pln || 0), 0),
+  }), [chosen]);
+
+  const toggleSku = (sku: string) => setPicked((p) => (p.includes(sku) ? p.filter((x) => x !== sku) : [...p, sku]));
+  const getXlsx = () =>
+    download(`/reports/sku/xlsx?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`,
+             `raport_sku_${from}${rng ? `_${to}` : ""}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Card style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 220px", minWidth: 180 }}>
+            <span style={labStyle}>Szukaj SKU / nazwy</span>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="np. A2-1cz" style={inputStyle} />
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-mid)", cursor: "pointer", paddingBottom: 8 }}>
+            <input type="checkbox" checked={favOnly} onChange={(e) => { setFavOnly(e.target.checked); setPicked([]); }} />
+            Tylko obserwowane
+          </label>
+          {picked.length > 0 && (
+            <button onClick={() => setPicked([])} style={{ ...btnGhost, padding: "7px 11px", fontSize: 12 }}>
+              Wyczyść wybór ({picked.length})
+            </button>
+          )}
+          <div style={{ flex: 1 }} />
+          <button onClick={getXlsx} style={btnDark}>Excel</button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
+          {picked.length > 0
+            ? `Raport obejmie ${picked.length} zaznaczonych SKU.`
+            : "Bez zaznaczenia raport obejmie wszystkie SKU spełniające filtry. Zaznacz wiersze, by zawęzić."}
+        </div>
+      </Card>
+
+      {loading ? <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Ładuję…</Card>
+        : !data?.has_data ? <Empty>W tym okresie nie ma snapshotów stanów. Zbierane są o 7:05 i 20:05.</Empty>
+        : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+              <Card style={{ padding: "14px 16px" }}>
+                <div style={labStyle}>SKU w raporcie</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6 }}>{totals.count}</div>
+              </Card>
+              <Card style={{ padding: "14px 16px" }}>
+                <div style={labStyle}>Sztuk łącznie</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6 }}>{totals.units.toLocaleString("pl-PL")}</div>
+              </Card>
+              <Card style={{ padding: "14px 16px" }}>
+                <div style={labStyle}>Wartość</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6, color: "var(--accent)", whiteSpace: "nowrap" }}>{fmtPLNk(totals.value)}</div>
+              </Card>
+              {rng && (
+                <Card style={{ padding: "14px 16px" }}>
+                  <div style={labStyle}>Zmiana w okresie</div>
+                  <div style={{ fontSize: 20, fontWeight: 650, marginTop: 6 }}><Delta abs={totals.delta} /></div>
+                </Card>
+              )}
+            </div>
+
+            <Card style={{ padding: "14px 6px 6px" }}>
+              <div style={{ padding: "0 10px 10px", ...labStyle }}>
+                Podgląd ({visible.length}{visible.length !== (data.rows.length) ? ` z ${data.rows.length}` : ""})
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...th, width: 34 }} />
+                      <th style={th}>SKU</th>
+                      <th style={th}>Nazwa</th>
+                      <th style={th}>Firma</th>
+                      <th style={{ ...th, textAlign: "right" }}>Cena</th>
+                      <th style={{ ...th, textAlign: "right" }}>Główny</th>
+                      <th style={{ ...th, textAlign: "right" }}>W drodze</th>
+                      <th style={{ ...th, textAlign: "right" }}>W kontenerze</th>
+                      <th style={{ ...th, textAlign: "right" }}>Razem</th>
+                      <th style={{ ...th, textAlign: "right" }}>Wartość</th>
+                      {rng && <>
+                        <th style={{ ...th, textAlign: "right" }}>Szt. start</th>
+                        <th style={{ ...th, textAlign: "right" }}>Szt. koniec</th>
+                        <th style={{ ...th, textAlign: "right" }}>Zmiana</th>
+                      </>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.map((r) => {
+                      const on = picked.includes(r.sku);
+                      return (
+                        <tr key={r.sku} style={on ? { background: "var(--surface-2)" } : undefined}>
+                          <td style={{ ...td, textAlign: "center" }}>
+                            <input type="checkbox" checked={on} onChange={() => toggleSku(r.sku)} />
+                          </td>
+                          <td className="mono" style={{ ...td, fontWeight: 600 }}>{r.sku}</td>
+                          <td style={{ ...td, whiteSpace: "normal", maxWidth: 260, color: r.nazwa ? "var(--text-mid)" : "var(--text-lo)" }}>{r.nazwa || "—"}</td>
+                          <td style={{ ...td, color: "var(--text-lo)" }}>{(r.firma_slug || "").toUpperCase()}</td>
+                          <td className="num" style={{ ...td, textAlign: "right" }}>{r.cena_jednostkowa.toLocaleString("pl-PL")}</td>
+                          <td className="num" style={{ ...td, textAlign: "right" }}>{r.stan_glowny}</td>
+                          <td className="num" style={{ ...td, textAlign: "right", color: "var(--info)" }}>{r.stan_w_drodze}</td>
+                          <td className="num" style={{ ...td, textAlign: "right", color: "var(--info)" }}>{r.w_kontenerze}</td>
+                          <td className="num" style={{ ...td, textAlign: "right", fontWeight: 600 }}>{r.razem}</td>
+                          <td className="num" style={{ ...td, textAlign: "right", fontWeight: 600 }}>{fmtPLNk(r.wartosc_pln)}</td>
+                          {rng && <>
+                            <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-lo)" }}>{r.razem_start ?? 0}</td>
+                            <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-lo)" }}>{r.razem_end ?? r.razem}</td>
+                            <td style={{ ...td, textAlign: "right" }}><Delta abs={r.delta_pln ?? 0} /></td>
+                          </>}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </>
+        )}
+    </div>
+  );
+}
+
+// ── Ekran główny ─────────────────────────────────────────────
+
+export default function ReportsView() {
+  const user = useUser();
+  const [mode, setMode] = useState<null | "kpi" | "sku">(null);
+  const [from, setFrom] = useState(monthStart());
+  const [to, setTo] = useState(today());
+  const [busy, setBusy] = useState(false);
+
+  const snapshotNow = async () => {
+    setBusy(true);
+    try { await api.post("/reports/snapshot?slot=wieczor", {}); toast("Zapisano snapshot", "ok"); }
+    catch { toast("Nie udało się zapisać snapshotu", "warning"); }
+    finally { setBusy(false); }
+  };
+
+  const box = (id: "kpi" | "sku", title: string, desc: string, icon: React.ReactNode, formats: string) => (
+    <Card style={{ padding: "22px 24px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div onClick={() => setMode(id)} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ color: "var(--accent)" }}>{icon}</span>
+          <span style={{ fontSize: 15, fontWeight: 650 }}>{title}</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: "var(--text-lo)", lineHeight: 1.6 }}>{desc}</div>
+        <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{formats}</div>
+      </div>
+    </Card>
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div>
-        <h1 style={{ fontSize: 22, fontWeight: 650, margin: 0, letterSpacing: "-0.02em" }}>Raporty miesięczne</h1>
-        <p style={{ margin: "4px 0 0", color: "var(--text-lo)", fontSize: 13 }}>
-          Zdjęcie KPI na koniec miesiąca — zbierane automatycznie o 7:05 i 20:05.
-        </p>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 650, margin: 0, letterSpacing: "-0.02em" }}>Raporty</h1>
+          <p style={{ margin: "4px 0 0", color: "var(--text-lo)", fontSize: 13 }}>
+            Dane ze snapshotów zbieranych automatycznie o 7:05 i 20:05.
+          </p>
+        </div>
+        {isAdmin(user) && (
+          <button onClick={snapshotNow} disabled={busy} style={{ ...btnGhost, padding: "6px 11px", fontSize: 11.5, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Zapisuję…" : "Zapisz snapshot teraz"}
+          </button>
+        )}
       </div>
 
-      {/* Sterowanie */}
-      <Card style={{ padding: "14px 16px", display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={labStyle}>Miesiąc</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => setMonth(shiftYm(month, -1))} style={{ width: 26, height: 26, border: "1px solid var(--border)", background: "var(--surface-1)", borderRadius: 7, color: "var(--text-mid)", cursor: "pointer" }}>‹</button>
-            <span style={{ fontWeight: 600, fontSize: 14, minWidth: 118, textAlign: "center" }}>{labelOf(month)}</span>
-            <button onClick={() => setMonth(shiftYm(month, 1))} style={{ width: 26, height: 26, border: "1px solid var(--border)", background: "var(--surface-1)", borderRadius: 7, color: "var(--text-mid)", cursor: "pointer" }}>›</button>
-          </div>
+      {mode === null ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+          {box("kpi", "Raport zbiorczy magazynu", "Wartości magazynu w czasie — wybierz dzień lub zakres, zdecyduj ptaszkami, które pozycje mają się pokazać.", <I.TrendUp size={18} />, "Podgląd · PDF · Excel")}
+          {box("sku", "Raport magazynu per SKU", "Stany i wartość per produkt. Przy zakresie dat pokaże początek, koniec i zmianę. Filtr obserwowanych i ręczny wybór SKU.", <I.Box size={18} />, "Podgląd · Excel")}
         </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={labStyle}>Format</span>
-          <div style={segWrap}>
-            {(["view", "pdf", "xls"] as const).map((f) => (
-              <button key={f} onClick={() => setFmt(f)} style={segBtn(fmt === f)}>
-                {f === "view" ? "Widok" : f === "pdf" ? "PDF" : "Excel"}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={labStyle}>Zakres</span>
-          <div style={segWrap}>
-            {SCOPES.map((s) => (
-              <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>
-            ))}
-          </div>
-        </div>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "var(--text-mid)", marginTop: 16 }}>
-          <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} />
-          Porównaj z poprzednim miesiącem
-        </label>
-
-        <div style={{ flex: 1 }} />
-        <button onClick={doAction} disabled={busy} style={{
-          display: "inline-flex", alignItems: "center", gap: 8, background: "var(--text-hi)", color: "var(--surface-1)",
-          border: "none", padding: "10px 16px", borderRadius: 9, fontSize: 13, fontWeight: 600,
-          cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, marginTop: 16,
-        }}>
-          {busy ? "Pracuję…" : actionLabel}
-        </button>
-      </Card>
-
-      {/* Treść */}
-      {loading ? (
-        <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Ładuję…</Card>
-      ) : !data?.has_data ? (
-        <Card style={{ padding: 40, textAlign: "center" }}>
-          <div style={{ color: "var(--text-mid)", fontWeight: 600, marginBottom: 6 }}>Brak snapshotu dla {labelOf(month)}</div>
-          <div style={{ color: "var(--text-lo)", fontSize: 12.5, lineHeight: 1.6 }}>
-            Dane zbierane są automatycznie o 7:05 i 20:05 — historii nie da się odtworzyć wstecz.<br />
-            Możesz zapisać pierwszy snapshot ręcznie przyciskiem powyżej.
-          </div>
-        </Card>
       ) : (
         <>
-          {/* Kafel Kapitał */}
-          <Card style={{ padding: "18px 20px", display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <div style={labStyle}>Kapitał w towarze</div>
-              <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 2 }}>magazyn + w drodze</div>
-            </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-              {compare && <Delta pct={hero?.delta_pct ?? null} />}
-              <span className="num" style={{ fontSize: 32, fontWeight: 700, color: "var(--accent)", whiteSpace: "nowrap" }}>
-                {hero ? fmtVal(hero) : "—"}
-              </span>
-            </div>
-          </Card>
-
-          {/* Pozostałe KPI */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
-            {rest.map((r) => (
-              <Card key={r.key} style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
-                <span style={labStyle}>{r.label}</span>
-                <span className="num" style={{ fontSize: 24, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{fmtVal(r)}</span>
-                {compare && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-lo)" }}>
-                    <Delta pct={r.delta_pct} />
-                    {r.prev != null && <span>poprz. {fmtPLNk(r.prev)}</span>}
-                  </span>
-                )}
-              </Card>
-            ))}
-          </div>
-
-          {data.snapshot_date && (
-            <div style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
-              Stan na podstawie snapshotu z {data.snapshot_date} (ostatni zapis w miesiącu).
-            </div>
-          )}
+          <button onClick={() => setMode(null)} style={{ ...btnGhost, alignSelf: "flex-start", padding: "6px 11px", fontSize: 12 }}>
+            ‹ Wszystkie raporty
+          </button>
+          {mode === "kpi"
+            ? <KpiReport from={from} to={to} setFrom={setFrom} setTo={setTo} />
+            : <SkuReport from={from} to={to} setFrom={setFrom} setTo={setTo} />}
         </>
       )}
     </div>
