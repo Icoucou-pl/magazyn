@@ -180,6 +180,7 @@ async def _sku_snapshot(db: AsyncSession, day_lo: date, day_hi: date, newest: bo
 async def sku_report(
     date_from: str = Query(..., alias="from"), date_to: str = Query("", alias="to"),
     favorites_only: bool = Query(False), skus: str = Query(""), slot: str = Query(""),
+    scope: str = Query("all"),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports),
 ):
     """Stany per SKU.
@@ -219,6 +220,8 @@ async def sku_report(
             continue
         if picked and key not in picked:
             continue
+        if scope != "all" and (e.get("firma_slug") or "") != scope:
+            continue
         cena = float(e["cena_jednostkowa"] or 0)
         gl, wd, kn = int(e["stan_glowny"] or 0), int(e["stan_w_drodze"] or 0), int(e["w_kontenerze"] or 0)
         razem = gl + wd + kn
@@ -226,30 +229,26 @@ async def sku_report(
             "sku": e["sku"], "nazwa": e.get("nazwa") or "", "firma_slug": e.get("firma_slug") or "",
             "cena_jednostkowa": round(cena, 2),
             "stan_glowny": gl, "stan_w_drodze": wd, "w_kontenerze": kn,
-            "razem": razem, "wartosc_pln": round(razem * cena, 2),
+            "razem": razem,
             "snap_date": e["snap_date"], "snap_slot": e["snap_slot"],
         }
         if has_compare:
             s = start.get(key)
             s_razem = (int(s["stan_glowny"] or 0) + int(s["stan_w_drodze"] or 0) + int(s["w_kontenerze"] or 0)) if s else 0
             s_cena = float(s["cena_jednostkowa"] or 0) if s else cena
-            row.update({
-                "razem_start": s_razem, "razem_end": razem, "delta_szt": razem - s_razem,
-                "wartosc_start": round(s_razem * s_cena, 2),
-                "wartosc_end": round(razem * cena, 2),
-                "delta_pln": round(razem * cena - s_razem * s_cena, 2),
-            })
+            row.update({"razem_start": s_razem, "razem_end": razem, "delta_szt": razem - s_razem})
         rows.append(row)
 
-    rows.sort(key=lambda x: x["wartosc_pln"], reverse=True)
+    rows.sort(key=lambda x: x["razem"], reverse=True)
     totals = {
         "sku_count": len(rows),
         "units": sum(r["razem"] for r in rows),
-        "value_pln": round(sum(r["wartosc_pln"] for r in rows), 2),
+        "units_glowny": sum(r["stan_glowny"] for r in rows),
+        "units_w_drodze": sum(r["stan_w_drodze"] for r in rows),
+        "units_kontener": sum(r["w_kontenerze"] for r in rows),
     }
     if has_compare:
         totals["delta_szt"] = sum(r.get("delta_szt", 0) for r in rows)
-        totals["delta_pln"] = round(sum(r.get("delta_pln", 0.0) for r in rows), 2)
 
     return {"from": a.isoformat(), "to": b.isoformat(), "is_range": has_compare,
             "compare": compare, "has_data": bool(rows), "rows": rows, "totals": totals}
@@ -271,11 +270,12 @@ async def _live_kpi(db: AsyncSession, scope: str) -> dict:
         row[k] = float(mine.get(k) or 0)
     summary = [{"key": k, "label": l, "start": None, "end": float(mine.get(k) or 0),
                 "delta": None, "delta_pct": None} for k, l in KPI_FIELDS]
-    return {"from": "teraz", "to": "teraz", "scope": scope, "group": "live",
-            "live": True, "has_data": True, "rows": [row], "summary": summary, "fields": fields}
+    return {"from": "teraz", "to": "teraz", "scope": scope, "group": "live", "live": True,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "has_data": True, "rows": [row], "summary": summary, "fields": fields}
 
 
-async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str) -> dict:
+async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str, scope: str = "all") -> dict:
     src = await build_stock_rows(db)
     favs = set()
     if favorites_only:
@@ -289,6 +289,8 @@ async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str) -> dict:
         if favorites_only and key not in favs:
             continue
         if picked and key not in picked:
+            continue
+        if scope != "all" and (e.get("firma_slug") or "") != scope:
             continue
         cena = float(e["cena_jednostkowa"] or 0)
         gl, wd, kn = int(e["stan_glowny"] or 0), int(e["stan_w_drodze"] or 0), int(e["w_kontenerze"] or 0)
@@ -313,10 +315,10 @@ async def live_kpi(scope: str = Query("all"), db: AsyncSession = Depends(get_db)
 
 
 @router.get("/reports/live/sku")
-async def live_sku(favorites_only: bool = Query(False), skus: str = Query(""),
+async def live_sku(favorites_only: bool = Query(False), skus: str = Query(""), scope: str = Query("all"),
                    db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports)):
     """Stany per SKU NA TERAZ — liczone na żywo, nic nie zapisuje."""
-    return await _live_sku(db, favorites_only, skus)
+    return await _live_sku(db, favorites_only, skus, scope)
 
 
 # ── eksport XLSX ─────────────────────────────────────────────
@@ -381,14 +383,14 @@ async def kpi_range_xlsx(
 async def sku_xlsx(
     date_from: str = Query("", alias="from"), date_to: str = Query("", alias="to"),
     favorites_only: bool = Query(False), skus: str = Query(""), slot: str = Query(""),
-    live: bool = Query(False),
+    live: bool = Query(False), scope: str = Query("all"),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports),
 ):
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    data = (await _live_sku(db, favorites_only, skus)) if live else (await sku_report(date_from=date_from, date_to=date_to, favorites_only=favorites_only,
-                            skus=skus, slot=slot, db=db, user=user))
+    data = (await _live_sku(db, favorites_only, skus, scope)) if live else (await sku_report(date_from=date_from, date_to=date_to, favorites_only=favorites_only,
+                            skus=skus, slot=slot, scope=scope, db=db, user=user))
     rng = data["is_range"]
 
     wb = Workbook(); ws = wb.active; ws.title = "Magazyn per SKU"
@@ -400,17 +402,16 @@ async def sku_xlsx(
     ws["A2"] = " · ".join(sub) if sub else "wszystkie SKU"
     ws["A2"].font = Font(color="808080")
 
-    head = ["SKU", "Nazwa", "Firma", "Cena jedn.", "Magazyn główny", "W drodze", "W kontenerze", "Razem szt", "Wartość PLN"]
+    head = ["SKU", "Nazwa", "Firma", "Cena jedn.", "Magazyn główny", "W drodze", "W kontenerze", "Razem szt"]
     if rng:
-        head += ["Szt. początek", "Szt. koniec", "Zmiana szt", "Wartość początek", "Wartość koniec", "Zmiana PLN"]
+        head += ["Szt. początek", "Szt. koniec", "Zmiana szt"]
     _style_header(ws, 4, head)
 
     for j, r in enumerate(data["rows"], start=5):
         vals = [r["sku"], r["nazwa"], r["firma_slug"], r["cena_jednostkowa"], r["stan_glowny"],
-                r["stan_w_drodze"], r["w_kontenerze"], r["razem"], r["wartosc_pln"]]
+                r["stan_w_drodze"], r["w_kontenerze"], r["razem"]]
         if rng:
-            vals += [r.get("razem_start"), r.get("razem_end"), r.get("delta_szt"),
-                     r.get("wartosc_start"), r.get("wartosc_end"), r.get("delta_pln")]
+            vals += [r.get("razem_start"), r.get("razem_end"), r.get("delta_szt")]
         for i, v in enumerate(vals, start=1):
             c = ws.cell(row=j, column=i, value=v)
             if isinstance(v, float):
@@ -419,8 +420,8 @@ async def sku_xlsx(
     t = data["totals"]
     last = 5 + len(data["rows"]) + 1
     ws.cell(row=last, column=1, value="RAZEM").font = Font(bold=True)
-    ws.cell(row=last, column=8, value=t["units"]).font = Font(bold=True)
-    c = ws.cell(row=last, column=9, value=t["value_pln"]); c.font = Font(bold=True); c.number_format = "#,##0.00"
+    for col_i, key in ((5, "units_glowny"), (6, "units_w_drodze"), (7, "units_kontener"), (8, "units")):
+        ws.cell(row=last, column=col_i, value=t.get(key, 0)).font = Font(bold=True)
 
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["B"].width = 34
