@@ -19,16 +19,15 @@ import { toast } from "@/components/toast";
 
 type KpiRow = { label: string; snap_date: string; snap_slot: string; [k: string]: string | number };
 type KpiSummary = { key: string; label: string; start: number | null; end: number | null; delta: number | null; delta_pct: number | null };
-type KpiData = { from: string; to: string; scope: string; group: string; live?: boolean; has_data: boolean; rows: KpiRow[]; summary: KpiSummary[]; fields: { key: string; label: string }[] };
+type KpiData = { from: string; to: string; scope: string; group: string; live?: boolean; generated_at?: string; has_data: boolean; rows: KpiRow[]; summary: KpiSummary[]; fields: { key: string; label: string }[] };
 
 type SkuRow = {
   sku: string; nazwa: string; firma_slug: string; cena_jednostkowa: number;
   stan_glowny: number; stan_w_drodze: number; w_kontenerze: number;
-  razem: number; wartosc_pln: number; snap_date: string; snap_slot: string;
+  razem: number; snap_date: string; snap_slot: string;
   razem_start?: number; razem_end?: number; delta_szt?: number;
-  wartosc_start?: number; wartosc_end?: number; delta_pln?: number;
 };
-type SkuData = { from: string; to: string; is_range: boolean; compare?: string; live?: boolean; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
+type SkuData = { from: string; to: string; is_range: boolean; compare?: string; live?: boolean; generated_at?: string; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
 
 const SCOPES = [{ id: "all", label: "Wszyscy" }, { id: "amh", label: "AMH" }, { id: "acti", label: "Acti" }, { id: "veluxa", label: "Veluxa" }];
 const KPI_ALL = ["kapital_pln", "magazyn_pln", "magazyn_w_drodze_pln", "kontenery_pln"];
@@ -73,28 +72,34 @@ function Delta({ pct, abs }: { pct?: number | null; abs?: number | null }) {
 }
 
 /** Fragmentator dat — pojedynczy dzień albo zakres, z szybkimi skrótami. */
-function DateSlicer({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+function DateSlicer({ from, to, setFrom, setTo, minDate }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void; minDate: string }) {
+  const clamp = (d: string) => (minDate && d < minDate ? minDate : d);
   const presets: [string, () => void][] = [
     ["Dziś", () => { setFrom(today()); setTo(today()); }],
-    ["7 dni", () => { setFrom(daysAgo(6)); setTo(today()); }],
-    ["30 dni", () => { setFrom(daysAgo(29)); setTo(today()); }],
-    ["Ten miesiąc", () => { setFrom(monthStart()); setTo(today()); }],
+    ["7 dni", () => { setFrom(clamp(daysAgo(6))); setTo(today()); }],
+    ["30 dni", () => { setFrom(clamp(daysAgo(29))); setTo(today()); }],
+    ["Ten miesiąc", () => { setFrom(clamp(monthStart())); setTo(today()); }],
   ];
   return (
     <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span style={labStyle}>Od</span>
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={inputStyle} />
+        <input type="date" value={from} min={minDate} max={today()} onChange={(e) => setFrom(clamp(e.target.value))} style={inputStyle} />
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span style={labStyle}>Do</span>
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={inputStyle} />
+        <input type="date" value={to} min={minDate} max={today()} onChange={(e) => setTo(clamp(e.target.value))} style={inputStyle} />
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 2 }}>
         {presets.map(([lab, fn]) => (
           <button key={lab} onClick={fn} style={{ ...btnGhost, padding: "6px 10px", fontSize: 12 }}>{lab}</button>
         ))}
       </div>
+      {minDate && (
+        <div style={{ fontSize: 11, color: "var(--text-lo)", width: "100%" }}>
+          Historia zbierana od {minDate} — wcześniejszych danych nie ma (snapshoty startują od pierwszego zapisu).
+        </div>
+      )}
     </div>
   );
 }
@@ -125,9 +130,8 @@ function Empty({ children }: { children: React.ReactNode }) {
 
 // ── Raport zbiorczy ──────────────────────────────────────────
 
-function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+function KpiReport({ from, to, setFrom, setTo, scope, minDate }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void; scope: string; minDate: string }) {
   const [live, setLive] = useState(true);
-  const [scope, setScope] = useState("all");
   const [group, setGroup] = useState<"day" | "month">("day");
   const [show, setShow] = useState<string[]>(KPI_ALL);
   const [data, setData] = useState<KpiData | null>(null);
@@ -158,7 +162,8 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
     if (!w) { toast("Włącz pop-upy dla tej strony, żeby wygenerować PDF", "warning"); return; }
     const logoUrl = `${window.location.origin}/assets/logo-black.png`;
     const scopeLabel = SCOPES.find((s) => s.id === scope)?.label || scope;
-    const okres = live ? "stan na teraz" : (from === to ? from : `${from} … ${to}`);
+    const stamp = data.generated_at || new Date().toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" });
+    const okres = live ? `stan na teraz · ${stamp}` : (from === to ? from : `${from} … ${to}`);
     const sumRows = (data.summary || []).filter((s) => show.includes(s.key)).map((s) => `
       <tr><td class="k">${s.label}</td>
         <td class="r num">${s.end == null ? "—" : fmtPLNk(s.end)}</td>
@@ -204,13 +209,9 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Card style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-        {!live && <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />}
+        {!live && <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} minDate={minDate} />}
         <div style={{ display: "flex", gap: 18, alignItems: "flex-end", flexWrap: "wrap" }}>
           <LiveToggle live={live} setLive={setLive} />
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={labStyle}>Zakres</span>
-            <div style={segWrap}>{SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}</div>
-          </div>
           {!live && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span style={labStyle}>Grupowanie</span>
@@ -281,7 +282,7 @@ function KpiReport({ from, to, setFrom, setTo }: { from: string; to: string; set
 
 // ── Raport per SKU ───────────────────────────────────────────
 
-function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void }) {
+function SkuReport({ from, to, setFrom, setTo, scope, minDate }: { from: string; to: string; setFrom: (v: string) => void; setTo: (v: string) => void; scope: string; minDate: string }) {
   const [live, setLive] = useState(true);
   const [favOnly, setFavOnly] = useState(false);
   const [q, setQ] = useState("");
@@ -292,12 +293,12 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const url = live ? `/reports/live/sku?favorites_only=${favOnly ? 1 : 0}`
-                       : `/reports/sku?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}`;
+      const url = live ? `/reports/live/sku?favorites_only=${favOnly ? 1 : 0}&scope=${scope}`
+                       : `/reports/sku?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}&scope=${scope}`;
       setData(await api.get(url) as SkuData);
     } catch { setData(null); toast("Nie udało się pobrać raportu", "warning"); }
     finally { setLoading(false); }
-  }, [from, to, favOnly, live]);
+  }, [from, to, favOnly, live, scope]);
   useEffect(() => { load(); }, [load]);
 
   const rng = !!data?.is_range;
@@ -310,21 +311,23 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
   const totals = useMemo(() => ({
     count: chosen.length,
     units: chosen.reduce((s, r) => s + r.razem, 0),
-    value: chosen.reduce((s, r) => s + r.wartosc_pln, 0),
-    delta: chosen.reduce((s, r) => s + (r.delta_pln || 0), 0),
+    glowny: chosen.reduce((s, r) => s + r.stan_glowny, 0),
+    wDrodze: chosen.reduce((s, r) => s + r.stan_w_drodze, 0),
+    kontener: chosen.reduce((s, r) => s + r.w_kontenerze, 0),
+    delta: chosen.reduce((s, r) => s + (r.delta_szt || 0), 0),
   }), [chosen]);
 
   const toggleSku = (sku: string) => setPicked((p) => (p.includes(sku) ? p.filter((x) => x !== sku) : [...p, sku]));
   const getXlsx = () =>
     download(live
-        ? `/reports/sku/xlsx?live=1&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`
-        : `/reports/sku/xlsx?from=${from}&to=${to}&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`,
+        ? `/reports/sku/xlsx?live=1&scope=${scope}&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`
+        : `/reports/sku/xlsx?from=${from}&to=${to}&scope=${scope}&favorites_only=${favOnly ? 1 : 0}&skus=${encodeURIComponent(picked.join(","))}`,
              live ? "raport_sku_teraz.xlsx" : `raport_sku_${from}${rng ? `_${to}` : ""}.xlsx`).catch(() => toast("Nie udało się pobrać Excela", "warning"));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Card style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-        {!live && <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} />}
+        {!live && <DateSlicer from={from} to={to} setFrom={setFrom} setTo={setTo} minDate={minDate} />}
         <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
           <LiveToggle live={live} setLive={setLive} />
           <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 220px", minWidth: 180 }}>
@@ -364,13 +367,23 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
                 <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6 }}>{totals.units.toLocaleString("pl-PL")}</div>
               </Card>
               <Card style={{ padding: "14px 16px" }}>
-                <div style={labStyle}>Wartość</div>
-                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6, color: "var(--accent)", whiteSpace: "nowrap" }}>{fmtPLNk(totals.value)}</div>
+                <div style={labStyle}>Szt. magazyn główny</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6 }}>{totals.glowny.toLocaleString("pl-PL")}</div>
+              </Card>
+              <Card style={{ padding: "14px 16px" }}>
+                <div style={labStyle}>Szt. magazyn w drodze</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6, color: "var(--info)" }}>{totals.wDrodze.toLocaleString("pl-PL")}</div>
+              </Card>
+              <Card style={{ padding: "14px 16px" }}>
+                <div style={labStyle}>Szt. kontenery w drodze</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6, color: "var(--info)" }}>{totals.kontener.toLocaleString("pl-PL")}</div>
               </Card>
               {rng && (
                 <Card style={{ padding: "14px 16px" }}>
                   <div style={labStyle}>{data.compare === "intraday" ? "Zmiana w ciągu dnia" : "Zmiana w okresie"}</div>
-                  <div style={{ fontSize: 20, fontWeight: 650, marginTop: 6 }}><Delta abs={totals.delta} /></div>
+                  <div className="num" style={{ fontSize: 22, fontWeight: 650, marginTop: 6, color: totals.delta >= 0 ? "var(--ok)" : "var(--critical)" }}>
+                    {totals.delta >= 0 ? "▲" : "▼"} {Math.abs(totals.delta).toLocaleString("pl-PL")} szt
+                  </div>
                 </Card>
               )}
             </div>
@@ -392,7 +405,6 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
                       <th style={{ ...th, textAlign: "right" }}>W drodze</th>
                       <th style={{ ...th, textAlign: "right" }}>W kontenerze</th>
                       <th style={{ ...th, textAlign: "right" }}>Razem</th>
-                      <th style={{ ...th, textAlign: "right" }}>Wartość</th>
                       {rng && <>
                         <th style={{ ...th, textAlign: "right" }}>{data.compare === "intraday" ? "Szt. rano" : "Szt. start"}</th>
                         <th style={{ ...th, textAlign: "right" }}>{data.compare === "intraday" ? "Szt. wieczór" : "Szt. koniec"}</th>
@@ -416,11 +428,12 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
                           <td className="num" style={{ ...td, textAlign: "right", color: "var(--info)" }}>{r.stan_w_drodze}</td>
                           <td className="num" style={{ ...td, textAlign: "right", color: "var(--info)" }}>{r.w_kontenerze}</td>
                           <td className="num" style={{ ...td, textAlign: "right", fontWeight: 600 }}>{r.razem}</td>
-                          <td className="num" style={{ ...td, textAlign: "right", fontWeight: 600 }}>{fmtPLNk(r.wartosc_pln)}</td>
                           {rng && <>
                             <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-lo)" }}>{r.razem_start ?? 0}</td>
                             <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-lo)" }}>{r.razem_end ?? r.razem}</td>
-                            <td style={{ ...td, textAlign: "right" }}><Delta abs={r.delta_pln ?? 0} /></td>
+                            <td className="num" style={{ ...td, textAlign: "right", fontWeight: 600, color: (r.delta_szt ?? 0) >= 0 ? "var(--ok)" : "var(--critical)" }}>
+                              {(r.delta_szt ?? 0) >= 0 ? "+" : ""}{r.delta_szt ?? 0}
+                            </td>
                           </>}
                         </tr>
                       );
@@ -439,8 +452,21 @@ function SkuReport({ from, to, setFrom, setTo }: { from: string; to: string; set
 
 export default function ReportsView() {
   const [mode, setMode] = useState<null | "kpi" | "sku">(null);
-  const [from, setFrom] = useState(monthStart());
+  const [scope, setScope] = useState("all");          // fragmentator firm — wspólny dla wszystkich raportów
+  const [minDate, setMinDate] = useState("");         // pierwszy dzień, z którego mamy snapshot
+  const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());
+
+  // Blokada dat wstecz: nie da się wybrać okresu sprzed pierwszego snapshotu.
+  useEffect(() => {
+    api.get("/reports/available")
+      .then((d: { first: string | null }) => {
+        const first = d?.first || today();
+        setMinDate(first);
+        setFrom((f) => (f < first ? first : f));
+      })
+      .catch(() => setMinDate(today()));
+  }, []);
 
   const box = (id: "kpi" | "sku", title: string, desc: string, icon: React.ReactNode, formats: string) => (
     <Card style={{ padding: "22px 24px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -471,6 +497,14 @@ export default function ReportsView() {
         </div>
       </div>
 
+      <Card style={{ padding: "12px 16px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={labStyle}>Firma</span>
+        <div style={segWrap}>
+          {SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}
+        </div>
+        <span style={{ fontSize: 11, color: "var(--text-lo)" }}>dotyczy obu raportów</span>
+      </Card>
+
       {mode === null ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
           {box("kpi", "Raport zbiorczy magazynu", "Wartości magazynu w czasie — wybierz dzień lub zakres, zdecyduj ptaszkami, które pozycje mają się pokazać.", <I.TrendUp size={18} />, "Podgląd · PDF · Excel")}
@@ -482,8 +516,8 @@ export default function ReportsView() {
             ‹ Wszystkie raporty
           </button>
           {mode === "kpi"
-            ? <KpiReport from={from} to={to} setFrom={setFrom} setTo={setTo} />
-            : <SkuReport from={from} to={to} setFrom={setFrom} setTo={setTo} />}
+            ? <KpiReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />
+            : <SkuReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />}
         </>
       )}
     </div>
