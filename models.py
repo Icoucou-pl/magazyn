@@ -372,6 +372,10 @@ class ContainerLotOut(BaseModel):
     total_units: int = 0
     total_cbm: float = 0
     total_value: float = 0
+    # Płatności przeliczone na PLN (kurs NBP z dnia poprzedzającego wpłatę).
+    zaplacono_pln: float = 0.0    # faktycznie zapłacone (zaliczki z datą + balance z zaplacono_data)
+    pozostalo_pln: float = 0.0    # wartość towaru − zapłacone, nie schodzi poniżej 0
+    brak_kursu: int = 0           # ile wpłat nie dało się przeliczyć (brak notowania NBP)
 
 
 class AttachmentOut(BaseModel):
@@ -442,6 +446,10 @@ class ContainerOut(BaseModel):
     subiekt_wbite_at: Optional[date] = None
     delivered_date: Optional[date] = None            # ręczna, potwierdzona data dostawy (jeśli jest)
     expected_delivery_date: Optional[date] = None    # „u nas" — umówiona data odbioru (przed potwierdzeniem)
+    # Płatności przeliczone na PLN (kurs NBP z dnia poprzedzającego wpłatę).
+    zaplacono_pln: float = 0.0    # faktycznie zapłacone (zaliczki z datą + balance z zaplacono_data)
+    pozostalo_pln: float = 0.0    # wartość towaru − zapłacone, nie schodzi poniżej 0
+    brak_kursu: int = 0           # ile wpłat nie dało się przeliczyć (brak notowania NBP)
     warehouse_delivery_date: Optional[date] = None   # KPI: delivered_date → expected_delivery_date → ETA + odprawa
     notes: Optional[str]
     items: List[ContainerItemOut]
