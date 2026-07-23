@@ -292,8 +292,11 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     const redRel = red.filter((l) => carries(l.firma_breakdown));
     const redWhole = redRel.length > 0 && redRel.length === relevant.length;
     const looseRed = (redRel.length > 0 && redRel.length < relevant.length) ? redRel.length : 0;
-    const greenWhole = green.length === lots.length;
-    const looseGreen = (red.length > 0 && green.length > 0) ? green.length : 0;
+    // Zielona strona liczona tak samo jak czerwona — tylko loty wiozące towar tej firmy.
+    // Wcześniej ignorowała `shop`, przez co licznik kontenerów był globalny.
+    const greenRel = green.filter((l) => carries(l.firma_breakdown));
+    const greenWhole = greenRel.length > 0 && greenRel.length === relevant.length;
+    const looseGreen = (greenRel.length > 0 && greenRel.length < relevant.length) ? greenRel.length : 0;
     return { redValue, redWhole, looseRed, greenWhole, looseGreen, redRemaining, greenPaid, missingRates };
   }
   const isRed = !c.subiekt_wbite;
@@ -303,7 +306,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     redValue: isRed ? redValOf(c.firma_breakdown, c.total_value || 0) : 0,
     redWhole: isRed && rel,
     looseRed: 0,
-    greenWhole: !isRed,
+    greenWhole: !isRed && rel,
     looseGreen: 0,
     redRemaining: isRed ? (c.pozostalo_pln ?? 0) * ratio : 0,
     greenPaid: isRed ? 0 : (c.zaplacono_pln ?? 0) * ratio,
@@ -943,12 +946,17 @@ export default function Dashboard({
       const s = splitSubiekt(c, shop);
       redValue += s.redValue;
       if (s.redWhole) redContainers += 1;
-      if (s.greenWhole) greenContainers += 1;
       redLooseLots += s.looseRed;
-      greenLooseLots += s.looseGreen;
       redRemaining += s.redRemaining;
-      greenPaid += s.greenPaid;
       missingRates += s.missingRates;
+
+      // „Magazyn w drodze" bierze wartość z Subiektu, a Subiekt to wyłącznie AMH.
+      // Licznik kontenerów i kwota zapłacona muszą więc iść tym samym zakresem,
+      // niezależnie od wybranej zakładki — inaczej wartość jest AMH-owa, a liczba globalna.
+      const a = splitSubiekt(c, "amh");
+      if (a.greenWhole) greenContainers += 1;
+      greenLooseLots += a.looseGreen;
+      greenPaid += a.greenPaid;
     }
     return {
       deliveries,
