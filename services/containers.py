@@ -171,6 +171,77 @@ async def fetch_advances_bulk(db: AsyncSession, container_ids: List[int], lot_id
     return by_container, by_lot
 
 
+async def fetch_payments_pln(db: AsyncSession, container_ids: List[int], lot_ids: List[int]):
+    """Faktycznie zapłacone kwoty w PLN — per kontener i per lot.
+
+    Liczymy TYLKO wpłaty, które naprawdę wyszły: zaliczka musi mieć wypełnioną datę,
+    balance — `zaplacono_data`, i obie nie mogą być z przyszłości (rata wpisana z
+    wyprzedzeniem to plan, nie płatność).
+
+    Przewalutowanie: średni kurs NBP z ostatniego dnia notowań POPRZEDZAJĄCEGO wpłatę
+    (`rate_date < data`), zgodnie z regułą podatkową — LATERAL sam przeskakuje weekendy
+    i święta. Brak kursu nie zeruje wpłaty po cichu: wiersz nie wchodzi do sumy (SUM
+    pomija NULL-e), ale ląduje w liczniku `brak_kursu`, który front pokazuje jako
+    ostrzeżenie z możliwością dociągnięcia kursów.
+
+    Zwraca (by_container, by_lot): {id: {"pln": float, "brak_kursu": int}}.
+    """
+    by_container: dict = {}
+    by_lot: dict = {}
+    ids_c = list(container_ids or [])
+    ids_l = list(lot_ids or [])
+    if not ids_c and not ids_l:
+        return by_container, by_lot
+
+    r = await db.execute(text(f"""
+        WITH pay AS (
+            SELECT a.container_id, a.lot_id, a.kwota AS kwota, UPPER(a.waluta) AS waluta, a.data AS data
+            FROM {settings.TABLE_CONTAINER_ADVANCES} a
+            WHERE (a.container_id = ANY(:cids) OR a.lot_id = ANY(:lids))
+              AND a.kwota IS NOT NULL AND a.data IS NOT NULL AND a.data <= CURRENT_DATE
+            UNION ALL
+            SELECT c.id, NULL, c.balance_kwota, UPPER(c.balance_waluta), c.zaplacono_data
+            FROM {settings.TABLE_CONTAINERS} c
+            WHERE c.id = ANY(:cids)
+              AND c.balance_kwota IS NOT NULL AND c.zaplacono_data IS NOT NULL
+              AND c.zaplacono_data <= CURRENT_DATE
+            UNION ALL
+            SELECT NULL, l.id, l.balance_kwota, UPPER(l.balance_waluta), l.zaplacono_data
+            FROM {settings.TABLE_CONTAINER_LOTS} l
+            WHERE l.id = ANY(:lids)
+              AND l.balance_kwota IS NOT NULL AND l.zaplacono_data IS NOT NULL
+              AND l.zaplacono_data <= CURRENT_DATE
+        )
+        SELECT p.container_id, p.lot_id,
+               COALESCE(SUM(CASE WHEN COALESCE(p.waluta, 'PLN') = 'PLN'
+                                 THEN p.kwota ELSE p.kwota * fx.mid END), 0) AS pln,
+               COUNT(*) FILTER (WHERE COALESCE(p.waluta, 'PLN') <> 'PLN' AND fx.mid IS NULL) AS brak_kursu
+        FROM pay p
+        LEFT JOIN LATERAL (
+            SELECT r.mid
+            FROM {settings.TABLE_FX_RATES} r
+            WHERE r.currency = p.waluta AND r.rate_date < p.data
+            ORDER BY r.rate_date DESC
+            LIMIT 1
+        ) fx ON TRUE
+        GROUP BY p.container_id, p.lot_id
+    """), {"cids": (ids_c or [0]), "lids": (ids_l or [0])})
+
+    for row in r:
+        d = dict(row._mapping)
+        entry = {"pln": round(float(d["pln"] or 0), 2), "brak_kursu": int(d["brak_kursu"] or 0)}
+        if d["container_id"] is not None:
+            tgt = by_container.setdefault(d["container_id"], {"pln": 0.0, "brak_kursu": 0})
+        elif d["lot_id"] is not None:
+            tgt = by_lot.setdefault(d["lot_id"], {"pln": 0.0, "brak_kursu": 0})
+        else:
+            continue
+        tgt["pln"] = round(tgt["pln"] + entry["pln"], 2)
+        tgt["brak_kursu"] += entry["brak_kursu"]
+
+    return by_container, by_lot
+
+
 async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals_by_cid: dict) -> dict:
     """Loty dla wielu kontenerów jednym zapytaniem (zamiast N× fetch_lots).
     Zwraca {container_id: [ContainerLotOut,...]}; kolejność w obrębie kontenera jak wcześniej (position ASC, id ASC)."""
@@ -363,10 +434,27 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     lots_by_cid = await fetch_lots_bulk(db, cids, lot_totals_by_cid)
     # Zaliczki na poziomie kontenera (wariant nieskonsolidowany) — jedno zapytanie.
     adv_by_container, _ = await fetch_advances_bulk(db, cids, [])
+    # Faktycznie zapłacone (PLN) — jedno zapytanie na kontenery i wszystkie ich loty.
+    all_lot_ids = [lot.id for lots in lots_by_cid.values() for lot in lots]
+    paid_by_cid, paid_by_lot = await fetch_payments_pln(db, cids, all_lot_ids)
     for cid in containers_dict:
         containers_dict[cid]["attachments"] = attachments_by_cid.get(cid, [])
         containers_dict[cid]["lots"] = lots_by_cid.get(cid, [])
         containers_dict[cid]["advances"] = adv_by_container.get(cid, [])
+
+        # Kontener zbiera własne wpłaty + wpłaty swoich lotów (skonsolidowany płaci per lot).
+        own = paid_by_cid.get(cid, {"pln": 0.0, "brak_kursu": 0})
+        paid = own["pln"]
+        missing = own["brak_kursu"]
+        for lot in containers_dict[cid]["lots"]:
+            lp = paid_by_lot.get(lot.id, {"pln": 0.0, "brak_kursu": 0})
+            lot.zaplacono_pln = lp["pln"]
+            lot.pozostalo_pln = round(max((lot.total_value or 0.0) - lp["pln"], 0.0), 2)
+            lot.brak_kursu = lp["brak_kursu"]
+            paid += lp["pln"]
+            missing += lp["brak_kursu"]
+        containers_dict[cid]["zaplacono_pln"] = round(paid, 2)
+        containers_dict[cid]["brak_kursu"] = missing
         # doklej rozbicie firm per lot (z ContainerFirmaShare-friendly dict-ów)
         lot_firma = containers_dict[cid]["_lot_firma"]
         for lot in containers_dict[cid]["lots"]:
@@ -380,6 +468,11 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         c.pop("_lot_firma", None)
         c["total_cbm"] = round(c["total_cbm"], 3)
         c["total_value"] = round(c["total_value"], 2)
+        # Ile jeszcze wypłynie za ten kontener. Podstawą jest wartość towaru w PLN
+        # (ilość × cena jednostkowa), która ma już w sobie transport, cło i odprawę —
+        # więc różnica to realna reszta do zapłaty, nie tylko dopłata do dostawcy.
+        # Clamp na zerze: nadpłata (np. korekta ceny po fakcie) nie może zejść poniżej 0.
+        c["pozostalo_pln"] = round(max(c["total_value"] - c.get("zaplacono_pln", 0.0), 0.0), 2)
         for fb in c["firma_breakdown"].values():
             fb["value"] = round(fb["value"], 2)
         # opłata dla spedycji = cały rachunek spedytora − sam koszt transportu (fracht)
