@@ -167,12 +167,16 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
         if d.get("nazwa"):
             name_by_sku[key] = d["nazwa"]
 
-    # 2) Acti/Veluxa — stany z Sellasista (tabela trzyma wyłącznie sklepy nie-AMH)
+    # 2) Acti/Veluxa — stany z Sellasista (tabela trzyma wyłącznie sklepy nie-AMH).
+    # Nazwy biorą się z name_by_sku (subiekt_dwa_magazyny). Był tu LEFT JOIN do
+    # `sellasist_skus`, ale to nie jest tabela — to CTE żyjące wyłącznie wewnątrz
+    # SALES_QUERY w sql.py. Poza tamtym zapytaniem nie istnieje, więc całe
+    # build_stock_rows wywalało się na UndefinedTableError: padał live i, co gorsza,
+    # zapis snapshotów (pętla łapała wyjątek i tylko go drukowała).
     r = await db.execute(text(f"""
         SELECT MAX(es.symbol) AS sku, LOWER(TRIM(es.shop)) AS shop,
-               SUM(es.quantity) AS qty, MAX(sk.nazwa) AS nazwa
+               SUM(es.quantity) AS qty
         FROM {settings.TABLE_EXTERNAL_STOCK} es
-        LEFT JOIN sellasist_skus sk ON sk.sku_canon = es.sku_canon
         WHERE es.symbol IS NOT NULL AND TRIM(es.symbol) <> ''
         GROUP BY es.sku_canon, LOWER(TRIM(es.shop))
     """))
