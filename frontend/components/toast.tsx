@@ -56,7 +56,9 @@ export function ToastHost() {
   return (
     <div style={{
       position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
-      zIndex: 200, display: "flex", flexDirection: "column", gap: 8, alignItems: "center",
+      // Musi być NAD modalami: modalBackdrop ma 1000, asystent 1001. Przy 200 toasty
+      // wpadały pod tło otwartego okna i były niewidoczne (błędy zapisu ginęły w ciszy).
+      zIndex: 2000, display: "flex", flexDirection: "column", gap: 8, alignItems: "center",
       pointerEvents: "none", width: "min(440px, calc(100vw - 32px))",
     }}>
       {items.map((t) => {
