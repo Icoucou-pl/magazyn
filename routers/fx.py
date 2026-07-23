@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models import CurrentUser
 from security import require_admin
-from services.fx import backfill_history, fx_status, topup_recent
+from services.fx import backfill_history, fx_status, refill_payment_rates, topup_recent
 
 router = APIRouter(prefix="/api/admin/fx", tags=["fx"])
 
@@ -25,6 +25,12 @@ async def get_fx_status(db: AsyncSession = Depends(get_db), admin: CurrentUser =
 async def post_fx_topup(db: AsyncSession = Depends(get_db), admin: CurrentUser = Depends(require_admin)):
     """Dociąga kursy z ostatnich ~14 dni (idempotentnie)."""
     return await topup_recent(db)
+
+
+@router.post("/refill")
+async def post_fx_refill(db: AsyncSession = Depends(get_db), admin: CurrentUser = Depends(require_admin)):
+    """Dociąga kursy brakujące pod konkretne daty wpłat za kontenery (wąsko, idempotentnie)."""
+    return await refill_payment_rates(db)
 
 
 @router.post("/backfill")
