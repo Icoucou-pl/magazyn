@@ -309,11 +309,19 @@ export default function ContainerFormModal({
     if (validItems.length === 0) { toast("Dodaj co najmniej jedną pozycję (SKU + ilość)", "warning"); return; }
 
     if (isConsolidated) {
-      const cleanLots = lots.filter((l) => l.manufacturer_id || l.order_number.trim());
-      if (cleanLots.length < 1) { toast("Skonsolidowany kontener wymaga przynajmniej jednego lotu (dostawca lub PO)", "warning"); return; }
-      if (cleanLots.length !== lots.length) { toast("Uzupełnij dostawcę lub PO w każdym locie (albo usuń pusty lot)", "warning"); return; }
+      if (lots.length < 1) { toast("Skonsolidowany kontener wymaga przynajmniej jednego lotu", "warning"); return; }
+      // W skonsolidowanym dostawca i PO żyją na locie, nie na kontenerze — wymagamy obu w każdym.
+      const brakDostawcy = lots.findIndex((l) => !l.manufacturer_id);
+      if (brakDostawcy >= 0) { toast(`Wybierz dostawcę w locie #${brakDostawcy + 1}`, "warning"); return; }
+      const brakPo = lots.findIndex((l) => !l.order_number.trim());
+      if (brakPo >= 0) { toast(`Podaj nr zamówienia (PO) w locie #${brakPo + 1}`, "warning"); return; }
       const unassigned = validItems.filter((i) => i.lotRef === "");
       if (unassigned.length > 0) { toast(`Przypisz lot do każdej pozycji (bez przypisania: ${unassigned.length})`, "warning"); return; }
+    } else {
+      // Numer zamówienia dostajemy od razu przy zamówieniu, więc jest wymagany
+      // (w odróżnieniu od numeru kontenera, który znamy dopiero po produkcji).
+      if (!manufacturerId) { toast("Wybierz producenta (dostawcę)", "warning"); return; }
+      if (!orderNumber.trim()) { toast("Podaj nr zamówienia (PO)", "warning"); return; }
     }
 
     const numOrNull = (s: string) => (s.trim() === "" ? null : Number(s));
@@ -465,7 +473,7 @@ export default function ContainerFormModal({
                   </span>
                 </Field>
                 {!isConsolidated && (
-                  <Field label="Nr zamówienia (PO)">
+                  <Field label="Nr zamówienia (PO)" required>
                     <input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} placeholder="np. PO-2026-001" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                   </Field>
                 )}
@@ -476,7 +484,7 @@ export default function ContainerFormModal({
                   </select>
                 </Field>
                 {!isConsolidated && (
-                  <Field label="Producent (dostawca)">
+                  <Field label="Producent (dostawca)" required>
                     <select value={manufacturerId} onChange={(e) => setManufacturerId(e.target.value)} disabled={!showEdit} style={inputStyle}>
                       <option value="">— wybierz —</option>
                       {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -517,10 +525,10 @@ export default function ContainerFormModal({
                         <div style={{ display: "grid", gridTemplateColumns: "34px minmax(0, 1fr) 150px 30px", gap: 6, alignItems: "center" }}>
                           <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", textAlign: "center" }}>#{idx + 1}</span>
                           <select value={lot.manufacturer_id} onChange={(e) => updateLot(idx, "manufacturer_id", e.target.value)} disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }}>
-                            <option value="">— dostawca —</option>
+                            <option value="">— dostawca * —</option>
                             {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                           </select>
-                          <input value={lot.order_number} onChange={(e) => updateLot(idx, "order_number", e.target.value)} placeholder="Nr PO" disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)" }} />
+                          <input value={lot.order_number} onChange={(e) => updateLot(idx, "order_number", e.target.value)} placeholder="Nr PO *" disabled={!showEdit} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)" }} />
                           <button onClick={() => removeLot(idx)} disabled={!showEdit} title="Usuń lot" style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, height: 32 }}><I.Close size={12} /></button>
                         </div>
                         {showFin && (
