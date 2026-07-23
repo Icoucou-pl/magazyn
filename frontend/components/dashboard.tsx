@@ -365,11 +365,10 @@ function KpiGrid({
   // Magazyn w drodze jest AMH-owy (drugi magazyn subiektowy). Przy zakładce Acti/Veluxa → 0.
   const isAmhScope = shop === "" || shop === "amh";
   const magValue = isAmhScope ? mag.value : 0;
+  const magValueLabel = isAmhScope ? fmtPLNk(magValue) : "—";
   // „Magazyn w drodze" pokazuje wartość towaru z Subiektu, ale zapłacone jest z niej
   // zwykle 30–40% (reszta to zaliczki jeszcze niewpłacone) — stąd druga liczba.
-  const magSub = isAmhScope
-    ? `${countLabel(mag.containers, mag.looseLots)} · zapłacone ${fmtPLNk(mag.paid)}`
-    : "tylko AMH";
+  const magSub = `${countLabel(mag.containers, mag.looseLots)} · zapłacone ${fmtPLNk(mag.paid)}`;
   // „Kontenery w drodze" pokazuje teraz ile JESZCZE zapłacimy, a nie wartość towaru.
   const kontSub = `${countLabel(kont.containers, kont.looseLots)} · z ${fmtPLNk(kont.value)}`;
   const kapital = stockValue + magValue;   // kapitał w towarze: u nas + opłacone/wbite w drodze
@@ -388,7 +387,7 @@ function KpiGrid({
         <KpiCard label="Wartość magazynu" value="•••••" sub="ukryte — brak uprawnień" tone="neutral" icon={<I.Box size={14} />} />
       )}
       {showFin ? (
-        <KpiCard label="Magazyn w drodze" value={fmtPLNk(magValue)} sub={magSub} tone="info" icon={<I.Container size={14} />} />
+        <KpiCard label="Magazyn w drodze" value={magValueLabel} sub={magSub} tone="info" icon={<I.Container size={14} />} />
       ) : (
         <KpiCard label="Magazyn w drodze" value="•••••" sub={magSub} tone="info" icon={<I.Container size={14} />} />
       )}
@@ -957,13 +956,13 @@ export default function Dashboard({
       redRemaining += s.redRemaining;
       missingRates += s.missingRates;
 
-      // „Magazyn w drodze" bierze wartość z Subiektu, a Subiekt to wyłącznie AMH.
-      // Licznik kontenerów i kwota zapłacona muszą więc iść tym samym zakresem,
-      // niezależnie od wybranej zakładki — inaczej wartość jest AMH-owa, a liczba globalna.
-      const a = splitSubiekt(c, "amh");
-      if (a.greenWhole) greenContainers += 1;
-      greenLooseLots += a.looseGreen;
-      greenPaid += a.greenPaid;
+      // Licznik kontenerów i kwota zapłacona idą zakresem wybranej zakładki: na „Wszyscy"
+      // wszystkie firmy, na zakładce firmowej tylko jej towar. Wartość karty zostaje
+      // AMH-owa (jedyne źródło to Subiekt), bo zaliczka za kontener Veluxy realnie
+      // wypłynęła z konta, nawet jeśli w Subiekcie nie ma po niej śladu.
+      if (s.greenWhole) greenContainers += 1;
+      greenLooseLots += s.looseGreen;
+      greenPaid += s.greenPaid;
     }
     return {
       deliveries,
