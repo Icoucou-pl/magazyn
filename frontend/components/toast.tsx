@@ -9,6 +9,7 @@
 // ============================================================
 
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { I } from "./ui";
 
 // ── Toast bus (bez kontekstu) ────────────────────────────────
@@ -39,6 +40,11 @@ const TOAST_META: Record<ToastKind, { color: string; icon: (s: number) => React.
 
 export function ToastHost() {
   const [items, setItems] = useState<ToastItem[]>([]);
+  // Modale renderują się przez createPortal do <body>. Gdyby ToastHost siedział głębiej
+  // w drzewie, jego zIndex mógłby zostać uwięziony w cudzym kontekście układania
+  // (wystarczy rodzic z transform/filter). Portal do body + zIndex 2000 to zamyka.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   useEffect(() => {
     const onToast = (t: ToastItem) => {
       setItems((prev) => [...prev, t]);
@@ -53,7 +59,9 @@ export function ToastHost() {
 
   const dismiss = (id: number) => setItems((prev) => prev.filter((x) => x.id !== id));
 
-  return (
+  if (!mounted || typeof document === "undefined") return null;
+
+  return createPortal(
     <div style={{
       position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
       // Musi być NAD modalami: modalBackdrop ma 1000, asystent 1001. Przy 200 toasty
@@ -94,7 +102,8 @@ export function ToastHost() {
         @keyframes toastIn { from { opacity: 0; transform: translateY(12px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .toast-in { animation: toastIn 0.26s cubic-bezier(0.34,1.56,0.64,1) both; }
       `}</style>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

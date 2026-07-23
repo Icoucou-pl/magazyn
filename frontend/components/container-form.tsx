@@ -110,6 +110,10 @@ export default function ContainerFormModal({
     Object.fromEntries((initial?.lots || []).map((l) => [l.id, !!l.subiekt_wbite])),
   );
   const [subiektBusy, setSubiektBusy] = useState(false);
+  // Błąd walidacji zostaje na ekranie przy przycisku. Toast tu nie wystarcza: formularz
+  // jest długi, a komunikat znika po 3 sekundach — łatwo go przegapić i wyjść z wrażeniem,
+  // że „przycisk nie działa".
+  const [formError, setFormError] = useState("");
 
   // Przełącznik „dodano do Subiektu" wprost z okna edycji — bez wychodzenia na listę.
   // Zapis idzie osobnym endpointem od razu (jak na karcie), więc NIE przeładowujemy tu
@@ -304,24 +308,26 @@ export default function ContainerFormModal({
 
   const save = async () => {
     if (busy) return;
+    const fail = (msg: string) => { setFormError(msg); toast(msg, "warning"); };
+    setFormError("");
 
     const validItems = items.filter((i) => i.sku && (parseInt(i.quantity, 10) || 0) > 0);
-    if (validItems.length === 0) { toast("Dodaj co najmniej jedną pozycję (SKU + ilość)", "warning"); return; }
+    if (validItems.length === 0) { fail("Dodaj co najmniej jedną pozycję (SKU + ilość)"); return; }
 
     if (isConsolidated) {
-      if (lots.length < 1) { toast("Skonsolidowany kontener wymaga przynajmniej jednego lotu", "warning"); return; }
+      if (lots.length < 1) { fail("Skonsolidowany kontener wymaga przynajmniej jednego lotu"); return; }
       // W skonsolidowanym dostawca i PO żyją na locie, nie na kontenerze — wymagamy obu w każdym.
       const brakDostawcy = lots.findIndex((l) => !l.manufacturer_id);
-      if (brakDostawcy >= 0) { toast(`Wybierz dostawcę w locie #${brakDostawcy + 1}`, "warning"); return; }
+      if (brakDostawcy >= 0) { fail(`Wybierz dostawcę w locie #${brakDostawcy + 1}`); return; }
       const brakPo = lots.findIndex((l) => !l.order_number.trim());
-      if (brakPo >= 0) { toast(`Podaj nr zamówienia (PO) w locie #${brakPo + 1}`, "warning"); return; }
+      if (brakPo >= 0) { fail(`Podaj nr zamówienia (PO) w locie #${brakPo + 1}`); return; }
       const unassigned = validItems.filter((i) => i.lotRef === "");
-      if (unassigned.length > 0) { toast(`Przypisz lot do każdej pozycji (bez przypisania: ${unassigned.length})`, "warning"); return; }
+      if (unassigned.length > 0) { fail(`Przypisz lot do każdej pozycji (bez przypisania: ${unassigned.length})`); return; }
     } else {
       // Numer zamówienia dostajemy od razu przy zamówieniu, więc jest wymagany
       // (w odróżnieniu od numeru kontenera, który znamy dopiero po produkcji).
-      if (!manufacturerId) { toast("Wybierz producenta (dostawcę)", "warning"); return; }
-      if (!orderNumber.trim()) { toast("Podaj nr zamówienia (PO)", "warning"); return; }
+      if (!manufacturerId) { fail("Wybierz producenta (dostawcę)"); return; }
+      if (!orderNumber.trim()) { fail("Podaj nr zamówienia (PO)"); return; }
     }
 
     const numOrNull = (s: string) => (s.trim() === "" ? null : Number(s));
@@ -405,11 +411,10 @@ export default function ContainerFormModal({
     } catch (e) {
       // 409 = numer kontenera albo numer zamówienia już zajęty — backend mówi który.
       const err = e as { status?: number; message?: string };
-      toast(
+      fail(
         err?.status === 409 && err.message
           ? err.message
           : isNew ? "Nie udało się utworzyć kontenera" : "Nie udało się zapisać zmian",
-        "warning",
       );
     } finally {
       setBusy(false);
@@ -725,6 +730,15 @@ export default function ContainerFormModal({
           </div>
 
           {/* Footer */}
+          {formError && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "9px 22px",
+              borderTop: "1px solid var(--border-soft)", background: "color-mix(in oklch, var(--critical) 12%, transparent)",
+              color: "var(--critical)", fontSize: 12, fontWeight: 600,
+            }}>
+              <I.Close size={13} /> {formError}
+            </div>
+          )}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 22px", borderTop: "1px solid var(--border-soft)", background: "var(--bg-elevated)" }}>
             {!isNew && showEdit ? (
               <button onClick={doDelete} disabled={busy} style={{ ...btnGhost, color: "var(--critical)" }}><I.Close size={12} /> Usuń kontener</button>
