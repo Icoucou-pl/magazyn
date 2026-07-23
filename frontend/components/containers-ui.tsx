@@ -195,18 +195,22 @@ export function ContainersToolbar({
         })}
       </div>
 
-      <div style={{ flex: 1 }} />
-
-      <button onClick={onToggleAll} style={btnSecondary}>
-        {expandedAny ? <><I.ChevronD size={12} style={{ transform: "rotate(180deg)" }} /> Zwiń wszystkie</> : <><I.ChevronD size={12} /> Rozwiń wszystkie</>}
-      </button>
-      {showEdit && (
-        <button onClick={onAutoSuggest} style={{ ...btnSecondary, borderColor: "color-mix(in oklch, var(--anomaly) 40%, var(--border))", color: "var(--anomaly)" }}>
-          <I.Wand size={12} /> Auto-sugestia
+      {/* Przyciski w jednym kontenerze z marginLeft:auto. Wcześniej odpychał je pusty
+          <div style={{flex:1}} />, ale przy flexWrap on sam się zawijał: raz lądował w
+          pierwszej linii (przyciski szły do lewej), raz w drugiej razem z nimi (do prawej).
+          Wygląd zależał więc od szerokości chipów, czyli od liczby kontenerów. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginLeft: "auto" }}>
+        <button onClick={onToggleAll} style={btnSecondary}>
+          {expandedAny ? <><I.ChevronD size={12} style={{ transform: "rotate(180deg)" }} /> Zwiń wszystkie</> : <><I.ChevronD size={12} /> Rozwiń wszystkie</>}
         </button>
-      )}
-      <button onClick={exportAll} style={btnSecondary}><I.ArrowUp size={12} /> Eksport</button>
-      {showEdit && <button onClick={onNew} style={btnPrimary}><I.Plus size={12} /> Nowy kontener</button>}
+        {showEdit && (
+          <button onClick={onAutoSuggest} style={{ ...btnSecondary, borderColor: "color-mix(in oklch, var(--anomaly) 40%, var(--border))", color: "var(--anomaly)" }}>
+            <I.Wand size={12} /> Auto-sugestia
+          </button>
+        )}
+        <button onClick={exportAll} style={btnSecondary}><I.ArrowUp size={12} /> Eksport</button>
+        {showEdit && <button onClick={onNew} style={btnPrimary}><I.Plus size={12} /> Nowy kontener</button>}
+      </div>
     </div>
   );
 }
