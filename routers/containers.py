@@ -120,12 +120,14 @@ async def _assert_numbers_free(db: AsyncSession, *, container_number: Optional[s
 
     order_numbers = PO kontenera i/lub PO wszystkich lotów (zależnie od wariantu).
     """
+    # CAST(:cid AS INTEGER) jest konieczny: asyncpg nie wywnioskuje typu parametru
+    # użytego w gołym porównaniu IS NULL i wywala się na prepare (500). Nie upraszczać.
     cn = _norm_nr(container_number)
     if cn:
         r = await db.execute(
             text(f"""
                 SELECT container_number FROM {settings.TABLE_CONTAINERS}
-                WHERE UPPER(TRIM(container_number)) = :v AND (:cid IS NULL OR id <> :cid)
+                WHERE UPPER(TRIM(container_number)) = :v AND (CAST(:cid AS INTEGER) IS NULL OR id <> CAST(:cid AS INTEGER))
                 LIMIT 1
             """),
             {"v": cn, "cid": exclude_cid},
@@ -146,7 +148,7 @@ async def _assert_numbers_free(db: AsyncSession, *, container_number: Optional[s
         r = await db.execute(
             text(f"""
                 SELECT order_number FROM {settings.TABLE_CONTAINERS}
-                WHERE UPPER(TRIM(order_number)) = :v AND (:cid IS NULL OR id <> :cid)
+                WHERE UPPER(TRIM(order_number)) = :v AND (CAST(:cid AS INTEGER) IS NULL OR id <> CAST(:cid AS INTEGER))
                 LIMIT 1
             """),
             {"v": v, "cid": exclude_cid},
@@ -158,7 +160,7 @@ async def _assert_numbers_free(db: AsyncSession, *, container_number: Optional[s
         r = await db.execute(
             text(f"""
                 SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
-                WHERE UPPER(TRIM(l.order_number)) = :v AND (:cid IS NULL OR l.container_id <> :cid)
+                WHERE UPPER(TRIM(l.order_number)) = :v AND (CAST(:cid AS INTEGER) IS NULL OR l.container_id <> CAST(:cid AS INTEGER))
                 LIMIT 1
             """),
             {"v": v, "cid": exclude_cid},
