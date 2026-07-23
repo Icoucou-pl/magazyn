@@ -330,6 +330,13 @@ async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str, scope: st
             "razem": razem, "wartosc_pln": round(razem * cena, 2),
             "snap_date": date.today().isoformat(), "snap_slot": "live",
         })
+    # Zakres firmy — dokładnie jak w raporcie z historii: konkretna firma filtruje,
+    # „Wszyscy" scala SKU w jeden wiersz i sumuje stany. Wcześniej `scope` był
+    # przyjmowany i ignorowany, więc przełącznik firm nie działał w trybie „Teraz",
+    # a przy „Wszyscy" ten sam SKU pojawiał się osobno dla każdego magazynu.
+    rows = _collapse(rows, scope)
+    for r in rows:
+        r["wartosc_pln"] = round(r["razem"] * float(r.get("cena_jednostkowa") or 0), 2)
     rows.sort(key=lambda x: x["wartosc_pln"], reverse=True)
     return {"from": "teraz", "to": "teraz", "is_range": False, "compare": "none", "live": True,
             "has_data": bool(rows), "rows": rows,
