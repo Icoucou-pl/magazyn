@@ -10,7 +10,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I } from "./ui";
 import { modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal, type Product, type Manufacturer } from "./products-ui";
-import { STATUS_FLOW, STATUS_FULL_META, type Container, type Attachment } from "./containers-ui";
+import { STATUS_FLOW, STATUS_FULL_META, SubiektSwitch, type Container, type Attachment } from "./containers-ui";
 import { api, download } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
@@ -102,6 +102,34 @@ export default function ContainerFormModal({
   const [manufacturerId, setManufacturerId] = useState<string>(initial?.manufacturer_id ? String(initial.manufacturer_id) : "");
   const [orderDate, setOrderDate] = useState(initial?.order_date || today());
   const [etaDate, setEtaDate] = useState(initial?.eta_date || plus90());
+  // „U nas" — umówiona data odbioru. Nie domyka statusu (to robi dopiero potwierdzenie dostawy).
+  const [expectedDelivery, setExpectedDelivery] = useState(initial?.expected_delivery_date || "");
+  // Przełączniki „w Subiekcie" — zapisywane od razu, osobnym endpointem (nie czekają na Zapisz).
+  const [subiektWbite, setSubiektWbite] = useState(!!initial?.subiekt_wbite);
+  const [lotSubiekt, setLotSubiekt] = useState<Record<number, boolean>>(
+    Object.fromEntries((initial?.lots || []).map((l) => [l.id, !!l.subiekt_wbite])),
+  );
+  const [subiektBusy, setSubiektBusy] = useState(false);
+
+  // Przełącznik „dodano do Subiektu" wprost z okna edycji — bez wychodzenia na listę.
+  // Zapis idzie osobnym endpointem od razu (jak na karcie), więc NIE przeładowujemy tu
+  // rodzica: reload zresetowałby niezapisany formularz. Lista odświeży się przy zamknięciu.
+  const flipSubiekt = async (lotId: number | null, value: boolean) => {
+    if (!initial?.id || subiektBusy) return;
+    setSubiektBusy(true);
+    if (lotId === null) setSubiektWbite(value);
+    else setLotSubiekt((prev) => ({ ...prev, [lotId]: value }));
+    try {
+      await api.post(`/containers/${initial.id}/subiekt-wbite`, { lot_id: lotId, value });
+      toast(value ? "Oznaczono: w Subiekcie (magazyn w drodze)" : "Cofnięto: z powrotem w apce", "ok");
+    } catch {
+      if (lotId === null) setSubiektWbite(!value);
+      else setLotSubiekt((prev) => ({ ...prev, [lotId]: !value }));
+      toast("Nie udało się zmienić statusu Subiekta", "warning");
+    } finally {
+      setSubiektBusy(false);
+    }
+  };
   const [status, setStatus] = useState(initial?.status || "ORDERED");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [isConsolidated, setIsConsolidated] = useState(!!initial?.is_consolidated && initialLots.length > 0);
@@ -112,6 +140,14 @@ export default function ContainerFormModal({
   const [kosztTransportuMagazyn, setKosztTransportuMagazyn] = useState(numStr(initial?.koszt_transportu_magazyn)); // PLN
   const [folder, setFolder] = useState(initial?.folder || "");
   const [subiektNr, setSubiektNr] = useState(initial?.subiekt_nr || "");
+  // Podgląd numeru roboczego (bez licznika — kolejny wolny wybiera backend przy zapisie).
+  const wasDraft = /^draft-/i.test(initial?.container_number || "");
+  const draftPreview = useMemo(() => {
+    if (isConsolidated) return "Draft-Mix";
+    const nm = manufacturers.find((m) => String(m.id) === manufacturerId)?.name;
+    return `Draft-${(nm || "Mix").trim().replace(/\s+/g, "-")}`;
+  }, [isConsolidated, manufacturerId, manufacturers]);
+
   // Płatność kontenera nieskonsolidowanego (jeden dostawca).
   // walutaTowaru: waluta domyślna/pierwotna (seed) — nie edytowana w UI, wysyłana z powrotem bez zmian.
   const [walutaTowaru] = useState(initial?.waluta_towaru || "USD");
@@ -268,7 +304,7 @@ export default function ContainerFormModal({
 
   const save = async () => {
     if (busy) return;
-    if (!containerNumber.trim()) { toast("Podaj numer kontenera", "warning"); return; }
+
     const validItems = items.filter((i) => i.sku && (parseInt(i.quantity, 10) || 0) > 0);
     if (validItems.length === 0) { toast("Dodaj co najmniej jedną pozycję (SKU + ilość)", "warning"); return; }
 
@@ -284,12 +320,13 @@ export default function ContainerFormModal({
     const dateOrNull = (s: string) => (s.trim() === "" ? null : s);
 
     const payload = {
-      container_number: containerNumber.trim(),
+      container_number: containerNumber.trim() || null,
       order_number: isConsolidated ? null : (orderNumber.trim() || null),
       container_type_id: containerTypeId ? Number(containerTypeId) : null,
       manufacturer_id: isConsolidated ? null : (manufacturerId ? Number(manufacturerId) : null),
       order_date: orderDate,
       eta_date: etaDate,
+      expected_delivery_date: dateOrNull(expectedDelivery),
       status,
       notes: notes.trim() || null,
       is_consolidated: isConsolidated,
@@ -354,11 +391,18 @@ export default function ContainerFormModal({
           : ((e as Error)?.message || "błąd uploadu");
       }
 
-      toast(attOk ? (isNew ? `Utworzono kontener #${payload.container_number}` : "Zapisano zmiany w kontenerze") : `Plik nie wgrany: ${attErr}`, attOk ? "ok" : "warning");
+      toast(attOk ? (isNew ? `Utworzono kontener #${saved.container_number}` : "Zapisano zmiany w kontenerze") : `Plik nie wgrany: ${attErr}`, attOk ? "ok" : "warning");
       onSaved();
       if (attOk) onClose();
-    } catch {
-      toast(isNew ? "Nie udało się utworzyć kontenera" : "Nie udało się zapisać zmian", "warning");
+    } catch (e) {
+      // 409 = numer kontenera albo numer zamówienia już zajęty — backend mówi który.
+      const err = e as { status?: number; message?: string };
+      toast(
+        err?.status === 409 && err.message
+          ? err.message
+          : isNew ? "Nie udało się utworzyć kontenera" : "Nie udało się zapisać zmian",
+        "warning",
+      );
     } finally {
       setBusy(false);
     }
@@ -412,8 +456,13 @@ export default function ContainerFormModal({
               </button>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                <Field label="Nr kontenera" required>
-                  <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder="np. MSCU-7821934" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                <Field label="Nr kontenera">
+                  <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder={`puste = ${draftPreview}`} disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                  <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
+                    {containerNumber.trim()
+                      ? (wasDraft ? "Zapis zdejmie numer roboczy i przestawi status na „W drodze”." : "Numer musi być unikalny.")
+                      : `Nie znasz jeszcze numeru? Zostaw puste — nadamy ${draftPreview}.`}
+                  </span>
                 </Field>
                 {!isConsolidated && (
                   <Field label="Nr zamówienia (PO)">
@@ -439,11 +488,19 @@ export default function ContainerFormModal({
                 </Field>
                 <Field label="ETA (planowana dostawa)" required>
                   <input type="date" value={etaDate} onChange={(e) => setEtaDate(e.target.value)} disabled={!showEdit} style={inputStyle} />
-                  {etaDate && (
+                  {etaDate && !expectedDelivery && (
                     <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
                       Wejście do magazynu po odprawie (~{CUSTOMS_DAYS} dni): <strong style={{ color: "var(--text-mid)" }}>{addDays(etaDate, CUSTOMS_DAYS)}</strong>
                     </span>
                   )}
+                </Field>
+                <Field label="Spodziewana dostawa (u nas)">
+                  <input type="date" value={expectedDelivery} onChange={(e) => setExpectedDelivery(e.target.value)} disabled={!showEdit} style={inputStyle} />
+                  <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
+                    {expectedDelivery
+                      ? "Zastępuje szacunek z odprawy. Nie oznacza kontenera jako dostarczonego."
+                      : "Umówiona data odbioru — wpisz, gdy znasz ją z odprawy."}
+                  </span>
                 </Field>
               </div>
             </Section>
@@ -530,6 +587,34 @@ export default function ContainerFormModal({
                   <input value={subiektNr} onChange={(e) => setSubiektNr(e.target.value)} placeholder="numer + cyfra" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                 </Field>
               </div>
+
+              {!isNew && (
+                <div style={{ marginTop: 10, padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                  <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                    Dodano do Subiektu (magazyn w drodze)
+                  </div>
+                  {isConsolidated && (initial?.lots || []).length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {(initial?.lots || []).map((l, i) => (
+                        <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <SubiektSwitch on={!!lotSubiekt[l.id]} onToggle={showEdit ? () => flipSubiekt(l.id, !lotSubiekt[l.id]) : undefined} disabled={subiektBusy} />
+                          <span style={{ fontSize: 12, color: "var(--text-mid)" }}>
+                            Lot {i + 1}{l.manufacturer_name ? ` · ${l.manufacturer_name}` : ""}{l.order_number ? ` · ${l.order_number}` : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <SubiektSwitch on={subiektWbite} onToggle={showEdit ? () => flipSubiekt(null, !subiektWbite) : undefined} disabled={subiektBusy} />
+                      <span style={{ fontSize: 12, color: "var(--text-mid)" }}>
+                        {subiektWbite ? "w Subiekcie — liczony z magazynu w drodze" : "jeszcze w apce — liczony z kontenera"}
+                      </span>
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 8 }}>Zapisuje się od razu, niezależnie od przycisku „Zapisz".</div>
+                </div>
+              )}
             </Section>
 
             <Section title="Status">

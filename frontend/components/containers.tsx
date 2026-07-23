@@ -248,7 +248,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
           manufacturers={manufacturers}
           containerTypes={containerTypes}
           products={products}
-          onClose={() => setShowForm(false)}
+          onClose={() => { setShowForm(false); reload(); }}
           onSaved={reload}
           onDeleted={reload}
         />

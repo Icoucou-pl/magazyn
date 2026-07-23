@@ -88,7 +88,8 @@ export type Container = {
   subiekt_wbite?: boolean | null;
   subiekt_wbite_at?: string | null;
   delivered_date?: string | null;              // ręczna, potwierdzona data dostawy
-  warehouse_delivery_date?: string | null;     // KPI: delivered_date lub ETA + odprawa
+  expected_delivery_date?: string | null;      // „u nas" — umówiona data odbioru (nie domyka statusu)
+  warehouse_delivery_date?: string | null;     // KPI: delivered_date → expected_delivery_date → ETA + odprawa
   order_date: string;
   eta_date: string;
   status: string;                       // status ręczny (z bazy)
@@ -294,6 +295,13 @@ export function ContainerCard({
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
   const subiektSt = subiektSummary(c);
+  // Druga data pod ETA: potwierdzona dostawa wygrywa, inaczej umówiony odbiór („u nas").
+  // Sam automat (ETA + okno odprawy) tu nie wchodzi — to szacunek, jest w rozwinięciu karty.
+  const arrival = c.delivered_date
+    ? { label: "Dostarczono", date: c.delivered_date, color: "var(--ok)" }
+    : c.expected_delivery_date
+      ? { label: "U nas", date: c.expected_delivery_date, color: "var(--info)" }
+      : null;
 
   return (
     <div style={{
@@ -345,6 +353,12 @@ export function ContainerCard({
                 ? `odprawa · ${c.customs_days_left ?? 0}d do dostawy`
                 : days < 0 ? `${Math.abs(days)}d temu` : days === 0 ? "dziś" : `za ${days}d`}
           </div>
+          {arrival && (
+            <div style={{ marginTop: 3, paddingTop: 3, borderTop: "1px solid var(--border-soft)" }}>
+              <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>{arrival.label}</div>
+              <div className="num" style={{ fontSize: 12, fontWeight: 600, color: arrival.color }}>{fmtDatePL(arrival.date)}</div>
+            </div>
+          )}
         </div>
 
         {!expanded && (c.container_capacity_cbm ?? 0) > 0 && (
@@ -558,6 +572,7 @@ function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean;
   const [val, setVal] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const confirmed = !!c.delivered_date;
+  const expected = !confirmed && !!c.expected_delivery_date;
   const whd = c.warehouse_delivery_date || c.delivered_date || null;
 
   const open = () => { setVal(c.delivered_date || c.warehouse_delivery_date || ""); setEditing(true); };
@@ -594,8 +609,8 @@ function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean;
         Dostawa na magazyn {editable && <I.Calendar size={9} style={{ color: "var(--text-disabled)" }} />}
       </div>
       <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{fmtDatePL(whd)}</div>
-      <div style={{ fontSize: 10, marginTop: 1, fontWeight: confirmed ? 600 : 400, color: confirmed ? "var(--ok)" : "var(--text-lo)" }}>
-        {confirmed ? "potwierdzona" : "auto · szac."}
+      <div style={{ fontSize: 10, marginTop: 1, fontWeight: (confirmed || expected) ? 600 : 400, color: confirmed ? "var(--ok)" : expected ? "var(--info)" : "var(--text-lo)" }}>
+        {confirmed ? "potwierdzona" : expected ? "umówiona · u nas" : "auto · szac."}
       </div>
     </div>
   );
