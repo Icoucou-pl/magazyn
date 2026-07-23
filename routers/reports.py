@@ -25,6 +25,8 @@ KPI_FIELDS = [
     ("magazyn_pln", "Wartość magazynu"),
     ("magazyn_w_drodze_pln", "Magazyn w drodze"),
     ("kontenery_pln", "Kontenery w drodze"),
+    ("zaplacono_pln", "Zapłacone za magazyn w drodze"),
+    ("pozostalo_pln", "Pozostało do zapłaty"),
 ]
 # 'wieczor' ma pierwszeństwo — to „stan na koniec dnia".
 SLOT_ORDER = "CASE snap_slot WHEN 'wieczor' THEN 0 ELSE 1 END"
@@ -110,7 +112,8 @@ async def kpi_range(
             SELECT to_char(snap_date, 'YYYY-MM-DD') || ' · ' ||
                    CASE snap_slot WHEN 'rano' THEN 'rano' ELSE 'wieczór' END AS label,
                    snap_date, snap_slot,
-                   kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln
+                   kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln,
+                   zaplacono_pln, pozostalo_pln
             FROM {settings.TABLE_KPI_SNAPSHOTS}
             WHERE firma_slug = :f AND snap_date = :a
             ORDER BY CASE snap_slot WHEN 'rano' THEN 0 ELSE 1 END
@@ -119,7 +122,8 @@ async def kpi_range(
         r = await db.execute(text(f"""
             SELECT DISTINCT ON ({key_expr})
                    {label_expr} AS label, snap_date, snap_slot,
-                   kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln
+                   kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln,
+                   zaplacono_pln, pozostalo_pln
             FROM {settings.TABLE_KPI_SNAPSHOTS}
             WHERE firma_slug = :f AND snap_date >= :a AND snap_date <= :b{slot_where}
             ORDER BY {key_expr}, snap_date DESC, {SLOT_ORDER}
