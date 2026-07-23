@@ -23,6 +23,10 @@ import { modalBackdrop, modalCard, iconBtnGhost, Portal, type Product } from "./
 
 // Domyślny próg = granica kubełka WYPRZEDAZ w prognozie („> 6 mies.").
 export const WYPRZEDAZ_PROG_DEFAULT = 6;
+// Minimalny stan, żeby SKU w ogóle trafiło na listę. Bez tego wchodzi drobnica
+// (3 szt. przy zerowej sprzedaży ma formalnie nieskończone pokrycie, ale nie ma
+// czego wyprzedawać) i lista robi się nie do przejrzenia.
+export const WYPRZEDAZ_MIN_STOCK = 50;
 // Brak sprzedaży przy dodatnim stanie: pokrycie nieskończone (jak classifyCover).
 const COVER_INF = 999;
 // 100% długości paska — powyżej i tak jest „poza skalą".
@@ -49,10 +53,14 @@ export function coverMonths(p: Product): number {
  * Filtrowanie po producencie/statusie robi WOŁAJĄCY — dzięki temu liczba
  * tutaj jest identyczna z liczbą na kafelku KPI.
  */
-export function selectWyprzedaz(products: Product[], prog: number): WyprzedazRow[] {
+export function selectWyprzedaz(
+  products: Product[],
+  prog: number,
+  minStock: number = WYPRZEDAZ_MIN_STOCK,
+): WyprzedazRow[] {
   const out: WyprzedazRow[] = [];
   for (const p of products) {
-    if (p.stock <= 0) continue;               // nie ma czego wyprzedawać
+    if (p.stock < Math.max(1, minStock)) continue;   // za mało towaru, żeby było co wyprzedawać
     const cover = coverMonths(p);
     if (cover < prog) continue;
     const capital = p.stock_value || p.stock * (p.purchase_price || 0);
@@ -105,13 +113,14 @@ export default function WyprzedazModal({
   loading?: boolean;
 }) {
   const [prog, setProg] = useState(WYPRZEDAZ_PROG_DEFAULT);
+  const [minStock, setMinStock] = useState(WYPRZEDAZ_MIN_STOCK);
   const [sort, setSort] = useState<"priority" | "cover" | "capital">("priority");
 
   const rows = useMemo(() => {
-    const arr = selectWyprzedaz(products, prog);
+    const arr = selectWyprzedaz(products, prog, minStock);
     arr.sort((a, b) => b[sort] - a[sort]);
     return arr;
-  }, [products, prog, sort]);
+  }, [products, prog, minStock, sort]);
 
   const totalCapital = rows.reduce((s, r) => s + r.capital, 0);
   const totalUnits = rows.reduce((s, r) => s + r.p.stock, 0);
@@ -146,7 +155,7 @@ export default function WyprzedazModal({
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-hi)" }}>Wyprzedaż / promo</div>
                 <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
-                  Pokrycie ponad {prog} mies. — zalegają i zamrażają kapitał
+                  Pokrycie ponad {prog} mies., stan od {fmtNum(minStock)} szt. — zalegają i zamrażają kapitał
                 </div>
                 {!!scopeLabels?.length && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
@@ -166,15 +175,26 @@ export default function WyprzedazModal({
             </button>
           </div>
 
-          {/* Próg pokrycia */}
-          <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border-soft)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 340, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-lo)", marginBottom: 6 }}>
-              <span>Próg pokrycia</span>
-              <span className="num" style={{ color: "var(--text-mid)" }}>{prog} mies.</span>
+          {/* Progi: pokrycie + minimalny stan */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 22, padding: "12px 18px", borderBottom: "1px solid var(--border-soft)" }}>
+            <div style={{ flex: "1 1 240px", minWidth: 200 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-lo)", marginBottom: 6 }}>
+                <span>Próg pokrycia</span>
+                <span className="num" style={{ color: "var(--text-mid)" }}>{prog} mies.</span>
+              </div>
+              <input type="range" min={3} max={36} step={1} value={prog}
+                onChange={(e) => setProg(parseInt(e.target.value))}
+                style={{ width: "100%", display: "block", accentColor: "var(--info)", cursor: "pointer" }} />
             </div>
-            <input type="range" min={3} max={36} step={1} value={prog}
-              onChange={(e) => setProg(parseInt(e.target.value))}
-              style={{ width: "100%", maxWidth: 340, display: "block", accentColor: "var(--info)", cursor: "pointer" }} />
+            <div style={{ flex: "1 1 240px", minWidth: 200 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-lo)", marginBottom: 6 }}>
+                <span>Stan minimalny</span>
+                <span className="num" style={{ color: "var(--text-mid)" }}>od {fmtNum(minStock)} szt.</span>
+              </div>
+              <input type="range" min={10} max={300} step={10} value={minStock}
+                onChange={(e) => setMinStock(parseInt(e.target.value))}
+                style={{ width: "100%", display: "block", accentColor: "var(--info)", cursor: "pointer" }} />
+            </div>
           </div>
 
           {/* Podsumowanie */}
@@ -198,7 +218,7 @@ export default function WyprzedazModal({
               <div style={{ padding: "48px 16px", textAlign: "center", fontSize: 12, color: "var(--text-lo)" }}>Wczytuję produkty…</div>
             ) : rows.length === 0 ? (
               <div style={{ padding: "48px 16px", textAlign: "center", fontSize: 12, color: "var(--text-lo)" }}>
-                W tym zakresie nic nie zalega przy progu {prog} mies.
+                Nic nie zalega przy progu {prog} mies. i stanie od {fmtNum(minStock)} szt.
               </div>
             ) : rows.map((r, i) => {
               const c = coverColor(r.cover);

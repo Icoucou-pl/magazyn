@@ -782,7 +782,7 @@ function ActionsBanner({ onAutoSuggest, onSimulator, onProductClick }: {
     <>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
         <SmartAction icon={<I.TrendDown size={18} />} title="Do wyprzedaży"
-          sub="Produkty z zapasem ponad 6 miesięcy — zalegają i zamrażają kapitał" onClick={openWyprzedaz} accent="var(--info)" />
+          sub="Produkty z zapasem ponad 6 miesięcy i stanem od 50 szt. — zamrażają kapitał" onClick={openWyprzedaz} accent="var(--info)" />
         <SmartAction icon={<I.Wand size={18} />} title="Auto-sugestia kontenera"
           sub="Algorytm zaplanuje optymalny skład na podstawie sprzedaży, lead-time i wolnej pojemności" onClick={onAutoSuggest} accent="var(--accent)" />
         <SmartAction icon={<I.Flask size={18} />} title="Symulator scenariuszy"

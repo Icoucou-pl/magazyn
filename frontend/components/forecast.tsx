@@ -24,7 +24,7 @@ import {
   type Product, type Manufacturer,
 } from "./products-ui";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
-import WyprzedazModal, { selectWyprzedaz, WYPRZEDAZ_PROG_DEFAULT } from "./wyprzedaz-modal";
+import WyprzedazModal, { selectWyprzedaz, WYPRZEDAZ_PROG_DEFAULT, WYPRZEDAZ_MIN_STOCK } from "./wyprzedaz-modal";
 
 // ── Kubełki pokrycia (months-of-cover) ───────────────────────
 type Bucket = "BRAKI" | "ZAMAWIAMY" | "IDEALNIE" | "ZA_DUZO" | "WYPRZEDAZ";
@@ -448,7 +448,7 @@ export default function ForecastView({
         <MiniStat label="Zabraknie w horyzoncie" value={summary.willStockOut} sub={`z ${rows.length} SKU`} icon={<I.Alert size={14} />} />
         <MiniStat label="Zamów w 3 mies." value={summary.needOrderSoon} sub="wymaga akcji" icon={<I.Flame size={14} />} />
         <MiniStat label="Nadmiar / promo" value={summary.overstockSkus}
-          sub={`SKU · pokrycie > ${WYPRZEDAZ_PROG_DEFAULT} mies.`}
+          sub={`SKU · >${WYPRZEDAZ_PROG_DEFAULT} mies. · od ${WYPRZEDAZ_MIN_STOCK} szt.`}
           icon={<I.TrendDown size={14} />}
           accent="var(--info)" hint="Kliknij →"
           onClick={() => setShowWyprzedaz(true)} />
