@@ -35,7 +35,11 @@ def _today_pl() -> date:
     return datetime.utcnow().date()
 
 
-def compute_effective_status(stored: str, eta: Optional[date]) -> Tuple[str, bool, Optional[int]]:
+def compute_effective_status(
+    stored: str,
+    eta: Optional[date],
+    expected: Optional[date] = None,
+) -> Tuple[str, bool, Optional[int]]:
     """Zwraca (effective_status, is_auto, customs_days_left).
 
     Reguły (CONTAINER_CUSTOMS_DAYS = okno odprawy, domyślnie 7 dni):
@@ -43,14 +47,31 @@ def compute_effective_status(stored: str, eta: Optional[date]) -> Tuple[str, boo
       - dzień <= ETA → status ręczny, bez automatu;
       - ETA+1 .. ETA+N → 'CUSTOMS' (Odprawa celna), z licznikiem dni do auto-dostawy;
       - dzień >= ETA+N+1 → 'DELIVERED' automatycznie.
+
+    `expected` = ręcznie wpisana data „u nas" (umówiony odbiór, znana w trakcie odprawy).
+    Gdy jest podana, ZASTĘPUJE szacowane okno odprawy: do dnia poprzedzającego kontener
+    jest w 'CUSTOMS' z licznikiem liczonym do tej daty, a od niej wchodzi auto-dostawa.
+    Sama data NIE domyka statusu (to robi dopiero delivered_date) — data jutrzejsza nie
+    zapala „Dostarczono".
     """
     if stored == "DELIVERED":
         return "DELIVERED", False, None
     if eta is None:
         return stored, False, None
 
+    today = _today_pl()
+
+    if expected is not None:
+        days_left = (expected - today).days
+        if days_left > 0:
+            # przed umówionym odbiorem: odprawa dopiero po ETA, wcześniej status ręczny
+            if (today - eta).days <= 0:
+                return stored, False, None
+            return "CUSTOMS", True, days_left
+        return "DELIVERED", True, None
+
     n = max(0, int(settings.CONTAINER_CUSTOMS_DAYS))
-    days_after = (_today_pl() - eta).days
+    days_after = (today - eta).days
 
     if days_after <= 0:
         return stored, False, None
@@ -208,7 +229,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
             c.koszt_transportu, c.koszt_spedycji, c.koszt_transportu_magazyn, c.folder, c.subiekt_nr,
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
-            c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.delivered_date,
+            c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.delivered_date, c.expected_delivery_date,
             c.subiekt_wbite, c.subiekt_wbite_at,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
@@ -275,6 +296,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "balance_waluta": (row["balance_waluta"] or row["waluta_towaru"] or "USD"),
                 "zaplacono_data": row["zaplacono_data"],
                 "delivered_date": row["delivered_date"],
+                "expected_delivery_date": row["expected_delivery_date"],
                 "subiekt_wbite": bool(row["subiekt_wbite"]),
                 "subiekt_wbite_at": row["subiekt_wbite_at"],
                 "warehouse_delivery_date": None,   # liczone niżej: delivered_date lub ETA + odprawa
@@ -365,14 +387,18 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c["oplata_spedycji"] = round(c["koszt_spedycji"] - c["koszt_transportu"], 2)
         if c["container_capacity_cbm"] and c["container_capacity_cbm"] > 0:
             c["fill_percentage"] = round((c["total_cbm"] / c["container_capacity_cbm"]) * 100, 1)
-        eff, is_auto, days_left = compute_effective_status(c["status"], c["eta_date"])
+        eff, is_auto, days_left = compute_effective_status(c["status"], c["eta_date"], c["expected_delivery_date"])
         c["effective_status"] = eff
         c["is_auto"] = is_auto
         c["customs_days_left"] = days_left
-        # Data wejścia do magazynu (KPI „Dostawa na magazyn"):
-        #   ręczna delivered_date (potwierdzona) albo szacowana = ETA + okno odprawy celnej.
+        # Data wejścia do magazynu (KPI „Dostawa na magazyn"), w kolejności pewności:
+        #   1. delivered_date            — potwierdzona dostawa (ręczna),
+        #   2. expected_delivery_date    — „u nas": umówiony odbiór, znany w trakcie odprawy,
+        #   3. ETA + okno odprawy celnej — szacunek automatu.
         if c["delivered_date"] is not None:
             c["warehouse_delivery_date"] = c["delivered_date"]
+        elif c["expected_delivery_date"] is not None:
+            c["warehouse_delivery_date"] = c["expected_delivery_date"]
         elif c["eta_date"] is not None:
             c["warehouse_delivery_date"] = c["eta_date"] + timedelta(days=max(0, int(settings.CONTAINER_CUSTOMS_DAYS)))
 
