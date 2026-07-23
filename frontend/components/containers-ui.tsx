@@ -132,16 +132,41 @@ export const STATUS_FULL_META: Record<string, StatusMetaFull> = {
 export const eff = (c: { effective_status?: string; status: string }): string => c.effective_status || c.status;
 
 // ── Mini stat ────────────────────────────────────────────────
-export function MiniStat({ label, value, sub, icon }: { label: string; value: React.ReactNode; sub?: string; icon?: React.ReactNode }) {
-  return (
-    <div style={{ padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }}>
+// Klikalny wariant: podaj onClick + accent (kolor liczby i ramki) + hint (podpowiedź w stopce).
+// Bez tych propsów zachowuje się dokładnie jak dotąd — zwykły, nieklikalny kafelek.
+export function MiniStat({ label, value, sub, icon, onClick, accent, hint }: {
+  label: string; value: React.ReactNode; sub?: string; icon?: React.ReactNode;
+  onClick?: () => void; accent?: string; hint?: string;
+}) {
+  const clickable = typeof onClick === "function";
+  const idle = accent ? `color-mix(in oklch, ${accent} 30%, var(--border-soft))` : "var(--border-soft)";
+  const body = (
+    <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
-        {icon && <span style={{ color: "var(--text-lo)" }}>{icon}</span>}
+        {icon && <span style={{ color: accent || "var(--text-lo)" }}>{icon}</span>}
       </div>
-      <div className="num" style={{ fontSize: 22, fontWeight: 600, color: "var(--text-hi)", marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{sub}</div>}
-    </div>
+      <div className="num" style={{ fontSize: 22, fontWeight: 600, color: accent || "var(--text-hi)", marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
+      {(sub || (clickable && hint)) && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 2 }}>
+          <span style={{ fontSize: 11, color: "var(--text-lo)" }}>{sub}</span>
+          {clickable && hint && <span style={{ fontSize: 10, fontWeight: 700, color: accent || "var(--text-mid)", whiteSpace: "nowrap" }}>{hint}</span>}
+        </div>
+      )}
+    </>
+  );
+  const base: React.CSSProperties = {
+    padding: "12px 14px", background: "var(--surface-1)",
+    border: `1px solid ${clickable ? idle : "var(--border-soft)"}`,
+    borderRadius: "var(--r-lg)",
+  };
+  if (!clickable) return <div style={base}>{body}</div>;
+  return (
+    <button onClick={onClick} style={{ ...base, textAlign: "left", width: "100%", cursor: "pointer", transition: "all 0.14s ease" }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; e.currentTarget.style.borderColor = accent || "var(--border-strong)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--surface-1)"; e.currentTarget.style.borderColor = idle; }}>
+      {body}
+    </button>
   );
 }
 
@@ -195,22 +220,18 @@ export function ContainersToolbar({
         })}
       </div>
 
-      {/* Przyciski w jednym kontenerze z marginLeft:auto. Wcześniej odpychał je pusty
-          <div style={{flex:1}} />, ale przy flexWrap on sam się zawijał: raz lądował w
-          pierwszej linii (przyciski szły do lewej), raz w drugiej razem z nimi (do prawej).
-          Wygląd zależał więc od szerokości chipów, czyli od liczby kontenerów. */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginLeft: "auto" }}>
-        <button onClick={onToggleAll} style={btnSecondary}>
-          {expandedAny ? <><I.ChevronD size={12} style={{ transform: "rotate(180deg)" }} /> Zwiń wszystkie</> : <><I.ChevronD size={12} /> Rozwiń wszystkie</>}
+      <div style={{ flex: 1 }} />
+
+      <button onClick={onToggleAll} style={btnSecondary}>
+        {expandedAny ? <><I.ChevronD size={12} style={{ transform: "rotate(180deg)" }} /> Zwiń wszystkie</> : <><I.ChevronD size={12} /> Rozwiń wszystkie</>}
+      </button>
+      {showEdit && (
+        <button onClick={onAutoSuggest} style={{ ...btnSecondary, borderColor: "color-mix(in oklch, var(--anomaly) 40%, var(--border))", color: "var(--anomaly)" }}>
+          <I.Wand size={12} /> Auto-sugestia
         </button>
-        {showEdit && (
-          <button onClick={onAutoSuggest} style={{ ...btnSecondary, borderColor: "color-mix(in oklch, var(--anomaly) 40%, var(--border))", color: "var(--anomaly)" }}>
-            <I.Wand size={12} /> Auto-sugestia
-          </button>
-        )}
-        <button onClick={exportAll} style={btnSecondary}><I.ArrowUp size={12} /> Eksport</button>
-        {showEdit && <button onClick={onNew} style={btnPrimary}><I.Plus size={12} /> Nowy kontener</button>}
-      </div>
+      )}
+      <button onClick={exportAll} style={btnSecondary}><I.ArrowUp size={12} /> Eksport</button>
+      {showEdit && <button onClick={onNew} style={btnPrimary}><I.Plus size={12} /> Nowy kontener</button>}
     </div>
   );
 }

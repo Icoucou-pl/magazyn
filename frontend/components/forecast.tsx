@@ -24,6 +24,7 @@ import {
   type Product, type Manufacturer,
 } from "./products-ui";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
+import WyprzedazModal, { selectWyprzedaz, WYPRZEDAZ_PROG_DEFAULT } from "./wyprzedaz-modal";
 
 // ── Kubełki pokrycia (months-of-cover) ───────────────────────
 type Bucket = "BRAKI" | "ZAMAWIAMY" | "IDEALNIE" | "ZA_DUZO" | "WYPRZEDAZ";
@@ -147,6 +148,7 @@ export default function ForecastView({
   const [colVis, setColVis] = useState<{ sales60: boolean; sales90: boolean }>({ sales60: true, sales90: true });
   const [showColMenu, setShowColMenu] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [showWyprzedaz, setShowWyprzedaz] = useState(false);
   const [detailMfrId, setDetailMfrId] = useState<number | null>(null);
   // Ręczne nadpisania — SKU wymuszone do usunięcia / dodania
   const [hiddenSkus, setHiddenSkus] = useState<Set<string>>(() => new Set());
@@ -231,13 +233,21 @@ export default function ForecastView({
     );
   }, [rows, products, mfrId]);
 
+  // Produkty w bieżącym zakresie (producent + filtr statusu + ręczne zmiany).
+  // To dokładnie ta lista, którą dostaje modal wyprzedaży — dzięki temu liczba
+  // na kafelku NADMIAR/PROMO zgadza się z liczbą wierszy po kliknięciu.
+  const scopedProducts = useMemo(() => rows.map((r) => r.p), [rows]);
+
   const summary = useMemo(() => {
     const counts: Record<Bucket, number> = { BRAKI: 0, ZAMAWIAMY: 0, IDEALNIE: 0, ZA_DUZO: 0, WYPRZEDAZ: 0 };
     rows.forEach((r) => r.cells.slice(0, 6).forEach((c) => { counts[c.bucket]++; }));
     const willStockOut = rows.filter((r) => r.cells.some((c) => c.bucket === "BRAKI")).length;
     const needOrderSoon = rows.filter((r) => r.cells.slice(0, 3).some((c) => c.bucket === "ZAMAWIAMY" || c.bucket === "BRAKI")).length;
-    return { counts, willStockOut, needOrderSoon };
-  }, [rows]);
+    // NADMIAR/PROMO liczony w SKU (nie w komórkach) — te same wiersze, co w modalu.
+    const overstock = selectWyprzedaz(scopedProducts, WYPRZEDAZ_PROG_DEFAULT);
+    const overstockCapital = overstock.reduce((s, r) => s + r.capital, 0);
+    return { counts, willStockOut, needOrderSoon, overstockSkus: overstock.length, overstockCapital };
+  }, [rows, scopedProducts]);
 
   const removeRow = (sku: string) => {
     setExtraSkus((prev) => { const n = new Set(prev); n.delete(sku); return n; });
@@ -437,7 +447,11 @@ export default function ForecastView({
         <MiniStat label="Produktów" value={rows.length} sub={mfr ? mfr.name : "wszyscy"} icon={<I.Box size={14} />} />
         <MiniStat label="Zabraknie w horyzoncie" value={summary.willStockOut} sub={`z ${rows.length} SKU`} icon={<I.Alert size={14} />} />
         <MiniStat label="Zamów w 3 mies." value={summary.needOrderSoon} sub="wymaga akcji" icon={<I.Flame size={14} />} />
-        <MiniStat label="Nadmiar / promo" value={summary.counts.WYPRZEDAZ} sub="komórek (6 mies.)" icon={<I.TrendDown size={14} />} />
+        <MiniStat label="Nadmiar / promo" value={summary.overstockSkus}
+          sub={`SKU · pokrycie > ${WYPRZEDAZ_PROG_DEFAULT} mies.`}
+          icon={<I.TrendDown size={14} />}
+          accent="var(--info)" hint="Kliknij →"
+          onClick={() => setShowWyprzedaz(true)} />
       </div>
 
       {/* Heatmap */}
@@ -554,6 +568,19 @@ export default function ForecastView({
       </div>
 
       {showAdd && <AddProductModal addable={addable} onAdd={addRow} onClose={() => setShowAdd(false)} />}
+
+      {showWyprzedaz && (
+        <WyprzedazModal
+          products={scopedProducts}
+          scopeLabels={[
+            ...(mfr ? [{ key: "mfr", label: `Producent: ${mfr.name}` }] : []),
+            ...(statusFilter !== "all" ? [{ key: "status", label: `Status: ${FC_STATUS_FILTERS[statusFilter].label}` }] : []),
+          ]}
+          onClearScope={(key) => { if (key === "mfr") setMfrId("ALL"); else setStatusFilter("all"); }}
+          onClose={() => setShowWyprzedaz(false)}
+          onProductClick={(sku) => { setShowWyprzedaz(false); onProductClick?.(sku); }}
+        />
+      )}
 
       {detailMfrId != null && (
         <ManufacturerModal

@@ -21,6 +21,8 @@ import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { can, canEdit, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
+import WyprzedazModal from "./wyprzedaz-modal";
+import type { Product } from "./products-ui";
 
 // ── Typy odpowiedzi API ──────────────────────────────────────
 type StockPoint = { date: string; value: number; units: number };
@@ -757,14 +759,45 @@ function TopSellersCard({ top, shop, onProductClick }: { top: TopSeller[]; shop:
 }
 
 // ── Banner akcji ─────────────────────────────────────────────
-function ActionsBanner({ onAutoSuggest, onSimulator }: { onAutoSuggest?: () => void; onSimulator?: () => void }) {
+function ActionsBanner({ onAutoSuggest, onSimulator, onProductClick }: {
+  onAutoSuggest?: () => void; onSimulator?: () => void; onProductClick?: (sku: string) => void;
+}) {
+  // Produkty ciągniemy DOPIERO po kliknięciu — pulpit i tak jest ciężki,
+  // więc kafelek nie dokłada kolejnego /products do pierwszego renderu.
+  const [showWyprzedaz, setShowWyprzedaz] = useState(false);
+  const [products, setProducts] = useState<Product[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const openWyprzedaz = () => {
+    setShowWyprzedaz(true);
+    if (products || loading) return;
+    setLoading(true);
+    api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK")
+      .then((res) => setProducts((res as Product[]) || []))
+      .catch(() => toast("Nie udało się wczytać produktów", "warning"))
+      .finally(() => setLoading(false));
+  };
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-      <SmartAction icon={<I.Wand size={18} />} title="Auto-sugestia kontenera"
-        sub="Algorytm zaplanuje optymalny skład na podstawie sprzedaży, lead-time i wolnej pojemności" onClick={onAutoSuggest} accent="var(--accent)" />
-      <SmartAction icon={<I.Flask size={18} />} title="Symulator scenariuszy"
-        sub="Co jeśli sprzedaż +30%, dostawa +30 dni lub kurs USD wzrośnie o 8%" onClick={onSimulator} accent="var(--anomaly)" />
-    </div>
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+        <SmartAction icon={<I.TrendDown size={18} />} title="Do wyprzedaży"
+          sub="Produkty z zapasem ponad 6 miesięcy — zalegają i zamrażają kapitał" onClick={openWyprzedaz} accent="var(--info)" />
+        <SmartAction icon={<I.Wand size={18} />} title="Auto-sugestia kontenera"
+          sub="Algorytm zaplanuje optymalny skład na podstawie sprzedaży, lead-time i wolnej pojemności" onClick={onAutoSuggest} accent="var(--accent)" />
+        <SmartAction icon={<I.Flask size={18} />} title="Symulator scenariuszy"
+          sub="Co jeśli sprzedaż +30%, dostawa +30 dni lub kurs USD wzrośnie o 8%" onClick={onSimulator} accent="var(--anomaly)" />
+      </div>
+
+      {showWyprzedaz && (
+        <WyprzedazModal
+          products={products || []}
+          loading={loading}
+          onClose={() => setShowWyprzedaz(false)}
+          onProductClick={onProductClick ? (sku) => { setShowWyprzedaz(false); onProductClick(sku); } : undefined}
+        />
+      )}
+    </>
   );
 }
 
@@ -1012,7 +1045,8 @@ export default function Dashboard({
         <>
           <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
           {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
-          {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
+          {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator}
+            onProductClick={onProductClick ? (sku) => onProductClick({ sku }) : undefined} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             <FiresCard fires={fires} onProductClick={onProductClick} />
             <DeliveriesCard deliveries={pipeline.deliveries} shop={shop} onContainerClick={onContainerClick} />
