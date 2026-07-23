@@ -278,8 +278,15 @@ function splitSubiekt(c: ContainerOut, shop: string) {
 
   // Udział sklepu w wartości — tym samym współczynnikiem skalujemy kwoty płatności,
   // żeby przy zakładce Acti/Veluxa karty pokazywały część przypadającą na ten sklep.
-  const ratioOf = (fb: Record<string, FirmaShare> | undefined, total: number) =>
-    !shop ? 1 : (total > 0 ? (fb?.[shop]?.value ?? 0) / total : 0);
+  // Udział sklepu, po wartości. Gdy wartość kontenera jest zerowa (SKU spoza katalogu,
+  // brak cen jednostkowych) wartość nie nadaje się na miarę — schodzimy na sztuki,
+  // inaczej cała wpłata przepadłaby przez mnożenie przez zero.
+  const ratioOf = (fb: Record<string, FirmaShare> | undefined, total: number) => {
+    if (!shop) return 1;
+    if (total > 0) return (fb?.[shop]?.value ?? 0) / total;
+    const units = Object.values(fb ?? {}).reduce((s, f) => s + (f.units ?? 0), 0);
+    return units > 0 ? (fb?.[shop]?.units ?? 0) / units : 0;
+  };
 
   if (consolidated) {
     const green = lots.filter((l) => !!l.subiekt_wbite);
