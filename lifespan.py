@@ -320,6 +320,8 @@ async def lifespan(app: FastAPI):
                 magazyn_pln NUMERIC DEFAULT 0,
                 magazyn_w_drodze_pln NUMERIC DEFAULT 0,
                 kontenery_pln NUMERIC DEFAULT 0,
+                zaplacono_pln NUMERIC DEFAULT 0,
+                pozostalo_pln NUMERIC DEFAULT 0,
                 captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT uq_kpi_snap UNIQUE (snap_date, snap_slot, firma_slug)
             )
