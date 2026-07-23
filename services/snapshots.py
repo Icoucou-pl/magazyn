@@ -92,6 +92,50 @@ async def _transit_warehouse_value(db: AsyncSession) -> float:
 
 # ── KPI ──────────────────────────────────────────────────────
 
+def _payment_totals(containers, shop: str) -> tuple:
+    """(zaplacono_pln, pozostalo_pln) dla niedostarczonych kontenerów.
+
+    Lustro frontowego splitSubiekt(): zapłacone liczymy po stronie ZIELONEJ (wbite do
+    Subiektu), a resztę do zapłaty po CZERWONEJ. Kwoty skalujemy udziałem firmy — po
+    wartości, a gdy wartość jest zerowa (SKU bez ceny) po sztukach, żeby wpłata nie
+    przepadła przez mnożenie przez zero.
+    """
+    def ratio(fb, total_value: float) -> float:
+        if not shop:
+            return 1.0
+        fb = fb or {}
+        if total_value > 0:
+            share = fb.get(shop)
+            return (float(getattr(share, "value", 0.0) or 0.0) / total_value) if share else 0.0
+        units = sum(float(getattr(v, "units", 0) or 0) for v in fb.values())
+        if units <= 0:
+            return 0.0
+        share = fb.get(shop)
+        return (float(getattr(share, "units", 0) or 0) / units) if share else 0.0
+
+    paid = 0.0
+    left = 0.0
+    for c in containers:
+        if (c.effective_status or c.status) == "DELIVERED":
+            continue
+        lots = c.lots or []
+        consolidated = bool(c.is_consolidated) and len(lots) > 0
+        if consolidated:
+            for l in lots:
+                r = ratio(l.firma_breakdown, float(l.total_value or 0.0))
+                if l.subiekt_wbite:
+                    paid += float(l.zaplacono_pln or 0.0) * r
+                else:
+                    left += float(l.pozostalo_pln or 0.0) * r
+        else:
+            r = ratio(c.firma_breakdown, float(c.total_value or 0.0))
+            if c.subiekt_wbite:
+                paid += float(c.zaplacono_pln or 0.0) * r
+            else:
+                left += float(c.pozostalo_pln or 0.0) * r
+    return round(paid, 2), round(left, 2)
+
+
 async def build_kpi_rows(db: AsyncSession) -> List[dict]:
     """4 KPI dla zakresu globalnego ('all') i każdej firmy.
 
@@ -112,12 +156,17 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
         # drugi magazyn w Subiekcie — wtedy liczby wskoczą same, bez zmian w kodzie.
         w_drodze = transit_all if scope in ("all", DEFAULT_FIRMA_SLUG) else 0.0
         kontenery = _red_container_value(containers, shop)
+        zaplacono, pozostalo = _payment_totals(containers, shop)
         rows.append({
             "firma_slug": scope,
             "magazyn_pln": magazyn,
             "magazyn_w_drodze_pln": w_drodze,
             "kontenery_pln": kontenery,
             "kapital_pln": round(magazyn + w_drodze, 2),
+            # Płatności (kurs NBP z dnia poprzedzającego wpłatę) — te same liczby,
+            # które pokazuje pulpit pod „Magazynem w drodze" i „Kontenerami w drodze".
+            "zaplacono_pln": zaplacono,
+            "pozostalo_pln": pozostalo,
         })
     return rows
 
@@ -239,16 +288,20 @@ async def store_snapshot(db: AsyncSession, slot: str, snap_date: Optional[date] 
     for row in kpi_rows:
         await db.execute(text(f"""
             INSERT INTO {settings.TABLE_KPI_SNAPSHOTS}
-                (snap_date, snap_slot, firma_slug, kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln, captured_at)
-            VALUES (:d, :s, :f, :kap, :mag, :wdr, :kon, CURRENT_TIMESTAMP)
+                (snap_date, snap_slot, firma_slug, kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln,
+                 zaplacono_pln, pozostalo_pln, captured_at)
+            VALUES (:d, :s, :f, :kap, :mag, :wdr, :kon, :zap, :poz, CURRENT_TIMESTAMP)
             ON CONFLICT (snap_date, snap_slot, firma_slug) DO UPDATE SET
                 kapital_pln = EXCLUDED.kapital_pln,
                 magazyn_pln = EXCLUDED.magazyn_pln,
                 magazyn_w_drodze_pln = EXCLUDED.magazyn_w_drodze_pln,
                 kontenery_pln = EXCLUDED.kontenery_pln,
+                zaplacono_pln = EXCLUDED.zaplacono_pln,
+                pozostalo_pln = EXCLUDED.pozostalo_pln,
                 captured_at = CURRENT_TIMESTAMP
         """), {"d": d, "s": slot, "f": row["firma_slug"], "kap": row["kapital_pln"],
-               "mag": row["magazyn_pln"], "wdr": row["magazyn_w_drodze_pln"], "kon": row["kontenery_pln"]})
+               "mag": row["magazyn_pln"], "wdr": row["magazyn_w_drodze_pln"], "kon": row["kontenery_pln"],
+               "zap": row["zaplacono_pln"], "poz": row["pozostalo_pln"]})
 
     stock_rows = await build_stock_rows(db)
     for row in stock_rows:
