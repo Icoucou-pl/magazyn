@@ -30,7 +30,8 @@ type SkuRow = {
 type SkuData = { from: string; to: string; is_range: boolean; compare?: string; live?: boolean; generated_at?: string; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
 
 const SCOPES = [{ id: "all", label: "Wszyscy" }, { id: "amh", label: "AMH" }, { id: "acti", label: "Acti" }, { id: "veluxa", label: "Veluxa" }];
-const KPI_ALL = ["kapital_pln", "magazyn_pln", "magazyn_w_drodze_pln", "kontenery_pln"];
+const KPI_ALL = ["kapital_pln", "magazyn_pln", "magazyn_w_drodze_pln", "kontenery_pln",
+                 "zaplacono_pln", "pozostalo_pln"];
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const today = () => iso(new Date());
