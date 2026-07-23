@@ -280,12 +280,13 @@ class ContainerLotIn(BaseModel):
 
 
 class ContainerCreate(BaseModel):
-    container_number: str
+    container_number: Optional[str] = None   # puste = backend nada Draft-<Producent> (nr znamy po produkcji)
     order_number: Optional[str] = None
     container_type_id: Optional[int] = None
     manufacturer_id: Optional[int] = None
     order_date: date
     eta_date: date
+    expected_delivery_date: Optional[date] = None   # „u nas" — realna, umówiona data odbioru (nie domyka statusu)
     status: ContainerStatus = "ORDERED"
     notes: Optional[str] = None
     is_consolidated: bool = False
@@ -334,6 +335,7 @@ class ContainerUpdate(BaseModel):
     balance_waluta: Optional[str] = None
     zaplacono_data: Optional[date] = None
     delivered_date: Optional[date] = None    # ręczna data dostawy na magazyn (domyka status)
+    expected_delivery_date: Optional[date] = None   # „u nas" — umówiona data odbioru; NIE domyka statusu
     lots: Optional[List[ContainerLotIn]] = None
     items: Optional[List[ContainerItemIn]] = None
 
@@ -439,7 +441,8 @@ class ContainerOut(BaseModel):
     subiekt_wbite: bool = False              # kontener (nieskonsolidowany) wbity do „w drodze" w Subiekcie
     subiekt_wbite_at: Optional[date] = None
     delivered_date: Optional[date] = None            # ręczna, potwierdzona data dostawy (jeśli jest)
-    warehouse_delivery_date: Optional[date] = None   # KPI: delivered_date lub ETA + odprawa celna
+    expected_delivery_date: Optional[date] = None    # „u nas" — umówiona data odbioru (przed potwierdzeniem)
+    warehouse_delivery_date: Optional[date] = None   # KPI: delivered_date → expected_delivery_date → ETA + odprawa
     notes: Optional[str]
     items: List[ContainerItemOut]
     attachments: List[AttachmentOut] = []
