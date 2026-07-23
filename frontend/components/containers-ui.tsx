@@ -38,8 +38,13 @@ export type ContainerAdvance = {
   waluta?: string | null;
   data?: string | null;
 };
+// Udział firmy w kontenerze/locie — kontener nie ma własnej firmy, wynika ona
+// z właścicieli SKU (app_product_attrs.firma_id), liczona po stronie backendu.
+export type FirmaShare = { slug: string; name: string; color?: string | null; units: number; value: number };
+
 export type ContainerLot = {
   id: number;
+  firma_breakdown?: Record<string, FirmaShare>;
   manufacturer_id: number | null;
   manufacturer_name: string | null;
   manufacturer_color: string | null;
@@ -60,6 +65,7 @@ export type ContainerLot = {
 export type Attachment = { id: number; filename: string; file_type: string | null; file_size: string | null; uploaded_at: string };
 export type Container = {
   id: number;
+  firma_breakdown?: Record<string, FirmaShare>;
   container_number: string;
   order_number: string | null;
   container_type_id: number | null;

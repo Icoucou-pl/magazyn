@@ -30,6 +30,8 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
+  const [shop, setShop] = useState("");     // "" = wszystkie firmy
+  const [mfr, setMfr] = useState("");       // "" = wszyscy producenci
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
 
   // Dane pomocnicze do formularza
@@ -86,14 +88,46 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
     if (openNewAutoSuggest) { openAutoSuggest(autoSuggestMfrId ?? null); onOpenedNewAutoSuggest?.(); }
   }, [openNewAutoSuggest]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Kontener nie ma własnej firmy — wynika ona z właścicieli SKU (firma_breakdown),
+  // a przy skonsolidowanym siedzi na lotach. Producent analogicznie: na kontenerze
+  // albo na locie. Zawężamy PRZED liczeniem statusów, żeby liczby na chipach
+  // odpowiadały temu, co faktycznie widać na liście.
+  const scoped = useMemo(() => {
+    let arr = containers;
+    if (shop) {
+      arr = arr.filter((c) =>
+        (c.firma_breakdown?.[shop]?.units ?? 0) > 0 ||
+        (c.lots ?? []).some((l) => (l.firma_breakdown?.[shop]?.units ?? 0) > 0));
+    }
+    if (mfr) {
+      const id = Number(mfr);
+      arr = arr.filter((c) =>
+        c.manufacturer_id === id || (c.lots ?? []).some((l) => l.manufacturer_id === id));
+    }
+    return arr;
+  }, [containers, shop, mfr]);
+
+  // Producenci obecni w bieżącym zakresie firmy — lista nie puchnie o nieużywanych.
+  const mfrOptions = useMemo(() => {
+    const seen = new Map<number, string>();
+    const base = shop ? scoped : containers;
+    for (const c of base) {
+      if (c.manufacturer_id && c.manufacturer_name) seen.set(c.manufacturer_id, c.manufacturer_name);
+      for (const l of c.lots ?? []) {
+        if (l.manufacturer_id && l.manufacturer_name) seen.set(l.manufacturer_id, l.manufacturer_name);
+      }
+    }
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [containers, scoped, shop]);
+
   const counts = useMemo(() => {
-    const out: Record<string, number> = { ALL: containers.length };
-    FILTER_STATUSES.forEach((s) => { out[s] = containers.filter((c) => eff(c) === s).length; });
+    const out: Record<string, number> = { ALL: scoped.length };
+    FILTER_STATUSES.forEach((s) => { out[s] = scoped.filter((c) => eff(c) === s).length; });
     return out;
-  }, [containers]);
+  }, [scoped]);
 
   const filtered = useMemo(() => {
-    let arr = containers;
+    let arr = scoped;
     if (filter !== "ALL") arr = arr.filter((c) => eff(c) === filter);
     if (search) {
       const q = search.toLowerCase();
@@ -109,7 +143,7 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
         c.items.some((i) => hit(i.sku)));
     }
     return [...arr].sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime());
-  }, [containers, filter, search]);
+  }, [scoped, filter, search]);
 
   const summary = useMemo(() => {
     const inFlight = containers.filter((c) => eff(c) !== "DELIVERED");
@@ -213,6 +247,43 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
         />
         <MiniStat label="Dostawy w tym tygodniu" value={summary.thisWeek} sub="wg ETA (pn–nd)" icon={<I.Calendar size={14} />} />
         <MiniStat label="Dostawy w tym miesiącu" value={summary.thisMonth} sub="wg ETA" icon={<I.Calendar size={14} />} />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
+          <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
+            {[{ v: "", l: "Wszyscy" }, { v: "amh", l: "AMH" }, { v: "acti", l: "Acti" }, { v: "veluxa", l: "Veluxa" }].map((sh) => {
+              const active = shop === sh.v;
+              return (
+                <button key={sh.v || "all"} onClick={() => setShop(sh.v)} style={{
+                  padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+                  background: active ? "var(--surface-3)" : "transparent",
+                  color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
+                }}>{sh.l}</button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Producent</span>
+          <select value={mfr} onChange={(e) => setMfr(e.target.value)} style={{
+            padding: "6px 10px", fontSize: 12, borderRadius: 8, minWidth: 150,
+            background: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text-hi)",
+          }}>
+            <option value="">Wszyscy ({mfrOptions.length})</option>
+            {mfrOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </select>
+        </div>
+        {(shop || mfr) && (
+          <button onClick={() => { setShop(""); setMfr(""); }} style={{
+            padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: "pointer",
+            background: "transparent", border: "1px solid var(--border)", color: "var(--text-mid)",
+          }}>Wyczyść</button>
+        )}
+        <span style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
+          {filtered.length} z {containers.length} kontenerów
+        </span>
       </div>
 
       <ContainersToolbar
