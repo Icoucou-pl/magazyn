@@ -64,6 +64,110 @@ def _advances_from(adv_list, z_proc, z_kwota, z_wal, z_data, default_cur="USD") 
     return out
 
 
+# ── Unikalność numerów + numer roboczy (Draft-<Producent>) ────────────────────
+# Numer kontenera dostajemy dopiero po produkcji, a numer zamówienia/faktury od razu
+# przy zamówieniu. Dlatego: container_number bywa pusty (nadajemy Draft-…), a oba
+# numery muszą być unikalne — porównanie po UPPER(TRIM(...)), żeby „sk2605013 " i
+# „SK2605013" były tym samym. PO żyje na kontenerze (nieskonsolidowany) ALBO na
+# lotach (skonsolidowany), więc sprawdzamy obie tabele naraz.
+
+DRAFT_PREFIX = "DRAFT-"
+
+
+def _norm_nr(v: Optional[str]) -> Optional[str]:
+    v = (v or "").strip()
+    return v.upper() if v else None
+
+
+def _is_draft(v: Optional[str]) -> bool:
+    n = _norm_nr(v)
+    return bool(n and n.startswith(DRAFT_PREFIX))
+
+
+async def _next_draft_number(db: AsyncSession, *, manufacturer_id: Optional[int], consolidated: bool) -> str:
+    """Kolejny wolny numer roboczy: Draft-Anji, Draft-Anji2, Draft-Anji3…
+
+    Skonsolidowany kontener nie ma jednego dostawcy → Draft-Mix.
+    """
+    label = "Mix"
+    if not consolidated and manufacturer_id:
+        r = await db.execute(text(f"SELECT name FROM {settings.TABLE_MANUFACTURERS} WHERE id = :id"), {"id": manufacturer_id})
+        nm = r.scalar()
+        if nm and nm.strip():
+            label = nm.strip().replace(" ", "-")
+    base = f"Draft-{label}"
+
+    r = await db.execute(
+        text(f"""
+            SELECT UPPER(TRIM(container_number))
+            FROM {settings.TABLE_CONTAINERS}
+            WHERE UPPER(TRIM(container_number)) LIKE :pat
+        """),
+        {"pat": base.upper() + "%"},
+    )
+    used = {row[0] for row in r if row[0]}
+    if base.upper() not in used:
+        return base
+    n = 2
+    while f"{base}{n}".upper() in used:
+        n += 1
+    return f"{base}{n}"
+
+
+async def _assert_numbers_free(db: AsyncSession, *, container_number: Optional[str],
+                               order_numbers: List[Optional[str]], exclude_cid: Optional[int] = None) -> None:
+    """Rzuca 409, gdy numer kontenera albo numer zamówienia/faktury już istnieje.
+
+    order_numbers = PO kontenera i/lub PO wszystkich lotów (zależnie od wariantu).
+    """
+    cn = _norm_nr(container_number)
+    if cn:
+        r = await db.execute(
+            text(f"""
+                SELECT container_number FROM {settings.TABLE_CONTAINERS}
+                WHERE UPPER(TRIM(container_number)) = :v AND (:cid IS NULL OR id <> :cid)
+                LIMIT 1
+            """),
+            {"v": cn, "cid": exclude_cid},
+        )
+        hit = r.scalar()
+        if hit:
+            raise HTTPException(409, f"Kontener o numerze „{hit}\u201d już istnieje")
+
+    seen: set = set()
+    for raw in order_numbers:
+        v = _norm_nr(raw)
+        if not v:
+            continue
+        if v in seen:
+            raise HTTPException(409, f"Numer zamówienia „{raw}\u201d powtarza się w tym kontenerze")
+        seen.add(v)
+
+        r = await db.execute(
+            text(f"""
+                SELECT order_number FROM {settings.TABLE_CONTAINERS}
+                WHERE UPPER(TRIM(order_number)) = :v AND (:cid IS NULL OR id <> :cid)
+                LIMIT 1
+            """),
+            {"v": v, "cid": exclude_cid},
+        )
+        hit = r.scalar()
+        if hit:
+            raise HTTPException(409, f"Numer zamówienia „{hit}\u201d jest już użyty w innym kontenerze")
+
+        r = await db.execute(
+            text(f"""
+                SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
+                WHERE UPPER(TRIM(l.order_number)) = :v AND (:cid IS NULL OR l.container_id <> :cid)
+                LIMIT 1
+            """),
+            {"v": v, "cid": exclude_cid},
+        )
+        hit = r.scalar()
+        if hit:
+            raise HTTPException(409, f"Numer zamówienia „{hit}\u201d jest już użyty w locie innego kontenera")
+
+
 async def _insert_advances(db: AsyncSession, *, advances: List[dict],
                            container_id: Optional[int] = None, lot_id: Optional[int] = None) -> None:
     """Wstawia zaliczki podpięte pod kontener ALBO lot (dokładnie jedno z id)."""
@@ -209,6 +313,16 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
         raise HTTPException(400, "ETA nie może być przed datą zamówienia")
 
     cons = payload.is_consolidated
+
+    # Numer kontenera bywa nieznany przy zamówieniu (dostajemy go po produkcji) →
+    # nadajemy roboczy Draft-<Producent>. Numery pilnujemy przed INSERT-em, żeby
+    # użytkownik dostał czytelny 409 zamiast surowego błędu unikalnego indeksu.
+    nr = (payload.container_number or "").strip()
+    if not nr:
+        nr = await _next_draft_number(db, manufacturer_id=payload.manufacturer_id, consolidated=cons)
+    order_nums = ([lot.order_number for lot in (payload.lots or [])] if cons else [payload.order_number])
+    await _assert_numbers_free(db, container_number=nr, order_numbers=order_nums)
+
     default_cur = payload.waluta_towaru or "USD"
     # Zaliczki kontenera tylko dla wariantu nieskonsolidowanego (przy konsolidacji siedzą w lotach).
     cont_advs = [] if cons else _advances_from(payload.advances, payload.zaliczka_procent,
@@ -221,13 +335,13 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
             (container_number, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
              koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr,
              waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
-             balance_kwota, balance_waluta, zaplacono_data)
+             balance_kwota, balance_waluta, zaplacono_data, expected_delivery_date)
             VALUES (:n, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
                     :kt, :ks, :ktm, :fol, :sub,
-                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :pd)
+                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :pd, :edd)
             RETURNING id
         """),
-        {"n": payload.container_number,
+        {"n": nr,
          "on": (None if cons else payload.order_number),
          "tid": payload.container_type_id,
          "mid": (None if cons else payload.manufacturer_id),
@@ -244,7 +358,8 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
          "zd": (first["data"] if first else None),
          "bal": (None if cons else payload.balance_kwota),
          "bwal": (None if cons else (payload.balance_waluta or default_cur)),
-         "pd": (None if cons else payload.zaplacono_data)}
+         "pd": (None if cons else payload.zaplacono_data),
+         "edd": payload.expected_delivery_date}
     )
     cid = r.scalar_one()
 
@@ -266,6 +381,36 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
 
 @router.patch("/containers/{cid}", response_model=ContainerOut)
 async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
+    cur = (await db.execute(
+        text(f"SELECT container_number, status, is_consolidated FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
+        {"id": cid},
+    )).mappings().first()
+    if not cur:
+        raise HTTPException(404)
+
+    cons_now = payload.is_consolidated if payload.is_consolidated is not None else bool(cur["is_consolidated"])
+
+    # Wyczyszczenie numeru w formularzu nie może zostawić pustego pola — wracamy do Draft-…
+    if "container_number" in payload.model_fields_set and not (payload.container_number or "").strip():
+        payload.container_number = await _next_draft_number(
+            db,
+            manufacturer_id=(payload.manufacturer_id if payload.manufacturer_id is not None else None),
+            consolidated=cons_now,
+        )
+
+    # Numery muszą zostać unikalne także po edycji (siebie samego pomijamy).
+    order_nums: List[Optional[str]] = []
+    if payload.lots is not None:
+        order_nums = [lot.order_number for lot in payload.lots]
+    elif not cons_now and "order_number" in payload.model_fields_set:
+        order_nums = [payload.order_number]
+    await _assert_numbers_free(
+        db,
+        container_number=(payload.container_number if "container_number" in payload.model_fields_set else None),
+        order_numbers=order_nums,
+        exclude_cid=cid,
+    )
+
     updates = []
     params = {"id": cid}
     for field in ["container_number", "container_type_id", "order_date", "eta_date", "status", "notes"]:
@@ -362,6 +507,24 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
             updates.append("delivered_date = COALESCE(delivered_date, CURRENT_DATE)")
         else:
             updates.append("delivered_date = NULL")
+
+    # Wpisanie prawdziwego numeru w miejsce roboczego Draft-… znaczy, że produkcja się
+    # skończyła i kontener ruszył → przestawiamy status na „W drodze". Tylko gdy front nie
+    # narzucił statusu jawnie i gdy kontener stoi jeszcze na wcześniejszym etapie.
+    if ("container_number" in fset and payload.container_number
+            and _is_draft(cur["container_number"]) and not _is_draft(payload.container_number)
+            and payload.status is None and cur["status"] in ("ORDERED", "IN_PRODUCTION")):
+        updates.append("status = 'IN_TRANSIT'")
+
+    # Spodziewana dostawa („u nas"): umówiona data odbioru, znana zwykle w trakcie odprawy.
+    # Świadomie NIE dotyka statusu — data z przyszłości ma zostawić kontener w „Odprawie
+    # celnej" (z licznikiem do tej daty), a nie zapalić „Dostarczono". Domyka dopiero
+    # delivered_date. Wysłanie null czyści → KPI wraca do szacunku ETA + okno odprawy.
+    if "expected_delivery_date" in fset:
+        if payload.expected_delivery_date is not None:
+            updates.append("expected_delivery_date = :edd"); params["edd"] = payload.expected_delivery_date
+        else:
+            updates.append("expected_delivery_date = NULL")
 
     if updates:
         updates.append("updated_at = CURRENT_TIMESTAMP")
