@@ -206,6 +206,70 @@ async def topup_recent(session: AsyncSession, lookback_days: int = 14) -> dict:
     }
 
 
+async def refill_payment_rates(session: AsyncSession) -> dict:
+    """Dociąga z NBP dokładnie te kursy, których brakuje pod płatności za kontenery.
+
+    Waluty bierzemy Z DANYCH (zaliczki + balance), a nie z FX_CURRENCIES — dzięki temu
+    USD/CNY zadziałają nawet zanim ktoś poprawi zmienną środowiskową. Dla każdej waluty
+    pobieramy jedno okno od najstarszej brakującej daty (z zapasem 10 dni wstecz, żeby
+    złapać notowanie poprzedzające wpłatę) do najnowszej.
+
+    Idempotentne — można klikać wielokrotnie.
+    """
+    r = await session.execute(text(f"""
+        WITH pay AS (
+            SELECT UPPER(waluta) AS cur, data AS d
+            FROM {settings.TABLE_CONTAINER_ADVANCES}
+            WHERE kwota IS NOT NULL AND data IS NOT NULL
+            UNION
+            SELECT UPPER(balance_waluta), zaplacono_data
+            FROM {settings.TABLE_CONTAINERS}
+            WHERE balance_kwota IS NOT NULL AND zaplacono_data IS NOT NULL
+            UNION
+            SELECT UPPER(balance_waluta), zaplacono_data
+            FROM {settings.TABLE_CONTAINER_LOTS}
+            WHERE balance_kwota IS NOT NULL AND zaplacono_data IS NOT NULL
+        )
+        SELECT p.cur, MIN(p.d) AS od, MAX(p.d) AS do
+        FROM pay p
+        WHERE p.cur IS NOT NULL AND p.cur <> 'PLN' AND p.d <= CURRENT_DATE
+          AND NOT EXISTS (
+              SELECT 1 FROM {settings.TABLE_FX_RATES} r
+              WHERE r.currency = p.cur AND r.rate_date < p.d
+          )
+        GROUP BY p.cur
+    """))
+    gaps = [(row[0], row[1], row[2]) for row in r]
+
+    if not gaps:
+        return {"status": "ok", "inserted": 0, "by_currency": {}, "errors": [],
+                "message": "Wszystkie płatności mają kurs"}
+
+    by_currency: dict = {}
+    errors: list = []
+    total = 0
+    today = date.today()
+    for cur, d_from, d_to in gaps:
+        start = d_from - timedelta(days=10)
+        end = min(d_to, today)
+        n = 0
+        try:
+            for a, b in _chunk_ranges(start, end):
+                rows = await _fetch_range(cur, a, b)
+                n += await _upsert_rates(session, cur, rows)
+        except Exception as e:  # noqa: BLE001
+            errors.append({"currency": cur, "error": str(e)[:300]})
+        by_currency[cur] = n
+        total += n
+
+    return {
+        "status": "ok" if not errors else "partial",
+        "inserted": total,
+        "by_currency": by_currency,
+        "errors": errors,
+    }
+
+
 async def fx_status(session: AsyncSession) -> dict:
     """Diagnostyka: zakres pokrytych kursów per waluta + waluty obecne w zamówieniach
     (żeby wyłapać luki — np. waluta w danych, której nie pobieramy)."""
