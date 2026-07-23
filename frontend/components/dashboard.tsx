@@ -54,7 +54,12 @@ type ContainerOut = {
   total_value: number;
   is_consolidated?: boolean;
   subiekt_wbite?: boolean | null;
-  lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null; firma_breakdown?: Record<string, FirmaShare> }[];
+  lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null; firma_breakdown?: Record<string, FirmaShare>;
+           zaplacono_pln?: number; pozostalo_pln?: number; brak_kursu?: number }[];
+  // Płatności przeliczone na PLN po kursie NBP z dnia poprzedzającego wpłatę (liczy backend).
+  zaplacono_pln?: number;
+  pozostalo_pln?: number;
+  brak_kursu?: number;
   firma_breakdown?: Record<string, FirmaShare>;   // slug -> udział firmy (może nie przyjść ze starego backendu)
 };
 type Anomaly = {
@@ -271,26 +276,38 @@ function splitSubiekt(c: ContainerOut, shop: string) {
   const carries = (fb?: Record<string, FirmaShare>) => !shop || ((fb?.[shop]?.units ?? 0) > 0);
   const redValOf = (fb: Record<string, FirmaShare> | undefined, total: number) => shop ? (fb?.[shop]?.value ?? 0) : total;
 
+  // Udział sklepu w wartości — tym samym współczynnikiem skalujemy kwoty płatności,
+  // żeby przy zakładce Acti/Veluxa karty pokazywały część przypadającą na ten sklep.
+  const ratioOf = (fb: Record<string, FirmaShare> | undefined, total: number) =>
+    !shop ? 1 : (total > 0 ? (fb?.[shop]?.value ?? 0) / total : 0);
+
   if (consolidated) {
     const green = lots.filter((l) => !!l.subiekt_wbite);
     const red = lots.filter((l) => !l.subiekt_wbite);
     const redValue = red.reduce((s, l) => s + redValOf(l.firma_breakdown, l.total_value || 0), 0);
+    const redRemaining = red.reduce((s, l) => s + (l.pozostalo_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
+    const greenPaid = green.reduce((s, l) => s + (l.zaplacono_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
+    const missingRates = lots.reduce((s, l) => s + (l.brak_kursu ?? 0), 0);
     const relevant = lots.filter((l) => carries(l.firma_breakdown));
     const redRel = red.filter((l) => carries(l.firma_breakdown));
     const redWhole = redRel.length > 0 && redRel.length === relevant.length;
     const looseRed = (redRel.length > 0 && redRel.length < relevant.length) ? redRel.length : 0;
     const greenWhole = green.length === lots.length;
     const looseGreen = (red.length > 0 && green.length > 0) ? green.length : 0;
-    return { redValue, redWhole, looseRed, greenWhole, looseGreen };
+    return { redValue, redWhole, looseRed, greenWhole, looseGreen, redRemaining, greenPaid, missingRates };
   }
   const isRed = !c.subiekt_wbite;
   const rel = carries(c.firma_breakdown);
+  const ratio = ratioOf(c.firma_breakdown, c.total_value || 0);
   return {
     redValue: isRed ? redValOf(c.firma_breakdown, c.total_value || 0) : 0,
     redWhole: isRed && rel,
     looseRed: 0,
     greenWhole: !isRed,
     looseGreen: 0,
+    redRemaining: isRed ? (c.pozostalo_pln ?? 0) * ratio : 0,
+    greenPaid: isRed ? 0 : (c.zaplacono_pln ?? 0) * ratio,
+    missingRates: c.brak_kursu ?? 0,
   };
 }
 
@@ -318,13 +335,15 @@ const SUBIEKT_ROW_META = {
 } as const;
 
 function KpiGrid({
-  history, classification, kont, mag, shop,
+  history, classification, kont, mag, shop, missingRates, onRefillRates,
 }: {
   history: StockHistory | null;
   classification: Classification | null;
-  kont: { value: number; containers: number; looseLots: number };
-  mag: { value: number; containers: number; looseLots: number };
+  kont: { value: number; containers: number; looseLots: number; remaining: number };
+  mag: { value: number; containers: number; looseLots: number; paid: number };
   shop: string;                    // "" = wszystkie sklepy
+  missingRates: number;            // wpłaty bez notowania NBP (nie weszły do sum)
+  onRefillRates: () => void;
 }) {
   const user = useUser();
   const showFin = can(user, "viewFinancials");
@@ -336,11 +355,17 @@ function KpiGrid({
   // Magazyn w drodze jest AMH-owy (drugi magazyn subiektowy). Przy zakładce Acti/Veluxa → 0.
   const isAmhScope = shop === "" || shop === "amh";
   const magValue = isAmhScope ? mag.value : 0;
-  const magSub = isAmhScope ? countLabel(mag.containers, mag.looseLots) : "tylko AMH";
-  const kontSub = countLabel(kont.containers, kont.looseLots);
+  // „Magazyn w drodze" pokazuje wartość towaru z Subiektu, ale zapłacone jest z niej
+  // zwykle 30–40% (reszta to zaliczki jeszcze niewpłacone) — stąd druga liczba.
+  const magSub = isAmhScope
+    ? `${countLabel(mag.containers, mag.looseLots)} · zapłacone ${fmtPLNk(mag.paid)}`
+    : "tylko AMH";
+  // „Kontenery w drodze" pokazuje teraz ile JESZCZE zapłacimy, a nie wartość towaru.
+  const kontSub = `${countLabel(kont.containers, kont.looseLots)} · z ${fmtPLNk(kont.value)}`;
   const kapital = stockValue + magValue;   // kapitał w towarze: u nas + opłacone/wbite w drodze
 
   return (
+    <>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
       {showFin ? (
         <KpiCard label="Kapitał w towarze" value={fmtPLNk(kapital)} sub="magazyn + w drodze" tone="accent" icon={<I.Wallet size={14} />} />
@@ -358,12 +383,30 @@ function KpiGrid({
         <KpiCard label="Magazyn w drodze" value="•••••" sub={magSub} tone="info" icon={<I.Container size={14} />} />
       )}
       {showFin ? (
-        <KpiCard label="Kontenery w drodze" value={fmtPLNk(kont.value)} sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="Kontenery w drodze" value={fmtPLNk(kont.remaining)} sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       ) : (
         <KpiCard label="Kontenery w drodze" value="•••••" sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       )}
       <KpiCard label="Aktywne SKU" value={fmtNum(c?.ACTIVE)} sub={`${fmtNum(c?.ACTIVE_NO_STOCK)} bez stanu`} tone="ok" icon={<I.Activity size={14} />} />
     </div>
+    {showFin && missingRates > 0 && (
+      // Wpłaty bez notowania NBP nie weszły do sum — mówimy o tym wprost, zamiast po cichu
+      // zaniżać „zapłacone". Klik dociąga brakujące kursy z NBP (idempotentnie).
+      <button
+        onClick={onRefillRates}
+        style={{
+          marginTop: 8, display: "flex", alignItems: "center", gap: 7, width: "100%",
+          padding: "8px 12px", borderRadius: 8, cursor: "pointer", textAlign: "left",
+          background: "color-mix(in oklch, var(--warning) 10%, transparent)",
+          border: "1px solid color-mix(in oklch, var(--warning) 35%, transparent)",
+          color: "var(--warning)", fontSize: 11.5, fontWeight: 600,
+        }}
+      >
+        <I.Alert size={13} />
+        {missingRates} {_plPick(missingRates, "wpłata", "wpłaty", "wpłat")} bez kursu NBP — kwoty zaniżone. Kliknij, żeby dociągnąć.
+      </button>
+    )}
+    </>
   );
 }
 
@@ -808,6 +851,26 @@ export default function Dashboard({
     setTransitWh(b.transitWh);
   };
 
+  // Dociągnięcie brakujących kursów NBP z poziomu dashboardu (ADMIN-only endpoint).
+  // Po sukcesie czyścimy cache i przeładowujemy kontenery, żeby kwoty od razu się poprawiły.
+  const refillRates = async () => {
+    try {
+      const r = (await api.post("/admin/fx/refill", {})) as { inserted?: number; errors?: unknown[] };
+      const errs = (r?.errors ?? []).length;
+      if (errs > 0) {
+        toast("NBP nie odpowiedziało dla części walut — spróbuj za chwilę", "warning");
+      } else {
+        toast(r?.inserted ? `Dociągnięto ${r.inserted} kursów` : "Brak nowych kursów do pobrania", "ok");
+      }
+      cacheRef.current = {};
+      const cont = await api.get("/containers");
+      setContainers((cont as ContainerOut[]) ?? []);
+    } catch (e) {
+      const err = e as { status?: number };
+      toast(err?.status === 403 ? "Dociąganie kursów wymaga uprawnień administratora" : "Nie udało się dociągnąć kursów", "warning");
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     const cached = cacheRef.current[shop];
@@ -875,6 +938,7 @@ export default function Dashboard({
     }
 
     let redValue = 0, redContainers = 0, redLooseLots = 0, greenContainers = 0, greenLooseLots = 0;
+    let redRemaining = 0, greenPaid = 0, missingRates = 0;
     for (const c of undelivered) {
       const s = splitSubiekt(c, shop);
       redValue += s.redValue;
@@ -882,11 +946,15 @@ export default function Dashboard({
       if (s.greenWhole) greenContainers += 1;
       redLooseLots += s.looseRed;
       greenLooseLots += s.looseGreen;
+      redRemaining += s.redRemaining;
+      greenPaid += s.greenPaid;
+      missingRates += s.missingRates;
     }
     return {
       deliveries,
-      kont: { value: redValue, containers: redContainers, looseLots: redLooseLots },
-      green: { containers: greenContainers, looseLots: greenLooseLots },
+      kont: { value: redValue, containers: redContainers, looseLots: redLooseLots, remaining: redRemaining },
+      green: { containers: greenContainers, looseLots: greenLooseLots, paid: greenPaid },
+      missingRates,
     };
   }, [containers, shop]);
 
@@ -928,7 +996,7 @@ export default function Dashboard({
       {shopSelector}
       {loading ? <DashboardSkeleton gap={gap} /> : (
         <>
-          <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots }} shop={shop} />
+          <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
           {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
