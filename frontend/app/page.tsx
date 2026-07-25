@@ -260,6 +260,7 @@ export default function Page() {
             density={t.density}
             openSku={pendingProductSku}
             onOpenedSku={() => setPendingProductSku(null)}
+            onContainerClick={goContainers}
           />
         ) : view === "containers" ? (
           <ContainersView
