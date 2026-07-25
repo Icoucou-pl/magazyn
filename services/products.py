@@ -12,6 +12,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from sql import SALES_QUERY, INCOMING_QUERY
 from models import ProductSummary, IncomingDelivery
+from services.containers import compute_effective_status
+
+
+def _arrival_and_source(inc: dict):
+    """Data wejścia na magazyn dla dostawy z kontenera + skąd pochodzi.
+
+    Kolejność (jak warehouse_delivery_date przy kontenerach):
+      1. delivered_date         — potwierdzona dostawa (ręczna),
+      2. expected_delivery_date — „u nas": umówiony odbiór znany w trakcie odprawy,
+      3. eta_date + odprawa     — automat (domyślnie ETA + CONTAINER_CUSTOMS_DAYS).
+    """
+    if inc.get("delivered_date"):
+        return inc["delivered_date"], "delivered"
+    if inc.get("expected_delivery_date"):
+        return inc["expected_delivery_date"], "expected"
+    n = max(0, int(settings.CONTAINER_CUSTOMS_DAYS))
+    return inc["eta_date"] + timedelta(days=n), "estimate"
 
 
 def classify_product(row: dict) -> str:
@@ -58,20 +75,46 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
     today = date.today()
     eta_map = {}
     stock_in_transit = 0
+    transit_wbite = 0
+    transit_containers = 0
+    nearest_date = None
+    nearest_source = None
     incoming_deliveries = []
 
     for inc in incoming:
-        if inc["eta_date"] >= today:
-            eta_map.setdefault(inc["eta_date"], 0)
-            eta_map[inc["eta_date"]] += inc["quantity"]
-            stock_in_transit += inc["quantity"]
-            incoming_deliveries.append(IncomingDelivery(
-                container_id=inc["container_id"],
-                container_number=inc["container_number"],
-                eta_date=inc["eta_date"],
-                quantity=inc["quantity"],
-                status=inc["status"],
-            ))
+        arrival, src = _arrival_and_source(inc)
+        # Towar wchodzi na magazyn dnia `arrival`. Póki arrival jest dziś/w przyszłości —
+        # jest „w drodze" i NIE ma go jeszcze w stan_dostepny (to magazyn fizyczny, potwierdzone).
+        # Gdy arrival już minął — wleciał do Subiektu i nie liczymy go drugi raz.
+        # (Dawniej filtr szedł po surowej ETA i zjadał dostawę w oknie odprawy.)
+        if arrival < today:
+            continue
+        qty = inc["quantity"]
+        eta_map.setdefault(arrival, 0)
+        eta_map[arrival] += qty
+        stock_in_transit += qty
+        if inc.get("wbite"):
+            transit_wbite += qty
+        else:
+            transit_containers += qty
+        if nearest_date is None or arrival < nearest_date:
+            nearest_date, nearest_source = arrival, src
+        eff, _is_auto, _days_left = compute_effective_status(
+            inc["status"], inc["eta_date"], inc.get("expected_delivery_date"))
+        incoming_deliveries.append(IncomingDelivery(
+            container_id=inc["container_id"],
+            container_number=inc["container_number"],
+            eta_date=inc["eta_date"],
+            quantity=qty,
+            status=inc["status"],
+            warehouse_delivery_date=arrival,
+            date_source=src,
+            effective_status=eff,
+            wbite=bool(inc.get("wbite")),
+            is_consolidated=bool(inc.get("is_consolidated")),
+            lot_order_number=inc.get("lot_order_number"),
+            manufacturer_name=inc.get("manufacturer_name"),
+        ))
 
     current_stock = float(row["stock"])
     days_until_empty = 9999
@@ -112,6 +155,10 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
         purchase_price=round(price, 2),
         cena_zakupu_manual=(round(float(row["cena_zakupu_manual"]), 2) if row.get("cena_zakupu_manual") is not None else None),
         stock_in_transit=stock_in_transit,
+        stock_in_transit_wbite=transit_wbite,
+        stock_in_transit_containers=transit_containers,
+        nearest_delivery_date=nearest_date,
+        nearest_delivery_source=nearest_source,
         product_status=classify_product(row),
         cbm_per_unit=row.get("cbm_per_unit", 0),
         manufacturer_id=row.get("manufacturer_id"),
@@ -140,7 +187,7 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
         empty_date=empty_date,
         order_date=order_date,
         status=status,
-        incoming_deliveries=sorted(incoming_deliveries, key=lambda d: d.eta_date),
+        incoming_deliveries=sorted(incoming_deliveries, key=lambda d: d.warehouse_delivery_date),
     )
 
 
