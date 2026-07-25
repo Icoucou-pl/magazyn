@@ -105,7 +105,14 @@ class IncomingDelivery(BaseModel):
     container_number: str
     eta_date: date
     quantity: int
-    status: ContainerStatus
+    status: ContainerStatus                        # status surowy z bazy (dla zgodności)
+    warehouse_delivery_date: date                  # data wejścia na magazyn: delivered_date / expected / ETA+odprawa
+    date_source: str = "estimate"                  # skąd data: 'delivered' | 'expected' | 'estimate'
+    effective_status: str = "ORDERED"              # status miękki (compute_effective_status) — do pilla w modalu
+    wbite: bool = False                            # wbite do subiektowego „w drodze" (zielona kropka)
+    is_consolidated: bool = False
+    lot_order_number: Optional[str] = None         # nr PO lotu (skonsolidowane)
+    manufacturer_name: Optional[str] = None
 
 
 class ProductSummary(BaseModel):
@@ -117,6 +124,10 @@ class ProductSummary(BaseModel):
     purchase_price: float = 0  # cena zakupu efektywna (ręczna override, inaczej Subiekt)
     cena_zakupu_manual: Optional[float] = None  # ręczny override PLN netto (None = brak, jedzie z Subiektu)
     stock_in_transit: int
+    stock_in_transit_wbite: int = 0          # zielone: wbite do subiektowego „w drodze"
+    stock_in_transit_containers: int = 0     # czerwone: jeszcze w kontenerach (niewbite)
+    nearest_delivery_date: Optional[date] = None
+    nearest_delivery_source: Optional[str] = None   # 'delivered' | 'expected' | 'estimate'
     product_status: ProductStatus
     cbm_per_unit: float
     manufacturer_id: Optional[int]

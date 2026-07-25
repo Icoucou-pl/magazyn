@@ -178,9 +178,27 @@ ORDER BY p.{settings.COL_PRODUCT_SKU};
 
 
 INCOMING_QUERY = f"""
-SELECT ci.sku, c.id AS container_id, c.container_number, c.eta_date, c.status, ci.quantity
+SELECT
+    ci.sku,
+    c.id AS container_id,
+    c.container_number,
+    c.eta_date,
+    c.status,
+    c.is_consolidated,
+    c.delivered_date,
+    c.expected_delivery_date,
+    ci.quantity,
+    ci.lot_id,
+    -- „wbite" (zielona kropka) = towar wjechany do subiektowego magazynu „w drodze".
+    -- Dla skonsolidowanych flaga siedzi na locie, dla zwykłych na kontenerze.
+    COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE) AS wbite,
+    l.order_number AS lot_order_number,
+    COALESCE(lm.name, m.name) AS manufacturer_name
 FROM {settings.TABLE_CONTAINER_ITEMS} ci
 JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
+LEFT JOIN {settings.TABLE_MANUFACTURERS} lm ON lm.id = l.manufacturer_id
+LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
 WHERE c.status != 'DELIVERED'
 ORDER BY c.eta_date ASC;
 """
