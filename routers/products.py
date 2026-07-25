@@ -138,8 +138,15 @@ async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_d
     product = await get_product(db, sku)
     today = date.today()
     base_daily = product.avg_monthly_weighted / 30
-    eta_map = {d.eta_date: d.quantity for d in product.incoming_deliveries}
-    eta_names = {d.eta_date: f"#{d.container_number} +{d.quantity}" for d in product.incoming_deliveries}
+    # Dostawa wchodzi na dzień wejścia na magazyn (warehouse_delivery_date), nie na surową ETA.
+    # incoming_deliveries są już przefiltrowane (arrival >= dziś) w calculate_forecast.
+    eta_map: dict = {}
+    eta_names: dict = {}
+    for d in product.incoming_deliveries:
+        wd = d.warehouse_delivery_date
+        eta_map[wd] = eta_map.get(wd, 0) + d.quantity
+        lbl = f"#{d.container_number} +{d.quantity}"
+        eta_names[wd] = (eta_names[wd] + ", " + lbl) if wd in eta_names else lbl
     points = []
     current = float(product.stock)
     for offset in range(0, days + 1):
