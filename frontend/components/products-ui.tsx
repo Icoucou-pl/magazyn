@@ -17,6 +17,13 @@ import { fmtNum, fmtPLNk } from "@/lib/format";
 // ── Typ produktu (z /api/products) ───────────────────────────
 export type IncomingDelivery = {
   container_id: number; container_number: string; eta_date: string; status: string; quantity: number;
+  warehouse_delivery_date: string;                 // data wejścia na magazyn (delivered/expected/ETA+odprawa)
+  date_source: "delivered" | "expected" | "estimate";
+  effective_status: string;                        // status miękki (ORDERED/IN_PRODUCTION/IN_TRANSIT/CUSTOMS/DELIVERED)
+  wbite: boolean;                                  // wbite do subiektowego „w drodze" (zielona kropka)
+  is_consolidated: boolean;
+  lot_order_number: string | null;                 // nr PO lotu (skonsolidowane)
+  manufacturer_name: string | null;
 };
 export type Product = {
   sku: string;
@@ -27,6 +34,10 @@ export type Product = {
   purchase_price: number;
   cena_zakupu_manual?: number | null;
   stock_in_transit: number;
+  stock_in_transit_wbite: number;        // zielone: wbite do subiektowego „w drodze"
+  stock_in_transit_containers: number;   // czerwone: jeszcze w kontenerach (niewbite)
+  nearest_delivery_date: string | null;
+  nearest_delivery_source: "delivered" | "expected" | "estimate" | null;
   product_status: "ACTIVE" | "ACTIVE_NO_STOCK" | "DEAD_STOCK" | "INACTIVE" | "SAMPLE";
   cbm_per_unit: number;
   manufacturer_id: number | null;

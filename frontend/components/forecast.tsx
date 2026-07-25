@@ -77,10 +77,13 @@ function projectProduct(p: Product, monthCols: MonthCol[], curve: number[] | nul
   const today = new Date();
   const deliveriesByMonth: Record<number, number> = {};
   (p.incoming_deliveries || []).forEach((d) => {
-    if (!d.eta_date) return;
-    const eta = new Date(d.eta_date);
-    if (isNaN(eta.getTime())) return;
-    const offset = (eta.getFullYear() - today.getFullYear()) * 12 + (eta.getMonth() - today.getMonth());
+    // Miesiąc dostawy liczymy po dacie wejścia na magazyn (ETA+odprawa albo znana data),
+    // nie po surowej ETA — spójnie z modalem produktu i backendem.
+    const arrivalIso = d.warehouse_delivery_date || d.eta_date;
+    if (!arrivalIso) return;
+    const arrival = new Date(arrivalIso);
+    if (isNaN(arrival.getTime())) return;
+    const offset = (arrival.getFullYear() - today.getFullYear()) * 12 + (arrival.getMonth() - today.getMonth());
     if (offset < 0 || offset >= monthCols.length) return;
     deliveriesByMonth[offset] = (deliveriesByMonth[offset] || 0) + d.quantity;
   });

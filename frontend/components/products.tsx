@@ -31,11 +31,12 @@ const sortVal = (p: Product, key: keyof Product): number | string => {
 };
 
 export default function ProductsView({
-  density, openSku, onOpenedSku,
+  density, openSku, onOpenedSku, onContainerClick,
 }: {
   density?: string;
   openSku?: string | null;
   onOpenedSku?: () => void;
+  onContainerClick?: (id: number) => void;
 }) {
   const gap = density === "compact" ? 10 : 12;
   const showFin = can(useUser(), "viewFinancials");
@@ -272,6 +273,7 @@ export default function ProductsView({
           firmy={firmy}
           onClose={() => setSelectedProduct(null)}
           onUpdated={onProductUpdated}
+          onContainerClick={onContainerClick}
         />
       )}
     </div>

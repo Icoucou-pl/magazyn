@@ -36,8 +36,10 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const deliveries: Delivery[] = (product.incoming_deliveries || [])
     .map((d) => {
-      const eta = new Date(d.eta_date);
-      const day = Math.round((eta.getTime() - today.getTime()) / 86400000);
+      // Dzień na wykresie liczymy od daty wejścia na magazyn (ETA+odprawa albo znana data),
+      // nie od surowej ETA — inaczej dostawa znikała w oknie odprawy.
+      const arrival = new Date(d.warehouse_delivery_date);
+      const day = Math.round((arrival.getTime() - today.getTime()) / 86400000);
       return { day, qty: d.quantity, container: d.container_number, eta: d.eta_date, status: d.status };
     })
     .filter((d) => d.day >= 0 && d.day <= 180)
@@ -56,13 +58,14 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
 }
 
 export default function ProductModal({
-  product: initialProduct, manufacturers, firmy, onClose, onUpdated,
+  product: initialProduct, manufacturers, firmy, onClose, onUpdated, onContainerClick,
 }: {
   product: Product;
   manufacturers: Manufacturer[];
   firmy?: Firma[];
   onClose: () => void;
   onUpdated?: (p: Product) => void;
+  onContainerClick?: (id: number) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -115,6 +118,16 @@ export default function ProductModal({
   const monthsStr = monthsDisplay(product.months_of_stock);
   const monthsTone = monthsStr === "∞" ? "neutral" : product.months_of_stock < 1 ? "critical" : product.months_of_stock < 2 ? "warning" : "neutral";
 
+  // KPI „Najbliższa dostawa" — data wejścia na magazyn + skąd pochodzi.
+  const nearestDelivery: { value: React.ReactNode; sub: string; tone: "neutral" | "info" | "ok" } =
+    product.nearest_delivery_date
+      ? {
+          value: fmtDay(product.nearest_delivery_date),
+          sub: product.nearest_delivery_source === "estimate" ? "szac. · ETA+7" : "potwierdzona",
+          tone: product.nearest_delivery_source === "estimate" ? "info" : "ok",
+        }
+      : { value: "—", sub: "brak dostaw", tone: "neutral" };
+
   return (
     <Portal>
       <div onClick={onClose} style={modalBackdrop}>
@@ -145,7 +158,9 @@ export default function ProductModal({
         <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
             <MetricBox label="Stan" value={product.stock} sub={showFin ? fmtPLN(product.stock_value) : "•••••"} tone={product.stock === 0 ? "critical" : "neutral"} />
-            <MetricBox label="W drodze" value={product.stock_in_transit > 0 ? `+${product.stock_in_transit}` : "—"} sub={product.stock_in_transit > 0 ? "oczekuje na dostawę" : "brak dostaw"} tone="info" />
+            <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do Subiektu" : "nic wbitego"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
+            <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
+            <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
             <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
             <MetricBox label="Mies. zapasu" value={monthsStr === "∞" ? "∞" : monthsStr + "m"} sub={product.days_until_empty < 365 ? `${product.days_until_empty}d do końca` : "brak ruchu"} tone={monthsTone} />
           </div>
@@ -162,9 +177,7 @@ export default function ProductModal({
             {proj ? <StockProjectionChart projection={proj} product={product} /> : <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />}
           </Section>
 
-          <Section title="Sprzedaż i porównanie YoY">
-            <SalesBars product={product} />
-          </Section>
+          <ContainersSection product={product} onContainerClick={onContainerClick} onClose={onClose} />
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
             <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} />
@@ -189,11 +202,14 @@ export default function ProductModal({
 }
 
 // ── Metric box ───────────────────────────────────────────────
-function MetricBox({ label, value, sub, tone = "neutral" }: { label: string; value: React.ReactNode; sub?: string; tone?: "neutral" | "critical" | "warning" | "info" | "ok" }) {
+function MetricBox({ label, value, sub, tone = "neutral", dot }: { label: string; value: React.ReactNode; sub?: string; tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string }) {
   const color = { neutral: "var(--text-hi)", critical: "var(--critical)", warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)" }[tone];
   return (
     <div style={{ padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>{label}</div>
+      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 5 }}>
+        {dot && <span style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />}
+        {label}
+      </div>
       <div className="num" style={{ fontSize: 22, fontWeight: 600, color, lineHeight: 1.1, marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{sub}</div>}
     </div>
@@ -340,35 +356,110 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
   );
 }
 
-// ── Słupki sprzedaży ─────────────────────────────────────────
-function SalesBars({ product: p }: { product: Product }) {
-  const bars = [
-    { label: "1m", value: p.sales_1m, group: "recent" },
-    { label: "2m", value: p.sales_2m, group: "recent" },
-    { label: "3m", value: p.sales_3m, group: "recent" },
-    { label: "4m", value: p.sales_4m, group: "recent" },
-    { label: "rok t.", value: p.sales_yoy_30d, group: "yoy" },
-    { label: "+30d", value: p.sales_yoy_next_30d, group: "yoy" },
-  ];
-  const max = Math.max(...bars.map((b) => b.value), 1);
+// ── Sekcja: kontenery z tym SKU ──────────────────────────────
+function fmtDay(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+// Etykieta + kolor dla statusu miękkiego kontenera (spójne z listą kontenerów).
+const CSTATUS: Record<string, { label: string; color: string; soft: string }> = {
+  ORDERED: { label: "Zamówione", color: "var(--text-mid)", soft: "var(--surface-2)" },
+  IN_PRODUCTION: { label: "W produkcji", color: "var(--anomaly)", soft: "var(--anomaly-soft)" },
+  IN_TRANSIT: { label: "W drodze", color: "var(--info)", soft: "var(--info-soft)" },
+  CUSTOMS: { label: "Odprawa celna", color: "var(--warning)", soft: "var(--warning-soft)" },
+  DELIVERED: { label: "Dostarczone", color: "var(--ok)", soft: "var(--ok-soft)" },
+};
+
+type CardAgg = {
+  container_id: number; container_number: string; effective_status: string;
+  warehouse_delivery_date: string; date_source: string; eta_date: string;
+  wbite: boolean; is_consolidated: boolean; lot_order_number: string | null;
+  manufacturer_name: string | null; qty: number;
+};
+
+function ContainersSection({ product, onContainerClick, onClose }: { product: Product; onContainerClick?: (id: number) => void; onClose: () => void }) {
+  // Grupujemy po kontenerze (ten sam SKU zwykle jest raz na kontener, ale na wszelki wypadek sumujemy).
+  const byContainer = new Map<number, CardAgg>();
+  for (const d of product.incoming_deliveries || []) {
+    const ex = byContainer.get(d.container_id);
+    if (ex) { ex.qty += d.quantity; continue; }
+    byContainer.set(d.container_id, {
+      container_id: d.container_id, container_number: d.container_number,
+      effective_status: d.effective_status, warehouse_delivery_date: d.warehouse_delivery_date,
+      date_source: d.date_source, eta_date: d.eta_date, wbite: d.wbite,
+      is_consolidated: d.is_consolidated, lot_order_number: d.lot_order_number,
+      manufacturer_name: d.manufacturer_name, qty: d.quantity,
+    });
+  }
+  const cards = [...byContainer.values()].sort((a, b) => a.warehouse_delivery_date.localeCompare(b.warehouse_delivery_date));
+  if (cards.length === 0) return null;
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const relDays = (iso: string) => {
+    const d = new Date(iso); d.setHours(0, 0, 0, 0);
+    const n = Math.round((d.getTime() - today.getTime()) / 86400000);
+    if (n === 0) return "dziś"; if (n < 0) return `${-n}d temu`; return `za ${n}d`;
+  };
+  const totalQty = cards.reduce((s, c) => s + c.qty, 0);
+
+  const go = (id: number) => { onContainerClick?.(id); onClose(); };
+
   return (
-    <div style={{ padding: 18, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
-        {bars.map((b, i) => (
-          <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <div style={{ width: "100%", height: 80, background: "var(--surface-2)", borderRadius: 6, display: "flex", flexDirection: "column-reverse", overflow: "hidden" }}>
-              <div style={{ height: `${(b.value / max) * 100}%`, background: b.group === "yoy" ? "var(--anomaly)" : "var(--accent)", opacity: b.group === "yoy" ? 0.8 : 1, transition: "height 0.4s" }} />
+    <Section title="Kontenery z tym SKU" hint={`${cards.length} ${cards.length === 1 ? "dostawa" : "dostawy"} · ${totalQty} szt`}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {cards.map((c) => {
+          const meta = CSTATUS[c.effective_status] || CSTATUS.IN_TRANSIT;
+          const est = c.date_source === "estimate";
+          const qtyColor = c.wbite ? "var(--ok)" : "var(--info)";
+          return (
+            <div key={c.container_id} onClick={onContainerClick ? () => go(c.container_id) : undefined} role={onContainerClick ? "button" : undefined}
+              style={{ position: "relative", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 12, overflow: "hidden", cursor: onContainerClick ? "pointer" : "default" }}>
+              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: meta.color }} />
+              {onContainerClick && <div style={{ position: "absolute", right: 12, top: 12, color: "var(--text-disabled)", fontSize: 16 }}>›</div>}
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 34px 10px 14px" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="mono" style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" }}>#{c.container_number}</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7 }}>
+                    <Pill bg={meta.soft} fg={meta.color} dot={meta.color} size="sm">{meta.label}</Pill>
+                    {c.is_consolidated && <Pill bg="var(--warning-soft)" fg="var(--warning)" size="sm">Skonsolidowany</Pill>}
+                    {c.is_consolidated && c.lot_order_number && <span className="mono" style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 20, background: "var(--surface-2)", color: "var(--text-mid)" }}>{c.lot_order_number}</span>}
+                    {c.manufacturer_name && <MfrChip name={c.manufacturer_name} color="var(--text-lo)" size="sm" />}
+                    {c.wbite && <Pill bg="var(--ok-soft)" fg="var(--ok)" dot="var(--ok)" size="sm">wbite</Pill>}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div className="num" style={{ fontSize: 19, fontWeight: 700, color: qtyColor, lineHeight: 1 }}>+{c.qty}</div>
+                  <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 2 }}>szt</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "var(--bg-elevated)", borderTop: "1px solid var(--border-soft)" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-lo)", marginBottom: 2 }}>Spodziewana dostawa</div>
+                  <div className="num" style={{ fontSize: 14, fontWeight: 700, letterSpacing: "-0.01em" }}>{fmtDay(c.warehouse_delivery_date)}</div>
+                  <div style={{ fontSize: 10, marginTop: 2 }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 600, padding: "2px 6px", borderRadius: 6, background: est ? "var(--info-soft)" : "var(--ok-soft)", color: est ? "var(--info)" : "var(--ok)" }}>
+                      {est ? "◷ szac. · ETA+7" : "✓ potwierdzona"}
+                    </span>
+                  </div>
+                </div>
+                <div style={{ width: 1, alignSelf: "stretch", background: "var(--border-soft)" }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-lo)", marginBottom: 2 }}>ETA (port)</div>
+                  <div className="num" style={{ fontSize: 14, fontWeight: 700, color: "var(--text-mid)", letterSpacing: "-0.01em" }}>{fmtDay(c.eta_date)}</div>
+                  <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 2 }}>{relDays(c.eta_date)}</div>
+                </div>
+              </div>
             </div>
-            <div className="num" style={{ fontSize: 14, fontWeight: 600, marginTop: 5 }}>{b.value}</div>
-            <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{b.label}</div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <div style={{ display: "flex", gap: 14, marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border-soft)", fontSize: 10, color: "var(--text-lo)" }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--accent)" }} /> Sprzedaż ostatnich miesięcy</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--anomaly)" }} /> Porównanie YoY (rok temu)</span>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 10, fontSize: 10, color: "var(--text-lo)" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ fontWeight: 600, padding: "1px 5px", borderRadius: 5, background: "var(--info-soft)", color: "var(--info)" }}>szac.</span> ETA + 7 dni (okno odprawy)</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ fontWeight: 600, padding: "1px 5px", borderRadius: 5, background: "var(--ok-soft)", color: "var(--ok)" }}>potwierdzona</span> znana data odbioru</span>
       </div>
-    </div>
+    </Section>
   );
 }
 
