@@ -213,7 +213,7 @@ export function ContainersToolbar({
           const m = STATUS_FULL_META[s];
           const Icon = m.icon;
           return (
-            <FilterChip key={s} active={filter === s} onClick={() => setFilter(s)} count={counts[s]} accent={m.accent}>
+            <FilterChip key={s} active={filter === s} onClick={() => setFilter(s)} count={counts[s]} accent={m.accent} soft={m.bg}>
               <Icon size={11} /> {m.label}
             </FilterChip>
           );
@@ -233,11 +233,30 @@ export function ContainersToolbar({
   );
 }
 
-function FilterChip({ children, active, onClick, count, accent }: { children: React.ReactNode; active: boolean; onClick: () => void; count: number; accent?: string }) {
+function FilterChip({ children, active, onClick, count, accent, soft }: { children: React.ReactNode; active: boolean; onClick: () => void; count: number; accent?: string; soft?: string }) {
+  const colored = !!accent;
+  // Kolor statusu widoczny zawsze (ikona + tekst), tło delikatnie podbarwione.
+  // Stan aktywny: mocniejsze tło + obwódka w kolorze statusu (bez legendy obok).
+  const idleBg = colored ? `color-mix(in oklch, ${accent} 9%, transparent)` : "transparent";
+  const activeBg = colored ? (soft || `color-mix(in oklch, ${accent} 18%, transparent)`) : "var(--surface-3)";
+  const hoverBg = colored ? `color-mix(in oklch, ${accent} 15%, transparent)` : "var(--surface-3)";
+  const fg = colored ? accent : (active ? "var(--text-hi)" : "var(--text-mid)");
   return (
-    <button onClick={onClick} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 11px", background: active ? "var(--surface-3)" : "transparent", color: active ? (accent || "var(--text-hi)") : "var(--text-mid)", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 500, transition: "all 0.12s" }}>
+    <button onClick={onClick}
+      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = hoverBg; }}
+      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = idleBg; }}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 11px",
+        background: active ? activeBg : idleBg, color: fg,
+        border: `1px solid ${active && colored ? accent : "transparent"}`,
+        borderRadius: 6, fontSize: 12, fontWeight: active ? 600 : 500, transition: "all 0.12s",
+      }}>
       {children}
-      <span className="num" style={{ fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 99, background: active ? "var(--accent-soft)" : "var(--surface-3)", color: active ? "var(--accent)" : "var(--text-lo)" }}>{count}</span>
+      <span className="num" style={{
+        fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 99,
+        background: colored ? `color-mix(in oklch, ${accent} 18%, transparent)` : (active ? "var(--accent-soft)" : "var(--surface-3)"),
+        color: colored ? accent : (active ? "var(--accent)" : "var(--text-lo)"),
+      }}>{count}</span>
     </button>
   );
 }
