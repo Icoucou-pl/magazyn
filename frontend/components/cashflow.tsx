@@ -101,6 +101,7 @@ function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
   const [tab, setTab] = useState<"due" | "paid">("due");
   const [shop, setShop] = useState("");
   const [cur, setCur] = useState("PLN");
+  const [year, setYear] = useState("2026");
   const [hoveredMfr, setHoveredMfr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -121,6 +122,14 @@ function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
   const events = resp?.events ?? [];
   const rt = resp?.rate_today ?? {};
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
+  const yearOpts = useMemo<[string, string][]>(() => {
+    const ys = new Set<string>();
+    events.forEach(e => { if (e.eta) ys.add(e.eta.slice(0, 4)); if (e.data) ys.add(e.data.slice(0, 4)); });
+    return [["all", "Wszystkie"], ...[...ys].sort().map(y => [y, y] as [string, string])];
+  }, [events]);
+  useEffect(() => {
+    if (year !== "all" && !yearOpts.some(([v]) => v === year)) setYear("all");
+  }, [yearOpts, year]);
 
   if (loading) {
     return <div className="fade-in" style={{ padding: 48, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>Ładowanie…</div>;
@@ -142,15 +151,18 @@ function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
         </div>
       </div>
 
-      {/* Filtry: sklep + waluta */}
+      {/* Filtry: sklep + rok + waluta */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <Seg label="Sklep" options={SHOPS} value={shop} onChange={setShop} />
+        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+          <Seg label="Sklep" options={SHOPS} value={shop} onChange={setShop} />
+          {yearOpts.length > 1 && <Seg label="Rok" options={yearOpts} value={year} onChange={setYear} />}
+        </div>
         <Seg label="Waluta" options={CURS.map(c => [c, c] as [string, string])} value={cur} onChange={setCur} />
       </div>
 
       {tab === "due"
-        ? <DueTab events={scoped} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />
-        : <PaidTab events={scoped} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />}
+        ? <DueTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />
+        : <PaidTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />}
 
       {/* Nota kontekstowa */}
       <div style={noteStyle}>
@@ -163,8 +175,9 @@ function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
 }
 
 // ── ZAKŁADKA: DO ZAPŁATY (bucket po ETA) ─────────────────────
-function DueTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
-  const open = useMemo(() => events.filter(e => e.status !== "paid"), [events]);
+function DueTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
+  const open = useMemo(() => events.filter(e =>
+    e.status !== "paid" && (year === "all" || (!!e.eta && e.eta.slice(0, 4) === year))), [events, year]);
   const agg = useMemo(() => aggregate(open, cur, rt, "eta"), [open, cur, rt]);
   const next30 = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -195,8 +208,9 @@ function DueTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerC
 }
 
 // ── ZAKŁADKA: ZAPŁACONO (bucket po dacie płatności) ──────────
-function PaidTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
-  const paid = useMemo(() => events.filter(e => e.status === "paid"), [events]);
+function PaidTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
+  const paid = useMemo(() => events.filter(e =>
+    e.status === "paid" && (year === "all" || (!!e.data && e.data.slice(0, 4) === year))), [events, year]);
   const agg = useMemo(() => aggregate(paid, cur, rt, "data"), [paid, cur, rt]);
   const last30 = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -455,7 +469,7 @@ function Seg({ label, options, value, onChange }: { label: string; options: [str
 }
 
 type TabProps = {
-  events: LedgerEvent[]; cur: string; rt: Record<string, number>; shop: string;
+  events: LedgerEvent[]; cur: string; rt: Record<string, number>; shop: string; year: string;
   hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: () => void;
 };
 
