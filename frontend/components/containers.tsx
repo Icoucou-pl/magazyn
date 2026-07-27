@@ -6,7 +6,7 @@
 //   Formularz CRUD + załączniki: etap 3b.
 // ============================================================
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { fmtPLNk } from "@/lib/format";
@@ -21,7 +21,7 @@ import AutoSuggestModal from "./auto-suggest";
 import OrderPdfModal from "./order-pdf";
 import type { Product, Manufacturer } from "./products-ui";
 
-export default function ContainersView({ density, openId, onOpenedId, openNewAutoSuggest, onOpenedNewAutoSuggest, autoSuggestMfrId }: { density?: string; openId?: number | null; onOpenedId?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void; autoSuggestMfrId?: number | null }) {
+export default function ContainersView({ density, openId, onOpenedId, onDeepLinkClose, openNewAutoSuggest, onOpenedNewAutoSuggest, autoSuggestMfrId }: { density?: string; openId?: number | null; onOpenedId?: () => void; onDeepLinkClose?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void; autoSuggestMfrId?: number | null }) {
   const gap = density === "compact" ? 10 : 14;
   const showFin = can(useUser(), "viewFinancials");
   const canPO = can(useUser(), "generatePO");
@@ -75,12 +75,14 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
   const openNew = () => { setEditing(null); setShowForm(true); };
   const openEdit = (c: Container) => { setEditing(c); setShowForm(true); };
   const openAutoSuggest = (mfrId: number | null = null) => { setAutoSuggestMfr(mfrId); setAutoSuggestOpen(true); };
+  // True gdy formularz otwarto deep-linkiem (openId z innego widoku) — wtedy zamknięcie ma wrócić do źródła.
+  const deepLinkRef = useRef(false);
 
   // Deep-link z globalnej wyszukiwarki: otwórz konkretny kontener po id
   useEffect(() => {
     if (openId == null || !containers.length) return;
     const c = containers.find((x) => x.id === openId);
-    if (c) { openEdit(c); onOpenedId?.(); }
+    if (c) { deepLinkRef.current = true; openEdit(c); onOpenedId?.(); }
   }, [openId, containers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Wywołanie z Dashboardu / szybkiej akcji: otwórz nowy kontener w trybie autosugestii
@@ -324,7 +326,11 @@ export default function ContainersView({ density, openId, onOpenedId, openNewAut
           manufacturers={manufacturers}
           containerTypes={containerTypes}
           products={products}
-          onClose={() => { setShowForm(false); reload(); }}
+          onClose={() => {
+            setShowForm(false);
+            if (deepLinkRef.current) { deepLinkRef.current = false; onDeepLinkClose?.(); }
+            else { reload(); }
+          }}
           onSaved={reload}
           onDeleted={reload}
         />
