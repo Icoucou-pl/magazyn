@@ -171,12 +171,6 @@ export default function ContainerFormModal({
   const [busy, setBusy] = useState(false);
   const [coverMonths, setCoverMonths] = useState("6");  // horyzont pokrycia dla autosugestii (mies.)
 
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
-
   const productBySku = useMemo(() => {
     const m = new Map<string, Product>();
     products.forEach((p) => m.set(p.sku, p));
@@ -439,8 +433,8 @@ export default function ContainerFormModal({
 
   return (
     <Portal>
-      <div onClick={onClose} style={modalBackdrop}>
-        <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
+      <div style={modalBackdrop}>
+        <div className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
           {/* Header */}
           <div style={{ padding: "14px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
