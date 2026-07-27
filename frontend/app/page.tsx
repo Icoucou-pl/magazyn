@@ -274,7 +274,7 @@ export default function Page() {
         ) : view === "calendar" ? (
           <Calendar density={t.density} />
         ) : view === "cashflow" ? (
-          <CashflowView onContainerClick={() => setView("containers")} />
+          <CashflowView onContainerClick={goContainers} />
         ) : view === "forecast" ? (
           <ForecastView
             density={t.density}
