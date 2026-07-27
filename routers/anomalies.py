@@ -75,7 +75,7 @@ async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncS
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     if favorites_only:
         products = [p for p in products if p.is_favorite]
-    needing = [p for p in products if p.status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and p.avg_monthly_weighted >= 1]
+    needing = [p for p in products if p.status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and p.avg_monthly_weighted >= 1 and not p.no_reorder]
 
     mfr_result = await db.execute(text(f"SELECT id, name, color, email FROM {settings.TABLE_MANUFACTURERS}"))
     mfr_emails = {r._mapping["id"]: r._mapping["email"] for r in mfr_result}

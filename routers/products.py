@@ -314,6 +314,27 @@ async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
     return await get_product(db, sku)
 
 
+@router.put("/products/{sku:path}/no-reorder", response_model=ProductSummary)
+async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db)):
+    """Przełącza „nie dozamawiamy" — produkt znika z pożarów i całego flow zamawiania
+    (lista zakupów, auto-sugestia, lista AI), ale zostaje żywy w Produktach/sprzedaży/wyprzedaży.
+    Nie rusza statusu ani klasyfikacji — to nie INACTIVE/DEAD_STOCK."""
+    existing = await db.execute(text(f"SELECT no_reorder FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    e = existing.first()
+    new_val = not e.no_reorder if e else True
+
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, no_reorder, updated_at)
+            VALUES (:sku, :nr, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET no_reorder = EXCLUDED.no_reorder, updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "nr": new_val}
+    )
+    await db.commit()
+    return await get_product(db, sku)
+
+
 @router.get("/favorites", response_model=List[ProductSummary])
 async def list_favorites(shop: str = "", db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Zwraca tylko ulubione produkty."""
