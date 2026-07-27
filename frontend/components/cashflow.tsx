@@ -20,6 +20,7 @@ import { toast } from "./toast";
 // ── Typy ─────────────────────────────────────────────────────
 type Status = "paid" | "plan" | "open";
 type LedgerEvent = {
+  id: number;
   kontener: string; po: string | null;
   mfr_id: number | null; mfr_name: string; mfr_color: string;
   shop: string; shop_name: string;
@@ -95,7 +96,7 @@ function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number
 }
 
 // ── Widok główny ─────────────────────────────────────────────
-function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
+function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) => void }) {
   const [resp, setResp] = useState<LedgerResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"due" | "paid">("due");
@@ -244,7 +245,7 @@ function PaidTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onCon
 type Titles = { breakdown: string; barsTitle: string; barsHint: string; drillTitle: string; drillHint: string; empty: string };
 function BucketBody({ agg, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick, titles }: {
   agg: Agg; cur: string; rt: Record<string, number>; shop: string;
-  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: () => void; titles: Titles;
+  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: (id: number) => void; titles: Titles;
 }) {
   const colorOf = (mk: string) => agg.mfrs.find(m => m.id === mk)?.color || "var(--text-lo)";
   const nameOf = (mk: string) => agg.mfrs.find(m => m.id === mk)?.name || "—";
@@ -286,7 +287,7 @@ function BucketBody({ agg, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainer
 function MonthRow({ month: m, maxTotal, cur, rt, shop, hoveredMfr, colorOf, nameOf, isLast, onContainerClick }: {
   month: Bucket; maxTotal: number; cur: string; rt: Record<string, number>; shop: string;
   hoveredMfr: string | null; colorOf: (k: string) => string; nameOf: (k: string) => string;
-  isLast: boolean; onContainerClick?: () => void;
+  isLast: boolean; onContainerClick?: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const segs = Object.entries(m.byMfr).sort((a, b) => b[1] - a[1]);
@@ -323,7 +324,7 @@ function MonthRow({ month: m, maxTotal, cur, rt, shop, hoveredMfr, colorOf, name
 
 // ── Wiersz płatności ─────────────────────────────────────────
 function PayRow({ e, cur, rt, shop, onContainerClick }: {
-  e: LedgerEvent; cur: string; rt: Record<string, number>; shop: string; onContainerClick?: () => void;
+  e: LedgerEvent; cur: string; rt: Record<string, number>; shop: string; onContainerClick?: (id: number) => void;
 }) {
   const est = e.status !== "paid";
   const dateColor = e.status === "plan" ? "var(--warning)" : (e.status === "open" ? "var(--text-lo)" : "var(--text-mid)");
@@ -334,7 +335,7 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
     : fmtCur(e.kwota, e.waluta);
 
   return (
-    <div onClick={() => onContainerClick?.()} style={{
+    <div onClick={() => onContainerClick?.(e.id)} style={{
       display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto auto auto", gap: 12, alignItems: "center",
       padding: "8px 12px", background: "var(--surface-1)", border: "1px solid var(--border-soft)",
       borderRadius: 7, cursor: onContainerClick ? "pointer" : "default",
@@ -470,7 +471,7 @@ function Seg({ label, options, value, onChange }: { label: string; options: [str
 
 type TabProps = {
   events: LedgerEvent[]; cur: string; rt: Record<string, number>; shop: string; year: string;
-  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: () => void;
+  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: (id: number) => void;
 };
 
 const emptyStyle: React.CSSProperties = { padding: 26, textAlign: "center", color: "var(--text-lo)", fontSize: 12 };
