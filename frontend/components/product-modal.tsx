@@ -110,6 +110,14 @@ export default function ProductModal({
     } catch { toast("Nie udało się zmienić obserwowania", "warning"); }
   };
 
+  const toggleNoReorder = async () => {
+    try {
+      const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/no-reorder`)) as Product;
+      applyUpdate(updated);
+      toast(updated.no_reorder ? "Ukryto z zamawiania" : "Przywrócono do zamawiania", "ok");
+    } catch { toast("Nie udało się zmienić", "warning"); }
+  };
+
   const statusKey = displayStatus(product);
   const statusMeta = STATUS_META[statusKey] || (statusKey === "DEAD_STOCK"
     ? { label: "DEAD STOCK", bg: "var(--surface-3)", fg: "var(--text-lo)", dot: "var(--text-disabled)" }
@@ -140,6 +148,7 @@ export default function ProductModal({
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <StatusPillExt status={statusKey} size="md" />
                 {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
+                {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
                 {product.manufacturer_id && product.manufacturer_name && <MfrChip name={product.manufacturer_name} color={product.manufacturer_color ?? "var(--text-lo)"} size="md" />}
               </div>
               <div className="mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 10, color: "var(--text-hi)", letterSpacing: "-0.01em" }}>{product.sku}</div>
@@ -148,6 +157,11 @@ export default function ProductModal({
             <div style={{ display: "flex", gap: 6 }}>
               <button onClick={toggleFav} style={iconBtnHeader} title={product.is_favorite ? "Usuń z obserwowanych" : "Obserwuj"}>
                 {product.is_favorite ? <I.StarFill size={16} /> : <I.Star size={16} />}
+              </button>
+              <button onClick={toggleNoReorder}
+                style={product.no_reorder ? { ...iconBtnHeader, background: "var(--info-soft)", color: "var(--info)" } : iconBtnHeader}
+                title={product.no_reorder ? "Przywróć do zamawiania (pokaż w pożarach)" : "Nie dozamawiamy — ukryj z pożarów i zamawiania"}>
+                <I.Flame size={16} />
               </button>
               <button onClick={onClose} style={iconBtnHeader} title="Zamknij"><I.Close size={16} /></button>
             </div>

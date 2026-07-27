@@ -48,6 +48,7 @@ export type Product = {
   firma_color: string | null;
   seasonality_enabled: boolean;
   is_favorite: boolean;
+  no_reorder?: boolean;
   is_sample: boolean;      // etykieta: produkt próbny — poza auto-sugestią, listą zakupów i anomaliami
   sample_stock: number;    // ręczny stan; liczy się tylko dla SKU spoza Subiektu i Sellasista
   ean: string | null;

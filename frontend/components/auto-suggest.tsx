@@ -155,7 +155,7 @@ export default function AutoSuggestModal({
     if (!manufacturerId || !containerTypeId) { toast("Wybierz producenta i typ kontenera", "warning"); return; }
     const ct = containerTypes.find((t) => String(t.id) === containerTypeId);
     const capacity = ct?.capacity_cbm || 0;
-    const pool = products.filter((p) => p.manufacturer_id === Number(manufacturerId));
+    const pool = products.filter((p) => p.manufacturer_id === Number(manufacturerId) && !p.no_reorder);
     setLoading(true);
     setTimeout(() => {
       const items = computeContainerFill(pool, capacity, monthsHorizon);
@@ -296,7 +296,7 @@ function Step1({
 
   const preview = useMemo(() => {
     if (!manufacturerId) return null;
-    const mfrProducts = products.filter((p) => p.manufacturer_id === Number(manufacturerId) && (p.avg_monthly_weighted || 0) > 0);
+    const mfrProducts = products.filter((p) => p.manufacturer_id === Number(manufacturerId) && (p.avg_monthly_weighted || 0) > 0 && !p.no_reorder);
     const needing = mfrProducts.filter((p) => p.avg_monthly_weighted * monthsHorizon - p.stock - p.stock_in_transit > 0);
     return { total: mfrProducts.length, needing: needing.length };
   }, [manufacturerId, monthsHorizon, products]);

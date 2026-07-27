@@ -518,7 +518,7 @@ const listScroll = (open: boolean): React.CSSProperties =>
   open ? { maxHeight: 420, overflowY: "auto" } : {};
 
 // ── Pożary ───────────────────────────────────────────────────
-function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProductClick?: (p: ClickTarget) => void }) {
+function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProduct[]; onProductClick?: (p: ClickTarget) => void; onNoReorder?: (sku: string) => void }) {
   const { shown, hidden, open, toggle } = useExpandable(fires);
   return (
     <Card>
@@ -554,6 +554,15 @@ function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProd
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-lo)" }}>do końca</div>
               </div>
+              {onNoReorder && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onNoReorder(p.sku); }}
+                  title="Nie dozamawiamy — ukryj z pożarów i zamawiania (odwracalne w karcie produktu)"
+                  style={{ flexShrink: 0, width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", border: "none", borderRadius: 6, background: "transparent", color: "var(--text-disabled)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-3)"; e.currentTarget.style.color = "var(--text-mid)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-disabled)"; }}
+                >✕</button>
+              )}
             </div>
           </HoverRow>
         ))}
@@ -926,6 +935,24 @@ export default function Dashboard({
     }
   };
 
+  // „Nie dozamawiamy" — chowa SKU z pożarów i całego flow zamawiania. Optymistycznie usuwamy
+  // z listy zakupów (pożary są jej pochodną), czyścimy cache pozostałych zakładek, potem zapis.
+  const onNoReorder = async (sku: string) => {
+    setShopping((prev) => prev
+      .map((g) => {
+        const products = g.products.filter((p) => p.sku !== sku);
+        return { ...g, products, total_skus: products.length };
+      })
+      .filter((g) => g.products.length > 0));
+    cacheRef.current = {};
+    try {
+      await api.put(`/products/${encodeURIComponent(sku)}/no-reorder`);
+      toast("Ukryto z zamawiania — przywrócisz w karcie produktu", "ok");
+    } catch {
+      toast("Nie udało się ukryć — odśwież stronę", "warning");
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     const cached = cacheRef.current[shop];
@@ -1061,7 +1088,7 @@ export default function Dashboard({
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator}
             onProductClick={onProductClick ? (sku) => onProductClick({ sku }) : undefined} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
-            <FiresCard fires={fires} onProductClick={onProductClick} />
+            <FiresCard fires={fires} onProductClick={onProductClick} onNoReorder={onNoReorder} />
             <DeliveriesCard deliveries={pipeline.deliveries} shop={shop} onContainerClick={onContainerClick} />
           </div>
           <ShoppingListCard groups={shopping} showEdit={showEdit} onCreateContainer={onCreateContainer} onAutoSuggest={onAutoSuggest} />
