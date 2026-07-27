@@ -19,20 +19,34 @@ router = APIRouter(prefix="/api", tags=["calendar"])
 @router.get("/calendar")
 async def calendar_events(
     favorites_only: bool = False,
+    shop: str = "",
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
     """Zdarzenia kalendarza: ORDER/EMPTY (z produktów) + DELIVERY (z kontenerów).
 
     favorites_only=True → zdarzenia ORDER/EMPTY tylko dla obserwowanych SKU (is_favorite);
-    dostawy są ZAWSZE widoczne, niezależnie od tego przełącznika.
+    dostawy są ZAWSZE widoczne w zakresie „obserwowane" (nie mają gwiazdki), o ile pasują do sklepu.
+
+    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = tylko dany magazyn:
+      · ORDER/EMPTY liczone są per-sklep przez fetch_products (sprzedaż i stan tylko tego sklepu,
+        więc SKU bez ruchu w danym sklepie odpada samo — próg avg_monthly_weighted >= 1),
+      · DELIVERY zawężamy do kontenerów, które fizycznie wiozą towar tej firmy — kontener nie ma
+        własnej firmy, wynika ona z właściciela SKU (firma_breakdown[slug].units > 0), dokładnie
+        jak lista dostaw na dashboardzie.
 
     Data dostawy = data wejścia do magazynu, czyli ręczne „dostarczono" (delivered_date),
     a gdy go brak — ETA + odprawa celna (CONTAINER_CUSTOMS_DAYS). Kontenery auto-domknięte
     po ETA+N (bez ręcznej daty) już fizycznie weszły do magazynu, więc nie zaśmiecają kalendarza.
     """
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
+    shop = (shop or "").strip().lower()
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     containers = await fetch_containers(db)
+
+    # Kontener nie ma własnej firmy — filtr sklepu na dostawach po udziale firmy w towarze
+    # (firma_breakdown[slug].units). Guard has_breakdown jak na dashboardzie: gdyby żaden kontener
+    # nie miał rozbicia (wariant bez danych), nie chowamy wszystkich dostaw — pokazujemy jak dawniej.
+    has_breakdown = any(c.firma_breakdown for c in containers)
 
     # Ręczne daty dostawy (ustawiane tylko przy ręcznym DELIVERED; auto-dostawa ma NULL).
     deliv_rows = await db.execute(
@@ -64,6 +78,11 @@ async def calendar_events(
             })
 
     for c in containers:
+        # Zakładka sklepowa: pokaż dostawę tylko, gdy kontener wiezie towar tej firmy.
+        if shop and has_breakdown:
+            share = c.firma_breakdown.get(shop)
+            if not share or (getattr(share, "units", 0) or 0) <= 0:
+                continue
         eff = c.effective_status or c.status
         manual = delivered_map.get(c.id)
         if manual is not None:
