@@ -117,6 +117,147 @@ async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db), user: Cu
     return {"months": result, "total": round(sum(m["total"] for m in result), 2)}
 
 
+@router.get("/cashflow/ledger")
+async def cashflow_ledger(
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_view_financials),
+):
+    """Płaski rejestr płatności za kontenery — jedno zdarzenie = jedna wpłata.
+
+    Zdarzenie: zaliczka (rata z app_container_advances) albo balance (kolumna balance_kwota).
+    Legacy pola zaliczka_* są ignorowane — źródłem prawdy dla zaliczek jest tabela rat
+    (tak samo jak liczy fetch_payments_pln), żeby nie policzyć zaliczki podwójnie.
+
+    status: 'paid' = data ≤ dziś (faktycznie zapłacone),
+            'plan' = data w przyszłości (zaplanowane, ale jeszcze nie wyszło),
+            'open' = brak daty (otwarte, dzień płatności nieumówiony).
+
+    Sklep i producent biorą się wprost z lotu (skonsolidowany) lub z kontenera
+    (nieskonsolidowany). Lot jest jednosklepowy; gdyby wyjątkowo był mieszany —
+    bierzemy firmę o największym udziale wartości.
+
+    kwota_pln: dla 'paid' przeliczone kursem NBP z dnia poprzedzającego wpłatę
+    (zablokowane, historyczne). Dla 'plan'/'open' = null — front szacuje po rate_today,
+    bo kursu z przyszłości jeszcze nie ma. brak_kursu=True gdy zapłacono w walucie obcej,
+    ale brak notowania NBP do przeliczenia.
+    """
+    from bisect import bisect_left
+
+    containers = await fetch_containers(db)
+    today = date.today()
+
+    # firma_breakdown bywa dictem plain-dictów (loty) albo obiektów ContainerFirmaShare
+    # (kontener) — czytamy odpornie na oba warianty.
+    def _sv(s):  # value
+        return (s.get("value") if isinstance(s, dict) else getattr(s, "value", 0)) or 0.0
+
+    def _ss(s):  # slug
+        return (s.get("slug") if isinstance(s, dict) else getattr(s, "slug", None)) or "amh"
+
+    def _sn(s):  # name
+        return s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
+
+    def _firma(fb):
+        if not fb:
+            return "amh", "AMH"
+        best = max(fb.values(), key=_sv)
+        slug = (_ss(best) or "amh").lower()
+        return slug, (_sn(best) or slug.upper())
+
+    events = []
+
+    def _add(c, mfr_id, mfr_name, mfr_color, slug, sname, typ, kwota, waluta, data):
+        if kwota is None:
+            return
+        cur = (waluta or "USD").upper()
+        if data is None:
+            status = "open"
+        elif data <= today:
+            status = "paid"
+        else:
+            status = "plan"
+        events.append({
+            "kontener": c.container_number,
+            "po": c.order_number,
+            "mfr_id": mfr_id,
+            "mfr_name": mfr_name or "Bez producenta",
+            "mfr_color": mfr_color or "var(--text-lo)",
+            "shop": slug,
+            "shop_name": sname,
+            "eta": c.eta_date.isoformat() if c.eta_date else None,
+            "typ": typ,
+            "kwota": round(float(kwota), 2),
+            "waluta": cur,
+            "data": data.isoformat() if data else None,
+            "_data": data,          # obiekt daty — do przeliczenia FX, usuwany przed zwrotem
+            "status": status,
+            "kwota_pln": None,
+            "brak_kursu": False,
+        })
+
+    for c in containers:
+        # zdarzenia na poziomie kontenera (nieskonsolidowany lub płatności container-level)
+        c_slug, c_name = _firma(c.firma_breakdown)
+        for a in (c.advances or []):
+            _add(c, c.manufacturer_id, c.manufacturer_name, c.manufacturer_color,
+                 c_slug, c_name, "zaliczka", a.kwota, a.waluta, a.data)
+        _add(c, c.manufacturer_id, c.manufacturer_name, c.manufacturer_color,
+             c_slug, c_name, "balance", c.balance_kwota, c.balance_waluta, c.zaplacono_data)
+        # zdarzenia lotów (skonsolidowany)
+        for lot in (c.lots or []):
+            l_slug, l_name = _firma(lot.firma_breakdown)
+            for a in (lot.advances or []):
+                _add(c, lot.manufacturer_id, lot.manufacturer_name, lot.manufacturer_color,
+                     l_slug, l_name, "zaliczka", a.kwota, a.waluta, a.data)
+            _add(c, lot.manufacturer_id, lot.manufacturer_name, lot.manufacturer_color,
+                 l_slug, l_name, "balance", lot.balance_kwota, lot.balance_waluta, lot.zaplacono_data)
+
+    # --- FX: notowania NBP dla wszystkich obcych walut w zdarzeniach ---
+    curs = sorted({e["waluta"] for e in events if e["waluta"] != "PLN"})
+    fx = {}  # cur -> (dates[], mids[])
+    if curs:
+        rows = await db.execute(text(f"""
+            SELECT currency, rate_date, mid
+            FROM {settings.TABLE_FX_RATES}
+            WHERE currency = ANY(:curs)
+            ORDER BY currency, rate_date
+        """), {"curs": curs})
+        tmp = {}
+        for r in rows:
+            m = r._mapping
+            tmp.setdefault(m["currency"], []).append((m["rate_date"], float(m["mid"])))
+        for cur, arr in tmp.items():
+            fx[cur] = ([d for d, _ in arr], [v for _, v in arr])
+
+    def _rate_before(cur, d):
+        pair = fx.get(cur)
+        if not pair or d is None:
+            return None
+        dates, mids = pair
+        i = bisect_left(dates, d) - 1   # ostatnie notowanie z rate_date < d
+        return mids[i] if i >= 0 else None
+
+    # rate_today = najnowsze notowanie per waluta — front szacuje otwarte/planowane PLN
+    rate_today = {"PLN": 1.0}
+    for cur, (dates, mids) in fx.items():
+        if mids:
+            rate_today[cur] = mids[-1]
+
+    for e in events:
+        if e["status"] == "paid":
+            if e["waluta"] == "PLN":
+                e["kwota_pln"] = e["kwota"]
+            else:
+                r = _rate_before(e["waluta"], e["_data"])
+                if r is not None:
+                    e["kwota_pln"] = round(e["kwota"] * r, 2)
+                else:
+                    e["brak_kursu"] = True
+        e.pop("_data", None)
+
+    return {"as_of": today.isoformat(), "rate_today": rate_today, "events": events}
+
+
 @router.get("/stock-value-history")
 async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """
