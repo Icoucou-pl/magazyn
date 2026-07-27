@@ -156,6 +156,8 @@ class ProductSummary(BaseModel):
     empty_date: date
     order_date: date
     status: str
+    transfer_source_shop: Optional[str] = None   # magazyn siostry mogący pokryć pożar (Acti/Veluxa)
+    transfer_source_qty: int = 0                  # ile tam leży (0 = brak sensownego transferu)
     incoming_deliveries: List[IncomingDelivery] = []
 
 
