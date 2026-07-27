@@ -107,6 +107,7 @@ export const STATUS_META: Record<string, StatusMeta> = {
   KRYTYCZNY:     { label: "KRYTYCZNY",     bg: "var(--critical-soft)", fg: "var(--critical)", dot: "var(--critical)" },
   ZAMOW_TERAZ:   { label: "ZAMÓW TERAZ",   bg: "var(--warning-soft)",  fg: "var(--warning)",  dot: "var(--warning)" },
   ZAMOW_WKROTCE: { label: "ZAMÓW WKRÓTCE", bg: "var(--pending-soft)",  fg: "var(--pending)",  dot: "var(--pending)" },
+  W_DRODZE:      { label: "W DRODZE",      bg: "var(--info-soft)",     fg: "var(--info)",     dot: "var(--info)" },
   OK:            { label: "OK",            bg: "var(--ok-soft)",       fg: "var(--ok)",       dot: "var(--ok)" },
 };
 

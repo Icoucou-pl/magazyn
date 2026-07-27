@@ -71,7 +71,7 @@ export type Manufacturer = { id: number; name: string; color: string; email?: st
 export type Firma = { id: number; slug: string; name: string; color: string };
 
 // ── Stałe ────────────────────────────────────────────────────
-export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, OK: 3, SAMPLE: 4, DEAD_STOCK: 5 };
+export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, W_DRODZE: 3, OK: 4, SAMPLE: 5, DEAD_STOCK: 6 };
 
 type ColId =
   | "fav" | "sku" | "name" | "mfr" | "stock" | "inTransit"

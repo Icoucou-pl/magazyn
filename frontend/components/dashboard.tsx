@@ -528,6 +528,12 @@ function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProd
             <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
               <StatusPill status={p.status} size="sm" />
               <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>
+              {p.stock_in_transit > 0 && (
+                <span title={`${p.stock_in_transit} szt już w drodze — ale za mało na miesiąc; zamów tylko brakującą różnicę`}
+                  style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: "var(--info-soft)", color: "var(--info)", whiteSpace: "nowrap" }}>
+                  +{p.stock_in_transit} w drodze
+                </span>
+              )}
               <span style={{ fontSize: 12, color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{p.name}</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
