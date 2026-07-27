@@ -13,13 +13,34 @@ import { fmtPLNk } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
 import { I } from "./ui";
 import {
-  ContainersToolbar, ContainerCard, MiniStat,
+  ContainersToolbar, ContainerCard, MiniStat, MonthGroup, monthLabelPL,
   STATUS_FLOW, FILTER_STATUSES, eff, type Container,
 } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import AutoSuggestModal from "./auto-suggest";
 import OrderPdfModal from "./order-pdf";
 import type { Product, Manufacturer } from "./products-ui";
+
+// Fallback okna odprawy — używany TYLKO gdy backend nie policzył warehouse_delivery_date
+// (normalnie zawsze je zwraca: delivered_date → expected_delivery_date → ETA + CONTAINER_CUSTOMS_DAYS).
+const CUSTOMS_FALLBACK_DAYS = 7;
+const parseLocalDate = (iso: string): Date => {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+};
+// Data wejścia na magazyn, po której grupujemy miesiące: realna gdy znana, inaczej szacunek ETA + odprawa.
+const warehouseDate = (c: Container): Date | null => {
+  const iso = c.warehouse_delivery_date || c.delivered_date || c.expected_delivery_date;
+  if (iso) return parseLocalDate(iso);
+  if (c.eta_date) { const d = parseLocalDate(c.eta_date); d.setDate(d.getDate() + CUSTOMS_FALLBACK_DAYS); return d; }
+  return null;
+};
+const ymKey = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+type MonthBucket = {
+  key: string; label: string; sort: number; isCurrent: boolean;
+  containers: Container[]; totalValue: number; totalUnits: number; statusCounts: Record<string, number>;
+};
 
 export default function ContainersView({ density, openId, onOpenedId, onDeepLinkClose, openNewAutoSuggest, onOpenedNewAutoSuggest, autoSuggestMfrId }: { density?: string; openId?: number | null; onOpenedId?: () => void; onDeepLinkClose?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void; autoSuggestMfrId?: number | null }) {
   const gap = density === "compact" ? 10 : 14;
@@ -33,6 +54,8 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
   const [shop, setShop] = useState("");     // "" = wszystkie firmy
   const [mfr, setMfr] = useState("");       // "" = wszyscy producenci
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
+  const [openMonths, setOpenMonths] = useState<Set<string>>(() => new Set());
+  const seededMonths = useRef(false);
 
   // Dane pomocnicze do formularza
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
@@ -147,6 +170,50 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     return [...arr].sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime());
   }, [scoped, filter, search]);
 
+  // Kontenery pogrupowane po miesiącu wejścia na magazyn (warehouse_delivery_date).
+  // Miesiące rosnąco (kalendarzowo), wewnątrz po dacie wejścia (ETA jako tie-break).
+  const grouped = useMemo<MonthBucket[]>(() => {
+    const nowKey = ymKey(new Date());
+    const map = new Map<string, MonthBucket>();
+    for (const c of filtered) {
+      const d = warehouseDate(c);
+      const key = d ? ymKey(d) : "____-__";
+      let g = map.get(key);
+      if (!g) {
+        g = {
+          key, label: d ? monthLabelPL(d) : "Bez daty",
+          sort: d ? d.getFullYear() * 12 + d.getMonth() : Number.MAX_SAFE_INTEGER,
+          isCurrent: key === nowKey, containers: [], totalValue: 0, totalUnits: 0, statusCounts: {},
+        };
+        map.set(key, g);
+      }
+      g.containers.push(c);
+      g.totalValue += c.total_value || 0;
+      g.totalUnits += c.total_units || 0;
+      const s = eff(c);
+      g.statusCounts[s] = (g.statusCounts[s] || 0) + 1;
+    }
+    const arr = [...map.values()].sort((a, b) => a.sort - b.sort);
+    arr.forEach((g) => g.containers.sort((a, b) =>
+      ((warehouseDate(a)?.getTime() ?? 0) - (warehouseDate(b)?.getTime() ?? 0)) ||
+      (new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime())));
+    return arr;
+  }, [filtered]);
+  const monthKeys = useMemo(() => grouped.map((g) => g.key), [grouped]);
+
+  // Podczas szukania / filtrowania statusem auto-rozwijamy miesiące z trafieniami
+  // (inaczej wynik chowałby się w zwiniętych nagłówkach).
+  const forceOpenMonths = !!search.trim() || filter !== "ALL";
+  const anyMonthOpen = forceOpenMonths || openMonths.size > 0;
+
+  // Domyślnie wszystko zwinięte, ale bieżący miesiąc rozwijamy raz na starcie.
+  useEffect(() => {
+    if (seededMonths.current || grouped.length === 0) return;
+    seededMonths.current = true;
+    const nowKey = ymKey(new Date());
+    if (monthKeys.includes(nowKey)) setOpenMonths(new Set([nowKey]));
+  }, [grouped, monthKeys]);
+
   const summary = useMemo(() => {
     const inFlight = containers.filter((c) => eff(c) !== "DELIVERED");
 
@@ -185,7 +252,14 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     if (n.has(id)) n.delete(id); else n.add(id);
     return n;
   });
-  const toggleAll = () => setExpandedIds((prev) => (prev.size > 0 ? new Set() : new Set(filtered.map((c) => c.id))));
+  // „Rozwiń / Zwiń wszystkie" działa teraz na pierwszym poziomie — miesiącach
+  // (karty w środku mają własne „Pokaż szczegóły").
+  const toggleMonth = (key: string) => setOpenMonths((prev) => {
+    const n = new Set(prev);
+    if (n.has(key)) n.delete(key); else n.add(key);
+    return n;
+  });
+  const toggleAll = () => setOpenMonths(anyMonthOpen ? new Set() : new Set(monthKeys));
 
   const advance = async (c: Container) => {
     const idx = STATUS_FLOW.indexOf(c.status);
@@ -291,14 +365,14 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
       <ContainersToolbar
         search={search} setSearch={setSearch}
         filter={filter} setFilter={setFilter} counts={counts}
-        expandedAny={expandedIds.size > 0}
+        expandedAny={anyMonthOpen}
         onToggleAll={toggleAll}
         onAutoSuggest={() => openAutoSuggest(null)}
         onNew={openNew}
         rows={containers}
       />
 
-      {filtered.length === 0 ? (
+      {grouped.length === 0 ? (
         <div style={{ padding: 60, textAlign: "center", background: "var(--surface-1)", border: "1px dashed var(--border)", borderRadius: "var(--r-lg)" }}>
           <I.Ship size={36} style={{ color: "var(--text-disabled)", marginBottom: 10 }} />
           <div style={{ fontSize: 14, color: "var(--text-mid)", fontWeight: 500 }}>Brak kontenerów</div>
@@ -306,18 +380,36 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map((c) => (
-            <ContainerCard
-              key={c.id} container={c}
-              expanded={expandedIds.has(c.id)}
-              onToggle={() => toggleExpand(c.id)}
-              onEdit={() => openEdit(c)}
-              onAdvance={() => advance(c)}
-              onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
-              onSetDelivered={(d) => setDelivered(c, d)}
-              onToggleSubiekt={(lotId, value) => toggleSubiekt(c, lotId, value)}
-            />
-          ))}
+          {grouped.map((g) => {
+            const open = forceOpenMonths || openMonths.has(g.key);
+            return (
+              <MonthGroup
+                key={g.key}
+                label={g.label}
+                open={open}
+                onToggle={() => toggleMonth(g.key)}
+                count={g.containers.length}
+                units={g.totalUnits}
+                value={g.totalValue}
+                statusCounts={g.statusCounts}
+                showFin={showFin}
+                isCurrent={g.isCurrent}
+              >
+                {open && g.containers.map((c) => (
+                  <ContainerCard
+                    key={c.id} container={c}
+                    expanded={expandedIds.has(c.id)}
+                    onToggle={() => toggleExpand(c.id)}
+                    onEdit={() => openEdit(c)}
+                    onAdvance={() => advance(c)}
+                    onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
+                    onSetDelivered={(d) => setDelivered(c, d)}
+                    onToggleSubiekt={(lotId, value) => toggleSubiekt(c, lotId, value)}
+                  />
+                ))}
+              </MonthGroup>
+            );
+          })}
         </div>
       )}
       {showForm && (

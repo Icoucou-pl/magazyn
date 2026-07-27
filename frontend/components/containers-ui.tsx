@@ -245,6 +245,76 @@ function FilterChip({ children, active, onClick, count, accent }: { children: Re
   );
 }
 
+// ── Grupa miesięczna (opakowanie listy kontenerów po miesiącu wejścia na magazyn) ──
+const MONTH_LABELS_PL = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
+export const monthLabelPL = (d: Date): string => `${MONTH_LABELS_PL[d.getMonth()]} ${d.getFullYear()}`;
+
+// Odmiana „kontener": 1 → kontener, 2–4 → kontenery, reszta → kontenerów (z wyjątkiem 12–14).
+function plKontener(n: number): string {
+  if (n === 1) return "kontener";
+  const d = n % 10, dd = n % 100;
+  return d >= 2 && d <= 4 && !(dd >= 12 && dd <= 14) ? "kontenery" : "kontenerów";
+}
+
+// Zwijany nagłówek miesiąca. Karty kontenerów przekazywane jako children — orkiestrator
+// nadal w pełni kontroluje ich rendering i własne rozwijanie („Pokaż szczegóły").
+export function MonthGroup({
+  label, open, onToggle, count, units, value, statusCounts, showFin, isCurrent, children,
+}: {
+  label: string; open: boolean; onToggle: () => void;
+  count: number; units: number; value: number;
+  statusCounts: Record<string, number>; showFin: boolean; isCurrent?: boolean;
+  children: React.ReactNode;
+}) {
+  const segs = FILTER_STATUSES
+    .map((s) => ({ s, n: statusCounts[s] || 0, meta: STATUS_FULL_META[s] }))
+    .filter((x) => x.n > 0);
+  return (
+    <div style={{
+      background: "var(--surface-1)",
+      border: `1px solid ${open ? "var(--border)" : "var(--border-soft)"}`,
+      borderRadius: "var(--r-lg)", overflow: "hidden", transition: "border-color 0.14s",
+    }}>
+      <button onClick={onToggle} style={{
+        display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+        padding: "13px 16px", background: "transparent", border: "none", cursor: "pointer",
+      }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+        <span style={{ color: "var(--text-lo)", transform: open ? "rotate(90deg)" : "none", transition: "transform 0.18s", flexShrink: 0, display: "inline-flex" }}>
+          <I.ChevronR size={15} />
+        </span>
+        <span style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)", minWidth: 96, flexShrink: 0 }}>
+          {label}
+          {isCurrent && (
+            <span style={{ fontSize: 9, fontWeight: 700, marginLeft: 7, padding: "1px 6px", borderRadius: 5, background: "var(--accent-soft)", color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.04em", verticalAlign: "middle" }}>teraz</span>
+          )}
+        </span>
+        {/* Pasek proporcji statusów w miesiącu (kolory jak w osi statusu kontenera) */}
+        <div style={{ flex: 1, minWidth: 40, height: 8, background: "var(--surface-2)", borderRadius: 99, overflow: "hidden", display: "flex", gap: 1 }}>
+          {segs.map(({ s, n, meta }) => (
+            <div key={s} title={`${meta.label}: ${n}`} style={{ flex: n, background: meta.accent, opacity: 0.85 }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
+          <span style={{ fontSize: 11.5, color: "var(--text-lo)", whiteSpace: "nowrap" }}>
+            <b className="num" style={{ color: "var(--text-mid)", fontWeight: 600 }}>{count}</b> {plKontener(count)}
+          </span>
+          <span className="num" style={{ fontSize: 11.5, color: "var(--text-lo)", whiteSpace: "nowrap" }}>{fmtNum(units)} szt</span>
+          <span className="num" style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)", minWidth: 70, textAlign: "right", whiteSpace: "nowrap" }}>
+            {showFin ? fmtPLNk(value) : "•••••"}
+          </span>
+        </div>
+      </button>
+      {open && (
+        <div className="fade-in" style={{ padding: "10px 12px 14px", background: "var(--bg-elevated)", borderTop: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 10 }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Kropka „dodano do Subiektu" (magazyn w drodze) ───────────
 // Zielony = wbite do magazynu „w drodze" w Subiekcie (liczony stamtąd), czerwony = jeszcze
 // tylko w apce (liczony z kontenera). Mieszany = część lotów wbita. null dla dostarczonych.
