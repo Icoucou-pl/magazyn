@@ -142,6 +142,15 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
     else:
         status = "OK"
 
+    # „W drodze" — pożar ugaszony zamówieniem. Produkt, który normalnie byłby do zamówienia
+    # (KRYTYCZNY/ZAMOW_TERAZ/ZAMOW_WKROTCE), ale ma dość towaru w drodze, by pokryć min. 1 miesiąc
+    # popytu, dostaje osobny status W_DRODZE → wypada z pożarów i z listy zakupów (nic nie zamawiamy).
+    # Jeśli w drodze jedzie ZA MAŁO (nie pokrywa miesiąca) — zostaje pożarem, a front dokłada „+N w drodze".
+    # Próg = 1× avg_monthly; łatwo podbić do ×2, gdyby okno odprawy/lead time wymagało zapasu.
+    if status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE") and stock_in_transit > 0 \
+            and (row["stock"] + stock_in_transit) >= avg_monthly:
+        status = "W_DRODZE"
+
     total_available = row["stock"] + stock_in_transit
     months_of_stock = (total_available / avg_monthly) if avg_monthly > 0 else 999.0
     price = float(row.get("price") or 0)
