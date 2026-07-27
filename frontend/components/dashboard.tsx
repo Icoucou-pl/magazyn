@@ -72,6 +72,7 @@ type Anomaly = {
 type ShoppingProduct = {
   sku: string; name: string; stock: number; stock_in_transit: number;
   avg_monthly: number; recommended_quantity: number; status: string; days_until_empty: number;
+  transfer_source_shop?: string | null; transfer_source_qty?: number;
 };
 type ShoppingGroup = {
   manufacturer_id: number | null;
@@ -528,6 +529,12 @@ function FiresCard({ fires, onProductClick }: { fires: ShoppingProduct[]; onProd
             <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
               <StatusPill status={p.status} size="sm" />
               <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>
+              {(p.transfer_source_qty ?? 0) > 0 && (
+                <span title={`${p.transfer_source_qty} szt na stanie w ${p.transfer_source_shop} — nie zamawiaj z Chin, zaciągnij z magazynu grupy`}
+                  style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: "var(--info-soft)", color: "var(--info)", whiteSpace: "nowrap" }}>
+                  ↔ z {p.transfer_source_shop}: {p.transfer_source_qty}
+                </span>
+              )}
               {p.stock_in_transit > 0 && (
                 <span title={`${p.stock_in_transit} szt już w drodze — ale za mało na miesiąc; zamów tylko brakującą różnicę`}
                   style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: "var(--info-soft)", color: "var(--info)", whiteSpace: "nowrap" }}>
