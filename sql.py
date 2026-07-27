@@ -202,3 +202,16 @@ LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
 WHERE c.status != 'DELIVERED'
 ORDER BY c.eta_date ASC;
 """
+
+
+# Stan sióstr (magazyny Sellasist: Acti/Veluxa) per SKU i per sklep — do komunikatu
+# „zaciągnij z [magazynu]" na pożarach. Osobne, lekkie zapytanie mergowane po SKU w Pythonie
+# (wzorzec INCOMING_QUERY) — NIE dotykamy SALES_QUERY, żeby nie zrobić fan-outu wierszy
+# (SALES_QUERY karmi cały dashboard/finanse/forecast; zdublowanie wierszy zawyżyłoby stany).
+# AMH (Subiekt) nie ma tu wierszy — źródłem transferu naturalnie są Acti/Veluxa.
+TRANSFER_STOCK_QUERY = f"""
+SELECT sku_canon, shop, SUM(quantity)::int AS qty
+FROM {settings.TABLE_EXTERNAL_STOCK}
+WHERE quantity > 0 AND shop IS NOT NULL AND TRIM(shop) <> ''
+GROUP BY sku_canon, shop;
+"""
