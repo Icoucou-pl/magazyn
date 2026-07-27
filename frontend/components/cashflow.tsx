@@ -1,10 +1,12 @@
 "use client";
 // ============================================================
 // MAGAZYN — Cashflow (etap 5). Rejestr płatności za kontenery.
-//   Dwie zakładki:
-//     • Do zapłaty — kwota pozostała per producent, bucket po miesiącu ETA
-//       (zaliczki i balance bez daty ≤ dziś; PLN otwarte = szacunek po kursie „dziś").
-//     • Zapłacono — ledger per producent, każda wpłata z datą, PLN po kursie historycznym.
+//   Dwie zakładki, identyczny układ (KPI → pasek per producent →
+//   słupki miesięczne → drilldown), różni je tylko zbiór danych i oś czasu:
+//     • Do zapłaty — kwota pozostała (bez daty ≤ dziś), bucket po miesiącu ETA.
+//       PLN otwarte = szacunek po kursie „dziś" (oznaczone „≈").
+//     • Zapłacono — wpłaty z datą ≤ dziś, bucket po miesiącu PŁATNOŚCI (realny wypływ).
+//       PLN = kurs historyczny NBP (zablokowany, bez „≈").
 //   Pasek sklepu (Wszystkie/AMH/Acti/Veluxa) + przełącznik waluty (PLN/USD/CNY).
 //   Źródło: GET /api/cashflow/ledger (płaska lista zdarzeń + rate_today).
 // ============================================================
@@ -31,13 +33,17 @@ type LedgerEvent = {
 };
 type LedgerResp = { as_of: string; rate_today: Record<string, number>; events: LedgerEvent[] };
 
+type MfrAgg = { id: string; name: string; color: string; value: number };
+type Bucket = { key: string; label: string; short: string; total: number; byMfr: Record<string, number>; items: LedgerEvent[] };
+type Agg = { months: Bucket[]; peak: Bucket | null; mfrs: MfrAgg[]; total: number; maxTotal: number; count: number };
+
 // ── Stałe ────────────────────────────────────────────────────
 const SHOPS: [string, string][] = [["", "Wszystkie"], ["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"]];
 const CURS: string[] = ["PLN", "USD", "CNY"];
 const CUR_SYM: Record<string, string> = { PLN: "zł", USD: "$", CNY: "¥" };
 const MONTH_SHORT = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
 
-// ── Formatery walut ──────────────────────────────────────────
+// ── Formatery ────────────────────────────────────────────────
 const fmtCur = (n: number, cur: string) => {
   const v = Math.round(n || 0);
   const s = new Intl.NumberFormat("pl-PL").format(v);
@@ -59,6 +65,34 @@ const plnOf = (e: LedgerEvent, rt: Record<string, number>) =>
 //   PLN → przeliczone/szacowane; USD/CNY → oryginał tylko dla zdarzeń tej waluty (inaczej null).
 const dispVal = (e: LedgerEvent, cur: string, rt: Record<string, number>): number | null =>
   cur === "PLN" ? plnOf(e, rt) : (e.waluta === cur ? e.kwota : null);
+
+// Agregacja wspólna dla obu zakładek. monthField: "eta" (do zapłaty) | "data" (zapłacono).
+function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number>, monthField: "eta" | "data"): Agg {
+  const monthsMap: Record<string, Bucket> = {};
+  const perMfr: Record<string, MfrAgg> = {};
+  let total = 0, count = 0;
+  events.forEach(e => {
+    const val = dispVal(e, cur, rt);
+    const ds = monthField === "eta" ? e.eta : e.data;
+    if (val == null || !ds) return;
+    count++;
+    const key = ds.slice(0, 7);
+    const d = parseLocal(ds);
+    const m = (monthsMap[key] = monthsMap[key] || {
+      key, label: `${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`, short: MONTH_SHORT[d.getMonth()],
+      total: 0, byMfr: {}, items: [],
+    });
+    m.total += val; m.items.push(e);
+    const mk = String(e.mfr_id ?? e.mfr_name);
+    m.byMfr[mk] = (m.byMfr[mk] || 0) + val;
+    const a = (perMfr[mk] = perMfr[mk] || { id: mk, name: e.mfr_name, color: e.mfr_color, value: 0 });
+    a.value += val; total += val;
+  });
+  const months = Object.values(monthsMap).sort((a, b) => (a.key < b.key ? -1 : 1));
+  const peak = months.reduce<Bucket | null>((p, m) => (m.total > (p?.total || 0) ? m : p), null);
+  const mfrs = Object.values(perMfr).sort((a, b) => b.value - a.value);
+  return { months, peak, mfrs, total, maxTotal: Math.max(...months.map(m => m.total), 1), count };
+}
 
 // ── Widok główny ─────────────────────────────────────────────
 function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
@@ -95,18 +129,16 @@ function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 }}>
       {/* Nagłówek + zakładki */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}>
-            <I.Wallet size={20} /> Cashflow
-          </h1>
-          <div style={{ color: "var(--text-lo)", fontSize: 12, marginTop: 4 }}>
-            Płatności za kontenery — zaliczki i balance, per producent, z podziałem na sklepy.
-          </div>
-          <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
-            <TabBtn active={tab === "due"} onClick={() => setTab("due")} icon={<I.Alert size={14} />}>Do zapłaty</TabBtn>
-            <TabBtn active={tab === "paid"} onClick={() => setTab("paid")} icon={<I.Customs size={14} />}>Zapłacono</TabBtn>
-          </div>
+      <div>
+        <h1 style={{ margin: 0, fontSize: 20, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}>
+          <I.Wallet size={20} /> Cashflow
+        </h1>
+        <div style={{ color: "var(--text-lo)", fontSize: 12, marginTop: 4 }}>
+          Płatności za kontenery — zaliczki i balance, per producent, z podziałem na sklepy.
+        </div>
+        <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
+          <TabBtn active={tab === "due"} onClick={() => setTab("due")} icon={<I.Alert size={14} />}>Do zapłaty</TabBtn>
+          <TabBtn active={tab === "paid"} onClick={() => setTab("paid")} icon={<I.Customs size={14} />}>Zapłacono</TabBtn>
         </div>
       </div>
 
@@ -118,97 +150,115 @@ function CashflowView({ onContainerClick }: { onContainerClick?: () => void }) {
 
       {tab === "due"
         ? <DueTab events={scoped} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />
-        : <PaidTab events={scoped} cur={cur} rt={rt} shop={shop} onContainerClick={onContainerClick} />}
+        : <PaidTab events={scoped} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />}
 
       {/* Nota kontekstowa */}
       <div style={noteStyle}>
         {tab === "due"
           ? <><b>Do zapłaty</b> — kwota pozostała (zaliczki i balance bez daty ≤ dziś), per producent, bucket po miesiącu ETA. W PLN kwoty otwarte są <b>szacunkiem</b> po dzisiejszym kursie (oznaczone „≈"). W trybie USD/CNY pokazujemy oryginalne kwoty faktur tylko dla zdarzeń danej waluty.</>
-          : <><b>Zapłacono</b> — wpłaty z datą ≤ dziś, per producent. <b>PLN</b> = kurs historyczny NBP z dnia płatności (zablokowany). <b>USD / CNY</b> = oryginalne kwoty faktur, tylko zdarzenia danej waluty (+ PLN w podpisie). Dostawa ≠ zapłata — dostarczony kontener z nieopłaconym balance siedzi w „Do zapłaty".</>}
+          : <><b>Zapłacono</b> — wpłaty z datą ≤ dziś, per producent, bucket po miesiącu faktycznej płatności (realny wypływ kasy). <b>PLN</b> = kurs historyczny NBP z dnia płatności (zablokowany, dokładny). <b>USD / CNY</b> = oryginalne kwoty faktur, tylko zdarzenia danej waluty (+ PLN w podpisie). Dostawa ≠ zapłata — dostarczony kontener z nieopłaconym balance siedzi w „Do zapłaty".</>}
       </div>
     </div>
   );
 }
 
-// ── ZAKŁADKA: DO ZAPŁATY ─────────────────────────────────────
-type MfrAgg = { id: string; name: string; color: string; value: number };
-type DueMonth = { key: string; label: string; short: string; total: number; byMfr: Record<string, number>; items: LedgerEvent[] };
-
-function DueTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick }: {
-  events: LedgerEvent[]; cur: string; rt: Record<string, number>; shop: string;
-  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: () => void;
-}) {
-  const agg = useMemo(() => {
-    const open = events.filter(e => e.status !== "paid");
-    const monthsMap: Record<string, DueMonth> = {};
-    const perMfr: Record<string, MfrAgg> = {};
-    let total = 0, next30 = 0, openCount = 0;
+// ── ZAKŁADKA: DO ZAPŁATY (bucket po ETA) ─────────────────────
+function DueTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
+  const open = useMemo(() => events.filter(e => e.status !== "paid"), [events]);
+  const agg = useMemo(() => aggregate(open, cur, rt, "eta"), [open, cur, rt]);
+  const next30 = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const d30 = new Date(today); d30.setDate(d30.getDate() + 30);
+    return open.reduce((s, e) => {
+      const v = dispVal(e, cur, rt); if (v == null || !e.eta) return s;
+      const d = parseLocal(e.eta); return (d >= today && d <= d30) ? s + v : s;
+    }, 0);
+  }, [open, cur, rt]);
 
-    open.forEach(e => {
-      const val = dispVal(e, cur, rt);
-      if (val == null || !e.eta) return;
-      openCount++;
-      const key = e.eta.slice(0, 7);
-      const eta = parseLocal(e.eta);
-      const m = (monthsMap[key] = monthsMap[key] || {
-        key, label: `${MONTH_SHORT[eta.getMonth()]} ${eta.getFullYear()}`, short: MONTH_SHORT[eta.getMonth()],
-        total: 0, byMfr: {}, items: [],
-      });
-      m.total += val; m.items.push(e);
-      const mk = String(e.mfr_id ?? e.mfr_name);
-      m.byMfr[mk] = (m.byMfr[mk] || 0) + val;
-      const a = (perMfr[mk] = perMfr[mk] || { id: mk, name: e.mfr_name, color: e.mfr_color, value: 0 });
-      a.value += val;
-      total += val;
-      if (eta >= today && eta <= d30) next30 += val;
-    });
+  return (
+    <>
+      <KpiRow
+        a={{ label: "Suma do zapłaty", value: fmtCur(agg.total, cur), sub: `${agg.count} płatności otwartych`, icon: <I.Wallet size={14} /> }}
+        b={{ label: "Najbliższe 30 dni", value: fmtCur(next30, cur), sub: "wg ETA", icon: <I.Alert size={14} /> }}
+        c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
+        d={{ label: "Otwarte pozycje", value: String(agg.count), sub: `${agg.months.length} miesięcy`, icon: <I.Activity size={14} /> }}
+      />
+      <BucketBody agg={agg} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick}
+        titles={{
+          breakdown: "Pozostało do zapłaty wg producenta",
+          barsTitle: "Pozostało do zapłaty — wg miesiąca ETA", barsHint: "kwota jeszcze niezapłacona",
+          drillTitle: "Szczegóły — otwarte płatności", drillHint: "kliknij miesiąc",
+          empty: "Brak otwartych płatności dla tego wyboru.",
+        }} />
+    </>
+  );
+}
 
-    const months = Object.values(monthsMap).sort((a, b) => (a.key < b.key ? -1 : 1));
-    const peak = months.reduce<DueMonth | null>((p, m) => (m.total > (p?.total || 0) ? m : p), null);
-    const mfrs = Object.values(perMfr).sort((a, b) => b.value - a.value);
-    return { months, peak, mfrs, total, next30, openCount };
-  }, [events, cur, rt]);
+// ── ZAKŁADKA: ZAPŁACONO (bucket po dacie płatności) ──────────
+function PaidTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
+  const paid = useMemo(() => events.filter(e => e.status === "paid"), [events]);
+  const agg = useMemo(() => aggregate(paid, cur, rt, "data"), [paid, cur, rt]);
+  const last30 = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const dm30 = new Date(today); dm30.setDate(dm30.getDate() - 30);
+    return paid.reduce((s, e) => {
+      const v = dispVal(e, cur, rt); if (v == null || !e.data) return s;
+      const d = parseLocal(e.data); return (d >= dm30 && d <= today) ? s + v : s;
+    }, 0);
+  }, [paid, cur, rt]);
 
-  const maxTotal = Math.max(...agg.months.map(m => m.total), 1);
+  return (
+    <>
+      <KpiRow
+        a={{ label: "Suma zapłacona", value: fmtCur(agg.total, cur), sub: cur === "PLN" ? "kurs historyczny NBP" : "kwoty oryginalne faktur", icon: <I.Wallet size={14} /> }}
+        b={{ label: "Ostatnie 30 dni", value: fmtCur(last30, cur), sub: "wg daty płatności", icon: <I.Activity size={14} /> }}
+        c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
+        d={{ label: "Liczba płatności", value: String(agg.count), sub: `${agg.mfrs.length} producentów`, icon: <I.Factory size={14} /> }}
+      />
+      <BucketBody agg={agg} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick}
+        titles={{
+          breakdown: "Zapłacone wg producenta",
+          barsTitle: "Zapłacone — wg miesiąca płatności", barsHint: "kwota faktycznie wypłacona",
+          drillTitle: "Szczegóły — płatności", drillHint: "kliknij miesiąc",
+          empty: `Brak zapłaconych płatności ${cur !== "PLN" ? `w walucie ${cur}` : ""} dla tego wyboru.`,
+        }} />
+    </>
+  );
+}
+
+// ── Wspólne ciało zakładki: pasek per producent + słupki + drilldown ──
+type Titles = { breakdown: string; barsTitle: string; barsHint: string; drillTitle: string; drillHint: string; empty: string };
+function BucketBody({ agg, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerClick, titles }: {
+  agg: Agg; cur: string; rt: Record<string, number>; shop: string;
+  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: () => void; titles: Titles;
+}) {
   const colorOf = (mk: string) => agg.mfrs.find(m => m.id === mk)?.color || "var(--text-lo)";
   const nameOf = (mk: string) => agg.mfrs.find(m => m.id === mk)?.name || "—";
 
   return (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-        <MiniStat label="Suma do zapłaty" value={fmtCur(agg.total, cur)} sub={`${agg.openCount} płatności otwartych`} icon={<I.Wallet size={14} />} />
-        <MiniStat label="Najbliższe 30 dni" value={fmtCur(agg.next30, cur)} sub="wg ETA" icon={<I.Alert size={14} />} />
-        <MiniStat label="Największy miesiąc" value={agg.peak ? fmtCur(agg.peak.total, cur) : "—"} sub={agg.peak?.label || "—"} icon={<I.TrendUp size={14} />} />
-        <MiniStat label="Otwarte pozycje" value={String(agg.openCount)} sub={`${agg.months.length} miesięcy`} icon={<I.Activity size={14} />} />
-      </div>
-
-      {/* Rozbicie per producent */}
       <Card>
-        <CardHeader icon={<I.Factory size={14} />} title="Pozostało do zapłaty wg producenta" hint="kolory jak w słupkach niżej" />
+        <CardHeader icon={<I.Factory size={14} />} title={titles.breakdown} hint="kolory jak w słupkach niżej" />
         <div style={{ padding: "14px 18px" }}>
           <MfrBreakdown mfrs={agg.mfrs} total={agg.total} cur={cur} hovered={hoveredMfr} setHovered={setHoveredMfr} />
         </div>
       </Card>
 
-      {/* Słupki miesięczne */}
       <Card>
-        <CardHeader icon={<I.Calendar size={14} />} title="Pozostało do zapłaty — wg miesiąca ETA" hint="kwota jeszcze niezapłacona" />
+        <CardHeader icon={<I.Calendar size={14} />} title={titles.barsTitle} hint={titles.barsHint} />
         {agg.months.length === 0
-          ? <div style={emptyStyle}>Brak otwartych płatności dla tego wyboru.</div>
+          ? <div style={emptyStyle}>{titles.empty}</div>
           : <div style={{ padding: "14px 4px 14px 0" }}>
-            <MonthBars months={agg.months} maxTotal={maxTotal} cur={cur} hoveredMfr={hoveredMfr} colorOf={colorOf} nameOf={nameOf} />
+            <MonthBars months={agg.months} maxTotal={agg.maxTotal} cur={cur} hoveredMfr={hoveredMfr} colorOf={colorOf} nameOf={nameOf} />
           </div>}
       </Card>
 
-      {/* Drilldown otwartych płatności */}
       {agg.months.length > 0 && (
         <Card>
-          <CardHeader icon={<I.Box size={14} />} title="Szczegóły — otwarte płatności" hint="kliknij miesiąc" />
+          <CardHeader icon={<I.Box size={14} />} title={titles.drillTitle} hint={titles.drillHint} />
           <div>
             {agg.months.map((m, i) => (
-              <DueMonthRow key={m.key} month={m} maxTotal={maxTotal} cur={cur} rt={rt} shop={shop}
+              <MonthRow key={m.key} month={m} maxTotal={agg.maxTotal} cur={cur} rt={rt} shop={shop}
                 hoveredMfr={hoveredMfr} colorOf={colorOf} nameOf={nameOf}
                 isLast={i === agg.months.length - 1} onContainerClick={onContainerClick} />
             ))}
@@ -219,8 +269,8 @@ function DueTab({ events, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainerC
   );
 }
 
-function DueMonthRow({ month: m, maxTotal, cur, rt, shop, hoveredMfr, colorOf, nameOf, isLast, onContainerClick }: {
-  month: DueMonth; maxTotal: number; cur: string; rt: Record<string, number>; shop: string;
+function MonthRow({ month: m, maxTotal, cur, rt, shop, hoveredMfr, colorOf, nameOf, isLast, onContainerClick }: {
+  month: Bucket; maxTotal: number; cur: string; rt: Record<string, number>; shop: string;
   hoveredMfr: string | null; colorOf: (k: string) => string; nameOf: (k: string) => string;
   isLast: boolean; onContainerClick?: () => void;
 }) {
@@ -257,93 +307,7 @@ function DueMonthRow({ month: m, maxTotal, cur, rt, shop, hoveredMfr, colorOf, n
   );
 }
 
-// ── ZAKŁADKA: ZAPŁACONO ──────────────────────────────────────
-function PaidTab({ events, cur, rt, shop, onContainerClick }: {
-  events: LedgerEvent[]; cur: string; rt: Record<string, number>; shop: string; onContainerClick?: () => void;
-}) {
-  const { groups, totalDisp, totalPln, nZal, nBal, nMfr } = useMemo(() => {
-    const paid = events.filter(e => e.status === "paid");
-    const shown = paid.filter(e => cur === "PLN" || e.waluta === cur);
-    const groups: Record<string, { name: string; color: string; list: LedgerEvent[] }> = {};
-    shown.forEach(e => {
-      const mk = String(e.mfr_id ?? e.mfr_name);
-      (groups[mk] = groups[mk] || { name: e.mfr_name, color: e.mfr_color, list: [] }).list.push(e);
-    });
-    const totalPln = shown.reduce((s, e) => s + (e.kwota_pln ?? 0), 0);
-    const totalDisp = cur === "PLN" ? totalPln : shown.reduce((s, e) => s + e.kwota, 0);
-    return {
-      groups: Object.entries(groups).sort((a, b) => {
-        const sa = a[1].list.reduce((s, e) => s + (e.kwota_pln ?? 0), 0);
-        const sb = b[1].list.reduce((s, e) => s + (e.kwota_pln ?? 0), 0);
-        return sb - sa;
-      }),
-      totalDisp, totalPln,
-      nZal: shown.filter(e => e.typ === "zaliczka").length,
-      nBal: shown.filter(e => e.typ === "balance").length,
-      nMfr: Object.keys(groups).length,
-    };
-  }, [events, cur]);
-
-  const nPay = groups.reduce((s, [, g]) => s + g.list.length, 0);
-
-  return (
-    <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-        <MiniStat label="Suma zapłacona" value={fmtCur(totalDisp, cur)} sub={cur === "PLN" ? "kurs historyczny NBP" : "kwoty oryginalne faktur"} icon={<I.Wallet size={14} />} />
-        <MiniStat label="Liczba płatności" value={String(nPay)} sub={`${nMfr} producentów`} icon={<I.Activity size={14} />} />
-        <MiniStat label="Zaliczki" value={String(nZal)} sub="z datami" icon={<I.ArrowUp size={14} />} />
-        <MiniStat label="Balance" value={String(nBal)} sub="z datami" icon={<I.TrendUp size={14} />} />
-      </div>
-
-      <Card>
-        <CardHeader icon={<I.Factory size={14} />} title="Płatności wg producenta"
-          hint={cur === "PLN" ? "PLN po kursie z dnia płatności" : "oryginalna waluta faktury"} />
-        {nPay === 0
-          ? <div style={emptyStyle}>Brak zapłaconych płatności {cur !== "PLN" ? `w walucie ${cur}` : ""} dla tego wyboru.</div>
-          : <div>
-            {groups.map(([mk, g], i) => (
-              <PaidGroup key={mk} name={g.name} color={g.color} list={g.list} cur={cur} rt={rt} shop={shop}
-                isLast={i === groups.length - 1} onContainerClick={onContainerClick} />
-            ))}
-          </div>}
-      </Card>
-    </>
-  );
-}
-
-function PaidGroup({ name, color, list, cur, rt, shop, isLast, onContainerClick }: {
-  name: string; color: string; list: LedgerEvent[]; cur: string; rt: Record<string, number>;
-  shop: string; isLast: boolean; onContainerClick?: () => void;
-}) {
-  const [open, setOpen] = useState(true);
-  const rows = [...list].sort((a, b) => ((a.data || "") < (b.data || "") ? -1 : 1));
-  const subPln = list.reduce((s, e) => s + (e.kwota_pln ?? 0), 0);
-  const subDisp = cur === "PLN" ? subPln : list.reduce((s, e) => s + e.kwota, 0);
-
-  return (
-    <div style={{ borderBottom: isLast ? "none" : "1px solid var(--border-soft)" }}>
-      <div onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", cursor: "pointer" }}
-        onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-2)")}
-        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-        <span style={{ color: "var(--text-lo)", transform: open ? "rotate(90deg)" : "none", transition: "transform 0.18s", flexShrink: 0 }}><I.ChevronR size={14} /></span>
-        <div style={{ flex: 1, minWidth: 0 }}><MfrChip name={name} color={color} /></div>
-        <div style={{ textAlign: "right", minWidth: 140, flexShrink: 0 }}>
-          <div className="num" style={{ fontSize: 14, fontWeight: 600 }}>{fmtCur(subDisp, cur)}</div>
-          <div style={{ fontSize: 11, color: "var(--text-lo)" }}>
-            {list.length} płatności{cur !== "PLN" ? ` · ${fmtCurK(subPln, "PLN")}` : ""}
-          </div>
-        </div>
-      </div>
-      {open && (
-        <div className="fade-in" style={{ background: "var(--bg-elevated)", padding: "6px 18px 14px 44px", display: "flex", flexDirection: "column", gap: 6 }}>
-          {rows.map((e, k) => <PayRow key={k} e={e} cur={cur} rt={rt} shop={shop} onContainerClick={onContainerClick} />)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Wiersz płatności (wspólny) ───────────────────────────────
+// ── Wiersz płatności ─────────────────────────────────────────
 function PayRow({ e, cur, rt, shop, onContainerClick }: {
   e: LedgerEvent; cur: string; rt: Record<string, number>; shop: string; onContainerClick?: () => void;
 }) {
@@ -389,7 +353,7 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
 function MfrBreakdown({ mfrs, total, cur, hovered, setHovered }: {
   mfrs: MfrAgg[]; total: number; cur: string; hovered: string | null; setHovered: (v: string | null) => void;
 }) {
-  if (mfrs.length === 0) return <div style={{ fontSize: 12, color: "var(--text-lo)" }}>Brak otwartych płatności.</div>;
+  if (mfrs.length === 0) return <div style={{ fontSize: 12, color: "var(--text-lo)" }}>Brak danych dla tego wyboru.</div>;
   return (
     <div>
       <div style={{ display: "flex", height: 12, borderRadius: 99, overflow: "hidden", background: "var(--surface-2)", marginBottom: 14 }}>
@@ -420,7 +384,7 @@ function MfrBreakdown({ mfrs, total, cur, hovered, setHovered }: {
 
 // ── Słupki miesięczne (stacked per producent) ────────────────
 function MonthBars({ months, maxTotal, cur, hoveredMfr, colorOf, nameOf }: {
-  months: DueMonth[]; maxTotal: number; cur: string; hoveredMfr: string | null;
+  months: Bucket[]; maxTotal: number; cur: string; hoveredMfr: string | null;
   colorOf: (k: string) => string; nameOf: (k: string) => string;
 }) {
   return (
@@ -454,6 +418,15 @@ function MonthBars({ months, maxTotal, cur, hoveredMfr, colorOf, nameOf }: {
 }
 
 // ── Drobne UI ────────────────────────────────────────────────
+type Kpi = { label: string; value: React.ReactNode; sub: string; icon: React.ReactNode };
+function KpiRow({ a, b, c, d }: { a: Kpi; b: Kpi; c: Kpi; d: Kpi }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+      {[a, b, c, d].map((k, i) => <MiniStat key={i} label={k.label} value={k.value} sub={k.sub} icon={k.icon} />)}
+    </div>
+  );
+}
+
 function TabBtn({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
   return (
     <button onClick={onClick} style={{
@@ -480,6 +453,11 @@ function Seg({ label, options, value, onChange }: { label: string; options: [str
     </div>
   );
 }
+
+type TabProps = {
+  events: LedgerEvent[]; cur: string; rt: Record<string, number>; shop: string;
+  hoveredMfr: string | null; setHoveredMfr: (v: string | null) => void; onContainerClick?: () => void;
+};
 
 const emptyStyle: React.CSSProperties = { padding: 26, textAlign: "center", color: "var(--text-lo)", fontSize: 12 };
 const firmaTag: React.CSSProperties = { fontSize: 10, fontWeight: 600, padding: "1px 7px", borderRadius: 5, border: "1px solid var(--border)", color: "var(--text-mid)", background: "var(--surface-2)" };
