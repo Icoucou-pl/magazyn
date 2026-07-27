@@ -62,6 +62,14 @@ const EVENT_META: Record<EventType, EventMeta> = {
 
 const MODE_LABEL: Record<Mode, string> = { month: "Mies", week: "Tydz", day: "Dzień" };
 
+// Sklep/magazyn — te same slugi i etykiety co na dashboardzie. "" = wszystkie sklepy (suma).
+const SHOPS: Array<{ v: string; l: string }> = [
+  { v: "", l: "Wszystkie" },
+  { v: "amh", l: "AMH" },
+  { v: "acti", l: "Acti" },
+  { v: "veluxa", l: "Veluxa" },
+];
+
 const MONTH_NAMES = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAY_NAMES   = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
 
@@ -94,13 +102,20 @@ function Calendar({ density }: { density?: string }) {
   // Zakres SKU: "watched" = tylko obserwowane (gwiazdka), "active" = wszystkie aktywne.
   // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy są zawsze widoczne.
   const [scope, setScope] = useState<Scope>("watched");
+  // Sklep: "" = wszystkie, "amh"/"acti"/"veluxa" = tylko dany magazyn (jak na dashboardzie).
+  // ORDER/EMPTY liczone są wtedy per-sklep, DELIVERY zawężone do kontenerów z towarem tej firmy.
+  const [shop, setShop] = useState("");
 
   useEffect(() => {
     let mounted = true;
     setLoading(true);
     (async () => {
       try {
-        const data = await api.get(`/calendar${scope === "watched" ? "?favorites_only=1" : ""}`);
+        const params = new URLSearchParams();
+        if (scope === "watched") params.set("favorites_only", "1");
+        if (shop) params.set("shop", shop);
+        const qs = params.toString();
+        const data = await api.get(`/calendar${qs ? `?${qs}` : ""}`);
         if (mounted) setEvents(Array.isArray(data) ? (data as CalEvent[]) : []);
       } catch {
         if (mounted) { setEvents([]); toast("Nie udało się pobrać kalendarza", "error"); }
@@ -109,7 +124,7 @@ function Calendar({ density }: { density?: string }) {
       }
     })();
     return () => { mounted = false; };
-  }, [scope]);
+  }, [scope, shop]);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -212,6 +227,23 @@ function Calendar({ density }: { density?: string }) {
 
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 }}>
+      {/* Selektor sklepu — 1:1 z dashboardem. "" = wszystkie sklepy. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
+        <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
+          {SHOPS.map((s) => {
+            const active = shop === s.v;
+            return (
+              <button key={s.v || "all"} onClick={() => setShop(s.v)} style={{
+                padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+                background: active ? "var(--surface-3)" : "transparent",
+                color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
+              }}>{s.l}</button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Toolbar */}
       <CalendarToolbar
         label={label}
