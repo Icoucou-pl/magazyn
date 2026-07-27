@@ -141,6 +141,7 @@ SELECT
     f.color AS firma_color,
     COALESCE(pa.seasonality_enabled, FALSE) AS seasonality_enabled,
     COALESCE(pa.is_favorite, FALSE) AS is_favorite,
+    COALESCE(pa.no_reorder, FALSE) AS no_reorder,
     pa.ean AS ean,
     pa.forced_status AS forced_status,
     COALESCE(pa.force_visible, FALSE) AS force_visible,
