@@ -601,7 +601,7 @@ async def _tool_sprzedaz(db: AsyncSession, user: CurrentUser, sku: str, sklep: A
 
 async def _tool_lista_do_zamowienia(db: AsyncSession, user: CurrentUser, producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
     prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, _norm_shop(sklep))
-    items = [p for p in prods if p.days_until_order is not None and p.days_until_order <= 0 and p.status != "W_DRODZE"]
+    items = [p for p in prods if p.days_until_order is not None and p.days_until_order <= 0 and p.status != "W_DRODZE" and not p.no_reorder]
     if producent:
         needle = producent.strip().lower()
         items = [p for p in items if needle in (p.manufacturer_name or "").lower()]
