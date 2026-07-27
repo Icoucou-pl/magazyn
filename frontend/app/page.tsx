@@ -83,6 +83,7 @@ export default function Page() {
   const [view, setView] = useState("dashboard");
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
   const [pendingContainerId, setPendingContainerId] = useState<number | null>(null);
+  const [containerReturnView, setContainerReturnView] = useState<string | null>(null);
   const [pendingAutoSuggestNew, setPendingAutoSuggestNew] = useState(false);
   const [pendingAutoSuggestMfr, setPendingAutoSuggestMfr] = useState<number | null>(null);
   const [pendingManufacturerId, setPendingManufacturerId] = useState<number | null>(null);
@@ -140,7 +141,7 @@ export default function Page() {
 
   // Routing wyników wyszukiwarki (logika widoków siedzi tutaj)
   const goProduct = (sku: string) => { setPendingProductSku(sku); setView("products"); setSearchOpen(false); setScanOpen(false); };
-  const goContainers = (id: number) => { setPendingContainerId(id); setView("containers"); setSearchOpen(false); };
+  const goContainers = (id: number, returnView: string | null = null) => { setPendingContainerId(id); setContainerReturnView(returnView); setView("containers"); setSearchOpen(false); };
   const goManufacturer = (id: number) => { setPendingManufacturerId(id); setView("settings"); setSearchOpen(false); };
 
   // Unikamy migotania ekranu logowania przy hydratacji (sesja czytana po montażu)
@@ -267,6 +268,7 @@ export default function Page() {
             density={t.density}
             openId={pendingContainerId}
             onOpenedId={() => setPendingContainerId(null)}
+            onDeepLinkClose={() => { if (containerReturnView) { setView(containerReturnView); setContainerReturnView(null); } }}
             openNewAutoSuggest={pendingAutoSuggestNew}
             autoSuggestMfrId={pendingAutoSuggestMfr}
             onOpenedNewAutoSuggest={() => { setPendingAutoSuggestNew(false); setPendingAutoSuggestMfr(null); }}
@@ -274,7 +276,7 @@ export default function Page() {
         ) : view === "calendar" ? (
           <Calendar density={t.density} />
         ) : view === "cashflow" ? (
-          <CashflowView onContainerClick={goContainers} />
+          <CashflowView onContainerClick={(id) => goContainers(id, "cashflow")} />
         ) : view === "forecast" ? (
           <ForecastView
             density={t.density}
