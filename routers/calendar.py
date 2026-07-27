@@ -177,6 +177,7 @@ async def cashflow_ledger(
         else:
             status = "plan"
         events.append({
+            "id": c.id,
             "kontener": c.container_number,
             "po": c.order_number,
             "mfr_id": mfr_id,
