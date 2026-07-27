@@ -102,6 +102,8 @@ async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncS
             "cbm_per_unit": p.cbm_per_unit,
             "status": p.status,
             "days_until_empty": p.days_until_empty,
+            "transfer_source_shop": p.transfer_source_shop,
+            "transfer_source_qty": p.transfer_source_qty,
         })
         groups[key]["total_skus"] += 1
 
