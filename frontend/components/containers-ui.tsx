@@ -172,12 +172,12 @@ export function MiniStat({ label, value, sub, icon, onClick, accent, hint }: {
 
 // ── Toolbar ──────────────────────────────────────────────────
 export function ContainersToolbar({
-  search, setSearch, filter, setFilter, counts, expandedAny, onToggleAll, onAutoSuggest, onNew, rows,
+  search, setSearch, filter, setFilter, counts, onAutoSuggest, onNew, rows,
 }: {
   search: string; setSearch: (v: string) => void;
   filter: string; setFilter: (v: string) => void;
-  counts: Record<string, number>; expandedAny: boolean;
-  onToggleAll: () => void; onAutoSuggest: () => void; onNew: () => void;
+  counts: Record<string, number>;
+  onAutoSuggest: () => void; onNew: () => void;
   rows: Container[];
 }) {
   const user = useUser();
@@ -222,9 +222,6 @@ export function ContainersToolbar({
 
       <div style={{ flex: 1 }} />
 
-      <button onClick={onToggleAll} style={btnSecondary}>
-        {expandedAny ? <><I.ChevronD size={12} style={{ transform: "rotate(180deg)" }} /> Zwiń wszystkie</> : <><I.ChevronD size={12} /> Rozwiń wszystkie</>}
-      </button>
       {showEdit && (
         <button onClick={onAutoSuggest} style={{ ...btnSecondary, borderColor: "color-mix(in oklch, var(--anomaly) 40%, var(--border))", color: "var(--anomaly)" }}>
           <I.Wand size={12} /> Auto-sugestia

@@ -201,10 +201,9 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
   }, [filtered]);
   const monthKeys = useMemo(() => grouped.map((g) => g.key), [grouped]);
 
-  // Podczas szukania / filtrowania statusem auto-rozwijamy miesiące z trafieniami
-  // (inaczej wynik chowałby się w zwiniętych nagłówkach).
-  const forceOpenMonths = !!search.trim() || filter !== "ALL";
-  const anyMonthOpen = forceOpenMonths || openMonths.size > 0;
+  // Podczas szukania auto-rozwijamy miesiące z trafieniami (inaczej wynik chowałby się
+  // w zwiniętych nagłówkach). Filtr statusu NIE wymusza rozwinięcia — resztę klika się ręcznie.
+  const forceOpenMonths = !!search.trim();
 
   // Domyślnie wszystko zwinięte, ale bieżący miesiąc rozwijamy raz na starcie.
   useEffect(() => {
@@ -252,14 +251,12 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     if (n.has(id)) n.delete(id); else n.add(id);
     return n;
   });
-  // „Rozwiń / Zwiń wszystkie" działa teraz na pierwszym poziomie — miesiącach
-  // (karty w środku mają własne „Pokaż szczegóły").
+  // Rozwijanie miesięcy — pierwszy poziom (karty w środku mają własne „Pokaż szczegóły").
   const toggleMonth = (key: string) => setOpenMonths((prev) => {
     const n = new Set(prev);
     if (n.has(key)) n.delete(key); else n.add(key);
     return n;
   });
-  const toggleAll = () => setOpenMonths(anyMonthOpen ? new Set() : new Set(monthKeys));
 
   const advance = async (c: Container) => {
     const idx = STATUS_FLOW.indexOf(c.status);
@@ -365,8 +362,6 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
       <ContainersToolbar
         search={search} setSearch={setSearch}
         filter={filter} setFilter={setFilter} counts={counts}
-        expandedAny={anyMonthOpen}
-        onToggleAll={toggleAll}
         onAutoSuggest={() => openAutoSuggest(null)}
         onNew={openNew}
         rows={containers}
