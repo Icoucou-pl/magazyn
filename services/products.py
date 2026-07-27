@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from sql import SALES_QUERY, INCOMING_QUERY
+from sql import SALES_QUERY, INCOMING_QUERY, TRANSFER_STOCK_QUERY
 from models import ProductSummary, IncomingDelivery
 from services.containers import compute_effective_status
 
@@ -62,7 +62,12 @@ def classify_product(row: dict) -> str:
     return "INACTIVE"
 
 
-def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
+# Kod sklepu (magazynu) → etykieta wyświetlana w znaczniku „↔ z [magazyn]".
+_SHOP_LABEL = {"amh": "AMH", "acti": "Acti", "veluxa": "Veluxa"}
+
+
+def calculate_forecast(row: dict, incoming: List[dict],
+                       transfer_stock: List[dict] = None, shop: str = "") -> ProductSummary:
     """Liczy prognozę: średnia ważona sprzedaż, dzień wyczerpania, data zamówienia, status."""
     sales_1m = row["sales_1m_total"]
     sales_2m_avg = row["sales_2m_total"] / 2
@@ -151,6 +156,27 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
             and (row["stock"] + stock_in_transit) >= avg_monthly:
         status = "W_DRODZE"
 
+    # „Zaciągnij z [magazynu]" — gdy produkt jest lokalnie krótki, ale magazyn siostry
+    # (Acti/Veluxa z Sellasista) ma jego stan, to NIE jest zamówienie z Chin, tylko przesunięcie.
+    # Pokazujemy tylko gdy realnie gasi pożar: dociągnięcie z największej siostry daje lokalnie
+    # ≥ 1 miesiąc popytu (row.stock + qty_siostry ≥ avg_monthly). Wykluczamy aktualnie wybrany
+    # magazyn (na zakładce Veluxy nie proponujemy „z Veluxy"). Surowy stan, nie nadwyżka — v1.
+    # Uwaga: liczymy TYLKO dla konkretnej zakładki sklepu. Na „Wszystkich" (shop="") row.stock
+    # jest już pulą grupy (zawiera stany sióstr), więc transfer nie ma sensu — pożar tam = cała
+    # grupa krótka. Ograniczenie do shop != "" zapobiega podwójnemu liczeniu i fałszywym znacznikom.
+    transfer_source_shop = None
+    transfer_source_qty = 0
+    if transfer_stock and avg_monthly > 0 and shop:
+        siblings = sorted(
+            ((t["shop"], int(t["qty"])) for t in transfer_stock
+             if t.get("qty") and t.get("shop") and (not shop or t["shop"] != shop)),
+            key=lambda s: s[1], reverse=True)
+        if siblings:
+            top_shop, top_qty = siblings[0]
+            if (row["stock"] + top_qty) >= avg_monthly:
+                transfer_source_shop = _SHOP_LABEL.get(top_shop, top_shop)
+                transfer_source_qty = top_qty
+
     total_available = row["stock"] + stock_in_transit
     months_of_stock = (total_available / avg_monthly) if avg_monthly > 0 else 999.0
     price = float(row.get("price") or 0)
@@ -196,6 +222,8 @@ def calculate_forecast(row: dict, incoming: List[dict]) -> ProductSummary:
         empty_date=empty_date,
         order_date=order_date,
         status=status,
+        transfer_source_shop=transfer_source_shop,
+        transfer_source_qty=transfer_source_qty,
         incoming_deliveries=sorted(incoming_deliveries, key=lambda d: d.warehouse_delivery_date),
     )
 
@@ -219,12 +247,23 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         key = inc["sku"].strip().lower() if inc["sku"] else ""
         incoming_by_sku.setdefault(key, []).append(inc)
 
+    # Stan sióstr (Sellasist) per SKU — osobne lekkie zapytanie, mergowane po SKU (jak incoming).
+    # Bez parametru :shop — filtr „inny magazyn niż wybrany" robimy w calculate_forecast.
+    transfer_result = await db.execute(text(TRANSFER_STOCK_QUERY))
+    transfer_by_sku = {}
+    for t in transfer_result.mappings():
+        key = (t["sku_canon"] or "").strip().lower()
+        if key:
+            transfer_by_sku.setdefault(key, []).append({"shop": t["shop"], "qty": t["qty"]})
+
     results = []
     for p in products:
         if classify_product(p) not in include_set:
             continue
         sku_key = p["sku"].strip().lower() if p["sku"] else ""
-        results.append(calculate_forecast(p, incoming_by_sku.get(sku_key, [])))
+        results.append(calculate_forecast(
+            p, incoming_by_sku.get(sku_key, []),
+            transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop))
     return results
 
 
