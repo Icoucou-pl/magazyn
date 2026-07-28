@@ -93,11 +93,25 @@ type ClickTarget = { sku: string; name?: string };
 type Tone = "neutral" | "accent" | "ok" | "warning" | "critical" | "info";
 
 // ── KPI card ─────────────────────────────────────────────────
+// „i" w kółku obok kwoty — tooltip po najechaniu (natywny title, jak reszta hoverów).
+function InfoDot({ title }: { title: string }) {
+  return (
+    <span title={title} style={{ display: "inline-flex", alignItems: "center", color: "var(--text-lo)", cursor: "help", flexShrink: 0 }}>
+      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 16v-4" />
+        <path d="M12 8h.01" />
+      </svg>
+    </span>
+  );
+}
+
 function KpiCard({
-  label, value, sub, change, tone = "neutral", icon, sparkData,
+  label, value, sub, change, tone = "neutral", icon, sparkData, valueInfo,
 }: {
   label: string; value: React.ReactNode; sub?: React.ReactNode;
   change?: number; tone?: Tone; icon?: React.ReactNode; sparkData?: number[];
+  valueInfo?: string;
 }) {
   const toneColor: Record<Tone, string> = {
     neutral: "var(--text-hi)",
@@ -127,7 +141,10 @@ function KpiCard({
         {icon && <span style={{ color: "var(--text-lo)", opacity: 0.65 }}>{icon}</span>}
       </div>
       <div>
-        <div className="num" style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.02em", color: c, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <span className="num" style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.02em", color: c, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</span>
+          {valueInfo && <InfoDot title={valueInfo} />}
+        </div>
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 8, marginTop: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
             {change != null && (
@@ -365,24 +382,31 @@ function KpiGrid({
   const change90 = pts.length > 1 ? ((stockValue - pts[0].value) / (pts[0].value || 1)) * 100 : undefined;
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
   const c = classification?.counts;
-  // Magazyn w drodze jest AMH-owy (drugi magazyn subiektowy). Przy zakładce Acti/Veluxa → 0.
+  // Magazyn w drodze jest AMH-owy (drugi magazyn subiektowy). Przy zakładce Acti/Veluxa → „—".
   const isAmhScope = shop === "" || shop === "amh";
-  const magValue = isAmhScope ? mag.value : 0;
-  const magValueLabel = isAmhScope ? fmtPLNk(magValue) : "—";
-  // „Magazyn w drodze" pokazuje wartość towaru z Subiektu, ale zapłacone jest z niej
-  // zwykle 30–40% (reszta to zaliczki jeszcze niewpłacone) — stąd druga liczba.
-  const magSub = `${countLabel(mag.containers, mag.looseLots)} · zapłacone ${fmtPLNk(mag.paid)}`;
-  // „Kontenery w drodze" pokazuje teraz ile JESZCZE zapłacimy, a nie wartość towaru.
-  const kontSub = `${countLabel(kont.containers, kont.looseLots)} · z ${fmtPLNk(kont.value)}`;
-  const kapital = stockValue + magValue;   // kapitał w towarze: u nas + opłacone/wbite w drodze
+  // Główna liczba karty „Magazyn w drodze" = ZAPŁACONE (suma opłaconych zaliczek + balance
+  // zielonych kontenerów), nie wartość towaru. mag.value (wartość NETTO w drodze, Σ
+  // cena_jednostkowa × ilość z tabeli subiektowej) służy już tylko do wyliczenia „do zapłacenia".
+  const magPaid = isAmhScope ? mag.paid : 0;
+  const magPaidLabel = isAmhScope ? fmtPLNk(mag.paid) : "—";
+  // „do zapłacenia" = wartość netto w drodze − zapłacone. Klamra na wypadek rozjazdu baz
+  // (płatności vs wycena subiektowa), żeby nie pokazać kwoty ujemnej.
+  const magToPay = isAmhScope ? fmtPLNk(Math.max(0, mag.value - mag.paid)) : "—";
+  const magSub = `${countLabel(mag.containers, mag.looseLots)} · do zapłacenia ${magToPay}`;
+  const magSubCount = countLabel(mag.containers, mag.looseLots);   // wariant bez kwoty (maskowany)
+  // „W Prognozie" (czerwone = jeszcze nie w Subiekcie): główna liczba to ile JESZCZE zapłacimy
+  // za nieopłacone kontenery tej firmy (redRemaining jest już skalowany udziałem sklepu).
+  // Pod spodem tylko liczba kontenerów.
+  const kontSub = countLabel(kont.containers, kont.looseLots);
+  const kapital = stockValue + magPaid;   // kapitał w towarze: magazyn + zapłacone w drodze
 
   return (
     <>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
       {showFin ? (
-        <KpiCard label="Kapitał w towarze" value={fmtPLNk(kapital)} sub="magazyn + w drodze" tone="accent" icon={<I.Wallet size={14} />} />
+        <KpiCard label="Kapitał w towarze" value={fmtPLNk(kapital)} sub="magazyn + zapłacone w drodze" tone="accent" icon={<I.Wallet size={14} />} />
       ) : (
-        <KpiCard label="Kapitał w towarze" value="•••••" sub="magazyn + w drodze" tone="accent" icon={<I.Wallet size={14} />} />
+        <KpiCard label="Kapitał w towarze" value="•••••" sub="magazyn + zapłacone w drodze" tone="accent" icon={<I.Wallet size={14} />} />
       )}
       {showFin ? (
         <KpiCard label="Wartość magazynu" value={fmtPLNk(stockValue)} change={change90} sub="vs 90 dni temu" tone="neutral" sparkData={sparkLast30} icon={<I.Box size={14} />} />
@@ -390,14 +414,14 @@ function KpiGrid({
         <KpiCard label="Wartość magazynu" value="•••••" sub="ukryte — brak uprawnień" tone="neutral" icon={<I.Box size={14} />} />
       )}
       {showFin ? (
-        <KpiCard label="Magazyn w drodze" value={magValueLabel} sub={magSub} tone="info" icon={<I.Container size={14} />} />
+        <KpiCard label="Magazyn w drodze" value={magPaidLabel} valueInfo="Suma opłaconych zaliczek i balance" sub={magSub} tone="info" icon={<I.Container size={14} />} />
       ) : (
-        <KpiCard label="Magazyn w drodze" value="•••••" sub={magSub} tone="info" icon={<I.Container size={14} />} />
+        <KpiCard label="Magazyn w drodze" value="•••••" sub={magSubCount} tone="info" icon={<I.Container size={14} />} />
       )}
       {showFin ? (
-        <KpiCard label="Kontenery w drodze" value={fmtPLNk(kont.remaining)} sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="W Prognozie" value={fmtPLNk(kont.remaining)} sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       ) : (
-        <KpiCard label="Kontenery w drodze" value="•••••" sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
+        <KpiCard label="W Prognozie" value="•••••" sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       )}
       <KpiCard label="Aktywne SKU" value={fmtNum(c?.ACTIVE)} sub={`${fmtNum(c?.ACTIVE_NO_STOCK)} bez stanu`} tone="ok" icon={<I.Activity size={14} />} />
     </div>
