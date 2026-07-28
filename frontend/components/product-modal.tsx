@@ -70,6 +70,9 @@ export default function ProductModal({
   const user = useUser();
   const showEdit = canEdit(user);
   const showFin = can(user, "viewFinancials");
+  // Obserwowanie i „nie dozamawiamy" to zapis atrybutów produktu → wymaga editProducts
+  // (VIEWER go nie ma). Ten sam klucz co guard na endpointach /favorite i /no-reorder.
+  const canEditProducts = can(user, "editProducts");
   const [product, setProduct] = useState<Product>(initialProduct);
   const [editingAttrs, setEditingAttrs] = useState(false);
   const [editingLT, setEditingLT] = useState(false);
@@ -155,14 +158,18 @@ export default function ProductModal({
               <div style={{ fontSize: 14, color: "var(--text-mid)", marginTop: 2 }}>{product.name}</div>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={toggleFav} style={iconBtnHeader} title={product.is_favorite ? "Usuń z obserwowanych" : "Obserwuj"}>
-                {product.is_favorite ? <I.StarFill size={16} /> : <I.Star size={16} />}
-              </button>
-              <button onClick={toggleNoReorder}
-                style={product.no_reorder ? { ...iconBtnHeader, background: "var(--info-soft)", color: "var(--info)" } : iconBtnHeader}
-                title={product.no_reorder ? "Przywróć do zamawiania (pokaż w pożarach)" : "Nie dozamawiamy — ukryj z pożarów i zamawiania"}>
-                <I.Flame size={16} />
-              </button>
+              {canEditProducts && (
+                <button onClick={toggleFav} style={iconBtnHeader} title={product.is_favorite ? "Usuń z obserwowanych" : "Obserwuj"}>
+                  {product.is_favorite ? <I.StarFill size={16} /> : <I.Star size={16} />}
+                </button>
+              )}
+              {canEditProducts && (
+                <button onClick={toggleNoReorder}
+                  style={product.no_reorder ? { ...iconBtnHeader, background: "var(--info-soft)", color: "var(--info)" } : iconBtnHeader}
+                  title={product.no_reorder ? "Przywróć do zamawiania (pokaż w pożarach)" : "Nie dozamawiamy — ukryj z pożarów i zamawiania"}>
+                  <I.Flame size={16} />
+                </button>
+              )}
               <button onClick={onClose} style={iconBtnHeader} title="Zamknij"><I.Close size={16} /></button>
             </div>
           </div>
