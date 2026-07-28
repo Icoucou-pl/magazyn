@@ -314,6 +314,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     const redValue = red.reduce((s, l) => s + redValOf(l.firma_breakdown, l.total_value || 0), 0);
     const redRemaining = red.reduce((s, l) => s + (l.pozostalo_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const greenPaid = green.reduce((s, l) => s + (l.zaplacono_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
+    const greenRemaining = green.reduce((s, l) => s + (l.pozostalo_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const missingRates = lots.reduce((s, l) => s + (l.brak_kursu ?? 0), 0);
     const relevant = lots.filter((l) => carries(l.firma_breakdown));
     const redRel = red.filter((l) => carries(l.firma_breakdown));
@@ -324,7 +325,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     const greenRel = green.filter((l) => carries(l.firma_breakdown));
     const greenWhole = greenRel.length > 0 && greenRel.length === relevant.length;
     const looseGreen = (greenRel.length > 0 && greenRel.length < relevant.length) ? greenRel.length : 0;
-    return { redValue, redWhole, looseRed, greenWhole, looseGreen, redRemaining, greenPaid, missingRates };
+    return { redValue, redWhole, looseRed, greenWhole, looseGreen, redRemaining, greenPaid, greenRemaining, missingRates };
   }
   const isRed = !c.subiekt_wbite;
   const rel = carries(c.firma_breakdown);
@@ -337,6 +338,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     looseGreen: 0,
     redRemaining: isRed ? (c.pozostalo_pln ?? 0) * ratio : 0,
     greenPaid: isRed ? 0 : (c.zaplacono_pln ?? 0) * ratio,
+    greenRemaining: isRed ? 0 : (c.pozostalo_pln ?? 0) * ratio,
     missingRates: c.brak_kursu ?? 0,
   };
 }
@@ -370,7 +372,7 @@ function KpiGrid({
   history: StockHistory | null;
   classification: Classification | null;
   kont: { value: number; containers: number; looseLots: number; remaining: number };
-  mag: { value: number; containers: number; looseLots: number; paid: number };
+  mag: { value: number; containers: number; looseLots: number; paid: number; remaining: number };
   shop: string;                    // "" = wszystkie sklepy
   missingRates: number;            // wpłaty bez notowania NBP (nie weszły do sum)
   onRefillRates: () => void;
@@ -382,23 +384,21 @@ function KpiGrid({
   const change90 = pts.length > 1 ? ((stockValue - pts[0].value) / (pts[0].value || 1)) * 100 : undefined;
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
   const c = classification?.counts;
-  // Magazyn w drodze jest AMH-owy (drugi magazyn subiektowy). Przy zakładce Acti/Veluxa → „—".
-  const isAmhScope = shop === "" || shop === "amh";
-  // Główna liczba karty „Magazyn w drodze" = ZAPŁACONE (suma opłaconych zaliczek + balance
-  // zielonych kontenerów), nie wartość towaru. mag.value (wartość NETTO w drodze, Σ
-  // cena_jednostkowa × ilość z tabeli subiektowej) służy już tylko do wyliczenia „do zapłacenia".
-  const magPaid = isAmhScope ? mag.paid : 0;
-  const magPaidLabel = isAmhScope ? fmtPLNk(mag.paid) : "—";
-  // „do zapłacenia" = wartość netto w drodze − zapłacone. Klamra na wypadek rozjazdu baz
-  // (płatności vs wycena subiektowa), żeby nie pokazać kwoty ujemnej.
-  const magToPay = isAmhScope ? fmtPLNk(Math.max(0, mag.value - mag.paid)) : "—";
+  // Karta „Magazyn w drodze" liczona spójnie z JEDNEGO źródła — płatności kontenerowe:
+  //   główna = zapłacone (Σ zaliczek + balance zielonych, skalowane udziałem sklepu),
+  //   „do zapłacenia" = pozostałe saldo tych samych zielonych kontenerów (greenRemaining).
+  // Dzięki temu zapłacone + do zapłacenia = wartość zielonych, a liczby sumują się po
+  // sklepach do „Wszyscy" i działają też dla Acti/Veluxy (mają swój udział, choć nie ma
+  // ich w Subiekcie). Wcześniej „do zapłacenia" = wartość_subiektowa(AMH) − zapłacone
+  // mieszało dwa zakresy i dawało rozjazdy między zakładkami oraz puste Acti/Veluxę.
+  const magPaidLabel = fmtPLNk(mag.paid);
+  const magToPay = fmtPLNk(mag.remaining);
   const magSub = `${countLabel(mag.containers, mag.looseLots)} · do zapłacenia ${magToPay}`;
   const magSubCount = countLabel(mag.containers, mag.looseLots);   // wariant bez kwoty (maskowany)
-  // „W Prognozie" (czerwone = jeszcze nie w Subiekcie): główna liczba to ile JESZCZE zapłacimy
-  // za nieopłacone kontenery tej firmy (redRemaining jest już skalowany udziałem sklepu).
-  // Pod spodem tylko liczba kontenerów.
+  // „W Prognozie" (czerwone = jeszcze nie w Subiekcie): ile jeszcze zapłacimy za nieopłacone
+  // kontenery tej firmy (redRemaining już skalowany udziałem sklepu). Pod spodem tylko liczba.
   const kontSub = countLabel(kont.containers, kont.looseLots);
-  const kapital = stockValue + magPaid;   // kapitał w towarze: magazyn + zapłacone w drodze
+  const kapital = stockValue + mag.paid;   // kapitał w towarze: magazyn + zapłacone w drodze
 
   return (
     <>
@@ -1044,7 +1044,7 @@ export default function Dashboard({
     }
 
     let redValue = 0, redContainers = 0, redLooseLots = 0, greenContainers = 0, greenLooseLots = 0;
-    let redRemaining = 0, greenPaid = 0, missingRates = 0;
+    let redRemaining = 0, greenPaid = 0, greenRemaining = 0, missingRates = 0;
     for (const c of undelivered) {
       const s = splitSubiekt(c, shop);
       redValue += s.redValue;
@@ -1053,18 +1053,19 @@ export default function Dashboard({
       redRemaining += s.redRemaining;
       missingRates += s.missingRates;
 
-      // Licznik kontenerów i kwota zapłacona idą zakresem wybranej zakładki: na „Wszyscy"
-      // wszystkie firmy, na zakładce firmowej tylko jej towar. Wartość karty zostaje
-      // AMH-owa (jedyne źródło to Subiekt), bo zaliczka za kontener Veluxy realnie
-      // wypłynęła z konta, nawet jeśli w Subiekcie nie ma po niej śladu.
+      // Licznik kontenerów oraz kwoty (zapłacone i do zapłacenia) idą zakresem wybranej
+      // zakładki: na „Wszyscy" wszystkie firmy, na zakładce firmowej tylko jej towar
+      // (skalowane udziałem firmy z firma_breakdown). Dzięki temu suma po sklepach zgadza
+      // się z „Wszyscy", a Acti/Veluxa też mają swoją część, mimo że w Subiekcie ich nie ma.
       if (s.greenWhole) greenContainers += 1;
       greenLooseLots += s.looseGreen;
       greenPaid += s.greenPaid;
+      greenRemaining += s.greenRemaining;
     }
     return {
       deliveries,
       kont: { value: redValue, containers: redContainers, looseLots: redLooseLots, remaining: redRemaining },
-      green: { containers: greenContainers, looseLots: greenLooseLots, paid: greenPaid },
+      green: { containers: greenContainers, looseLots: greenLooseLots, paid: greenPaid, remaining: greenRemaining },
       missingRates,
     };
   }, [containers, shop]);
@@ -1107,7 +1108,7 @@ export default function Dashboard({
       {shopSelector}
       {loading ? <DashboardSkeleton gap={gap} /> : (
         <>
-          <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
+          <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid, remaining: pipeline.green.remaining }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
           {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator}
             onProductClick={onProductClick ? (sku) => onProductClick({ sku }) : undefined} />}
