@@ -16,7 +16,7 @@ from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
     StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate,
 )
-from security import get_current_user, has_perm
+from security import get_current_user, has_perm, require_perm
 from services.products import fetch_products, get_product
 
 router = APIRouter(prefix="/api", tags=["products"])
@@ -296,8 +296,9 @@ async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_
 
 
 @router.put("/products/{sku:path}/favorite", response_model=ProductSummary)
-async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
-    """Przełącza status ulubione - jeśli był true, robi false i odwrotnie."""
+async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
+    """Przełącza status ulubione - jeśli był true, robi false i odwrotnie.
+    Wymaga editProducts (VIEWER nie może zmieniać obserwowania)."""
     existing = await db.execute(text(f"SELECT is_favorite FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     new_val = not e.is_favorite if e else True
@@ -315,7 +316,7 @@ async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/products/{sku:path}/no-reorder", response_model=ProductSummary)
-async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db)):
+async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
     """Przełącza „nie dozamawiamy" — produkt znika z pożarów i całego flow zamawiania
     (lista zakupów, auto-sugestia, lista AI), ale zostaje żywy w Produktach/sprzedaży/wyprzedaży.
     Nie rusza statusu ani klasyfikacji — to nie INACTIVE/DEAD_STOCK."""
