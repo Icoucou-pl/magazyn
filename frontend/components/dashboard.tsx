@@ -367,10 +367,9 @@ const SUBIEKT_ROW_META = {
 } as const;
 
 function KpiGrid({
-  history, classification, kont, mag, shop, missingRates, onRefillRates,
+  history, kont, mag, shop, missingRates, onRefillRates,
 }: {
   history: StockHistory | null;
-  classification: Classification | null;
   kont: { value: number; containers: number; looseLots: number; remaining: number };
   mag: { value: number; containers: number; looseLots: number; paid: number; remaining: number };
   shop: string;                    // "" = wszystkie sklepy
@@ -383,7 +382,6 @@ function KpiGrid({
   const stockValue = history?.current_value ?? 0;
   const change90 = pts.length > 1 ? ((stockValue - pts[0].value) / (pts[0].value || 1)) * 100 : undefined;
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
-  const c = classification?.counts;
   // Karta „Magazyn w drodze" liczona spójnie z JEDNEGO źródła — płatności kontenerowe:
   //   główna = zapłacone (Σ zaliczek + balance zielonych, skalowane udziałem sklepu),
   //   „do zapłacenia" = pozostałe saldo tych samych zielonych kontenerów (greenRemaining).
@@ -423,7 +421,6 @@ function KpiGrid({
       ) : (
         <KpiCard label="W Prognozie" value="•••••" sub={kontSub} tone="info" icon={<I.Ship size={14} />} />
       )}
-      <KpiCard label="Aktywne SKU" value={fmtNum(c?.ACTIVE)} sub={`${fmtNum(c?.ACTIVE_NO_STOCK)} bez stanu`} tone="ok" icon={<I.Activity size={14} />} />
     </div>
     {showFin && missingRates > 0 && (
       // Wpłaty bez notowania NBP nie weszły do sum — mówimy o tym wprost, zamiast po cichu
@@ -916,7 +913,6 @@ export default function Dashboard({
 
   const [loading, setLoading] = useState(true);
   const [history, setHistory] = useState<StockHistory | null>(null);
-  const [classification, setClassification] = useState<Classification | null>(null);
   const [containers, setContainers] = useState<ContainerOut[]>([]);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
@@ -924,17 +920,17 @@ export default function Dashboard({
   const [transitWh, setTransitWh] = useState<{ value_pln: number; sku_count: number } | null>(null);
   const [shop, setShop] = useState("");
   const cacheRef = useRef<Record<string, {
-    history: StockHistory | null; classification: Classification | null;
+    history: StockHistory | null;
     containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
     transitWh: { value_pln: number; sku_count: number } | null;
   }>>({});
 
   const applyBundle = (b: {
-    history: StockHistory | null; classification: Classification | null;
+    history: StockHistory | null;
     containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
     transitWh: { value_pln: number; sku_count: number } | null;
   }) => {
-    setHistory(b.history); setClassification(b.classification); setContainers(b.containers);
+    setHistory(b.history); setContainers(b.containers);
     setAnomalies(b.anomalies); setShopping(b.shopping); setTopSellers(b.topSellers);
     setTransitWh(b.transitWh);
   };
@@ -991,9 +987,8 @@ export default function Dashboard({
       // W obserwowanych trzymamy tylko to, co firmy aktualnie sprzedają, więc boxy nie krzyczą o wycofanych SKU.
       // Kontenery (/containers) zostają globalne: wiozą fizyczny towar niezależnie od obserwacji.
       const shopQ = shop ? `&shop=${shop}` : "";
-      const [h, cls, cont, ano, shp, top, tw] = await Promise.allSettled([
+      const [h, cont, ano, shp, top, tw] = await Promise.allSettled([
         api.get(`/stock-value-history?favorites_only=0&days=90${shopQ}`),
-        api.get(`/classification?favorites_only=1${shopQ}`),
         api.get("/containers"),
         api.get(`/anomalies?favorites_only=1${shopQ}`),
         api.get(`/shopping-list?favorites_only=1${shopQ}`),
@@ -1003,13 +998,12 @@ export default function Dashboard({
       if (!alive) return;
       let failed = false;
       const bundle = {
-        history: null as StockHistory | null, classification: null as Classification | null,
+        history: null as StockHistory | null,
         containers: [] as ContainerOut[], anomalies: [] as Anomaly[],
         shopping: [] as ShoppingGroup[], topSellers: [] as TopSeller[],
         transitWh: null as { value_pln: number; sku_count: number } | null,
       };
       if (h.status === "fulfilled") bundle.history = h.value as StockHistory; else failed = true;
-      if (cls.status === "fulfilled") bundle.classification = cls.value as Classification; else failed = true;
       if (cont.status === "fulfilled") bundle.containers = (cont.value as ContainerOut[]) || []; else failed = true;
       if (ano.status === "fulfilled") bundle.anomalies = (ano.value as Anomaly[]) || []; else failed = true;
       if (shp.status === "fulfilled") bundle.shopping = (shp.value as ShoppingGroup[]) || []; else failed = true;
@@ -1108,7 +1102,9 @@ export default function Dashboard({
       {shopSelector}
       {loading ? <DashboardSkeleton gap={gap} /> : (
         <>
-          <KpiGrid history={history} classification={classification} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid, remaining: pipeline.green.remaining }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
+          {can(user, "viewDashboardKpi") && (
+            <KpiGrid history={history} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid, remaining: pipeline.green.remaining }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
+          )}
           {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator}
             onProductClick={onProductClick ? (sku) => onProductClick({ sku }) : undefined} />}
