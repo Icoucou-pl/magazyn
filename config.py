@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     STARTING_BALANCE_USD: float = 10.0            # ile realnie wrzucone na konto (do salda w liczniku)
 
     TABLE_EXTERNAL_STOCK: str = "sellasist_stock"   # stany z Sellasistów nie-AMH (Faza 2b)
+    TABLE_FAKTUROWNIA_STOCK: str = "fakturownia_stock"  # stan „w drodze" + cena zakupu z Fakturowni (Acti/Veluxa)
 
     TABLE_PRODUCTS: str = "subiekt_towary"
     COL_PRODUCT_SKU: str = "symbol"
