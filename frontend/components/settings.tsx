@@ -1658,6 +1658,7 @@ const btnGhostMini: React.CSSProperties = {
 type FreshInfo = {
   sellasist?: { last: string | null; count: number };
   subiekt?: { last: string | null; count: number };
+  fakturownia?: { last: string | null; count: number };
 };
 type SyncRow = {
   id: number; source: string; started_at?: string | null; finished_at?: string | null;
@@ -1711,9 +1712,10 @@ function FreshnessPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <FreshCard title="Ostatnie pobranie Sellasist" info={fresh?.sellasist}/>
         <FreshCard title="Ostatnie pobranie Subiekt" info={fresh?.subiekt}/>
+        <FreshCard title="Ostatnie pobranie Fakturownia" info={fresh?.fakturownia}/>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1749,12 +1751,19 @@ function FreshnessPanel() {
                   <td style={{ ...td, fontWeight: 600, color: "var(--text-hi)" }}>
                     {(() => {
                       const s = r.source || "";
-                      if (s === "subiekt") return "Subiekt";
+                      if (s === "subiekt" || s.startsWith("subiekt:")) return "Subiekt";
                       if (s.startsWith("sellasist:")) {
                         const sh = s.slice(10);
                         return sh ? `Sellasist · ${sh.toUpperCase()}` : "Sellasist";
                       }
-                      return "Sellasist";
+                      if (s === "sellasist") return "Sellasist";
+                      if (s.startsWith("fakturownia:")) {
+                        const sh = s.slice(12);
+                        return sh ? `Fakturownia · ${sh.charAt(0).toUpperCase()}${sh.slice(1)}` : "Fakturownia";
+                      }
+                      if (s === "fakturownia") return "Fakturownia";
+                      // Domyślnie: pokaż surowe źródło z kropką zamiast dwukropka, zamiast mylącego „Sellasist".
+                      return s ? s.replace(":", " · ") : "—";
                     })()}
                   </td>
                   <td style={td} className="num">{fmtLocalDt(r.finished_at || r.started_at)}</td>

@@ -127,7 +127,7 @@ type TopbarProps = {
   onOpenScan?: () => void;
   onRefresh?: () => void;
   refreshing?: boolean;
-  freshness?: { sellasist?: { last: string | null }; subiekt?: { last: string | null } } | null;
+  freshness?: { sellasist?: { last: string | null }; subiekt?: { last: string | null }; fakturownia?: { last: string | null } } | null;
   onChangePassword?: () => void;
   onAuditLog?: () => void;
 };
@@ -262,9 +262,9 @@ export function Topbar({
               </b>
             </span>
             <span style={{ opacity: 0.45 }} className="hide-mobile">·</span>
-            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Subiekt:{" "}
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Fakturownia:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {fmtFresh(freshness?.subiekt?.last)}
+                {fmtFresh(freshness?.fakturownia?.last)}
               </b>
             </span>
           </div>
