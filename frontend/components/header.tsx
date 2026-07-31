@@ -256,15 +256,18 @@ export function Topbar({
             flexWrap: "wrap", gap: 2, rowGap: 2, columnGap: 10,
             fontSize: 11, color: "var(--text-lo)",
           }}>
-            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Sellasist:{" "}
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Sellasist i Fakturownia:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {refreshing ? "pobieranie…" : fmtFresh(freshness?.sellasist?.last)}
+                {refreshing ? "pobieranie…" : fmtFresh(
+                  [freshness?.sellasist?.last, freshness?.fakturownia?.last]
+                    .filter(Boolean).sort().slice(-1)[0] || null
+                )}
               </b>
             </span>
             <span style={{ opacity: 0.45 }} className="hide-mobile">·</span>
-            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Fakturownia:{" "}
+            <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Subiekt AMH:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
-                {fmtFresh(freshness?.fakturownia?.last)}
+                {fmtFresh(freshness?.subiekt?.last)}
               </b>
             </span>
           </div>
