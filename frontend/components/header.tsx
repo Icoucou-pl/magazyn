@@ -252,8 +252,8 @@ export function Topbar({
 
           {/* Wiersz 2: świeżość danych (osobny wiersz — nie nachodzi na ikony przy wąskim ekranie) */}
           <div className="freshness-row" style={{
-            display: "flex", alignItems: "center", justifyContent: "flex-end",
-            flexWrap: "wrap", gap: 2, rowGap: 2, columnGap: 10,
+            display: "flex", flexDirection: "column", alignItems: "flex-end",
+            gap: 2, rowGap: 2,
             fontSize: 11, color: "var(--text-lo)",
           }}>
             <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Sellasist i Fakturownia:{" "}
@@ -264,7 +264,6 @@ export function Topbar({
                 )}
               </b>
             </span>
-            <span style={{ opacity: 0.45 }} className="hide-mobile">·</span>
             <span style={{ whiteSpace: "nowrap" }}>Ostatnie pobranie Subiekt AMH:{" "}
               <b style={{ color: "var(--text-mid)", fontWeight: 600 }}>
                 {fmtFresh(freshness?.subiekt?.last)}

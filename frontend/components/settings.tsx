@@ -1674,9 +1674,6 @@ function FreshCard({ title, info }: { title: string; info?: { last: string | nul
     }}>
       <div style={{ fontSize: 11, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{title}</div>
       <div className="num" style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}>{fmtLocalDt(info?.last)}</div>
-      <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 4 }}>
-        {info && info.count != null ? `${info.count.toLocaleString("pl-PL")} rekordów w bazie` : "—"}
-      </div>
     </div>
   );
 }
@@ -1712,13 +1709,10 @@ function FreshnessPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <FreshCard title="Ostatnie pobranie Sellasist i Fakturownia" info={{
-          last: [fresh?.sellasist?.last, fresh?.fakturownia?.last]
-                  .filter(Boolean).sort().slice(-1)[0] || null,
-          count: (fresh?.sellasist?.count || 0) + (fresh?.fakturownia?.count || 0),
-        }}/>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <FreshCard title="Ostatnie pobranie Sellasist" info={fresh?.sellasist}/>
         <FreshCard title="Ostatnie pobranie Subiekt AMH" info={fresh?.subiekt}/>
+        <FreshCard title="Ostatnie pobranie Fakturownia" info={fresh?.fakturownia}/>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
