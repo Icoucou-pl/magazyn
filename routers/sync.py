@@ -55,6 +55,24 @@ async def data_freshness(db: AsyncSession = Depends(get_db), user: CurrentUser =
         candidates = [d for d in (last_data, last_log) if d is not None]
         last = max(candidates) if candidates else None
         out[key] = {"last": last.isoformat() if last is not None else None, "count": cnt}
+
+    # Fakturownia (Acti/Veluxa) — osobny kafelek. Tabela ma `updated_at` (nie `data_pobrania`),
+    # a dziennik loguje per sklep (fakturownia:acti, …), więc obsługujemy ją poza pętlą.
+    fakt_data, fakt_cnt = None, 0
+    try:
+        r = await db.execute(text(
+            f"SELECT MAX(updated_at) AS last, COUNT(*) AS cnt FROM {settings.TABLE_FAKTUROWNIA_STOCK}"))
+        row = r.mappings().first()
+        if row:
+            fakt_data = row["last"]
+            fakt_cnt = int(row["cnt"]) if row["cnt"] is not None else 0
+    except Exception:
+        pass
+    fakt_log = [v for k, v in log_last.items()
+                if v is not None and (k == "fakturownia" or k.startswith("fakturownia:"))]
+    fakt_candidates = [d for d in (fakt_data, (max(fakt_log) if fakt_log else None)) if d is not None]
+    fakt_last = max(fakt_candidates) if fakt_candidates else None
+    out["fakturownia"] = {"last": fakt_last.isoformat() if fakt_last is not None else None, "count": fakt_cnt}
     return out
 
 

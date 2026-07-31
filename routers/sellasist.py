@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from models import CurrentUser
 from security import get_current_user
 from services.sellasist import get_status, is_running, mark_started, run_refresh
+from services import fakturownia as fakt
 
 router = APIRouter(prefix="/api/sellasist", tags=["sellasist"])
 
@@ -41,4 +42,12 @@ async def sellasist_refresh(user: CurrentUser = Depends(get_current_user)):
 
     mark_started()                       # synchronicznie, zanim wystartuje zadanie
     asyncio.create_task(run_refresh())   # bieg w tle, własna sesja bazy
+
+    # Fakturownia (Acti/Veluxa) — odświeżamy TĄ SAMĄ ikonką „Odśwież", ale NIEZALEŻNIE:
+    # brak konfiguracji lub błąd Fakturowni nie wpływa na wynik Sellasista (osobny status,
+    # osobny wpis w app_sync_log jako fakturownia:<slug>). Fire-and-forget w tle.
+    if fakt.is_configured() and not fakt.is_running():
+        fakt.mark_started()
+        asyncio.create_task(fakt.run_refresh())
+
     return {"status": "started", **get_status()}
