@@ -104,6 +104,18 @@ ext_stock_global AS (
     FROM {settings.TABLE_EXTERNAL_STOCK}
     GROUP BY sku_canon
 ),
+fakturownia_data AS (
+    -- Cena zakupu (z PZ) i nazwa z Fakturowni Acti/Veluxa, po sku_canon (SKU globalnie unikalne 1:1;
+    -- MAX tylko na wypadek gdyby ten sam symbol trafił do >1 Fakturowni). Bez filtra na cenę,
+    -- bo produkt może mieć nazwę przy zerowej cenie. Filtrowanie zer robimy dopiero przy użyciu:
+    -- cena przez NULLIF(fd.ppn,0), nazwa przez NULLIF(TRIM(fd.nazwa),'').
+    -- AMH nie ma tu wierszy → jego cena/nazwa zostają bez zmian (Subiekt).
+    SELECT sku_canon,
+           MAX(purchase_price_net) AS ppn,
+           MAX(nazwa)              AS nazwa
+    FROM {settings.TABLE_FAKTUROWNIA_STOCK}
+    GROUP BY sku_canon
+),
 sales_global AS (
     SELECT
         LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_normalized,
@@ -116,7 +128,7 @@ sales_global AS (
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
-    COALESCE(NULLIF(TRIM(pa.name_override), ''), p.{settings.COL_PRODUCT_NAME}) AS name,
+    COALESCE(NULLIF(TRIM(pa.name_override), ''), NULLIF(TRIM(fd.nazwa), ''), p.{settings.COL_PRODUCT_NAME}) AS name,
     pa.name_override AS name_override_manual,
     -- Sample istniejący TYLKO w app_product_attrs (src_pri = 4) nie ma źródła stanu
     -- (nie zna go ani Subiekt, ani Sellasist) — stan bierze się z ręcznego licznika sample_stock.
@@ -129,7 +141,7 @@ SELECT
           THEN COALESCE(pa.sample_stock, 0)
           ELSE (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(esg.qty, 0))
      END)::int AS stock_global,
-    COALESCE(NULLIF(pa.cena_zakupu, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
+    COALESCE(NULLIF(pa.cena_zakupu, 0), NULLIF(fd.ppn, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     pa.cena_zakupu::float AS cena_zakupu_manual,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
     COALESCE(pa.cbm_per_unit, 0)::float AS cbm_per_unit,
@@ -159,6 +171,7 @@ SELECT
 FROM catalog_dedup p
 LEFT JOIN ext_stock es ON es.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN ext_stock_global esg ON esg.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+LEFT JOIN fakturownia_data fd ON fd.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_periods sp ON sp.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_global sg ON sg.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
