@@ -443,7 +443,7 @@ export function ContainerCard({
         <span style={{ color: "var(--text-lo)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.18s" }}><I.ChevronR size={14} /></span>
         <div style={{ width: 36, height: 36, borderRadius: 8, background: meta.bg, color: meta.fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={16} /></div>
 
-        <div style={{ flex: "0 1 auto", minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {/* Tytuł na pierwszym planie: producent jako kropka+nazwa. Skonsolidowany → po jednym na lot. Brak dostawcy → nr kontenera. */}
             {consolidated
@@ -457,6 +457,7 @@ export function ContainerCard({
             {!expanded && hasMfrTitle && realNr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
             {subiektSt && <SubiektDot state={subiektSt} />}
             {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
+            {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
             {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
             {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa · auto" : "auto"}</Pill>}
           </div>
@@ -472,10 +473,6 @@ export function ContainerCard({
             <span className="num" style={{ color: "var(--text-mid)" }}>{showFin ? fmtPLNk(c.total_value) : "•••"}</span>
           </div>
         </div>
-
-        {/* Status opłacenia — doklejony do informacji kontenera (do lewej). Spacer dopycha ETA/CBM w prawo. */}
-        {showFin && <div style={{ flexShrink: 0 }}><PaymentBadge status={paymentStatusOf(c)} /></div>}
-        <div style={{ flex: 1, minWidth: 8 }} />
 
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>ETA</div>
@@ -808,11 +805,11 @@ function PaymentBadge({ status }: { status: PayStatus }) {
       : { label: "Nieopłacony", fg: "var(--text-lo)", bg: "var(--surface-3)" };
   return (
     <span style={{
-      display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 12px",
-      fontSize: 11.5, fontWeight: 600, borderRadius: 999, whiteSpace: "nowrap",
+      display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px",
+      fontSize: 10.5, fontWeight: 600, borderRadius: 999, whiteSpace: "nowrap",
       color: meta.fg, background: meta.bg,
     }}>
-      <span style={{ width: 6, height: 6, borderRadius: 99, background: meta.fg }} />
+      <span style={{ width: 5, height: 5, borderRadius: 99, background: meta.fg }} />
       {meta.label}
     </span>
   );
@@ -849,8 +846,7 @@ function PaymentBlock({ advances, bCur, balance, zaplacono, showFin }: {
           />
         );
       })}
-      <MoneyCell label="Balance" value={showFin ? fmtCur(balance, bCur) : "•••••"} sub={`waluta: ${bCur}`} />
-      <MoneyCell label="Zapłacono" value={fmtDatePL(zaplacono)} muted />
+      <MoneyCell label="Balance" value={showFin ? fmtCur(balance, bCur) : "•••••"} sub={zaplacono ? `zapł. ${fmtDatePL(zaplacono)} · ${bCur}` : `plan · ${bCur}`} />
     </div>
   );
 }

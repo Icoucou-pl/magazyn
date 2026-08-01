@@ -945,7 +945,7 @@ function PaymentInputs({
         </button>
       )}
 
-      {/* Balance: kwota · waluta, a data zapłaty pod spodem (pod kwotą) — jak w zaliczce */}
+      {/* Balance: kwota · waluta · data */}
       <div style={{ display: "grid", gridTemplateColumns: "16px 64px minmax(0, 1fr) 82px minmax(0, 1fr) 28px", gap: 6, alignItems: "end", marginTop: 2 }}>
         <div />
         <div />
@@ -957,17 +957,9 @@ function PaymentInputs({
             {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
           </select>
         </Field>
-        <div />
-        <div />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "16px 64px minmax(0, 1fr) 82px minmax(0, 1fr) 28px", gap: 6, alignItems: "end" }}>
-        <div />
-        <div />
         <Field label="Zapłacono — data">
           <input type="date" value={balance.zaplacono_data} onChange={(e) => onBalanceChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
         </Field>
-        <div />
-        <div />
         <div />
       </div>
 
