@@ -159,6 +159,17 @@ export default function ContainerFormModal({
   const [balanceKwota, setBalanceKwota] = useState(numStr(initial?.balance_kwota));
   const [balanceWaluta, setBalanceWaluta] = useState(initial?.balance_waluta || initial?.waluta_towaru || "USD");
   const [zaplaconoData, setZaplaconoData] = useState(initial?.zaplacono_data || "");
+
+  // Zmiana producenta → jeśli ma ustawioną domyślną walutę, ustaw ją w zaliczkach i balance
+  // (tylko przy realnej zmianie w UI; przy otwarciu istniejącego kontenera nic nie nadpisujemy).
+  const handleManufacturerChange = (id: string) => {
+    setManufacturerId(id);
+    const def = manufacturers.find((m) => String(m.id) === id)?.default_currency;
+    if (def) {
+      setAdvances((prev) => prev.map((a) => ({ ...a, waluta: def })));
+      setBalanceWaluta(def);
+    }
+  };
   const [items, setItems] = useState<ItemDraft[]>(
     initial?.items?.map((i) => ({
       sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "",
@@ -256,9 +267,19 @@ export default function ContainerFormModal({
   // ── Loty (skonsolidowany kontener) ─────────────────────────
   const addLot = () => setLots([...lots, emptyLot()]);
   const updateLot = (idx: number, field: keyof LotDraft, value: string) => {
-    const next = [...lots];
-    next[idx] = { ...next[idx], [field]: value };
-    setLots(next);
+    setLots((prev) => prev.map((l, i) => {
+      if (i !== idx) return l;
+      const nl: LotDraft = { ...l, [field]: value };
+      // Zmiana dostawcy lotu → ustaw jego domyślną walutę w zaliczkach i balance tego lotu.
+      if (field === "manufacturer_id") {
+        const def = manufacturers.find((m) => String(m.id) === value)?.default_currency;
+        if (def) {
+          nl.advances = nl.advances.map((a) => ({ ...a, waluta: def }));
+          nl.balance_waluta = def;
+        }
+      }
+      return nl;
+    }));
   };
   const updateLotAdvances = (idx: number, adv: AdvanceDraft[]) => {
     setLots((prev) => prev.map((l, i) => (i === idx ? { ...l, advances: adv } : l)));
@@ -484,7 +505,7 @@ export default function ContainerFormModal({
                 </Field>
                 {!isConsolidated && (
                   <Field label="Producent (dostawca)" required>
-                    <select value={manufacturerId} onChange={(e) => setManufacturerId(e.target.value)} disabled={!showEdit} style={inputStyle}>
+                    <select value={manufacturerId} onChange={(e) => handleManufacturerChange(e.target.value)} disabled={!showEdit} style={inputStyle}>
                       <option value="">— wybierz —</option>
                       {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
@@ -538,6 +559,8 @@ export default function ContainerFormModal({
                             onBalanceChange={(f, val) => updateLot(idx, f as keyof LotDraft, val)}
                             disabled={!showEdit}
                             refValue={lotValue}
+                            expectedCurrency={manufacturers.find((m) => String(m.id) === lot.manufacturer_id)?.default_currency}
+                            mfrName={manufacturers.find((m) => String(m.id) === lot.manufacturer_id)?.name}
                           />
                         )}
                         <div style={{ fontSize: 10, color: "var(--text-lo)" }} className="num">{lotUnits} szt przypisanych</div>
@@ -561,6 +584,8 @@ export default function ContainerFormModal({
                   }}
                   disabled={!showEdit}
                   refValue={totalValue}
+                  expectedCurrency={manufacturers.find((m) => String(m.id) === manufacturerId)?.default_currency}
+                  mfrName={manufacturers.find((m) => String(m.id) === manufacturerId)?.name}
                 />
               </Section>
             )}
@@ -863,7 +888,7 @@ function _sumByCur(advances: AdvanceDraft[], b: BalanceVals): Record<string, num
 }
 
 function PaymentInputs({
-  advances, onAdvancesChange, balance, onBalanceChange, disabled, refValue,
+  advances, onAdvancesChange, balance, onBalanceChange, disabled, refValue, expectedCurrency, mfrName,
 }: {
   advances: AdvanceDraft[];
   onAdvancesChange: (next: AdvanceDraft[]) => void;
@@ -871,6 +896,8 @@ function PaymentInputs({
   onBalanceChange: (field: keyof BalanceVals, value: string) => void;
   disabled?: boolean;
   refValue?: number;
+  expectedCurrency?: string | null;   // domyślna waluta wybranego producenta (jeśli ustawiona)
+  mfrName?: string;                    // nazwa producenta do treści ostrzeżenia
 }) {
   const mini: React.CSSProperties = { ...inputStyle, padding: "6px 8px", fontSize: 12 };
   const monoMini: React.CSSProperties = { ...mini, fontFamily: "var(--font-mono)", textAlign: "right" };
@@ -883,6 +910,13 @@ function PaymentInputs({
 
   const sums = _sumByCur(advances, balance);
   const sumsLabel = Object.entries(sums).map(([cur, v]) => `${v.toLocaleString("pl-PL")} ${cur}`).join(" + ") || "—";
+
+  // Ostrzeżenie: któraś waluta (zaliczka lub balance) ≠ domyślna waluta producenta.
+  // Nie blokuje zapisu — tylko czerwona flaga, żeby nie wpisać USD zamiast CNY.
+  const currencyMismatch = !!expectedCurrency && (
+    advances.some((a) => a.waluta && a.waluta !== expectedCurrency) ||
+    (!!balance.balance_waluta && balance.balance_waluta !== expectedCurrency)
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -933,6 +967,17 @@ function PaymentInputs({
         </Field>
         <div />
       </div>
+
+      {currencyMismatch && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6, marginLeft: 22, padding: "6px 10px",
+          fontSize: 11.5, color: "var(--warning)", background: "var(--warning-soft)",
+          border: "1px solid var(--warning)", borderRadius: 6,
+        }}>
+          <I.Alert size={13} />
+          <span>{mfrName || "Ten producent"} zazwyczaj płaci w <strong>{expectedCurrency}</strong> — sprawdź, czy inna waluta jest celowa.</span>
+        </div>
+      )}
 
       {/* Podpowiedź: suma wpłat (per waluta) vs wartość towaru */}
       <div style={{ fontSize: 10.5, color: "var(--text-lo)", paddingLeft: 22 }}>

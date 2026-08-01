@@ -20,7 +20,11 @@ import UsagePanel from "./usage-panel";
 type Manufacturer = {
   id: number; name: string; color: string; notes?: string | null;
   email?: string | null; contact?: string | null; sku_count?: number; open_orders?: number;
+  default_currency?: string | null;
 };
+
+// Waluty rozliczeń z producentem — te same co w kontenerach (CUR_OPTS w container-form).
+const MFR_CURRENCIES: [string, string][] = [["", "— brak —"], ["USD", "USD $"], ["CNY", "CNY ¥"], ["PLN", "PLN zł"]];
 type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order: number };
 type UserRowT = {
   id: number; email: string; full_name?: string | null; role: string;
@@ -303,13 +307,14 @@ function ManufacturerRow({ item, editing, isLast, onEdit, onSaved, onCancel, sho
   const [email, setEmail] = useState(item?.email || "");
   const [contact, setContact] = useState(item?.contact || "");
   const [notes, setNotes] = useState(item?.notes || "");
+  const [defaultCurrency, setDefaultCurrency] = useState(item?.default_currency || "");
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
     if (!name.trim()) { toast("Podaj nazwę producenta", "warning"); return; }
     setBusy(true);
     try {
-      const body = { name: name.trim(), color, email: email.trim() || null, contact: contact.trim() || null, notes: notes.trim() || null };
+      const body = { name: name.trim(), color, email: email.trim() || null, contact: contact.trim() || null, notes: notes.trim() || null, default_currency: defaultCurrency || null };
       if (item) await api.patch(`/manufacturers/${item.id}`, body);
       else await api.post("/manufacturers", body);
       toast(item ? "Zapisano producenta" : "Dodano producenta", "ok");
@@ -352,9 +357,16 @@ function ManufacturerRow({ item, editing, isLast, onEdit, onSaved, onCancel, sho
             </div>
           </SettingsField>
         </div>
-        <SettingsField label="Notatki">
-          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="np. LT 90 dni, MOQ 50 szt" style={inputStyle}/>
-        </SettingsField>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+          <SettingsField label="Notatki">
+            <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="np. LT 90 dni, MOQ 50 szt" style={inputStyle}/>
+          </SettingsField>
+          <SettingsField label="Domyślna waluta">
+            <select value={defaultCurrency} onChange={(e) => setDefaultCurrency(e.target.value)} style={inputStyle}>
+              {MFR_CURRENCIES.map(([v, l]) => <option key={v || "none"} value={v}>{l}</option>)}
+            </select>
+          </SettingsField>
+        </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
           {item ? <button onClick={remove} disabled={busy} style={{ ...btnGhost, color: "var(--critical)" }}>Usuń producenta</button> : <span/>}
           <div style={{ display: "flex", gap: 8 }}>

@@ -66,7 +66,7 @@ export type Product = {
   incoming_deliveries: IncomingDelivery[];
 };
 
-export type Manufacturer = { id: number; name: string; color: string; email?: string | null; notes?: string | null };
+export type Manufacturer = { id: number; name: string; color: string; email?: string | null; notes?: string | null; default_currency?: string | null };
 
 // Firma = sklep/właściciel magazynu źródłowego (AMH / Acti / Veluxa). Z /api/firmy.
 export type Firma = { id: number; slug: string; name: string; color: string };
