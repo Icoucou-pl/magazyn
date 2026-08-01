@@ -96,7 +96,7 @@ export default function ContainerFormModal({
   const lotIdToIdx = new Map<number, number>();
   (initial?.lots || []).forEach((l, i) => lotIdToIdx.set(l.id, i));
 
-  const [containerNumber, setContainerNumber] = useState(initial?.container_number || "");
+  const [containerNumber, setContainerNumber] = useState(/^draft-/i.test(initial?.container_number || "") ? "" : (initial?.container_number || ""));
   const [orderNumber, setOrderNumber] = useState(initial?.order_number || "");
   const [containerTypeId, setContainerTypeId] = useState<string>(initial?.container_type_id ? String(initial.container_type_id) : "");
   const [manufacturerId, setManufacturerId] = useState<string>(initial?.manufacturer_id ? String(initial.manufacturer_id) : "");
@@ -144,13 +144,8 @@ export default function ContainerFormModal({
   const [kosztTransportuMagazyn, setKosztTransportuMagazyn] = useState(numStr(initial?.koszt_transportu_magazyn)); // PLN
   const [folder, setFolder] = useState(initial?.folder || "");
   const [subiektNr, setSubiektNr] = useState(initial?.subiekt_nr || "");
-  // Podgląd numeru roboczego (bez licznika — kolejny wolny wybiera backend przy zapisie).
+  // Numer roboczy nadaje backend wewnętrznie, gdy pole zostanie puste — nie pokazujemy go użytkownikowi.
   const wasDraft = /^draft-/i.test(initial?.container_number || "");
-  const draftPreview = useMemo(() => {
-    if (isConsolidated) return "Draft-Mix";
-    const nm = manufacturers.find((m) => String(m.id) === manufacturerId)?.name;
-    return `Draft-${(nm || "Mix").trim().replace(/\s+/g, "-")}`;
-  }, [isConsolidated, manufacturerId, manufacturers]);
 
   // Płatność kontenera nieskonsolidowanego (jeden dostawca).
   // walutaTowaru: waluta domyślna/pierwotna (seed) — nie edytowana w UI, wysyłana z powrotem bez zmian.
@@ -461,7 +456,7 @@ export default function ContainerFormModal({
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--accent-soft)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}><I.Ship size={16} /></div>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-hi)" }}>{isNew ? "Nowy kontener" : `Edycja: #${initial!.container_number}`}</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-hi)" }}>{isNew ? "Nowy kontener" : (/^draft-/i.test(initial!.container_number) ? `Edycja: ${initial!.manufacturer_name || "kontener"}` : `Edycja: #${initial!.container_number}`)}</div>
                 {!isNew && <div style={{ fontSize: 11, color: "var(--text-lo)" }}>{initial!.items.length} pozycji · {fmtNum(initial!.total_units)} szt</div>}
               </div>
             </div>
@@ -485,11 +480,11 @@ export default function ContainerFormModal({
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
                 <Field label="Nr kontenera">
-                  <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder={`puste = ${draftPreview}`} disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                  <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder="np. MSKU1234567 — opcjonalne" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                   <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
                     {containerNumber.trim()
-                      ? (wasDraft ? "Zapis zdejmie numer roboczy i przestawi status na „W drodze”." : "Numer musi być unikalny.")
-                      : `Nie znasz jeszcze numeru? Zostaw puste — nadamy ${draftPreview}.`}
+                      ? (wasDraft ? "Wpisanie numeru przestawi status na „W drodze”." : "Numer musi być unikalny.")
+                      : "Nie znasz jeszcze numeru? Możesz zostawić puste."}
                   </span>
                 </Field>
                 {!isConsolidated && (
@@ -950,7 +945,7 @@ function PaymentInputs({
         </button>
       )}
 
-      {/* Balance: kwota · waluta · data */}
+      {/* Balance: kwota · waluta, a data zapłaty pod spodem (pod kwotą) — jak w zaliczce */}
       <div style={{ display: "grid", gridTemplateColumns: "16px 64px minmax(0, 1fr) 82px minmax(0, 1fr) 28px", gap: 6, alignItems: "end", marginTop: 2 }}>
         <div />
         <div />
@@ -962,9 +957,17 @@ function PaymentInputs({
             {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
           </select>
         </Field>
+        <div />
+        <div />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "16px 64px minmax(0, 1fr) 82px minmax(0, 1fr) 28px", gap: 6, alignItems: "end" }}>
+        <div />
+        <div />
         <Field label="Zapłacono — data">
           <input type="date" value={balance.zaplacono_data} onChange={(e) => onBalanceChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
         </Field>
+        <div />
+        <div />
         <div />
       </div>
 

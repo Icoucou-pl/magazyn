@@ -414,6 +414,8 @@ export function ContainerCard({
   // Czy karta ma tytuł-producenta (skonsolidowany → chipy lotów; prosty → nazwa producenta).
   // Gdy false (prosty bez dostawcy) tytułem zostaje nr kontenera — nie dublujemy go małym obok.
   const hasMfrTitle = consolidated || (!!c.manufacturer_id && !!c.manufacturer_name);
+  // Numer roboczy (Draft-…) lub brak numeru → nie pokazujemy w UI (nadany tylko wewnętrznie dla unikalności).
+  const realNr = c.container_number && !/^draft-/i.test(c.container_number) ? c.container_number : null;
   const subiektSt = subiektSummary(c);
   // Druga data pod ETA: potwierdzona dostawa wygrywa, inaczej umówiony odbiór („u nas").
   // Sam automat (ETA + okno odprawy) tu nie wchodzi — to szacunek, jest w rozwinięciu karty.
@@ -448,17 +450,19 @@ export function ContainerCard({
               ? lots.map((l) => <MfrTitle key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
               : (c.manufacturer_id && c.manufacturer_name
                   ? <MfrTitle name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />
-                  : <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>)}
-            {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty i istnieje tytuł-producent */}
-            {!expanded && hasMfrTitle && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{c.container_number}</span>}
+                  : (realNr
+                      ? <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{realNr}</span>
+                      : <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-lo)" }}>—</span>))}
+            {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty, istnieje tytuł-producent i jest prawdziwy numer */}
+            {!expanded && hasMfrTitle && realNr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
             {subiektSt && <SubiektDot state={subiektSt} />}
             {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
             {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
             {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa · auto" : "auto"}</Pill>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 4, flexWrap: "wrap" }}>
-            {/* Po rozwinięciu nr kontenera spada tutaj (niżej) */}
-            {expanded && hasMfrTitle && <span className="mono">#{c.container_number}</span>}
+            {/* Po rozwinięciu nr kontenera spada tutaj (niżej) — tylko prawdziwy numer */}
+            {expanded && hasMfrTitle && realNr && <span className="mono">#{realNr}</span>}
             {consolidated
               ? <span className="mono">{lots.map((l) => l.order_number || "—").join(" · ")}</span>
               : (c.order_number ? <span className="mono">FV: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez FV</span>)}
@@ -469,10 +473,9 @@ export function ContainerCard({
           </div>
         </div>
 
-        {/* Status opłacenia — na środku karty, między lewą stroną a ETA/CBM (tylko z uprawnieniem do finansów) */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "center", minWidth: 0 }}>
-          {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
-        </div>
+        {/* Status opłacenia — doklejony do informacji kontenera (do lewej). Spacer dopycha ETA/CBM w prawo. */}
+        {showFin && <div style={{ flexShrink: 0 }}><PaymentBadge status={paymentStatusOf(c)} /></div>}
+        <div style={{ flex: 1, minWidth: 8 }} />
 
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>ETA</div>
