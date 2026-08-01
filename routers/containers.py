@@ -4,6 +4,7 @@ import io
 import asyncio
 from datetime import date
 from typing import List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -647,6 +648,14 @@ async def add_attachment(cid: int, file: UploadFile = File(...), user: CurrentUs
     raise HTTPException(503, f"Zapis załącznika nieudany po kilku próbach: {last_err}")
 
 
+def _content_disposition(filename: str) -> str:
+    """Nagłówek Content-Disposition bezpieczny dla nazw z polskimi znakami.
+    Nagłówki HTTP muszą być latin-1, więc podajemy fallback ASCII + filename* w UTF-8 (RFC 5987)."""
+    name = filename or "plik"
+    ascii_name = name.encode("ascii", "ignore").decode().strip() or "plik"
+    return "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (ascii_name, quote(name))
+
+
 @router.get("/attachments/{aid}/download")
 async def download_attachment(aid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Zwraca zawartość pliku załącznika."""
@@ -656,7 +665,7 @@ async def download_attachment(aid: int, db: AsyncSession = Depends(get_db), user
         raise HTTPException(404, "Plik nie znaleziony (mógł być dodany przed włączeniem przechowywania)")
     data = bytes(row.file_data)
     ctype = row.content_type or "application/octet-stream"
-    return StreamingResponse(io.BytesIO(data), media_type=ctype, headers={"Content-Disposition": f'attachment; filename="{row.filename}"'})
+    return StreamingResponse(io.BytesIO(data), media_type=ctype, headers={"Content-Disposition": _content_disposition(row.filename)})
 
 
 @router.delete("/attachments/{aid}", status_code=204)
