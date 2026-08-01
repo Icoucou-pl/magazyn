@@ -453,7 +453,7 @@ function SkuReport({ from, to, setFrom, setTo, scope, minDate }: { from: string;
 
 export default function ReportsView() {
   const [mode, setMode] = useState<null | "kpi" | "sku">(null);
-  const [scope, setScope] = useState("all");          // fragmentator firm — wspólny dla wszystkich raportów
+  const [scope, setScope] = useState("amh");          // domyślnie AMH; fragmentator firm — wspólny dla wszystkich raportów
   const [minDate, setMinDate] = useState("");         // pierwszy dzień, z którego mamy snapshot
   const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());

@@ -51,7 +51,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
-  const [shop, setShop] = useState("");     // "" = wszystkie firmy
+  const [shop, setShop] = useState("amh");     // domyślnie AMH; "" = wszystkie firmy
   const [mfr, setMfr] = useState("");       // "" = wszyscy producenci
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
   const [openMonths, setOpenMonths] = useState<Set<string>>(() => new Set());

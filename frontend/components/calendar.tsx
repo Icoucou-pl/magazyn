@@ -104,7 +104,7 @@ function Calendar({ density }: { density?: string }) {
   const [scope, setScope] = useState<Scope>("watched");
   // Sklep: "" = wszystkie, "amh"/"acti"/"veluxa" = tylko dany magazyn (jak na dashboardzie).
   // ORDER/EMPTY liczone są wtedy per-sklep, DELIVERY zawężone do kontenerów z towarem tej firmy.
-  const [shop, setShop] = useState("");
+  const [shop, setShop] = useState("amh");
 
   useEffect(() => {
     let mounted = true;

@@ -95,7 +95,7 @@ export default function FinanceView({ density }: { density?: string }) {
   const showFin = can(useUser(), "viewFinancials");
   const [tab, setTab] = useState<"overview" | "product">("overview");
   const [period, setPeriod] = useState("ytd");
-  const [shop, setShop] = useState(""); // "" = wszystkie sklepy; globalny dla obu zakładek
+  const [shop, setShop] = useState("amh"); // domyślnie AMH; "" = wszystkie sklepy; globalny dla obu zakładek
 
   if (!showFin) {
     return (

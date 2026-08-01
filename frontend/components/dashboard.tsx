@@ -918,7 +918,7 @@ export default function Dashboard({
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
   const [topSellers, setTopSellers] = useState<TopSeller[]>([]);
   const [transitWh, setTransitWh] = useState<{ value_pln: number; sku_count: number } | null>(null);
-  const [shop, setShop] = useState("");
+  const [shop, setShop] = useState("amh");
   const cacheRef = useRef<Record<string, {
     history: StockHistory | null;
     containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];

@@ -51,7 +51,7 @@ export default function ProductsView({
   // Domyślny widok po wejściu w Produkty = Obserwowane (is_favorite), nie Aktywne.
   const [filter, setFilter] = useState("favorites");
   // Selektor sklepu (Faza 3 na Produktach): "" = Wszystkie (suma), "amh"/"acti"/"veluxa" = liczby per sklep.
-  const [shop, setShop] = useState("");
+  const [shop, setShop] = useState("amh");
   // Start false (SSR-safe: brak window), wczytaj zapamiętaną preferencję po montażu.
   const [showInactive, setShowInactive] = useState(false);
   useEffect(() => { setShowInactive(readShowInactive()); }, []);
