@@ -8,7 +8,7 @@ Python używał późniejszej definicji. Tu zostają TYLKO efektywne wersje (te 
 from datetime import date, datetime
 from typing import List, Optional, Literal, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ===== TYPY =====
@@ -200,6 +200,21 @@ class ManufacturerIn(BaseModel):
     notes: Optional[str] = None
     email: Optional[str] = None
     contact: Optional[str] = None
+    # Domyślna waluta rozliczeń z producentem (zaliczki/balance w kontenerze).
+    # None = brak domyślnej. Dozwolone tylko waluty używane w kontenerach.
+    default_currency: Optional[str] = None
+
+    @field_validator("default_currency", mode="before")
+    @classmethod
+    def _norm_default_currency(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip().upper()
+        if s == "":
+            return None
+        if s not in ("USD", "CNY", "PLN"):
+            raise ValueError("default_currency musi być jednym z: USD, CNY, PLN")
+        return s
 
 
 class ManufacturerOut(ManufacturerIn):
