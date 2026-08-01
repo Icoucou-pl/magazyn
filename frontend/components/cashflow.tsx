@@ -331,6 +331,8 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
   const dateColor = e.status === "plan" ? "var(--warning)" : (e.status === "open" ? "var(--text-lo)" : "var(--text-mid)");
   const dateTxt = e.data ? fmtDay(e.data) : "bez daty";
   const isZal = e.typ === "zaliczka";
+  // Numer roboczy (Draft-…)/pusty nie pokazujemy — spójnie z kartami kontenerów.
+  const nr = e.kontener && !/^draft-/i.test(e.kontener) ? e.kontener : null;
   const amount = cur === "PLN"
     ? `${est ? "≈ " : ""}${fmtCur(plnOf(e, rt), "PLN")}`
     : fmtCur(e.kwota, e.waluta);
@@ -344,7 +346,17 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
       onMouseEnter={ev => (ev.currentTarget.style.borderColor = "var(--border)")}
       onMouseLeave={ev => (ev.currentTarget.style.borderColor = "var(--border-soft)")}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{e.kontener}</span>
+        {/* Producent — pierwszy plan (przed nr kontenera i FV) */}
+        {e.mfr_name
+          ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 99, background: e.mfr_color || "var(--text-lo)", flexShrink: 0 }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.mfr_name}</span>
+            </span>
+          )
+          : (nr && <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{nr}</span>)}
+        {/* nr kontenera — pomniejszony do rozmiaru FV (tylko gdy jest producent i prawdziwy numer) */}
+        {e.mfr_name && nr && <span className="mono" style={{ fontSize: 10, color: "var(--text-lo)" }}>#{nr}</span>}
         {e.po && <span className="mono" style={{ fontSize: 10, color: "var(--text-lo)" }}>{e.po}</span>}
         {!shop && <span style={firmaTag}>{e.shop_name}</span>}
       </div>
