@@ -129,8 +129,9 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
     return [["all", "Wszystkie"], ...[...ys].sort().map(y => [y, y] as [string, string])];
   }, [events]);
   useEffect(() => {
+    if (loading) return;                     // dane jeszcze się ładują — nie kasuj domyślnego roku (2026)
     if (year !== "all" && !yearOpts.some(([v]) => v === year)) setYear("all");
-  }, [yearOpts, year]);
+  }, [loading, yearOpts, year]);
 
   if (loading) {
     return <div className="fade-in" style={{ padding: 48, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>Ładowanie…</div>;
