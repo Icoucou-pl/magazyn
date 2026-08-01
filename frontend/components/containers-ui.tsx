@@ -441,18 +441,13 @@ export function ContainerCard({
         <span style={{ color: "var(--text-lo)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.18s" }}><I.ChevronR size={14} /></span>
         <div style={{ width: 36, height: 36, borderRadius: 8, background: meta.bg, color: meta.fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={16} /></div>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: "0 1 auto", minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            {/* Tytuł na pierwszym planie: producent (skonsolidowany → chipy lotów). Brak dostawcy → nr kontenera jako tytuł. */}
+            {/* Tytuł na pierwszym planie: producent jako kropka+nazwa. Skonsolidowany → po jednym na lot. Brak dostawcy → nr kontenera. */}
             {consolidated
-              ? lots.map((l) => <MfrChip key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
+              ? lots.map((l) => <MfrTitle key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
               : (c.manufacturer_id && c.manufacturer_name
-                  ? (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 99, background: c.manufacturer_color ?? "var(--text-lo)", flexShrink: 0 }} />
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.manufacturer_name}</span>
-                    </span>
-                  )
+                  ? <MfrTitle name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />
                   : <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>)}
             {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty i istnieje tytuł-producent */}
             {!expanded && hasMfrTitle && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{c.container_number}</span>}
@@ -472,6 +467,11 @@ export function ContainerCard({
             <span>·</span>
             <span className="num" style={{ color: "var(--text-mid)" }}>{showFin ? fmtPLNk(c.total_value) : "•••"}</span>
           </div>
+        </div>
+
+        {/* Status opłacenia — na środku karty, między lewą stroną a ETA/CBM (tylko z uprawnieniem do finansów) */}
+        <div style={{ flex: 1, display: "flex", justifyContent: "center", minWidth: 0 }}>
+          {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
         </div>
 
         <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -769,6 +769,56 @@ function MoneyCell({ label, value, sub, muted }: { label: string; value: React.R
 
 // Zaliczki do wyświetlenia: z nowego pola `advances`, a gdy puste — fallback na legacy
 // pojedynczą zaliczkę (dane sprzed migracji).
+// Producent jako tytuł: kropka w kolorze + nazwa (spójne dla pojedynczych i skonsolidowanych).
+function MfrTitle({ name, color }: { name: string; color: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 99, background: color, flexShrink: 0 }} />
+      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
+    </span>
+  );
+}
+
+// Status opłacenia kontenera. Noga płatności = zaliczka z kwotą>0 lub balance z kwotą>0.
+// Zapłacona = ma datę (zaliczka.data / zaplacono_data). Skonsolidowany → agregacja po lotach.
+type PayStatus = "paid" | "partial" | "unpaid";
+function paymentStatusOf(c: Container): PayStatus {
+  const srcs = (c.is_consolidated && c.lots && c.lots.length)
+    ? c.lots.map((l) => ({ adv: advancesOf(l), bal: l.balance_kwota, paidBal: l.zaplacono_data }))
+    : [{ adv: advancesOf(c), bal: c.balance_kwota, paidBal: c.zaplacono_data }];
+  let legs = 0, paid = 0;
+  for (const s of srcs) {
+    for (const a of s.adv) {
+      const amt = Number(a.kwota);
+      if (!isNaN(amt) && amt > 0) { legs++; if (a.data) paid++; }
+    }
+    const b = Number(s.bal);
+    if (!isNaN(b) && b > 0) { legs++; if (s.paidBal) paid++; }
+  }
+  if (legs > 0 && paid >= legs) return "paid";
+  if (paid > 0) return "partial";
+  return "unpaid";
+}
+
+// Wyśrodkowany badge statusu opłacenia (na środku nagłówka karty).
+function PaymentBadge({ status }: { status: PayStatus }) {
+  const meta = status === "paid"
+    ? { label: "Opłacony", fg: "var(--ok)", bg: "var(--ok-soft)" }
+    : status === "partial"
+      ? { label: "Częściowo opłacony", fg: "var(--warning)", bg: "var(--warning-soft)" }
+      : { label: "Nieopłacony", fg: "var(--text-lo)", bg: "var(--surface-3)" };
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 12px",
+      fontSize: 11.5, fontWeight: 600, borderRadius: 999, whiteSpace: "nowrap",
+      color: meta.fg, background: meta.bg,
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: 99, background: meta.fg }} />
+      {meta.label}
+    </span>
+  );
+}
+
 function advancesOf(src: {
   waluta_towaru?: string | null; advances?: ContainerAdvance[] | null;
   zaliczka_procent?: number | null; zaliczka_kwota?: number | null; zaliczka_waluta?: string | null; zaliczka_data?: string | null;
