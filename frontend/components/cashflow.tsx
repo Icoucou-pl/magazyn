@@ -39,7 +39,7 @@ type Bucket = { key: string; label: string; short: string; total: number; byMfr:
 type Agg = { months: Bucket[]; peak: Bucket | null; mfrs: MfrAgg[]; total: number; maxTotal: number; count: number };
 
 // ── Stałe ────────────────────────────────────────────────────
-const SHOPS: [string, string][] = [["", "Wszystkie"], ["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"]];
+const SHOPS: [string, string][] = [["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"], ["", "Wszystkie"]];
 const CURS: string[] = ["PLN", "USD", "CNY"];
 const CUR_SYM: Record<string, string> = { PLN: "zł", USD: "$", CNY: "¥" };
 const MONTH_SHORT = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
@@ -155,7 +155,7 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
       {/* Filtry: sklep + rok + waluta */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <Seg label="Sklep" options={SHOPS} value={shop} onChange={setShop} />
+          <Seg label="" options={SHOPS} value={shop} onChange={setShop} />
           {yearOpts.length > 1 && <Seg label="Rok" options={yearOpts} value={year} onChange={setYear} />}
         </div>
         <Seg label="Waluta" options={CURS.map(c => [c, c] as [string, string])} value={cur} onChange={setCur} />
@@ -456,7 +456,7 @@ function TabBtn({ active, onClick, icon, children }: { active: boolean; onClick:
 function Seg({ label, options, value, onChange }: { label: string; options: [string, string][]; value: string; onChange: (v: string) => void }) {
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>{label}</span>
+      {label && <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>{label}</span>}
       <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
         {options.map(([v, l]) => (
           <button key={v || "all"} onClick={() => onChange(v)} style={{

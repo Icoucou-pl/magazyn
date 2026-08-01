@@ -77,7 +77,7 @@ const PERIODS: [string, string][] = [
 ];
 // Filtr sklepu — "" = wszystkie. Identyczny zestaw jak na dashboardzie (dashboard.tsx SHOPS).
 const SHOPS: [string, string][] = [
-  ["", "Wszystkie"], ["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"],
+  ["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"], ["", "Wszystkie"],
 ];
 const dec1 = (n: number) => n.toFixed(1).replace(".", ",");
 
@@ -136,7 +136,6 @@ export default function FinanceView({ density }: { density?: string }) {
 
       {/* Pasek sklepu — globalny filtr dla obu zakładek (styl 1:1 jak na dashboardzie) */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
         <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
           {SHOPS.map(([v, l]) => {
             const active = shop === v;

@@ -29,7 +29,7 @@ type SkuRow = {
 };
 type SkuData = { from: string; to: string; is_range: boolean; compare?: string; live?: boolean; generated_at?: string; has_data: boolean; rows: SkuRow[]; totals: Record<string, number> };
 
-const SCOPES = [{ id: "all", label: "Wszyscy" }, { id: "amh", label: "AMH" }, { id: "acti", label: "Acti" }, { id: "veluxa", label: "Veluxa" }];
+const SCOPES = [{ id: "amh", label: "AMH" }, { id: "acti", label: "Acti" }, { id: "veluxa", label: "Veluxa" }, { id: "all", label: "Wszyscy" }];
 const KPI_ALL = ["kapital_pln", "magazyn_pln", "magazyn_w_drodze_pln", "kontenery_pln",
                  "zaplacono_pln", "pozostalo_pln"];
 
@@ -499,7 +499,6 @@ export default function ReportsView() {
       </div>
 
       <Card style={{ padding: "12px 16px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={labStyle}>Firma</span>
         <div style={segWrap}>
           {SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}
         </div>

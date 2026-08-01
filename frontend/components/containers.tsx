@@ -324,9 +324,8 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
 
       <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
           <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
-            {[{ v: "", l: "Wszyscy" }, { v: "amh", l: "AMH" }, { v: "acti", l: "Acti" }, { v: "veluxa", l: "Veluxa" }].map((sh) => {
+            {[{ v: "amh", l: "AMH" }, { v: "acti", l: "Acti" }, { v: "veluxa", l: "Veluxa" }, { v: "", l: "Wszyscy" }].map((sh) => {
               const active = shop === sh.v;
               return (
                 <button key={sh.v || "all"} onClick={() => setShop(sh.v)} style={{

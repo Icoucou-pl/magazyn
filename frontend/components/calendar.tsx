@@ -64,10 +64,10 @@ const MODE_LABEL: Record<Mode, string> = { month: "Mies", week: "Tydz", day: "Dz
 
 // Sklep/magazyn — te same slugi i etykiety co na dashboardzie. "" = wszystkie sklepy (suma).
 const SHOPS: Array<{ v: string; l: string }> = [
-  { v: "", l: "Wszystkie" },
   { v: "amh", l: "AMH" },
   { v: "acti", l: "Acti" },
   { v: "veluxa", l: "Veluxa" },
+  { v: "", l: "Wszystkie" },
 ];
 
 const MONTH_NAMES = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
@@ -229,7 +229,6 @@ function Calendar({ density }: { density?: string }) {
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 }}>
       {/* Selektor sklepu — 1:1 z dashboardem. "" = wszystkie sklepy. */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
         <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
           {SHOPS.map((s) => {
             const active = shop === s.v;

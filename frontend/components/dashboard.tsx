@@ -1073,15 +1073,14 @@ export default function Dashboard({
   }, [shopping]);
 
   const SHOPS: Array<{ v: string; l: string }> = [
-    { v: "", l: "Wszystkie" },
     { v: "amh", l: "AMH" },
     { v: "acti", l: "Acti" },
     { v: "veluxa", l: "Veluxa" },
+    { v: "", l: "Wszystkie" },
   ];
 
   const shopSelector = (
     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Sklep</span>
       <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
         {SHOPS.map((s) => {
           const active = shop === s.v;

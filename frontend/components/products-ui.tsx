@@ -122,10 +122,10 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
 // Selektor sklepu (Faza 3). "" = suma wszystkich sklepów (realny łączny popyt),
 // "amh"/"acti"/"veluxa" = sprzedaż i stan liczone tylko dla danego sklepu.
 const SHOPS: Array<{ v: string; l: string; title: string }> = [
-  { v: "", l: "Wszystkie", title: "Suma ze wszystkich sklepów — realny łączny popyt (np. produkt sprzedawany i na AMH, i w źródle)" },
   { v: "amh", l: "AMH", title: "Widok z AMH: katalog Subiektu, sprzedaż w sklepie AMH, stan z Subiektu" },
   { v: "acti", l: "Acti", title: "Tylko produkty Acti: sprzedaż i stan magazynu Acti" },
   { v: "veluxa", l: "Veluxa", title: "Tylko produkty Veluxa: sprzedaż i stan magazynu Veluxa" },
+  { v: "", l: "Wszystkie", title: "Suma ze wszystkich sklepów — realny łączny popyt (np. produkt sprzedawany i na AMH, i w źródle)" },
 ];
 
 // ── Helpery wyświetlania ─────────────────────────────────────
