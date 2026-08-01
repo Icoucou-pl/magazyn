@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api", tags=["manufacturers"])
 @router.get("/manufacturers", response_model=List[ManufacturerOut])
 async def list_manufacturers(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     r = await db.execute(text(f"""
-        SELECT m.id, m.name, m.color, m.notes, m.email, m.contact,
+        SELECT m.id, m.name, m.color, m.notes, m.email, m.contact, m.default_currency,
             (SELECT COUNT(*) FROM {settings.TABLE_PRODUCT_ATTRS} pa WHERE pa.manufacturer_id = m.id) AS sku_count,
             (SELECT COUNT(*) FROM {settings.TABLE_CONTAINERS} c
                 WHERE c.manufacturer_id = m.id
@@ -206,8 +206,8 @@ async def forecast_seasonality(db: AsyncSession = Depends(get_db), user: Current
 @router.post("/manufacturers", response_model=ManufacturerOut, status_code=201)
 async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(
-        text(f"INSERT INTO {settings.TABLE_MANUFACTURERS} (name, color, notes, email, contact) VALUES (:n, :c, :no, :e, :ct) RETURNING id"),
-        {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact}
+        text(f"INSERT INTO {settings.TABLE_MANUFACTURERS} (name, color, notes, email, contact, default_currency) VALUES (:n, :c, :no, :e, :ct, :dc) RETURNING id"),
+        {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact, "dc": payload.default_currency}
     )
     new_id = r.scalar_one()
     await db.commit()
@@ -217,8 +217,8 @@ async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depend
 @router.patch("/manufacturers/{mid}", response_model=ManufacturerOut)
 async def update_manufacturer(mid: int, payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     await db.execute(
-        text(f"UPDATE {settings.TABLE_MANUFACTURERS} SET name=:n, color=:c, notes=:no, email=:e, contact=:ct WHERE id=:id"),
-        {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact, "id": mid}
+        text(f"UPDATE {settings.TABLE_MANUFACTURERS} SET name=:n, color=:c, notes=:no, email=:e, contact=:ct, default_currency=:dc WHERE id=:id"),
+        {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact, "dc": payload.default_currency, "id": mid}
     )
     await db.commit()
     return ManufacturerOut(id=mid, **payload.model_dump())
