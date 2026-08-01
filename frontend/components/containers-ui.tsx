@@ -411,6 +411,9 @@ export function ContainerCard({
   const fillColor = fill > 100 ? "var(--critical)" : fill > 90 ? "var(--warning)" : fill > 70 ? "var(--ok)" : "var(--info)";
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
+  // Czy karta ma tytuł-producenta (skonsolidowany → chipy lotów; prosty → nazwa producenta).
+  // Gdy false (prosty bez dostawcy) tytułem zostaje nr kontenera — nie dublujemy go małym obok.
+  const hasMfrTitle = consolidated || (!!c.manufacturer_id && !!c.manufacturer_name);
   const subiektSt = subiektSummary(c);
   // Druga data pod ETA: potwierdzona dostawa wygrywa, inaczej umówiony odbiór („u nas").
   // Sam automat (ETA + okno odprawy) tu nie wchodzi — to szacunek, jest w rozwinięciu karty.
@@ -440,19 +443,30 @@ export function ContainerCard({
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>
-            {subiektSt && <SubiektDot state={subiektSt} />}
-            {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
+            {/* Tytuł na pierwszym planie: producent (skonsolidowany → chipy lotów). Brak dostawcy → nr kontenera jako tytuł. */}
             {consolidated
               ? lots.map((l) => <MfrChip key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
-              : (c.manufacturer_id && c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />)}
+              : (c.manufacturer_id && c.manufacturer_name
+                  ? (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 99, background: c.manufacturer_color ?? "var(--text-lo)", flexShrink: 0 }} />
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.manufacturer_name}</span>
+                    </span>
+                  )
+                  : <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{c.container_number}</span>)}
+            {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty i istnieje tytuł-producent */}
+            {!expanded && hasMfrTitle && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{c.container_number}</span>}
+            {subiektSt && <SubiektDot state={subiektSt} />}
+            {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
             {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
             {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa · auto" : "auto"}</Pill>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 4, flexWrap: "wrap" }}>
+            {/* Po rozwinięciu nr kontenera spada tutaj (niżej) */}
+            {expanded && hasMfrTitle && <span className="mono">#{c.container_number}</span>}
             {consolidated
               ? <span className="mono">{lots.map((l) => l.order_number || "—").join(" · ")}</span>
-              : (c.order_number ? <span className="mono">PO: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez PO</span>)}
+              : (c.order_number ? <span className="mono">FV: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez FV</span>)}
             <span>·</span>
             <span><span className="num" style={{ color: "var(--text-mid)" }}>{c.items.length}</span> pozycji · <span className="num" style={{ color: "var(--text-mid)" }}>{c.total_units}</span> szt</span>
             <span>·</span>
@@ -549,7 +563,7 @@ function ContainerCardBody({
               <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px" }}>
                 <SubiektSwitch on={!!l.subiekt_wbite} onToggle={showEdit && onToggleSubiekt ? () => onToggleSubiekt(l.id, !l.subiekt_wbite) : undefined} disabled={!showEdit} />
                 <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
-                {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
+                {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>FV: {l.order_number}</span>}
                 <span style={{ marginLeft: "auto", fontSize: 11, color: l.subiekt_wbite ? "var(--ok)" : "var(--text-lo)" }}>
                   {l.subiekt_wbite ? `w Subiekcie${l.subiekt_wbite_at ? ` · ${fmtDatePL(l.subiekt_wbite_at)}` : ""}` : "w apce (kontener)"}
                 </span>
@@ -589,7 +603,7 @@ function ContainerCardBody({
               <div key={l.id} style={{ padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
                   <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
-                  {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>PO: {l.order_number}</span>}
+                  {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>FV: {l.order_number}</span>}
                 </div>
                 <PaymentBlock
                   advances={advancesOf(l)}
