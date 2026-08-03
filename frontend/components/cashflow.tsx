@@ -16,6 +16,7 @@ import { I, Card, CardHeader, MfrChip } from "./ui";
 import { MiniStat } from "./containers-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
+import { useUser, isAdmin } from "@/lib/permissions";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Status = "paid" | "plan" | "open";
@@ -97,31 +98,52 @@ function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number
 
 // ── Widok główny ─────────────────────────────────────────────
 function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) => void }) {
+  const user = useUser();
   const [resp, setResp] = useState<LedgerResp | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refilling, setRefilling] = useState(false);
   const [tab, setTab] = useState<"due" | "paid">("due");
   const [shop, setShop] = useState("amh");
   const [cur, setCur] = useState("PLN");
   const [year, setYear] = useState("2026");
   const [hoveredMfr, setHoveredMfr] = useState<string | null>(null);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const data = await api.get("/cashflow/ledger");
-        if (mounted) setResp(data as LedgerResp);
-      } catch {
-        if (mounted) { setResp({ as_of: "", rate_today: {}, events: [] }); toast("Nie udało się pobrać płatności", "error"); }
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => { mounted = false; };
-  }, []);
+  const load = async () => {
+    try {
+      const data = await api.get("/cashflow/ledger");
+      setResp(data as LedgerResp);
+    } catch {
+      setResp({ as_of: "", rate_today: {}, events: [] });
+      toast("Nie udało się pobrać płatności", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Dociągnięcie brakujących kursów NBP (ADMIN). Endpoint bierze waluty z danych
+  // (zaliczki + balance), więc łapie USD/CNY nawet bez ustawionej listy walut.
+  const refillRates = async () => {
+    if (refilling) return;
+    setRefilling(true);
+    try {
+      const r = (await api.post("/admin/fx/refill", {})) as { inserted?: number; errors?: unknown[] };
+      const errs = (r?.errors ?? []).length;
+      if (errs > 0) toast("NBP nie odpowiedziało dla części walut — spróbuj za chwilę", "warning");
+      else toast(r?.inserted ? `Dociągnięto ${r.inserted} kursów NBP` : "Brak nowych kursów do pobrania", "ok");
+      await load();
+    } catch {
+      toast("Nie udało się dociągnąć kursów", "error");
+    } finally {
+      setRefilling(false);
+    }
+  };
 
   const events = resp?.events ?? [];
   const rt = resp?.rate_today ?? {};
+  const missingCount = events.filter(e => e.brak_kursu).length;
+  const showRefill = isAdmin(user) && missingCount > 0;
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
   const yearOpts = useMemo<[string, string][]>(() => {
     const ys = new Set<string>();
@@ -161,6 +183,21 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
         </div>
         <Seg label="Waluta" options={CURS.map(c => [c, c] as [string, string])} value={cur} onChange={setCur} />
       </div>
+
+      {showRefill && (
+        <button onClick={refillRates} disabled={refilling} style={{
+          display: "flex", alignItems: "center", gap: 7, width: "100%",
+          padding: "8px 12px", borderRadius: 8, cursor: refilling ? "default" : "pointer", textAlign: "left",
+          background: "color-mix(in oklch, var(--warning) 10%, transparent)",
+          border: "1px solid color-mix(in oklch, var(--warning) 35%, transparent)",
+          color: "var(--warning)", fontSize: 11.5, fontWeight: 600, opacity: refilling ? 0.6 : 1,
+        }}>
+          <I.Alert size={13} />
+          {refilling
+            ? "Dociągam brakujące kursy z NBP…"
+            : `${missingCount} ${missingCount === 1 ? "płatność" : "płatności"} bez kursu NBP — kwoty niepełne. Kliknij, żeby dociągnąć z NBP.`}
+        </button>
+      )}
 
       {tab === "due"
         ? <DueTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />
