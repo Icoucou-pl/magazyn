@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     TABLE_FX_RATES: str = "app_fx_rates"
     TABLE_SYNC_LOG: str = "app_sync_log"
     FX_BASE_CURRENCY: str = "PLN"           # waluta bazowa - mnożnik 1, bez przewalutowania
-    FX_CURRENCIES: str = "EUR,CZK,HUF"      # waluty obce do pobierania z NBP (lista po przecinku)
+    FX_CURRENCIES: str = "USD,CNY,EUR,CZK,HUF"      # waluty obce do pobierania z NBP (lista po przecinku)
     NBP_API_BASE: str = "https://api.nbp.pl/api"
 
     TABLE_LEAD_TIMES: str = "app_lead_times"
