@@ -326,7 +326,14 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             WHERE oi.product_name IS NOT NULL AND TRIM(oi.product_name) <> ''
             GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
         ) sell ON sell.sku_canon = LOWER(TRIM(ci.sku))
-        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = ci.sku
+        LEFT JOIN (
+            SELECT DISTINCT ON (LOWER(TRIM(sku)))
+                   LOWER(TRIM(sku)) AS sku_canon,
+                   firma_id, cena_zakupu, cbm_per_unit, name_override
+            FROM {settings.TABLE_PRODUCT_ATTRS}
+            WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+            ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+        ) pa ON pa.sku_canon = LOWER(TRIM(ci.sku))
         LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
         {where}
         ORDER BY c.eta_date DESC, c.id DESC, ci.id ASC
