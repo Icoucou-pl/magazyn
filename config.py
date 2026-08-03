@@ -220,15 +220,20 @@ def included_status_clause(alias: str = "o") -> str:
 def sales_channel_case(alias: str = "o") -> str:
     """Buduje wyrażenie CASE mapujące sellasist_orders.creator → kanał sprzedaży.
     Reguła 1:1 z Power BI: case-insensitive, PIERWSZE trafienie wygrywa (jak if/else if),
-    kolejność WHEN ma znaczenie. creator NULL/puste → 'I-CC.PL'.
-    Kanały: Allegro, Erli, Studio-Bay, Klaudia (klaudia LUB api), I-CC.PL (reszta)."""
+    kolejność WHEN ma znaczenie.
+    Kanały marketplace: Allegro, Erli, Studio-Bay, Klaudia (klaudia LUB api).
+    Reszta (własny sklep, creator NULL/puste) → etykieta zależna od sklepu (per wiersz):
+    veluxa → 'Veluxa.eu', acti → 'Acti4med.pl', amh/pozostałe → 'I-CC.PL'."""
     c = f"LOWER(COALESCE({alias}.{settings.COL_ORDER_CREATOR}, ''))"
+    s = f"LOWER(COALESCE({alias}.shop, ''))"
     return (
         "CASE "
         f"WHEN {c} LIKE '%allegro%' THEN 'Allegro' "
         f"WHEN {c} LIKE '%erli%' THEN 'Erli' "
         f"WHEN {c} LIKE '%studio%' THEN 'Studio-Bay' "
         f"WHEN {c} LIKE '%klaudia%' OR {c} LIKE '%api%' THEN 'Klaudia' "
+        f"WHEN {s} = 'veluxa' THEN 'Veluxa.eu' "
+        f"WHEN {s} = 'acti' THEN 'Acti4med.pl' "
         "ELSE 'I-CC.PL' END"
     )
 
