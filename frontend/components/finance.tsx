@@ -62,13 +62,15 @@ type ProductCard = {
 type SearchProduct = { sku: string; name: string; stock: number; manufacturer_name: string | null; manufacturer_color: string | null };
 
 // ── Kanały: kolejność + kolory ───────────────────────────────
-const CH_ORDER = ["Allegro", "Erli", "Studio-Bay", "Klaudia", "I-CC.PL"];
+const CH_ORDER = ["Allegro", "Erli", "Studio-Bay", "Klaudia", "I-CC.PL", "Veluxa.eu", "Acti4med.pl"];
 const CH_COLORS: Record<string, string> = {
   "Allegro": "oklch(0.70 0.17 45)",
   "Erli": "oklch(0.72 0.12 185)",
   "Studio-Bay": "oklch(0.62 0.17 300)",
   "Klaudia": "oklch(0.66 0.14 255)",
   "I-CC.PL": "var(--accent)",
+  "Veluxa.eu": "oklch(0.68 0.15 145)",
+  "Acti4med.pl": "oklch(0.70 0.15 25)",
 };
 const chColor = (c: string) => CH_COLORS[c] || "var(--text-lo)";
 const MONTH_NAMES = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
