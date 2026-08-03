@@ -398,7 +398,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "sprzedaz_wg_kanalu",
-            "description": ("Udział kanałów sprzedaży (Allegro / Erli / Studio-Bay / Klaudia / I-CC.PL): przychód i sztuki. "
+            "description": ("Udział kanałów sprzedaży (Allegro / Erli / Studio-Bay / Klaudia / własny sklep: I-CC.PL dla AMH, Veluxa.eu dla Veluxa, Acti4med.pl dla Acti): przychód i sztuki. "
                             "Bez SKU — całość; z SKU — dla jednego produktu. Dane finansowe — wymaga uprawnień."),
             "parameters": {
                 "type": "object",
