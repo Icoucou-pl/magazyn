@@ -779,20 +779,26 @@ function MfrTitle({ name, color }: { name: string; color: string }) {
   );
 }
 
-// Status opłacenia kontenera:
-//   nieopłacone  → brak jakiejkolwiek daty zapłaty (zaliczka/balance),
-//   częściowo    → jest jakaś data, ale nie wszystkie balance opłacone (np. wpłacona zaliczka),
-//   opłacone     → zapłacony balance w KAŻDYM locie (2 loty → oba balance). Zaliczek tu nie liczymy,
-//                  bo czasem płaci się od razu cały balance bez zaliczek.
+// Status opłacenia kontenera. Noga płatności = zaliczka z kwotą>0 lub balance z kwotą>0; zapłacona = ma datę.
+//   nieopłacone → żadna noga nie ma daty,
+//   opłacone    → KAŻDA noga z kwotą ma datę (w tym balance każdego lotu). Zaliczka z kwotą bez daty psuje „opłacone",
+//   częściowo   → coś zapłacone, ale nie wszystko.
+// Gdy płaci się od razu cały balance bez zaliczek — jest tylko noga balance, więc wystarczy zapłacony balance.
+// Skonsolidowany → agregacja po lotach.
 type PayStatus = "paid" | "partial" | "unpaid";
 function paymentStatusOf(c: Container): PayStatus {
   const srcs = (c.is_consolidated && c.lots && c.lots.length)
-    ? c.lots.map((l) => ({ paidBal: l.zaplacono_data, adv: advancesOf(l) }))
-    : [{ paidBal: c.zaplacono_data, adv: advancesOf(c) }];
-  const anyDate = srcs.some((s) => !!s.paidBal || s.adv.some((a) => !!a.data));
-  const allBalancesPaid = srcs.length > 0 && srcs.every((s) => !!s.paidBal);
-  if (!anyDate) return "unpaid";
-  if (allBalancesPaid) return "paid";
+    ? c.lots.map((l) => ({ bal: l.balance_kwota, paidBal: l.zaplacono_data, adv: advancesOf(l) }))
+    : [{ bal: c.balance_kwota, paidBal: c.zaplacono_data, adv: advancesOf(c) }];
+  let legs = 0, paid = 0;
+  for (const s of srcs) {
+    for (const a of s.adv) {
+      if (Number(a.kwota) > 0) { legs++; if (a.data) paid++; }
+    }
+    if (Number(s.bal) > 0) { legs++; if (s.paidBal) paid++; }
+  }
+  if (paid === 0) return "unpaid";
+  if (legs > 0 && paid >= legs) return "paid";
   return "partial";
 }
 
