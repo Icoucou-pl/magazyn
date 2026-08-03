@@ -175,8 +175,20 @@ LEFT JOIN fakturownia_data fd ON fd.sku_canon = LOWER(TRIM(p.{settings.COL_PRODU
 LEFT JOIN sales_periods sp ON sp.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_global sg ON sg.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN sales_yoy sy ON sy.sku_normalized = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
-LEFT JOIN {settings.TABLE_LEAD_TIMES} lt ON lt.sku = p.{settings.COL_PRODUCT_SKU}
-LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON pa.sku = p.{settings.COL_PRODUCT_SKU}
+LEFT JOIN (
+    SELECT DISTINCT ON (LOWER(TRIM(sku)))
+           *, LOWER(TRIM(sku)) AS sku_canon
+    FROM {settings.TABLE_LEAD_TIMES}
+    WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+    ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+) lt ON lt.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+LEFT JOIN (
+    SELECT DISTINCT ON (LOWER(TRIM(sku)))
+           *, LOWER(TRIM(sku)) AS sku_canon
+    FROM {settings.TABLE_PRODUCT_ATTRS}
+    WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+    ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+) pa ON pa.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
 LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
 WHERE (
