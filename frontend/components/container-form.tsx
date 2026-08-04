@@ -115,6 +115,18 @@ export default function ContainerFormModal({
   // że „przycisk nie działa".
   const [formError, setFormError] = useState("");
 
+  // Etykieta ERP dla „wbite": AMH → Subiekt, Acti/Veluxa → Fakturownia. Firma z firma_breakdown
+  // (dominująca po ilości). Działa identycznie — inny tylko opis, zgodnie z modelem „w drodze".
+  const _fb = (initial?.firma_breakdown || {}) as Record<string, { units?: number }>;
+  let _bestSlug = "amh", _bestU = -1;
+  for (const [slug, share] of Object.entries(_fb)) {
+    const u = share?.units ?? 0;
+    if (u > _bestU) { _bestU = u; _bestSlug = slug.toLowerCase(); }
+  }
+  const erpIsAmh = _bestSlug === "amh";
+  const erpDop = erpIsAmh ? "Subiektu" : "Fakturowni";   // „do …"
+  const erpMsc = erpIsAmh ? "Subiekcie" : "Fakturowni";  // „w …"
+
   // Przełącznik „dodano do Subiektu" wprost z okna edycji — bez wychodzenia na listę.
   // Zapis idzie osobnym endpointem od razu (jak na karcie), więc NIE przeładowujemy tu
   // rodzica: reload zresetowałby niezapisany formularz. Lista odświeży się przy zamknięciu.
@@ -125,7 +137,7 @@ export default function ContainerFormModal({
     else setLotSubiekt((prev) => ({ ...prev, [lotId]: value }));
     try {
       await api.post(`/containers/${initial.id}/subiekt-wbite`, { lot_id: lotId, value });
-      toast(value ? "Oznaczono: w Subiekcie (magazyn w drodze)" : "Cofnięto: z powrotem w apce", "ok");
+      toast(value ? `Oznaczono: w ${erpMsc} (magazyn w drodze)` : "Cofnięto: z powrotem w apce", "ok");
     } catch {
       if (lotId === null) setSubiektWbite(!value);
       else setLotSubiekt((prev) => ({ ...prev, [lotId]: !value }));
@@ -618,7 +630,7 @@ export default function ContainerFormModal({
               {!isNew && (
                 <div style={{ marginTop: 10, padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
                   <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-                    Dodano do Subiektu (magazyn w drodze)
+                    Dodano do {erpDop} (magazyn w drodze)
                   </div>
                   {isConsolidated && (initial?.lots || []).length > 0 ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -635,7 +647,7 @@ export default function ContainerFormModal({
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <SubiektSwitch on={subiektWbite} onToggle={showEdit ? () => flipSubiekt(null, !subiektWbite) : undefined} disabled={subiektBusy} />
                       <span style={{ fontSize: 12, color: "var(--text-mid)" }}>
-                        {subiektWbite ? "w Subiekcie — liczony z magazynu w drodze" : "jeszcze w apce — liczony z kontenera"}
+                        {subiektWbite ? `w ${erpMsc} — liczony z magazynu w drodze` : "jeszcze w apce — liczony z kontenera"}
                       </span>
                     </div>
                   )}

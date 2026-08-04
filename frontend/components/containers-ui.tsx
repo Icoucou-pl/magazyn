@@ -524,6 +524,15 @@ function ContainerCardBody({
   const fill = c.fill_percentage ?? 0;
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
+  // Etykieta ERP dla „wbite": AMH → Subiekt, Acti/Veluxa → Fakturownia (firma z firma_breakdown).
+  const _fb = (c.firma_breakdown || {}) as Record<string, { units?: number }>;
+  let _bestSlug = "amh", _bestU = -1;
+  for (const [slug, share] of Object.entries(_fb)) {
+    const u = share?.units ?? 0;
+    if (u > _bestU) { _bestU = u; _bestSlug = slug.toLowerCase(); }
+  }
+  const erpShort = _bestSlug === "amh" ? "Subiekt" : "Fakturownia";
+  const erpMsc = _bestSlug === "amh" ? "Subiekcie" : "Fakturowni";
   const isDelivered = eff(c) === "DELIVERED";
   // Sekcje finansowe są teraz zawsze widoczne po rozwinięciu (przy showFin) — bez chowania gdy brak danych.
   const showDocs = showFin || !!c.folder || !!c.subiekt_nr;
@@ -557,7 +566,7 @@ function ContainerCardBody({
 
       {!isDelivered && (
         <div>
-          <div style={sectionLabelStyle}>Magazyn w drodze (Subiekt)</div>
+          <div style={sectionLabelStyle}>Magazyn w drodze ({erpShort})</div>
           <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: 4 }}>
             {consolidated ? lots.map((l) => (
               <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px" }}>
@@ -565,7 +574,7 @@ function ContainerCardBody({
                 <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
                 {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>FV: {l.order_number}</span>}
                 <span style={{ marginLeft: "auto", fontSize: 11, color: l.subiekt_wbite ? "var(--ok)" : "var(--text-lo)" }}>
-                  {l.subiekt_wbite ? `w Subiekcie${l.subiekt_wbite_at ? ` · ${fmtDatePL(l.subiekt_wbite_at)}` : ""}` : "w apce (kontener)"}
+                  {l.subiekt_wbite ? `w ${erpMsc}${l.subiekt_wbite_at ? ` · ${fmtDatePL(l.subiekt_wbite_at)}` : ""}` : "w apce (kontener)"}
                 </span>
               </div>
             )) : (
@@ -577,7 +586,7 @@ function ContainerCardBody({
               </div>
             )}
           </div>
-          {showEdit && <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>Kliknij kropkę, gdy towar zostanie wbity do magazynu „w drodze" w Subiekcie (czerwona → zielona).</div>}
+          {showEdit && <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 4 }}>Kliknij kropkę, gdy towar zostanie wbity do magazynu „w drodze" w {erpMsc} (czerwona → zielona).</div>}
         </div>
       )}
 

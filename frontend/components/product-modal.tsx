@@ -187,7 +187,7 @@ export default function ProductModal({
         <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
             <MetricBox label="Stan" value={product.stock} sub={showFin ? fmtPLN(product.stock_value) : "•••••"} tone={product.stock === 0 ? "critical" : "neutral"} />
-            <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do Subiektu" : "nic wbitego"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
+            <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do ERP (w drodze)" : "nic w drodze"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
             <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
             <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
             <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
