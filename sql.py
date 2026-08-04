@@ -151,6 +151,7 @@ SELECT
     pa.firma_id,
     f.name AS firma_name,
     f.color AS firma_color,
+    LOWER(COALESCE(f.slug, 'amh')) AS firma_slug,
     COALESCE(pa.seasonality_enabled, FALSE) AS seasonality_enabled,
     COALESCE(pa.is_favorite, FALSE) AS is_favorite,
     COALESCE(pa.no_reorder, FALSE) AS no_reorder,
