@@ -95,17 +95,25 @@ export default function ProductsView({
   }, []);
 
   // Drill-down z Dashboardu / globalnej wyszukiwarki: otwórz modal wskazanego SKU
-  // w trybie SUMA („Wszyscy") — realny obraz „ile mam łącznie i mogę przerzucić między firmami".
+  // w trybie SUMA („Wszyscy") — realny obraz „ile mam łącznie i mogę przerzucić".
+  // Dociągamy produkt WPROST przez get_product (nie z listy) — lista przy pierwszym
+  // wejściu bywa jeszcze pusta i dawniej dawała fałszywe „Nie znaleziono produktu".
   useEffect(() => {
     if (!openSku) return;
-    // Najpierw przeskocz na „Wszyscy" (shop=""); po przeładowaniu listy efekt odpali ponownie.
-    if (shop !== "") { setShop(""); return; }
-    if (loading) return;
-    const p = products.find((x) => x.sku === openSku);
-    if (p) setSelectedProduct(p);
-    else toast(`Nie znaleziono produktu ${openSku}`, "info");
-    onOpenedSku?.();
-  }, [openSku, shop, loading, products, onOpenedSku]);
+    let cancelled = false;
+    setShop("");  // pod modalem zostaje „Wszyscy" (suma), spójnie z tym, co pokazuje modal
+    (async () => {
+      try {
+        const p = (await api.get(`/products/${encodeURIComponent(openSku)}`)) as Product;
+        if (!cancelled && p) setSelectedProduct(p);
+        else if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
+      } catch {
+        if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
+      }
+      if (!cancelled) onOpenedSku?.();
+    })();
+    return () => { cancelled = true; };
+  }, [openSku, onOpenedSku]);
 
   const toggleRow = (sku: string) => setSelected((prev) => {
     const n = new Set(prev);
