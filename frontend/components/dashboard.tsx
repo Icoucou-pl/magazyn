@@ -556,9 +556,9 @@ const listScroll = (open: boolean): React.CSSProperties =>
 function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProduct[]; onProductClick?: (p: ClickTarget) => void; onNoReorder?: (sku: string) => void }) {
   const { shown, hidden, open, toggle } = useExpandable(fires);
   return (
-    <Card>
+    <Card style={{ display: "flex", flexDirection: "column" }}>
       <CardHeader icon={<I.Flame size={16} />} title="Pożary" hint={`${fires.length} pozycji`} accent="var(--critical)" />
-      <div style={listScroll(open)}>
+      <div style={{ flex: 1, ...listScroll(open) }}>
         {shown.map((p, i) => (
           <HoverRow key={p.sku} onClick={() => onProductClick?.(p)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
             <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
@@ -618,11 +618,11 @@ function DeliveriesCard({
 }) {
   const { shown, hidden, open, toggle } = useExpandable(deliveries);
   return (
-    <Card>
+    <Card style={{ display: "flex", flexDirection: "column" }}>
       <CardHeader icon={<I.Ship size={16} />} title="Najbliższe dostawy"
         hint={shop ? `${deliveries.length} kontenerów z towarem ${shop.toUpperCase()}` : `${deliveries.length} kontenerów`}
         accent="var(--info)" />
-      <div style={listScroll(open)}>
+      <div style={{ flex: 1, ...listScroll(open) }}>
         {shown.map((c, i) => {
           const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
           const eStatus = c.effective_status ?? c.status;
@@ -630,6 +630,10 @@ function DeliveriesCard({
           // Przy wybranym sklepie pokazujemy UDZIAŁ tej firmy w kontenerze, nie całość
           // (kontener bywa mieszany — zwłaszcza skonsolidowany).
           const share = shop ? c.firma_breakdown?.[shop] : undefined;
+          // Przy „Wszystkie" (bez wybranego sklepu) pokazujemy tagi wszystkich firm obecnych w kontenerze.
+          const allFirmas = !shop && c.firma_breakdown
+            ? Object.values(c.firma_breakdown).filter((f) => f.units > 0)
+            : [];
           const itemsCount = c.items.length;
           const subSt = subiektRowState(c);
           const subMeta = SUBIEKT_ROW_META[subSt];
@@ -645,6 +649,11 @@ function DeliveriesCard({
                       {share.name ?? share.slug.toUpperCase()}
                     </Pill>
                   )}
+                  {allFirmas.map((f) => (
+                    <Pill key={f.slug} bg="var(--surface-2)" fg={f.color ?? "var(--text-mid)"} size="sm" dot={f.color ?? undefined}>
+                      {f.name ?? f.slug.toUpperCase()}
+                    </Pill>
+                  ))}
                 </div>
                 <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-lo)", marginTop: 2 }}>#{c.container_number}</div>
                 <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
@@ -681,9 +690,9 @@ function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; on
   const sevLabel: Record<string, string> = { high: "WYS", medium: "ŚR", low: "NIS" };
   const { shown, hidden, open, toggle } = useExpandable(anomalies);
   return (
-    <Card>
+    <Card style={{ display: "flex", flexDirection: "column" }}>
       <CardHeader icon={<I.Activity size={16} />} title="Anomalie" hint={`${anomalies.length} wykrytych`} accent="var(--anomaly)" />
-      <div style={listScroll(open)}>
+      <div style={{ flex: 1, ...listScroll(open) }}>
         {shown.map((a, i) => {
           // Procent (±) trzymamy po prawej — z komunikatu usuwamy końcowe „(…)", żeby się nie dublował.
           const hasTrend = a.type === "sales_spike" || a.type === "sales_drop";
@@ -786,11 +795,11 @@ function TopSellersCard({ top, shop, onProductClick }: { top: TopSeller[]; shop:
   const { shown, hidden, open, toggle } = useExpandable(top);
   const max = top.length ? Math.max(...top.map((p) => p.sales_1m)) : 0;
   return (
-    <Card>
+    <Card style={{ display: "flex", flexDirection: "column" }}>
       <CardHeader icon={<I.TrendUp size={16} />} title="Top sprzedaży"
         hint={shop ? `30 dni · szt · ${shop.toUpperCase()}` : "30 dni · szt · wszystkie sklepy"}
         accent="var(--ok)" />
-      <div style={listScroll(open)}>
+      <div style={{ flex: 1, ...listScroll(open) }}>
         {shown.map((p, i) => {
           const yoy = p.sales_yoy_30d;
           const pct = yoy > 0 ? ((p.sales_1m - yoy) / yoy) * 100 : null;
