@@ -75,7 +75,7 @@ export type Firma = { id: number; slug: string; name: string; color: string };
 export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, W_DRODZE: 3, OK: 4, SAMPLE: 5, DEAD_STOCK: 6 };
 
 type ColId =
-  | "fav" | "sku" | "name" | "mfr" | "stock" | "inTransit"
+  | "fav" | "sku" | "name" | "mfr" | "stock" | "magWDrodze" | "wKontenerach"
   | "sales_1m" | "sales_2m" | "sales_3m" | "sales_4m"
   | "avgMonth" | "yoy" | "yoyNext" | "months" | "price" | "value" | "lt" | "cbm" | "status";
 
@@ -92,7 +92,8 @@ export const PRODUCT_COLS: ColDef[] = [
   { id: "name", label: "Nazwa", w: "minmax(180px, 1fr)", align: "left", sortKey: "name", alwaysVisible: true },
   { id: "mfr", label: "Producent", w: 150, align: "left", sortKey: "manufacturer_name" },
   { id: "stock", label: "Stan", w: 70, align: "right", sortKey: "stock" },
-  { id: "inTransit", label: "W drodze", w: 80, align: "right", sortKey: "stock_in_transit" },
+  { id: "magWDrodze", label: "Magazyn w drodze", w: 110, align: "right", sortKey: "stock_in_transit_wbite" },
+  { id: "wKontenerach", label: "W kontenerach", w: 105, align: "right", sortKey: "stock_in_transit_containers" },
   { id: "sales_1m", label: "Sprz. 1m", w: 80, align: "right", sortKey: "sales_1m" },
   { id: "sales_2m", label: "Sprz. 2m", w: 80, align: "right", sortKey: "sales_2m" },
   { id: "sales_3m", label: "Sprz. 3m", w: 80, align: "right", sortKey: "sales_3m" },
@@ -108,7 +109,7 @@ export const PRODUCT_COLS: ColDef[] = [
   { id: "status", label: "Status", w: 130, align: "left", sortKey: "status", alwaysVisible: true },
 ];
 
-export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "mfr", "stock", "inTransit", "sales_1m", "sales_2m", "avgMonth", "yoy", "yoyNext", "months", "value", "status"];
+export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "mfr", "stock", "magWDrodze", "wKontenerach", "sales_1m", "sales_2m", "avgMonth", "yoy", "yoyNext", "months", "value", "status"];
 
 const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }> = [
   { id: "favorites", label: "Obserwowane", icon: <I.StarFill size={11} /> },
@@ -382,8 +383,10 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
       return <div style={baseStyle}>{p.manufacturer_id && p.manufacturer_name ? <MfrChip name={p.manufacturer_name} color={p.manufacturer_color ?? "var(--text-lo)"} /> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
     case "stock":
       return <div style={baseStyle}><span className="num" style={{ fontWeight: 600, color: p.stock === 0 ? "var(--critical)" : "var(--text-hi)" }}>{p.stock}</span></div>;
-    case "inTransit":
-      return <div style={baseStyle}>{p.stock_in_transit > 0 ? <span className="num" style={{ color: "var(--info)", fontWeight: 600 }}>+{p.stock_in_transit}</span> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
+    case "magWDrodze":
+      return <div style={baseStyle}>{p.stock_in_transit_wbite > 0 ? <span className="num" style={{ color: "var(--ok)", fontWeight: 600 }}>+{p.stock_in_transit_wbite}</span> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
+    case "wKontenerach":
+      return <div style={baseStyle}>{p.stock_in_transit_containers > 0 ? <span className="num" style={{ color: "var(--info)", fontWeight: 600 }}>+{p.stock_in_transit_containers}</span> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
     case "avgMonth":
       return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{Math.round(p.avg_monthly_weighted)}</span></div>;
     case "sales_1m":
