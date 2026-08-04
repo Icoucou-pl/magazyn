@@ -274,7 +274,7 @@ export default function Page() {
             onOpenedNewAutoSuggest={() => { setPendingAutoSuggestNew(false); setPendingAutoSuggestMfr(null); }}
           />
         ) : view === "calendar" ? (
-          <Calendar density={t.density} />
+          <Calendar density={t.density} onOpenContainer={(id) => goContainers(id, "calendar")} />
         ) : view === "cashflow" ? (
           <CashflowView onContainerClick={(id) => goContainers(id, "cashflow")} />
         ) : view === "forecast" ? (
