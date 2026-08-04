@@ -22,7 +22,7 @@ import { SeasonChart, type SeasonPoint } from "./season-chart";
 type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
 type ProjPoint = { day: number; stock: number; arrivals: Delivery[] };
-type Projection = { points: ProjPoint[]; deliveries: Delivery[]; stockOutDay: number | null; orderByDay: number | null };
+type Projection = { points: ProjPoint[]; deliveries: Delivery[]; deliveryMarkers: { day: number; qty: number }[]; stockOutDay: number | null; orderByDay: number | null };
 
 const CLASSIFICATION_OPTIONS = [
   { value: "AUTO", label: "Automatyczna" },
@@ -49,12 +49,20 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
     day: i, stock: p.stock, arrivals: deliveries.filter((d) => d.day === i),
   }));
 
+  // Znaczniki na wykresie: gdy kilka dostaw wpada tego samego dnia, pokazujemy JEDNĄ kropkę
+  // z sumą sztuk (rozbicie na kontenery zostaje w tooltipie przez points[].arrivals).
+  const dayAgg = new Map<number, number>();
+  for (const d of deliveries) dayAgg.set(d.day, (dayAgg.get(d.day) || 0) + d.qty);
+  const deliveryMarkers = [...dayAgg.entries()]
+    .map(([day, qty]) => ({ day, qty }))
+    .sort((a, b) => a.day - b.day);
+
   let stockOutDay: number | null = null;
   for (let i = 0; i < points.length; i++) {
     if (points[i].stock <= 0) { stockOutDay = i; break; }
   }
   const orderByDay = stockOutDay != null ? Math.max(0, stockOutDay - product.lead_time_days) : null;
-  return { points, deliveries, stockOutDay, orderByDay };
+  return { points, deliveries, deliveryMarkers, stockOutDay, orderByDay };
 }
 
 export default function ProductModal({
@@ -262,7 +270,7 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
     return () => ro.disconnect();
   }, []);
 
-  const { points, deliveries, stockOutDay, orderByDay } = projection;
+  const { points, deliveries, deliveryMarkers, stockOutDay, orderByDay } = projection;
   const max = Math.max(...points.map((p) => p.stock), 1);
   const avg = product.avg_monthly_weighted;
   const safetyStock = Math.max(1, Math.round(avg * 0.5));
@@ -329,7 +337,7 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
         <path d={areaPath} fill="url(#projGrad)" />
         <path d={linePath} stroke="var(--accent)" strokeWidth="2" fill="none" strokeLinejoin="round" />
 
-        {deliveries.map((d, i) => (
+        {deliveryMarkers.map((d, i) => (
           <g key={i}>
             <line x1={x(d.day)} x2={x(d.day)} y1={pad.t} y2={y(points[d.day].stock)} stroke="var(--info)" strokeWidth="1" strokeDasharray="2,3" opacity="0.7" />
             <circle cx={x(d.day)} cy={y(points[d.day].stock)} r="5" fill="var(--info)" stroke="var(--bg)" strokeWidth="2" />
@@ -441,12 +449,12 @@ function ContainersSection({ product, onContainerClick, onClose }: { product: Pr
               {onContainerClick && <div style={{ position: "absolute", right: 12, top: 12, color: "var(--text-disabled)", fontSize: 16 }}>›</div>}
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 34px 10px 14px" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="mono" style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" }}>#{c.container_number}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" }}>{c.manufacturer_name || "—"}</div>
+                  <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-lo)", marginTop: 2 }}>#{c.container_number}</div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7 }}>
                     <Pill bg={meta.soft} fg={meta.color} dot={meta.color} size="sm">{meta.label}</Pill>
                     {c.is_consolidated && <Pill bg="var(--warning-soft)" fg="var(--warning)" size="sm">Skonsolidowany</Pill>}
                     {c.is_consolidated && c.lot_order_number && <span className="mono" style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 20, background: "var(--surface-2)", color: "var(--text-mid)" }}>{c.lot_order_number}</span>}
-                    {c.manufacturer_name && <MfrChip name={c.manufacturer_name} color="var(--text-lo)" size="sm" />}
                     {c.wbite && <Pill bg="var(--ok-soft)" fg="var(--ok)" dot="var(--ok)" size="sm">wbite</Pill>}
                   </div>
                 </div>
