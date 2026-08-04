@@ -4,7 +4,7 @@ pobieranie listy produktów z naliczonymi metrykami.
 """
 
 from datetime import date, timedelta
-from typing import List
+from typing import List, Dict
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,7 +67,8 @@ _SHOP_LABEL = {"amh": "AMH", "acti": "Acti", "veluxa": "Veluxa"}
 
 
 def calculate_forecast(row: dict, incoming: List[dict],
-                       transfer_stock: List[dict] = None, shop: str = "") -> ProductSummary:
+                       transfer_stock: List[dict] = None, shop: str = "",
+                       erp_transit: int = 0, skip_wbite: bool = True) -> ProductSummary:
     """Liczy prognozę: średnia ważona sprzedaż, dzień wyczerpania, data zamówienia, status."""
     sales_1m = row["sales_1m_total"]
     sales_2m_avg = row["sales_2m_total"] / 2
@@ -94,14 +95,16 @@ def calculate_forecast(row: dict, incoming: List[dict],
         # (Dawniej filtr szedł po surowej ETA i zjadał dostawę w oknie odprawy.)
         if arrival < today:
             continue
+        # Wbite loty są już w magazynie „w drodze" ERP (Subiekt/Fakturownia) — liczymy je
+        # z erp_transit, NIE z kontenera, żeby nie było dubla. Veluxa (skip_wbite=False,
+        # brak wpiętej Fakturowni) liczy wszystko z kontenerów po staremu.
+        if skip_wbite and inc.get("wbite"):
+            continue
         qty = inc["quantity"]
         eta_map.setdefault(arrival, 0)
         eta_map[arrival] += qty
         stock_in_transit += qty
-        if inc.get("wbite"):
-            transit_wbite += qty
-        else:
-            transit_containers += qty
+        transit_containers += qty
         if nearest_date is None or arrival < nearest_date:
             nearest_date, nearest_source = arrival, src
         eff, _is_auto, _days_left = compute_effective_status(
@@ -120,6 +123,14 @@ def calculate_forecast(row: dict, incoming: List[dict],
             lot_order_number=inc.get("lot_order_number"),
             manufacturer_name=inc.get("manufacturer_name"),
         ))
+
+    # Magazyn „w drodze" z ERP firmy (AMH→Subiekt drugi magazyn, Acti→Fakturownia).
+    # Zastępuje dawne liczenie „wbite" z kontenera — jedno źródło prawdy, spójne z Raportami.
+    # Bez daty ETA (towar już fizycznie leży w magazynie „w drodze") → dostępny od dziś.
+    transit_wbite = int(erp_transit or 0)
+    if transit_wbite > 0:
+        eta_map[today] = eta_map.get(today, 0) + transit_wbite
+        stock_in_transit += transit_wbite
 
     current_stock = float(row["stock"])
     days_until_empty = 9999
@@ -248,6 +259,31 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         key = inc["sku"].strip().lower() if inc["sku"] else ""
         incoming_by_sku.setdefault(key, []).append(inc)
 
+    # Magazyn „w drodze" z ERP — źródło zależne od firmy (identycznie jak w Raportach):
+    #   AMH  → drugi magazyn Subiektu (subiekt_dwa_magazyny.stan_magazyn_w_drodze)
+    #   Acti → Fakturownia „Towary w drodze" (fakturownia_stock.in_transit_qty)
+    # Klucz LOWER(TRIM(sku)) — spójnie z resztą sklejania po SKU.
+    subiekt_transit: Dict[str, int] = {}
+    r = await db.execute(text(f"""
+        SELECT LOWER(TRIM(sku)) AS k, COALESCE(SUM(stan_magazyn_w_drodze), 0) AS q
+        FROM {settings.TABLE_SUBIEKT_DWA}
+        WHERE sku IS NOT NULL AND stan_magazyn_w_drodze IS NOT NULL AND stan_magazyn_w_drodze > 0
+        GROUP BY LOWER(TRIM(sku))
+    """))
+    for m in r.mappings():
+        subiekt_transit[m["k"]] = int(m["q"] or 0)
+
+    fakturownia_transit: Dict[str, int] = {}
+    r = await db.execute(text(f"""
+        SELECT LOWER(TRIM(fs.sku)) AS k, COALESCE(SUM(fs.in_transit_qty), 0) AS q
+        FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
+        JOIN {settings.TABLE_FIRMY} f ON f.id = fs.firma_id
+        WHERE LOWER(f.slug) = 'acti' AND fs.sku IS NOT NULL AND fs.in_transit_qty > 0
+        GROUP BY LOWER(TRIM(fs.sku))
+    """))
+    for m in r.mappings():
+        fakturownia_transit[m["k"]] = int(m["q"] or 0)
+
     # Stan sióstr (Sellasist) per SKU — osobne lekkie zapytanie, mergowane po SKU (jak incoming).
     # Bez parametru :shop — filtr „inny magazyn niż wybrany" robimy w calculate_forecast.
     transfer_result = await db.execute(text(TRANSFER_STOCK_QUERY))
@@ -262,9 +298,27 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         if classify_product(p) not in include_set:
             continue
         sku_key = p["sku"].strip().lower() if p["sku"] else ""
+        p_firma = (p.get("firma_slug") or "amh").strip().lower()
+        # Kontekst magazynu: konkretna zakładka → jej firma; „Wszyscy" → firma produktu.
+        cf = shop if shop else p_firma
+        # Magazyn „w drodze" z ERP właściwego dla kontekstu (Subiekt / Fakturownia / 0).
+        if cf == "amh":
+            erp = subiekt_transit.get(sku_key, 0)
+        elif cf == "acti":
+            erp = fakturownia_transit.get(sku_key, 0)
+        else:
+            erp = 0
+        # Kontenery pokazujemy tylko na zakładce firmy produktu — bez przecieku na obcą
+        # firmę (np. kontener Acti nie doklei się do zakładki AMH dla produktu dwufirmowego).
+        inc_lines = incoming_by_sku.get(sku_key, [])
+        if shop and p_firma != shop:
+            inc_lines = []
+        # Wbite wykluczamy tylko dla firm z wpiętym ERP (AMH, Acti); Veluxa liczy wszystko.
+        skip_wbite = cf in ("amh", "acti")
         results.append(calculate_forecast(
-            p, incoming_by_sku.get(sku_key, []),
-            transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop))
+            p, inc_lines,
+            transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop,
+            erp_transit=erp, skip_wbite=skip_wbite))
     return results
 
 
