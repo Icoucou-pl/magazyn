@@ -80,31 +80,61 @@ const parseLocal = (s: string) => { const [y, m, d] = s.split("-").map(Number); 
 // Poniedziałek tygodnia zawierającego d
 const mondayOf = (d: Date) => { const x = new Date(d); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); x.setHours(0, 0, 0, 0); return x; };
 
-// Etykieta zdarzenia: dostawa pokazuje numer kontenera, reszta SKU
-const eventLabel = (e: CalEvent) => (e.type === "DELIVERY" ? e.container_number ?? "" : e.sku ?? "");
-// Podtytuł: dostawa → "producent · N szt", reszta → nazwa produktu
-const eventSub = (e: CalEvent) =>
-  e.type === "DELIVERY"
-    ? `${e.manufacturer_name ?? "Dostawa"} · ${fmtNum(e.total_units)} szt`
-    : e.name ?? "";
+// Etykieta zdarzenia: dostawa pokazuje producenta (fallback: nr kontenera), reszta SKU
+const eventLabel = (e: CalEvent) =>
+  e.type === "DELIVERY" ? (e.manufacturer_name ?? e.container_number ?? "Dostawa") : e.sku ?? "";
+// Podtytuł: dostawa → "nr kontenera · N szt" (producent poszedł na 1 plan), reszta → nazwa produktu
+const eventSub = (e: CalEvent) => {
+  if (e.type !== "DELIVERY") return e.name ?? "";
+  return [e.container_number, `${fmtNum(e.total_units)} szt`].filter(Boolean).join(" · ");
+};
+
+// ── Utrwalanie stanu widoku (sessionStorage) ─────────────────
+// Po otwarciu popupu kontenera page.tsx przełącza widok na „containers", przez co
+// kalendarz się odmontowuje. Zapamiętujemy tryb/miesiąc/wybrany dzień/sklep/zakres/filtry,
+// żeby po zamknięciu popupu wrócić dokładnie w to samo miejsce. Kalendarz renderuje się
+// wyłącznie po stronie klienta (page.tsx: `if (!ready) return null`), więc odczyt w
+// inicjalizatorze useState jest bezpieczny — brak hydration mismatch.
+const CAL_STATE_KEY = "magazyn:calendar:view";
+type PersistedCalState = { mode: Mode; cursorTs: number; selected: string; shop: string; scope: Scope; filters: Filters };
+function loadCalState(): Partial<PersistedCalState> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.sessionStorage.getItem(CAL_STATE_KEY);
+    return raw ? (JSON.parse(raw) as PersistedCalState) : {};
+  } catch { return {}; }
+}
 
 // ── Widok główny ─────────────────────────────────────────────
-function Calendar({ density }: { density?: string }) {
+function Calendar({ density, onOpenContainer }: { density?: string; onOpenContainer?: (id: number) => void }) {
   void density; // gęstość nie wpływa na układ kalendarza — zachowane dla spójności propsów widoków
 
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [mode, setMode] = useState<Mode>("month");
-  const [cursor, setCursor] = useState(new Date());
-  const [selected, setSelected] = useState(dKey(new Date()));
-  const [filters, setFilters] = useState<Filters>({ ORDER: true, EMPTY: true, DELIVERY: true });
+  // Stan widoku inicjowany z sessionStorage (lazy) — patrz komentarz przy loadCalState.
+  const [saved] = useState<Partial<PersistedCalState>>(loadCalState);
+  const [mode, setMode] = useState<Mode>(saved.mode ?? "month");
+  const [cursor, setCursor] = useState<Date>(() => (saved.cursorTs ? new Date(saved.cursorTs) : new Date()));
+  const [selected, setSelected] = useState(saved.selected ?? dKey(new Date()));
+  const [filters, setFilters] = useState<Filters>(saved.filters ?? { ORDER: true, EMPTY: true, DELIVERY: true });
   // Zakres SKU: "watched" = tylko obserwowane (gwiazdka), "active" = wszystkie aktywne.
   // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy są zawsze widoczne.
-  const [scope, setScope] = useState<Scope>("watched");
+  const [scope, setScope] = useState<Scope>(saved.scope ?? "watched");
   // Sklep: "" = wszystkie, "amh"/"acti"/"veluxa" = tylko dany magazyn (jak na dashboardzie).
   // ORDER/EMPTY liczone są wtedy per-sklep, DELIVERY zawężone do kontenerów z towarem tej firmy.
-  const [shop, setShop] = useState("amh");
+  const [shop, setShop] = useState(saved.shop ?? "amh");
+
+  // Zapis stanu widoku przy każdej zmianie — dzięki temu po powrocie z popupu kontenera
+  // (remount) kalendarz odtwarza dokładnie ten sam widok.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(CAL_STATE_KEY, JSON.stringify({
+        mode, cursorTs: cursor.getTime(), selected, shop, scope, filters,
+      }));
+    } catch { /* quota / tryb prywatny — ignorujemy */ }
+  }, [mode, cursor, selected, shop, scope, filters]);
 
   useEffect(() => {
     let mounted = true;
@@ -264,7 +294,7 @@ function Calendar({ density }: { density?: string }) {
           )}
           {mode === "day" && (
             <Card>
-              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}/>
+              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading} onOpenContainer={onOpenContainer}/>
             </Card>
           )}
         </div>
@@ -274,7 +304,7 @@ function Calendar({ density }: { density?: string }) {
           {/* Wybrany dzień — w trybie „Dzień" główny obszar to już ten dzień, więc tu pomijamy */}
           {mode !== "day" && (
             <Card>
-              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}/>
+              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading} onOpenContainer={onOpenContainer}/>
             </Card>
           )}
 
@@ -551,8 +581,8 @@ function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect }: {
 }
 
 // --- Szczegół dnia (panel boczny / tryb Dzień) --------------
-function DayDetail({ dateKey, events, todayKey, loading }: {
-  dateKey: string; events: CalEvent[]; todayKey: string; loading: boolean;
+function DayDetail({ dateKey, events, todayKey, loading, onOpenContainer }: {
+  dateKey: string; events: CalEvent[]; todayKey: string; loading: boolean; onOpenContainer?: (id: number) => void;
 }) {
   const d = parseLocal(dateKey);
   return (
@@ -574,7 +604,7 @@ function DayDetail({ dateKey, events, todayKey, loading }: {
           <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
             {loading ? "Ładowanie…" : "Brak wydarzeń tego dnia"}
           </div>
-        ) : events.map((e, i) => <EventRow key={i} event={e} isLast={i === events.length - 1}/>)}
+        ) : events.map((e, i) => <EventRow key={i} event={e} isLast={i === events.length - 1} onOpenContainer={onOpenContainer}/>)}
       </div>
     </>
   );
@@ -596,17 +626,24 @@ function EventChip({ event }: { event: CalEvent }) {
 }
 
 // --- Wiersz zdarzenia (szczegół dnia) -----------------------
-function EventRow({ event, isLast }: { event: CalEvent; isLast: boolean }) {
+// Dostawa jest klikalna → otwiera popup kontenera (przez onOpenContainer z page.tsx).
+// Producent jest na 1 planie (eventLabel), numer kontenera + sztuki niżej (eventSub) —
+// dlatego dolny chip producenta pokazujemy już tylko dla ORDER/EMPTY, gdzie producent
+// nie ma innego miejsca; dla dostawy byłby zdublowaniem tytułu.
+function EventRow({ event, isLast, onOpenContainer }: { event: CalEvent; isLast: boolean; onOpenContainer?: (id: number) => void }) {
   const meta = EVENT_META[event.type];
+  const clickable = event.type === "DELIVERY" && event.container_id != null && !!onOpenContainer;
   return (
-    <div style={{
-      display: "flex", alignItems: "flex-start", gap: 12,
-      padding: "12px 18px",
-      borderBottom: isLast ? "none" : "1px solid var(--border-soft)",
-      cursor: "pointer",
-    }}
-      onMouseEnter={(e) => e.currentTarget.style.background = "var(--surface-2)"}
-      onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+    <div
+      onClick={clickable ? () => onOpenContainer!(event.container_id!) : undefined}
+      style={{
+        display: "flex", alignItems: "flex-start", gap: 12,
+        padding: "12px 18px",
+        borderBottom: isLast ? "none" : "1px solid var(--border-soft)",
+        cursor: clickable ? "pointer" : "default",
+      }}
+      onMouseEnter={(e) => { if (clickable) e.currentTarget.style.background = "var(--surface-2)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
       <div style={{ width: 3, alignSelf: "stretch", background: meta.dot, borderRadius: 2 }}/>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -615,7 +652,7 @@ function EventRow({ event, isLast }: { event: CalEvent; isLast: boolean }) {
         </div>
         <div className="mono" style={{ fontSize: 12, fontWeight: 600, marginTop: 6 }}>{eventLabel(event)}</div>
         <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{eventSub(event)}</div>
-        {event.manufacturer_name && (
+        {event.type !== "DELIVERY" && event.manufacturer_name && (
           <div style={{ marginTop: 6 }}>
             <MfrChip name={event.manufacturer_name} color={event.manufacturer_color || "var(--text-lo)"}/>
           </div>
