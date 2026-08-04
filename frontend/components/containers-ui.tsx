@@ -352,13 +352,25 @@ const SUBIEKT_META = {
   mixed: { color: "var(--warning)", label: "część w Subiekcie, część w apce" },
 } as const;
 
-export function SubiektDot({ state, onClick, size = 10 }: { state: "green" | "red" | "mixed"; onClick?: () => void; size?: number }) {
+// Nazwa ERP zależna od firmy kontenera (dominującej): AMH → Subiekt, Acti/Veluxa → Fakturownia.
+function erpLocOfContainer(c: Container): string {
+  const fb = c.firma_breakdown || {};
+  let best = "amh", bestU = -1;
+  for (const [slug, share] of Object.entries(fb)) {
+    const u = (share as FirmaShare | undefined)?.units ?? 0;
+    if (u > bestU) { bestU = u; best = slug.toLowerCase(); }
+  }
+  return best === "amh" ? "Subiekcie" : "Fakturowni";
+}
+
+export function SubiektDot({ state, onClick, size = 10, erpLoc = "Subiekcie" }: { state: "green" | "red" | "mixed"; onClick?: () => void; size?: number; erpLoc?: string }) {
   const meta = SUBIEKT_META[state];
+  const label = state === "green" ? `w ${erpLoc} (magazyn w drodze)` : meta.label;
   const clickable = !!onClick;
   return (
     <span
       onClick={onClick ? (e) => { e.stopPropagation(); onClick(); } : undefined}
-      title={meta.label + (clickable ? " — kliknij, by zmienić" : "")}
+      title={label + (clickable ? " — kliknij, by zmienić" : "")}
       style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: size + 6, height: size + 6, cursor: clickable ? "pointer" : "default", flexShrink: 0 }}>
       <span style={{ width: size, height: size, borderRadius: 99, background: meta.color, boxShadow: `0 0 0 2px color-mix(in oklch, ${meta.color} 22%, transparent)` }} />
     </span>
@@ -373,7 +385,7 @@ export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggl
       type="button"
       onClick={clickable ? (e) => { e.stopPropagation(); onToggle!(); } : undefined}
       disabled={!clickable}
-      title={on ? "w Subiekcie (magazyn w drodze) — kliknij, by cofnąć" : "w apce (kontener) — kliknij, gdy wbite do Subiektu"}
+      title={on ? "w magazynie w drodze (ERP) — kliknij, by cofnąć" : "w apce (kontener) — kliknij, gdy wbite do ERP"}
       style={{
         position: "relative", width: 40, height: 22, borderRadius: 999, border: "none", padding: 0,
         background: on ? "var(--ok)" : "var(--critical)",
@@ -455,7 +467,7 @@ export function ContainerCard({
                       : <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-lo)" }}>—</span>))}
             {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty, istnieje tytuł-producent i jest prawdziwy numer */}
             {!expanded && hasMfrTitle && realNr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
-            {subiektSt && <SubiektDot state={subiektSt} />}
+            {subiektSt && <SubiektDot state={subiektSt} erpLoc={erpLocOfContainer(c)} />}
             {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
             {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
             {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}

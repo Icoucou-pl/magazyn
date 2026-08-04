@@ -63,6 +63,8 @@ type ContainerOut = {
   pozostalo_pln?: number;
   brak_kursu?: number;
   firma_breakdown?: Record<string, FirmaShare>;   // slug -> udział firmy (może nie przyjść ze starego backendu)
+  expected_delivery_date?: string | null;          // „u nas" — umówiona data odbioru
+  warehouse_delivery_date?: string | null;         // data wejścia na magazyn (delivered/expected/ETA+odprawa)
 };
 type Anomaly = {
   sku: string; name: string;
@@ -366,6 +368,17 @@ const SUBIEKT_ROW_META = {
   mixed: { color: "var(--warning)", label: "mieszany" },
 } as const;
 
+// Nazwa ERP zależna od firmy kontenera (dominującej): AMH → Subiekt, Acti/Veluxa → Fakturownia.
+function erpLocOf(c: ContainerOut): string {
+  const fb = c.firma_breakdown || {};
+  let best = "amh", bestU = -1;
+  for (const [slug, share] of Object.entries(fb)) {
+    const u = (share as FirmaShare | undefined)?.units ?? 0;
+    if (u > bestU) { bestU = u; best = slug.toLowerCase(); }
+  }
+  return best === "amh" ? "Subiekcie" : "Fakturowni";
+}
+
 function KpiGrid({
   history, kont, mag, shop, missingRates, onRefillRates,
 }: {
@@ -602,7 +615,6 @@ function DeliveriesCard({
   shop: string;                       // "" = wszystkie sklepy
   onContainerClick?: (c: ContainerOut) => void;
 }) {
-  const showFin = can(useUser(), "viewFinancials");
   const { shown, hidden, open, toggle } = useExpandable(deliveries);
   return (
     <Card>
@@ -625,26 +637,32 @@ function DeliveriesCard({
               <div style={{ width: 4, height: 32, background: meta?.dot ?? "var(--text-lo)", borderRadius: 2, flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span title={`Magazyn w drodze: ${subMeta.label}`} style={{ width: 9, height: 9, borderRadius: 99, background: subMeta.color, flexShrink: 0, boxShadow: `0 0 0 2px color-mix(in oklch, ${subMeta.color} 22%, transparent)` }} />
-                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{c.container_number}</span>
-                  {c.manufacturer_name && <MfrChip name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />}
+                  <span title={`Magazyn w drodze: ${subSt === "green" ? `w ${erpLocOf(c)}` : subMeta.label}`} style={{ width: 9, height: 9, borderRadius: 99, background: subMeta.color, flexShrink: 0, boxShadow: `0 0 0 2px color-mix(in oklch, ${subMeta.color} 22%, transparent)` }} />
+                  <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "-0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.manufacturer_name || "—"}</span>
                   {share && (
                     <Pill bg="var(--surface-2)" fg={share.color ?? "var(--text-mid)"} size="sm" dot={share.color ?? undefined}>
                       {share.name ?? share.slug.toUpperCase()}
                     </Pill>
                   )}
                 </div>
+                <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-lo)", marginTop: 2 }}>#{c.container_number}</div>
                 <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
                   {share
-                    ? <>{share.items}/{itemsCount} pozycji · {fmtNum(share.units)} szt · {showFin ? fmtPLNk(share.value) : "•••"}</>
-                    : <>{itemsCount} pozycji · {fmtNum(c.total_units)} szt · {showFin ? fmtPLNk(c.total_value) : "•••"}</>}
+                    ? <>{share.items} SKU · {fmtNum(share.units)} szt</>
+                    : <>{itemsCount} SKU · {fmtNum(c.total_units)} szt</>}
                 </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 8.5, fontWeight: 600, color: "var(--text-disabled)", textTransform: "uppercase", letterSpacing: "0.06em" }}>ETA</div>
                 <div className="num" style={{ fontSize: 12, fontWeight: 600 }}>{new Date(c.eta_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}</div>
                 <div className="num" style={{ fontSize: 10, color: eStatus === "CUSTOMS" ? "var(--warning)" : "var(--text-lo)" }}>
                   {eStatus === "CUSTOMS" ? `odprawa · ${c.customs_days_left ?? 0}d` : `za ${days}d`} · {meta?.label ?? eStatus}
                 </div>
+                {c.warehouse_delivery_date && (eStatus === "CUSTOMS" || !!c.expected_delivery_date) && (
+                  <div className="num" style={{ fontSize: 10, color: "var(--ok)", marginTop: 1 }}>
+                    U nas: {new Date(c.warehouse_delivery_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}
+                  </div>
+                )}
               </div>
             </HoverRow>
           );
