@@ -31,11 +31,11 @@ type NavItem = { id: string; label: string; icon: IconCmp; perm?: string };
 export const NAV_ITEMS: NavItem[] = [
   { id: "dashboard",  label: "Dashboard",  icon: I.Dashboard },
   { id: "calendar",   label: "Kalendarz",  icon: I.Calendar },
-  { id: "products",   label: "Produkty",   icon: I.Box },
   { id: "containers", label: "Kontenery",  icon: I.Ship },
-  { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
   { id: "finance",    label: "Finanse",    icon: I.TrendUp, perm: "viewFinancials" },
   { id: "cashflow",   label: "Cashflow",   icon: I.Wallet, perm: "viewFinancials" },
+  { id: "products",   label: "Produkty",   icon: I.Box },
+  { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
   { id: "reports",    label: "Raporty",    icon: I.Calendar, perm: "viewReports" },
 ];
 
@@ -65,7 +65,7 @@ function Brand({ stacked }: { stacked?: boolean }) {
   if (stacked) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 3, flexShrink: 0, lineHeight: 1 }}>
-        <span className="mono" style={{ fontSize: 8, color: "var(--text-lo)", letterSpacing: "0.14em" }}>MAGAZYN</span>
+        <span className="mono" style={{ fontSize: 8, color: "var(--text-lo)", letterSpacing: "0.14em" }}>MAGAZYN 2.0</span>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 20, width: "auto", display: "block" }}/>
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -80,7 +80,7 @@ function Brand({ stacked }: { stacked?: boolean }) {
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
       <span className="mono" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
-        MAGAZYN
+        MAGAZYN 2.0
       </span>
     </div>
   );
