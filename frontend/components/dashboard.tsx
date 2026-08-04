@@ -554,7 +554,8 @@ const listScroll = (open: boolean): React.CSSProperties =>
 
 // ── Pożary ───────────────────────────────────────────────────
 function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProduct[]; onProductClick?: (p: ClickTarget) => void; onNoReorder?: (sku: string) => void }) {
-  const { shown, hidden, open, toggle } = useExpandable(fires);
+  // Pożary mają niższe wiersze niż sąsiadujący box dostaw — mieści się 6 (footer i tak jest przypięty na dole).
+  const { shown, hidden, open, toggle } = useExpandable(fires, 6);
   return (
     <Card style={{ display: "flex", flexDirection: "column" }}>
       <CardHeader icon={<I.Flame size={16} />} title="Pożary" hint={`${fires.length} pozycji`} accent="var(--critical)" />
