@@ -89,22 +89,17 @@ def calculate_forecast(row: dict, incoming: List[dict],
 
     for inc in incoming:
         arrival, src = _arrival_and_source(inc)
-        # Towar wchodzi na magazyn dnia `arrival`. Póki arrival jest dziś/w przyszłości —
-        # jest „w drodze" i NIE ma go jeszcze w stan_dostepny (to magazyn fizyczny, potwierdzone).
-        # Gdy arrival już minął — wleciał do Subiektu i nie liczymy go drugi raz.
-        # (Dawniej filtr szedł po surowej ETA i zjadał dostawę w oknie odprawy.)
+        # Towar wchodzi na magazyn dnia `arrival`. Dopóki arrival jest dziś/w przyszłości —
+        # jest „w drodze". Wbite do Subiektu/Fakturowni TEŻ ma ETA (dokument w magazynie
+        # „w drodze" poprzedza fizyczne przyjęcie), więc jego datę nanosimy na wykres i do
+        # „najbliższej dostawy" — inaczej znika informacja „przypływa 19 paź".
         if arrival < today:
             continue
-        # Wbite loty są już w magazynie „w drodze" ERP (Subiekt/Fakturownia) — liczymy je
-        # z erp_transit, NIE z kontenera, żeby nie było dubla. Veluxa (skip_wbite=False,
-        # brak wpiętej Fakturowni) liczy wszystko z kontenerów po staremu.
-        if skip_wbite and inc.get("wbite"):
-            continue
         qty = inc["quantity"]
+        wbite = bool(inc.get("wbite"))
+        # ETA / wykres / najbliższa dostawa — dla WSZYSTKICH linii (także wbite).
         eta_map.setdefault(arrival, 0)
         eta_map[arrival] += qty
-        stock_in_transit += qty
-        transit_containers += qty
         if nearest_date is None or arrival < nearest_date:
             nearest_date, nearest_source = arrival, src
         eff, _is_auto, _days_left = compute_effective_status(
@@ -118,19 +113,20 @@ def calculate_forecast(row: dict, incoming: List[dict],
             warehouse_delivery_date=arrival,
             date_source=src,
             effective_status=eff,
-            wbite=bool(inc.get("wbite")),
+            wbite=wbite,
             is_consolidated=bool(inc.get("is_consolidated")),
             lot_order_number=inc.get("lot_order_number"),
             manufacturer_name=inc.get("manufacturer_name"),
         ))
+        # „W kontenerach" = TYLKO czerwone (niewbite). Wbite idą do „magazynu w drodze" z ERP.
+        if not (skip_wbite and wbite):
+            transit_containers += qty
 
-    # Magazyn „w drodze" z ERP firmy (AMH→Subiekt drugi magazyn, Acti→Fakturownia).
-    # Zastępuje dawne liczenie „wbite" z kontenera — jedno źródło prawdy, spójne z Raportami.
-    # Bez daty ETA (towar już fizycznie leży w magazynie „w drodze") → dostępny od dziś.
+    # „Magazyn w drodze" = ilość z ERP firmy (AMH→Subiekt drugi magazyn, Acti→Fakturownia).
+    # To te same sztuki, których datę ETA nanieśliśmy wyżej: ILOŚĆ z ERP (źródło prawdy),
+    # DATA z kontenera. Suma tranzytu = magazyn w drodze (ERP) + czerwone kontenery.
     transit_wbite = int(erp_transit or 0)
-    if transit_wbite > 0:
-        eta_map[today] = eta_map.get(today, 0) + transit_wbite
-        stock_in_transit += transit_wbite
+    stock_in_transit = transit_wbite + transit_containers
 
     current_stock = float(row["stock"])
     days_until_empty = 9999
