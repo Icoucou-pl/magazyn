@@ -94,14 +94,18 @@ export default function ProductsView({
     })();
   }, []);
 
-  // Drill-down z Dashboardu: po załadowaniu otwórz modal wskazanego SKU
+  // Drill-down z Dashboardu / globalnej wyszukiwarki: otwórz modal wskazanego SKU
+  // w trybie SUMA („Wszyscy") — realny obraz „ile mam łącznie i mogę przerzucić między firmami".
   useEffect(() => {
-    if (!openSku || loading) return;
+    if (!openSku) return;
+    // Najpierw przeskocz na „Wszyscy" (shop=""); po przeładowaniu listy efekt odpali ponownie.
+    if (shop !== "") { setShop(""); return; }
+    if (loading) return;
     const p = products.find((x) => x.sku === openSku);
     if (p) setSelectedProduct(p);
     else toast(`Nie znaleziono produktu ${openSku}`, "info");
     onOpenedSku?.();
-  }, [openSku, loading, products, onOpenedSku]);
+  }, [openSku, shop, loading, products, onOpenedSku]);
 
   const toggleRow = (sku: string) => setSelected((prev) => {
     const n = new Set(prev);
