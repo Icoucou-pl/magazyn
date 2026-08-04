@@ -299,22 +299,29 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             continue
         sku_key = p["sku"].strip().lower() if p["sku"] else ""
         p_firma = (p.get("firma_slug") or "amh").strip().lower()
-        # Kontekst magazynu: konkretna zakładka → jej firma; „Wszyscy" → firma produktu.
-        cf = shop if shop else p_firma
-        # Magazyn „w drodze" z ERP właściwego dla kontekstu (Subiekt / Fakturownia / 0).
-        if cf == "amh":
-            erp = subiekt_transit.get(sku_key, 0)
-        elif cf == "acti":
-            erp = fakturownia_transit.get(sku_key, 0)
+        if not shop:
+            # TRYB SUMA („Wszyscy" / globalne wyszukiwanie): łączny obraz produktu po
+            # wszystkich firmach — realne „ile mam i mogę przerzucić". STAN jest już sumą
+            # (SALES_QUERY dla shop='' sumuje Subiekt + wszystkie Sellasisty). „W drodze"
+            # sumujemy z obu magazynów ERP; kontenery bierzemy wszystkie (bez firma-scope).
+            erp = subiekt_transit.get(sku_key, 0) + fakturownia_transit.get(sku_key, 0)
+            inc_lines = incoming_by_sku.get(sku_key, [])
+            skip_wbite = True
         else:
-            erp = 0
-        # Kontenery pokazujemy tylko na zakładce firmy produktu — bez przecieku na obcą
-        # firmę (np. kontener Acti nie doklei się do zakładki AMH dla produktu dwufirmowego).
-        inc_lines = incoming_by_sku.get(sku_key, [])
-        if shop and p_firma != shop:
-            inc_lines = []
-        # Wbite wykluczamy tylko dla firm z wpiętym ERP (AMH, Acti); Veluxa liczy wszystko.
-        skip_wbite = cf in ("amh", "acti")
+            # TRYB FIRMY (zakładka AMH/Acti/Veluxa): widok jednej firmy.
+            cf = shop
+            if cf == "amh":
+                erp = subiekt_transit.get(sku_key, 0)
+            elif cf == "acti":
+                erp = fakturownia_transit.get(sku_key, 0)
+            else:
+                erp = 0
+            # Kontenery tylko na zakładce firmy produktu — bez przecieku na obcą firmę.
+            inc_lines = incoming_by_sku.get(sku_key, [])
+            if p_firma != shop:
+                inc_lines = []
+            # Wbite wykluczamy tylko dla firm z wpiętym ERP (AMH, Acti); Veluxa liczy wszystko.
+            skip_wbite = cf in ("amh", "acti")
         results.append(calculate_forecast(
             p, inc_lines,
             transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop,
