@@ -16,6 +16,31 @@ from services.containers import fetch_containers
 router = APIRouter(prefix="/api", tags=["calendar"])
 
 
+def _delivery_manufacturers(c) -> tuple:
+    """Etykieta producent(ów) dla dostawy + kolor.
+
+    Kontener zwykły ma producenta na sobie (c.manufacturer_name). Kontener
+    SKONSOLIDOWANY ma go pustego — producenci siedzą na lotach. Składamy listę
+    unikalnych nazw (dedupe, kolejność wg pojawienia się), złączoną ' · '.
+    Numer kontenera jako fallback dobiera już frontend, gdy nazwa == None.
+    """
+    names: list = []
+    color = c.manufacturer_color
+
+    def _push(n, col):
+        nonlocal color
+        if n and n not in names:
+            names.append(n)
+            if color is None:
+                color = col
+
+    _push(c.manufacturer_name, c.manufacturer_color)
+    for lot in (getattr(c, "lots", None) or []):
+        _push(getattr(lot, "manufacturer_name", None), getattr(lot, "manufacturer_color", None))
+
+    return (" · ".join(names) if names else None), color
+
+
 @router.get("/calendar")
 async def calendar_events(
     favorites_only: bool = False,
@@ -91,11 +116,12 @@ async def calendar_events(
             deliv_date = c.eta_date + timedelta(days=customs)     # ETA + odprawa celna
         else:
             continue                                             # auto-domknięte po ETA+N — już w magazynie
+        mfr_label, mfr_color = _delivery_manufacturers(c)
         events.append({
             "date": deliv_date.isoformat(), "type": "DELIVERY",
             "container_id": c.id, "container_number": c.container_number,
-            "order_number": c.order_number, "manufacturer_name": c.manufacturer_name,
-            "manufacturer_color": c.manufacturer_color, "total_units": c.total_units,
+            "order_number": c.order_number, "manufacturer_name": mfr_label,
+            "manufacturer_color": mfr_color, "total_units": c.total_units,
             "container_status": eff,
         })
 
