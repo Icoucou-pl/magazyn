@@ -70,6 +70,7 @@ type Anomaly = {
   sku: string; name: string;
   severity: "high" | "medium" | "low";
   type: string; message: string;
+  sales_1m: number; sales_3m_avg: number; change_pct: number;
 };
 type ShoppingProduct = {
   sku: string; name: string; stock: number; stock_in_transit: number;
@@ -683,7 +684,12 @@ function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; on
     <Card>
       <CardHeader icon={<I.Activity size={16} />} title="Anomalie" hint={`${anomalies.length} wykrytych`} accent="var(--anomaly)" />
       <div style={listScroll(open)}>
-        {shown.map((a, i) => (
+        {shown.map((a, i) => {
+          // Procent (±) trzymamy po prawej — z komunikatu usuwamy końcowe „(…)", żeby się nie dublował.
+          const hasTrend = a.type === "sales_spike" || a.type === "sales_drop";
+          const up = a.change_pct >= 0;
+          const msg = hasTrend ? a.message.replace(/\s*\([^)]*\)\s*$/, "") : a.message;
+          return (
           <HoverRow key={`${a.sku}-${i}`} onClick={() => onProductClick?.(a)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
             <span className="mono" style={{
               padding: "2px 6px", fontSize: 10, fontWeight: 700,
@@ -696,10 +702,21 @@ function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; on
                 <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{a.sku}</span>
                 <span style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{a.type.replace(/_/g, " ")}</span>
               </div>
-              <div style={{ fontSize: 12, color: "var(--text-mid)", marginTop: 2, lineHeight: 1.4 }}>{a.message}</div>
+              <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
+              <div style={{ fontSize: 12, color: "var(--text-mid)", marginTop: 2, lineHeight: 1.4 }}>{msg}</div>
             </div>
+            {hasTrend && (
+              <div className="num" style={{
+                display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0,
+                fontSize: 12, fontWeight: 600, color: up ? "var(--ok)" : "var(--critical)",
+              }}>
+                {up ? <I.TrendUp size={12} /> : <I.TrendDown size={12} />}
+                {fmtPct(a.change_pct)}
+              </div>
+            )}
           </HoverRow>
-        ))}
+          );
+        })}
         {anomalies.length === 0 && <EmptyRow text="Brak anomalii" />}
       </div>
       <ExpandFooter hidden={hidden} open={open} onToggle={toggle} />
