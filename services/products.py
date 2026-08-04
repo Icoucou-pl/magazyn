@@ -330,10 +330,13 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
 
 
 async def get_product(db: AsyncSession, sku: str) -> ProductSummary:
-    """Pojedynczy produkt po SKU (szuka we wszystkich statusach). Rzuca 404."""
+    """Pojedynczy produkt po SKU (szuka we wszystkich statusach). Rzuca 404.
+    Dopasowanie po kanonicznym SKU (case-insensitive) — globalne wyszukiwanie i lista
+    mogą renderować różną wielkość liter tego samego SKU."""
     from fastapi import HTTPException
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"})
+    target = (sku or "").strip().lower()
     for p in products:
-        if p.sku == sku:
+        if (p.sku or "").strip().lower() == target:
             return p
     raise HTTPException(404, f"Produkt {sku} nie znaleziony")
