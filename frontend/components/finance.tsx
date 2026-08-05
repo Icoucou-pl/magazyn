@@ -82,6 +82,12 @@ const SHOPS: [string, string][] = [
   ["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"], ["", "Wszystkie"],
 ];
 const dec1 = (n: number) => n.toFixed(1).replace(".", ",");
+// Własny zakres („Zakres"): dolny limit 01.01.2025, górny = dziś (data lokalna).
+const CUSTOM_MIN = "2025-01-01";
+const todayISO = () => {
+  const d = new Date(), p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 
 function orderedChannels(present: string[]): string[] {
   const set = new Set(present);
@@ -98,6 +104,8 @@ export default function FinanceView({ density }: { density?: string }) {
   const [tab, setTab] = useState<"overview" | "product">("overview");
   const [period, setPeriod] = useState("ytd");
   const [shop, setShop] = useState("amh"); // domyślnie AMH; "" = wszystkie sklepy; globalny dla obu zakładek
+  const [fromDate, setFromDate] = useState(CUSTOM_MIN);   // własny zakres — start (domyślnie 01.01.2025)
+  const [toDate, setToDate] = useState(todayISO);         // własny zakres — koniec (domyślnie dziś)
 
   if (!showFin) {
     return (
@@ -125,14 +133,33 @@ export default function FinanceView({ density }: { density?: string }) {
             <TabBtn active={tab === "product"} onClick={() => setTab("product")} icon={<I.Box size={14} />}>Karta produktu</TabBtn>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 2, padding: 4, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-          {PERIODS.map(([id, label]) => (
-            <button key={id} onClick={() => setPeriod(id)} style={{
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <div style={{ display: "flex", gap: 2, padding: 4, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+            {PERIODS.map(([id, label]) => (
+              <button key={id} onClick={() => setPeriod(id)} style={{
+                padding: "7px 12px", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
+                background: period === id ? "var(--surface-3)" : "transparent",
+                color: period === id ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
+              }}>{label}</button>
+            ))}
+            {/* Własny zakres — pozostałe fragmentatory bez zmian, domyślnie aktywne „Ten rok" (ytd). */}
+            <button key="custom" onClick={() => setPeriod("custom")} style={{
               padding: "7px 12px", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
-              background: period === id ? "var(--surface-3)" : "transparent",
-              color: period === id ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
-            }}>{label}</button>
-          ))}
+              background: period === "custom" ? "var(--surface-3)" : "transparent",
+              color: period === "custom" ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}><I.Calendar size={13} /> Zakres</button>
+          </div>
+          {period === "custom" && (
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+              <span style={{ fontSize: 12, color: "var(--text-lo)" }}>od</span>
+              <input type="date" value={fromDate} min={CUSTOM_MIN} max={toDate}
+                onChange={(e) => setFromDate(e.target.value || CUSTOM_MIN)} style={dateInput} />
+              <span style={{ fontSize: 12, color: "var(--text-lo)" }}>do</span>
+              <input type="date" value={toDate} min={fromDate} max={todayISO()}
+                onChange={(e) => setToDate(e.target.value || todayISO())} style={dateInput} />
+            </div>
+          )}
         </div>
       </div>
 
@@ -152,7 +179,9 @@ export default function FinanceView({ density }: { density?: string }) {
         </div>
       </div>
 
-      {tab === "overview" ? <OverviewTab period={period} shop={shop} /> : <ProductTab period={period} shop={shop} />}
+      {tab === "overview"
+        ? <OverviewTab period={period} shop={shop} from={fromDate} to={toDate} />
+        : <ProductTab period={period} shop={shop} from={fromDate} to={toDate} />}
     </div>
   );
 }
@@ -160,7 +189,7 @@ export default function FinanceView({ density }: { density?: string }) {
 // ============================================================
 // ZAKŁADKA: PRZEGLĄD
 // ============================================================
-function OverviewTab({ period, shop }: { period: string; shop: string }) {
+function OverviewTab({ period, shop, from, to }: { period: string; shop: string; from: string; to: string }) {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -168,12 +197,15 @@ function OverviewTab({ period, shop }: { period: string; shop: string }) {
   useEffect(() => {
     let alive = true;
     setLoading(true); setErr(null);
-    api.get(`/finance/overview?period=${period}${shop ? `&shop=${shop}` : ""}`)
+    const q = period === "custom"
+      ? `period=custom&from_date=${from}&to_date=${to}`
+      : `period=${period}`;
+    api.get(`/finance/overview?${q}${shop ? `&shop=${shop}` : ""}`)
       .then((d: Overview) => { if (alive) setData(d); })
       .catch((e: unknown) => { if (alive) setErr(e instanceof Error ? e.message : "Błąd pobierania"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [period, shop]);
+  }, [period, shop, from, to]);
 
   const k = data?.kpi;
   if (err) return <ErrBox msg={err} />;
@@ -210,7 +242,7 @@ function OverviewTab({ period, shop }: { period: string; shop: string }) {
 // ============================================================
 // ZAKŁADKA: KARTA PRODUKTU
 // ============================================================
-function ProductTab({ period, shop }: { period: string; shop: string }) {
+function ProductTab({ period, shop, from, to }: { period: string; shop: string; from: string; to: string }) {
   const [symbol, setSymbol] = useState<string | null>(null);
   const [data, setData] = useState<ProductCard | null>(null);
   const [loading, setLoading] = useState(false);
@@ -220,12 +252,15 @@ function ProductTab({ period, shop }: { period: string; shop: string }) {
     if (!symbol) { setData(null); return; }
     let alive = true;
     setLoading(true); setErr(null);
-    api.get(`/finance/product?symbol=${encodeURIComponent(symbol)}&period=${period}${shop ? `&shop=${shop}` : ""}`)
+    const q = period === "custom"
+      ? `period=custom&from_date=${from}&to_date=${to}`
+      : `period=${period}`;
+    api.get(`/finance/product?symbol=${encodeURIComponent(symbol)}&${q}${shop ? `&shop=${shop}` : ""}`)
       .then((d: ProductCard) => { if (alive) setData(d); })
       .catch((e: unknown) => { if (alive) { setErr(e instanceof Error ? e.message : "Błąd pobierania"); setData(null); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [symbol, period, shop]);
+  }, [symbol, period, shop, from, to]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -795,3 +830,4 @@ const td: React.CSSProperties = { padding: "10px 14px", borderBottom: "1px solid
 const warnBox: React.CSSProperties = { ...panel, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--warning)" };
 const emptyBox: React.CSSProperties = { padding: 60, textAlign: "center", background: "var(--surface-1)", border: "1px dashed var(--border)", borderRadius: "var(--r-lg)" };
 const emptyIcon: React.CSSProperties = { width: 56, height: 56, margin: "0 auto 16px", borderRadius: 14, background: "var(--accent-soft)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" };
+const dateInput: React.CSSProperties = { padding: "5px 8px", fontSize: 12, borderRadius: 7, border: "1px solid var(--border-soft)", background: "var(--surface-2)", color: "var(--text-hi)", fontFamily: "inherit", cursor: "pointer" };
