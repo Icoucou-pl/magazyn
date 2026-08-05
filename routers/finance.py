@@ -35,6 +35,7 @@ router = APIRouter(prefix="/api", tags=["finance"])
 
 ALLOWED_PERIODS = {"ytd", "365", "90", "30", "prev_year"}
 ALLOWED_SHOPS = {"amh", "acti", "veluxa"}
+CUSTOM_MIN_DATE = date(2025, 1, 1)  # dolny limit własnego zakresu (fragmentator „Zakres")
 
 
 def _shop_clause(shop: Optional[str]) -> str:
@@ -160,6 +161,31 @@ def _range_label(df: date, dt: date) -> str:
     if df.year == dt.year:
         return f"{df.day} {_MONTHS_PL[df.month]} – {dt.day} {_MONTHS_PL[dt.month]} {dt.year}"
     return f"{df.isoformat()} – {dt.isoformat()}"
+
+
+def _custom_period(from_str: Optional[str], to_str: Optional[str]):
+    """Własny zakres z fragmentatora „Zakres". Zwraca (label, sql_clause, date_from, date_to)
+    w tym samym kształcie co _period; None gdy obie daty niepoprawne → wywołujący spada na ytd.
+    Przycięcie serwerowe: from >= 2025-01-01, to <= dziś, from <= to. date_to WŁĄCZNIE."""
+    df = _parse_iso_date(from_str)
+    dt = _parse_iso_date(to_str)
+    if df is None and dt is None:
+        return None
+    today = date.today()
+    if df is None:
+        df = CUSTOM_MIN_DATE
+    if dt is None:
+        dt = today
+    if df < CUSTOM_MIN_DATE:
+        df = CUSTOM_MIN_DATE
+    if dt > today:
+        dt = today
+    if dt < df:
+        df, dt = dt, df
+    d = settings.COL_ORDER_DATE
+    dt_excl = dt + timedelta(days=1)  # dt włącznie → górna granica wyłączna to dt+1
+    clause = (f"o.{d} >= DATE '{df.isoformat()}' AND o.{d} < DATE '{dt_excl.isoformat()}'")
+    return (_range_label(df, dt), clause, df, dt)
 
 
 async def _range_finance(db: AsyncSession, date_from: date, date_to_excl: date, label: str,
@@ -297,12 +323,19 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
 async def finance_overview(
     period: str = Query("ytd"),
     shop: str = Query("", description="amh|acti|veluxa; puste = wszystkie sklepy"),
+    from_date: str = Query("", description="własny zakres: początek RRRR-MM-DD (period=custom)"),
+    to_date: str = Query("", description="własny zakres: koniec RRRR-MM-DD włącznie (period=custom)"),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_view_financials),
 ):
-    if period not in ALLOWED_PERIODS:
-        period = "ytd"
-    label, period_clause, date_from, date_to = _period(period)
+    custom = _custom_period(from_date, to_date) if period == "custom" else None
+    if custom is not None:
+        period = "custom"
+        label, period_clause, date_from, date_to = custom
+    else:
+        if period not in ALLOWED_PERIODS:
+            period = "ytd"
+        label, period_clause, date_from, date_to = _period(period)
     base = _base_cte(period_clause, _shop_clause(shop))
 
     # --- Kanały (z tego wyliczamy też KPI: order=jeden kanał, więc sumy się sumują) ---
@@ -419,6 +452,8 @@ async def finance_product(
     symbol: str = Query(..., min_length=1),
     period: str = Query("ytd"),
     shop: str = Query("", description="amh|acti|veluxa; puste = wszystkie sklepy"),
+    from_date: str = Query("", description="własny zakres: początek RRRR-MM-DD (period=custom)"),
+    to_date: str = Query("", description="własny zakres: koniec RRRR-MM-DD włącznie (period=custom)"),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_view_financials),
 ):
@@ -430,9 +465,14 @@ async def finance_product(
     których w ogóle nie ma w Subiekcie (3/4 asortymentu Acti/Veluxa). Koszt jednostkowy z
     COALESCE(app_product_attrs.cena_zakupu, subiekt.cena_zakupu_netto) — to samo źródło co Produkty,
     czyli ceny uzupełnione ręcznie dla Acti/Veluxa też wchodzą do marży."""
-    if period not in ALLOWED_PERIODS:
-        period = "ytd"
-    label, period_clause, date_from, date_to = _period(period)
+    custom = _custom_period(from_date, to_date) if period == "custom" else None
+    if custom is not None:
+        period = "custom"
+        label, period_clause, date_from, date_to = custom
+    else:
+        if period not in ALLOWED_PERIODS:
+            period = "ytd"
+        label, period_clause, date_from, date_to = _period(period)
 
     # Normalizacja sklepu do zamkniętej whitelisty; nieznane → "" (wszystkie).
     sklep = (shop or "").strip().lower()
