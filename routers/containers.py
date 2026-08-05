@@ -58,10 +58,10 @@ def _advances_from(adv_list, z_proc, z_kwota, z_wal, z_data, default_cur="USD") 
         if a.kwota is None and a.data is None and a.procent is None:
             continue
         out.append({"procent": a.procent, "kwota": a.kwota,
-                    "waluta": (a.waluta or default_cur), "data": a.data})
+                    "waluta": (a.waluta or default_cur), "termin": a.termin, "data": a.data})
     if not out and (z_kwota is not None or z_data is not None or z_proc is not None):
         out.append({"procent": z_proc, "kwota": z_kwota,
-                    "waluta": (z_wal or default_cur), "data": z_data})
+                    "waluta": (z_wal or default_cur), "termin": None, "data": z_data})
     return out
 
 
@@ -178,11 +178,12 @@ async def _insert_advances(db: AsyncSession, *, advances: List[dict],
         await db.execute(
             text(f"""
                 INSERT INTO {settings.TABLE_CONTAINER_ADVANCES}
-                (container_id, lot_id, position, procent, kwota, waluta, data)
-                VALUES (:cid, :lid, :p, :proc, :kw, :wal, :dt)
+                (container_id, lot_id, position, procent, kwota, waluta, termin, data)
+                VALUES (:cid, :lid, :p, :proc, :kw, :wal, :tm, :dt)
             """),
             {"cid": container_id, "lid": lot_id, "p": pos,
-             "proc": a["procent"], "kw": a["kwota"], "wal": a["waluta"], "dt": a["data"]},
+             "proc": a["procent"], "kw": a["kwota"], "wal": a["waluta"],
+             "tm": a.get("termin"), "dt": a["data"]},
         )
 
 
@@ -202,8 +203,8 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
                 INSERT INTO {settings.TABLE_CONTAINER_LOTS}
                 (container_id, manufacturer_id, order_number, position,
                  waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
-                 balance_kwota, balance_waluta, zaplacono_data)
-                VALUES (:c, :m, :o, :p, :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :pd)
+                 balance_kwota, balance_waluta, balance_termin, zaplacono_data)
+                VALUES (:c, :m, :o, :p, :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd)
                 RETURNING id
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
@@ -213,6 +214,7 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
              "zwal": (first["waluta"] if first else default_cur),
              "zd": (first["data"] if first else None),
              "bal": lot.balance_kwota, "bwal": (lot.balance_waluta or default_cur),
+             "bt": lot.balance_termin,
              "pd": lot.zaplacono_data},
         )
         lid = rr.scalar_one()
@@ -338,10 +340,10 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
             (container_number, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
              koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr,
              waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
-             balance_kwota, balance_waluta, zaplacono_data, expected_delivery_date)
+             balance_kwota, balance_waluta, balance_termin, zaplacono_data, expected_delivery_date)
             VALUES (:n, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
                     :kt, :ks, :ktm, :fol, :sub,
-                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :pd, :edd)
+                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd, :edd)
             RETURNING id
         """),
         {"n": nr,
@@ -361,6 +363,7 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
          "zd": (first["data"] if first else None),
          "bal": (None if cons else payload.balance_kwota),
          "bwal": (None if cons else (payload.balance_waluta or default_cur)),
+         "bt": (None if cons else payload.balance_termin),
          "pd": (None if cons else payload.zaplacono_data),
          "edd": payload.expected_delivery_date}
     )
@@ -463,6 +466,7 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         ("waluta_towaru", "wal", default_cur),
         ("balance_kwota", "bal", payload.balance_kwota),
         ("balance_waluta", "bwal", (payload.balance_waluta or default_cur)),
+        ("balance_termin", "bt", payload.balance_termin),
         ("zaplacono_data", "pd", payload.zaplacono_data),
     ]
     # Zaliczki (rata) na poziomie kontenera — tylko wariant nieskonsolidowany.
