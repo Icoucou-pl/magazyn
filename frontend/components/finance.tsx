@@ -13,7 +13,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
+import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
 import { I } from "./ui";
 
@@ -185,9 +185,9 @@ function OverviewTab({ period, shop }: { period: string; shop: string }) {
       <p style={{ margin: 0, fontSize: 12, color: "var(--text-lo)" }}>{data.period_label} · {data.date_from} – {data.date_to} · w PLN</p>
 
       <div style={kpiGrid}>
-        <StatCard label="Przychód netto" value={fmtPLN(k.revenue_net)} icon={<I.Wallet size={16} />} accent />
-        <StatCard label="Marża" value={fmtPLN(k.margin)} sub={`marża ${fmtPct(k.margin_pct)}`} icon={<I.TrendUp size={16} />} tone={k.margin >= 0 ? "ok" : "bad"} />
-        <StatCard label="Przychód brutto" value={fmtPLN(k.revenue_gross)} icon={<I.Cart size={16} />} />
+        <StatCard label="Przychód bez VAT" value={fmtPLN(k.revenue_net)} icon={<I.Wallet size={16} />} accent />
+        <StatCard label="Marża" value={`${dec1(k.margin_pct)}%`} sub={fmtPLN(k.margin)} icon={<I.TrendUp size={16} />} tone={k.margin >= 0 ? "ok" : "bad"} />
+        <StatCard label="Przychód z VAT" value={fmtPLN(k.revenue_gross)} icon={<I.Cart size={16} />} />
         <StatCard label="Zamówienia" value={fmtNum(k.orders)} sub={`${fmtNum(k.units)} szt`} icon={<I.Box size={16} />} />
         <StatCard label="Śr. wartość zam." value={fmtPLN(k.aov_net)} sub="netto" icon={<I.Activity size={16} />} />
         <StatCard label="Koszt zakupu" value={fmtPLN(k.cost)} sub="bieżący (Subiekt)" icon={<I.Factory size={16} />} />
@@ -364,12 +364,12 @@ function ProductCardBody({ data, loading }: { data: ProductCard; loading: boolea
 
       {/* KPI */}
       <div style={kpiGrid}>
-        <StatCard label="Przychód netto" value={fmtPLN(kpi.revenue_net)} icon={<I.Wallet size={16} />} accent />
-        <StatCard label="Marża" value={fmtPLN(kpi.margin)} sub={`marża ${fmtPct(kpi.margin_pct)}`} icon={<I.TrendUp size={16} />} tone={kpi.margin >= 0 ? "ok" : "bad"} />
+        <StatCard label="Przychód bez VAT" value={fmtPLN(kpi.revenue_net)} icon={<I.Wallet size={16} />} accent />
+        <StatCard label="Marża" value={`${dec1(kpi.margin_pct)}%`} sub={fmtPLN(kpi.margin)} icon={<I.TrendUp size={16} />} tone={kpi.margin >= 0 ? "ok" : "bad"} />
         <StatCard label="Sztuki" value={fmtNum(kpi.units)} sub={`${fmtNum(kpi.orders)} zam.`} icon={<I.Box size={16} />} />
         <StatCard label="Śr. cena netto / szt" value={fmtPLN(kpi.avg_price_net)} icon={<I.Cart size={16} />} />
         <StatCard label="Marża / szt" value={fmtPLN(kpi.unit_margin)} sub={`koszt ${fmtPLN(kpi.unit_cost)}`} icon={<I.Activity size={16} />} tone={kpi.unit_margin >= 0 ? "ok" : "bad"} />
-        <StatCard label="Przychód brutto" value={fmtPLN(kpi.revenue_gross)} icon={<I.Factory size={16} />} />
+        <StatCard label="Przychód z VAT" value={fmtPLN(kpi.revenue_gross)} icon={<I.Factory size={16} />} />
       </div>
 
       {/* Rotacja / pokrycie stanu */}
