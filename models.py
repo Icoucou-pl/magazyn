@@ -274,6 +274,7 @@ class ContainerAdvanceIn(BaseModel):
     procent: Optional[float] = None
     kwota: Optional[float] = None
     waluta: Optional[str] = None
+    termin: Optional[date] = None      # planowany termin płatności (deadline; niezależny od `data`)
     data: Optional[date] = None
 
 
@@ -282,6 +283,7 @@ class ContainerAdvanceOut(BaseModel):
     procent: Optional[float] = None
     kwota: Optional[float] = None
     waluta: Optional[str] = "USD"
+    termin: Optional[date] = None
     data: Optional[date] = None
 
 
@@ -305,6 +307,7 @@ class ContainerLotIn(BaseModel):
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = None
+    balance_termin: Optional[date] = None     # planowany termin zapłaty balance
     zaplacono_data: Optional[date] = None
 
 
@@ -334,6 +337,7 @@ class ContainerCreate(BaseModel):
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = None
+    balance_termin: Optional[date] = None
     zaplacono_data: Optional[date] = None
     lots: List[ContainerLotIn] = []
     items: List[ContainerItemIn] = Field(..., min_length=1)
@@ -362,6 +366,7 @@ class ContainerUpdate(BaseModel):
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = None
+    balance_termin: Optional[date] = None
     zaplacono_data: Optional[date] = None
     delivered_date: Optional[date] = None    # ręczna data dostawy na magazyn (domyka status)
     expected_delivery_date: Optional[date] = None   # „u nas" — umówiona data odbioru; NIE domyka statusu
@@ -394,6 +399,7 @@ class ContainerLotOut(BaseModel):
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = "USD"
+    balance_termin: Optional[date] = None
     zaplacono_data: Optional[date] = None
     subiekt_wbite: bool = False              # lot wbity do magazynu „w drodze" w Subiekcie
     subiekt_wbite_at: Optional[date] = None
@@ -470,6 +476,7 @@ class ContainerOut(BaseModel):
     zaliczka_data: Optional[date] = None
     balance_kwota: Optional[float] = None
     balance_waluta: Optional[str] = "USD"
+    balance_termin: Optional[date] = None
     zaplacono_data: Optional[date] = None
     subiekt_wbite: bool = False              # kontener (nieskonsolidowany) wbity do „w drodze" w Subiekcie
     subiekt_wbite_at: Optional[date] = None
