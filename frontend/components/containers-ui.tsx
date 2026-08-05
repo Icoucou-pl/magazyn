@@ -36,6 +36,7 @@ export type ContainerAdvance = {
   procent?: number | null;
   kwota?: number | null;
   waluta?: string | null;
+  termin?: string | null;
   data?: string | null;
 };
 // Udział firmy w kontenerze/locie — kontener nie ma własnej firmy, wynika ona
@@ -57,6 +58,7 @@ export type ContainerLot = {
   zaliczka_data?: string | null;
   balance_kwota?: number | null;
   balance_waluta?: string | null;
+  balance_termin?: string | null;
   zaplacono_data?: string | null;
   subiekt_wbite?: boolean | null;
   subiekt_wbite_at?: string | null;
@@ -90,6 +92,7 @@ export type Container = {
   zaliczka_data?: string | null;
   balance_kwota?: number | null;
   balance_waluta?: string | null;
+  balance_termin?: string | null;
   zaplacono_data?: string | null;
   subiekt_wbite?: boolean | null;
   subiekt_wbite_at?: string | null;
@@ -629,7 +632,7 @@ function ContainerCardBody({
                 <PaymentBlock
                   advances={advancesOf(l)}
                   bCur={l.balance_waluta || l.waluta_towaru || "USD"}
-                  balance={l.balance_kwota} zaplacono={l.zaplacono_data} showFin={showFin}
+                  balance={l.balance_kwota} balanceTermin={l.balance_termin} zaplacono={l.zaplacono_data} showFin={showFin}
                 />
               </div>
             ))}
@@ -641,7 +644,7 @@ function ContainerCardBody({
           <PaymentBlock
             advances={advancesOf(c)}
             bCur={c.balance_waluta || c.waluta_towaru || "USD"}
-            balance={c.balance_kwota} zaplacono={c.zaplacono_data} showFin={showFin}
+            balance={c.balance_kwota} balanceTermin={c.balance_termin} zaplacono={c.zaplacono_data} showFin={showFin}
           />
         </div>
       ))}
@@ -853,9 +856,9 @@ function advancesOf(src: {
   return [];
 }
 
-function PaymentBlock({ advances, bCur, balance, zaplacono, showFin }: {
+function PaymentBlock({ advances, bCur, balance, balanceTermin, zaplacono, showFin }: {
   advances: ContainerAdvance[]; bCur: string;
-  balance?: number | null; zaplacono?: string | null; showFin: boolean;
+  balance?: number | null; balanceTermin?: string | null; zaplacono?: string | null; showFin: boolean;
 }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
@@ -864,16 +867,26 @@ function PaymentBlock({ advances, bCur, balance, zaplacono, showFin }: {
       )}
       {advances.map((a, i) => {
         const cur = a.waluta || "USD";
+        // Zapłacone → jak dotąd „wpł. data · waluta"; niezapłacone → planowany termin płatności (fallback „plan").
+        const sub = a.data
+          ? `wpł. ${fmtDatePL(a.data)} · ${cur}`
+          : (a.termin ? `termin ${fmtDatePL(a.termin)} · ${cur}` : `plan · ${cur}`);
         return (
           <MoneyCell
             key={a.id ?? i}
             label={`Zaliczka ${i + 1}${a.procent != null ? ` · ${fmtNum(a.procent)}%` : ""}`}
             value={showFin ? fmtCur(a.kwota, cur) : "•••••"}
-            sub={a.data ? `wpł. ${fmtDatePL(a.data)} · ${cur}` : `plan · ${cur}`}
+            sub={sub}
           />
         );
       })}
-      <MoneyCell label="Balance" value={showFin ? fmtCur(balance, bCur) : "•••••"} sub={zaplacono ? `zapł. ${fmtDatePL(zaplacono)} · ${bCur}` : `plan · ${bCur}`} />
+      <MoneyCell
+        label="Balance"
+        value={showFin ? fmtCur(balance, bCur) : "•••••"}
+        sub={zaplacono
+          ? `zapł. ${fmtDatePL(zaplacono)} · ${bCur}`
+          : (balanceTermin ? `termin ${fmtDatePL(balanceTermin)} · ${bCur}` : `plan · ${bCur}`)}
+      />
     </div>
   );
 }
