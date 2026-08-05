@@ -211,7 +211,7 @@ async def cashflow_ledger(
 
     events = []
 
-    def _add(c, mfr_id, mfr_name, mfr_color, slug, sname, typ, kwota, waluta, data):
+    def _add(c, mfr_id, mfr_name, mfr_color, slug, sname, typ, kwota, waluta, data, termin, lot_id):
         if kwota is None:
             return
         cur = (waluta or "USD").upper()
@@ -235,7 +235,9 @@ async def cashflow_ledger(
             "kwota": round(float(kwota), 2),
             "waluta": cur,
             "data": data.isoformat() if data else None,
+            "termin": termin.isoformat() if termin else None,   # planowany termin płatności (bucket „Do zapłaty")
             "_data": data,          # obiekt daty — do przeliczenia FX, usuwany przed zwrotem
+            "_grp": (c.id, lot_id), # klucz łączenia balance↔zaliczki (per lot/kontener), usuwany przed zwrotem
             "status": status,
             "kwota_pln": None,
             "brak_kursu": False,
@@ -246,17 +248,17 @@ async def cashflow_ledger(
         c_slug, c_name = _firma(c.firma_breakdown)
         for a in (c.advances or []):
             _add(c, c.manufacturer_id, c.manufacturer_name, c.manufacturer_color,
-                 c_slug, c_name, "zaliczka", a.kwota, a.waluta, a.data)
+                 c_slug, c_name, "zaliczka", a.kwota, a.waluta, a.data, a.termin, None)
         _add(c, c.manufacturer_id, c.manufacturer_name, c.manufacturer_color,
-             c_slug, c_name, "balance", c.balance_kwota, c.balance_waluta, c.zaplacono_data)
+             c_slug, c_name, "balance", c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.balance_termin, None)
         # zdarzenia lotów (skonsolidowany)
         for lot in (c.lots or []):
             l_slug, l_name = _firma(lot.firma_breakdown)
             for a in (lot.advances or []):
                 _add(c, lot.manufacturer_id, lot.manufacturer_name, lot.manufacturer_color,
-                     l_slug, l_name, "zaliczka", a.kwota, a.waluta, a.data)
+                     l_slug, l_name, "zaliczka", a.kwota, a.waluta, a.data, a.termin, lot.id)
             _add(c, lot.manufacturer_id, lot.manufacturer_name, lot.manufacturer_color,
-                 l_slug, l_name, "balance", lot.balance_kwota, lot.balance_waluta, lot.zaplacono_data)
+                 l_slug, l_name, "balance", lot.balance_kwota, lot.balance_waluta, lot.zaplacono_data, lot.balance_termin, lot.id)
 
     # --- FX: notowania NBP dla wszystkich obcych walut w zdarzeniach ---
     curs = sorted({e["waluta"] for e in events if e["waluta"] != "PLN"})
@@ -300,6 +302,24 @@ async def cashflow_ledger(
                 else:
                     e["brak_kursu"] = True
         e.pop("_data", None)
+
+    # Kontekst: opłacone zaliczki tego samego lotu/kontenera doklejamy do zdarzenia balance,
+    # żeby w „Do zapłaty" pokazać przy balansie, ile już wpłacono i kiedy. Grupujemy po
+    # (container_id, lot_id), żeby dla skonsolidowanych kontenerów nie mieszać zaliczek między lotami.
+    adv_by_grp: dict = {}
+    for e in events:
+        if e["typ"] == "zaliczka" and e["status"] == "paid":
+            adv_by_grp.setdefault(e["_grp"], []).append(e)
+    for e in events:
+        if e["typ"] == "balance":
+            ctx = sorted(adv_by_grp.get(e["_grp"], []), key=lambda x: (x["data"] or ""))
+            e["zaliczki_oplacone"] = [
+                {"kwota": a["kwota"], "waluta": a["waluta"], "data": a["data"], "kwota_pln": a["kwota_pln"]}
+                for a in ctx
+            ]
+        else:
+            e["zaliczki_oplacone"] = []
+        e.pop("_grp", None)
 
     return {"as_of": today.isoformat(), "rate_today": rate_today, "events": events}
 
