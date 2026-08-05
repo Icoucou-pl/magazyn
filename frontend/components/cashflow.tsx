@@ -20,6 +20,8 @@ import { useUser, isAdmin } from "@/lib/permissions";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Status = "paid" | "plan" | "open";
+// Opłacona zaliczka doklejana do balansu tego samego lotu/kontenera (kontekst w „Do zapłaty").
+type AdvCtx = { kwota: number; waluta: string; data: string | null; kwota_pln: number | null };
 type LedgerEvent = {
   id: number;
   kontener: string; po: string | null;
@@ -29,14 +31,16 @@ type LedgerEvent = {
   typ: "zaliczka" | "balance";
   kwota: number; waluta: string;
   data: string | null;
+  termin: string | null;              // planowany termin płatności (bucket „Do zapłaty")
   status: Status;
   kwota_pln: number | null;
   brak_kursu: boolean;
+  zaliczki_oplacone?: AdvCtx[];        // opłacone zaliczki tego kontenera (tylko dla balansu)
 };
 type LedgerResp = { as_of: string; rate_today: Record<string, number>; events: LedgerEvent[] };
 
 type MfrAgg = { id: string; name: string; color: string; value: number };
-type Bucket = { key: string; label: string; short: string; total: number; byMfr: Record<string, number>; items: LedgerEvent[] };
+type Bucket = { key: string; label: string; short: string; total: number; byMfr: Record<string, number>; items: LedgerEvent[]; noDate?: boolean };
 type Agg = { months: Bucket[]; peak: Bucket | null; mfrs: MfrAgg[]; total: number; maxTotal: number; count: number };
 
 // ── Stałe ────────────────────────────────────────────────────
@@ -68,22 +72,41 @@ const plnOf = (e: LedgerEvent, rt: Record<string, number>) =>
 const dispVal = (e: LedgerEvent, cur: string, rt: Record<string, number>): number | null =>
   cur === "PLN" ? plnOf(e, rt) : (e.waluta === cur ? e.kwota : null);
 
-// Agregacja wspólna dla obu zakładek. monthField: "eta" (do zapłaty) | "data" (zapłacono).
-function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number>, monthField: "eta" | "data"): Agg {
+// Kwota opłaconej zaliczki w walucie widoku: PLN → kurs historyczny (fallback: oryginał
+// gdy brak notowania NBP); USD/CNY → zawsze oryginał (zaliczka bywa w innej walucie niż widok).
+const zaliczkaAmount = (z: AdvCtx, cur: string): string =>
+  cur === "PLN"
+    ? (z.kwota_pln != null ? fmtCur(z.kwota_pln, "PLN") : fmtCur(z.kwota, z.waluta))
+    : fmtCur(z.kwota, z.waluta);
+
+// Klucz koszyka „Bez terminu" — sortuje się przed każdym miesiącem (YYYY-MM), więc ląduje na górze.
+const NO_TERM_KEY = "0000-00";
+
+// Agregacja wspólna dla obu zakładek.
+//   monthField: pole daty do bucketowania — "eta" | "data" (zapłacono) | "termin" (do zapłaty).
+//   noDateBucket: gdy true, zdarzenia bez daty trafiają do koszyka „Bez terminu" na górze,
+//                 zamiast wypadać z zestawienia (używane w „Do zapłaty").
+function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number>, monthField: "eta" | "data" | "termin", noDateBucket = false): Agg {
   const monthsMap: Record<string, Bucket> = {};
   const perMfr: Record<string, MfrAgg> = {};
   let total = 0, count = 0;
   events.forEach(e => {
     const val = dispVal(e, cur, rt);
-    const ds = monthField === "eta" ? e.eta : e.data;
-    if (val == null || !ds) return;
+    if (val == null) return;
+    const ds = monthField === "eta" ? e.eta : monthField === "data" ? e.data : e.termin;
+    if (!ds && !noDateBucket) return;
     count++;
-    const key = ds.slice(0, 7);
-    const d = parseLocal(ds);
-    const m = (monthsMap[key] = monthsMap[key] || {
-      key, label: `${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`, short: MONTH_SHORT[d.getMonth()],
-      total: 0, byMfr: {}, items: [],
-    });
+    const key = ds ? ds.slice(0, 7) : NO_TERM_KEY;
+    let m = monthsMap[key];
+    if (!m) {
+      if (ds) {
+        const d = parseLocal(ds);
+        m = { key, label: `${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`, short: MONTH_SHORT[d.getMonth()], total: 0, byMfr: {}, items: [] };
+      } else {
+        m = { key, label: "Bez terminu", short: "—", total: 0, byMfr: {}, items: [], noDate: true };
+      }
+      monthsMap[key] = m;
+    }
     m.total += val; m.items.push(e);
     const mk = String(e.mfr_id ?? e.mfr_name);
     m.byMfr[mk] = (m.byMfr[mk] || 0) + val;
@@ -91,7 +114,8 @@ function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number
     a.value += val; total += val;
   });
   const months = Object.values(monthsMap).sort((a, b) => (a.key < b.key ? -1 : 1));
-  const peak = months.reduce<Bucket | null>((p, m) => (m.total > (p?.total || 0) ? m : p), null);
+  // Największy „miesiąc" liczymy tylko z realnych miesięcy — koszyk bez terminu pomijamy.
+  const peak = months.reduce<Bucket | null>((p, m) => (!m.noDate && m.total > (p?.total || 0) ? m : p), null);
   const mfrs = Object.values(perMfr).sort((a, b) => b.value - a.value);
   return { months, peak, mfrs, total, maxTotal: Math.max(...months.map(m => m.total), 1), count };
 }
@@ -147,7 +171,7 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
   const yearOpts = useMemo<[string, string][]>(() => {
     const ys = new Set<string>();
-    events.forEach(e => { if (e.eta) ys.add(e.eta.slice(0, 4)); if (e.data) ys.add(e.data.slice(0, 4)); });
+    events.forEach(e => { if (e.eta) ys.add(e.eta.slice(0, 4)); if (e.data) ys.add(e.data.slice(0, 4)); if (e.termin) ys.add(e.termin.slice(0, 4)); });
     return [["all", "Wszystkie"], ...[...ys].sort().map(y => [y, y] as [string, string])];
   }, [events]);
   useEffect(() => {
@@ -206,24 +230,26 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
       {/* Nota kontekstowa */}
       <div style={noteStyle}>
         {tab === "due"
-          ? <><b>Do zapłaty</b> — kwota pozostała (zaliczki i balance bez daty ≤ dziś), per producent, bucket po miesiącu ETA. W PLN kwoty otwarte są <b>szacunkiem</b> po dzisiejszym kursie (oznaczone „≈"). W trybie USD/CNY pokazujemy oryginalne kwoty faktur tylko dla zdarzeń danej waluty.</>
+          ? <><b>Do zapłaty</b> — otwarte zaliczki i balance, per producent, bucket po <b>terminie płatności</b> (płatności bez wpisanego terminu lądują w koszyku „Bez terminu" na górze). Przy balansie pokazujemy już <b>opłaconą zaliczkę</b> tego kontenera (ile i kiedy). W PLN kwoty otwarte są <b>szacunkiem</b> po dzisiejszym kursie (oznaczone „≈"). W trybie USD/CNY pokazujemy oryginalne kwoty faktur tylko dla zdarzeń danej waluty.</>
           : <><b>Zapłacono</b> — wpłaty z datą ≤ dziś, per producent, bucket po miesiącu faktycznej płatności (realny wypływ kasy). <b>PLN</b> = kurs historyczny NBP z dnia płatności (zablokowany, dokładny). <b>USD / CNY</b> = oryginalne kwoty faktur, tylko zdarzenia danej waluty (+ PLN w podpisie). Dostawa ≠ zapłata — dostarczony kontener z nieopłaconym balance siedzi w „Do zapłaty".</>}
       </div>
     </div>
   );
 }
 
-// ── ZAKŁADKA: DO ZAPŁATY (bucket po ETA) ─────────────────────
+// ── ZAKŁADKA: DO ZAPŁATY (bucket po terminie płatności) ──────
 function DueTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onContainerClick }: TabProps) {
+  // Otwarte (niezapłacone) zdarzenia. Filtr roku po terminie; pozycje bez terminu pokazujemy
+  // zawsze (nie mają roku, a to przypomnienie o nieumówionej płatności).
   const open = useMemo(() => events.filter(e =>
-    e.status !== "paid" && (year === "all" || (!!e.eta && e.eta.slice(0, 4) === year))), [events, year]);
-  const agg = useMemo(() => aggregate(open, cur, rt, "eta"), [open, cur, rt]);
+    e.status !== "paid" && (year === "all" || !e.termin || e.termin.slice(0, 4) === year)), [events, year]);
+  const agg = useMemo(() => aggregate(open, cur, rt, "termin", true), [open, cur, rt]);
   const next30 = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const d30 = new Date(today); d30.setDate(d30.getDate() + 30);
     return open.reduce((s, e) => {
-      const v = dispVal(e, cur, rt); if (v == null || !e.eta) return s;
-      const d = parseLocal(e.eta); return (d >= today && d <= d30) ? s + v : s;
+      const v = dispVal(e, cur, rt); if (v == null || !e.termin) return s;
+      const d = parseLocal(e.termin); return (d >= today && d <= d30) ? s + v : s;
     }, 0);
   }, [open, cur, rt]);
 
@@ -231,14 +257,14 @@ function DueTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onCont
     <>
       <KpiRow
         a={{ label: "Suma do zapłaty", value: fmtCur(agg.total, cur), sub: `${agg.count} płatności otwartych`, icon: <I.Wallet size={14} /> }}
-        b={{ label: "Najbliższe 30 dni", value: fmtCur(next30, cur), sub: "wg ETA", icon: <I.Alert size={14} /> }}
+        b={{ label: "Najbliższe 30 dni", value: fmtCur(next30, cur), sub: "wg terminu płatności", icon: <I.Alert size={14} /> }}
         c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
-        d={{ label: "Otwarte pozycje", value: String(agg.count), sub: `${agg.months.length} miesięcy`, icon: <I.Activity size={14} /> }}
+        d={{ label: "Otwarte pozycje", value: String(agg.count), sub: `${agg.months.length} okresów`, icon: <I.Activity size={14} /> }}
       />
       <BucketBody agg={agg} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick}
         titles={{
           breakdown: "Pozostało do zapłaty wg producenta",
-          barsTitle: "Pozostało do zapłaty — wg miesiąca ETA", barsHint: "kwota jeszcze niezapłacona",
+          barsTitle: "Pozostało do zapłaty — wg terminu płatności", barsHint: "kwota jeszcze niezapłacona",
           drillTitle: "Szczegóły — otwarte płatności", drillHint: "kliknij miesiąc",
           empty: "Brak otwartych płatności dla tego wyboru.",
         }} />
@@ -287,6 +313,8 @@ function BucketBody({ agg, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainer
 }) {
   const colorOf = (mk: string) => agg.mfrs.find(m => m.id === mk)?.color || "var(--text-lo)";
   const nameOf = (mk: string) => agg.mfrs.find(m => m.id === mk)?.name || "—";
+  // Słupki to oś czasu — koszyk „Bez terminu" tam nie pasuje, więc go pomijamy (zostaje w liście niżej).
+  const barMonths = agg.months.filter(m => !m.noDate);
 
   return (
     <>
@@ -299,10 +327,10 @@ function BucketBody({ agg, cur, rt, shop, hoveredMfr, setHoveredMfr, onContainer
 
       <Card>
         <CardHeader icon={<I.Calendar size={14} />} title={titles.barsTitle} hint={titles.barsHint} />
-        {agg.months.length === 0
+        {barMonths.length === 0
           ? <div style={emptyStyle}>{titles.empty}</div>
           : <div style={{ padding: "14px 4px 14px 0" }}>
-            <MonthBars months={agg.months} maxTotal={agg.maxTotal} cur={cur} hoveredMfr={hoveredMfr} colorOf={colorOf} nameOf={nameOf} />
+            <MonthBars months={barMonths} maxTotal={agg.maxTotal} cur={cur} hoveredMfr={hoveredMfr} colorOf={colorOf} nameOf={nameOf} />
           </div>}
       </Card>
 
@@ -329,7 +357,9 @@ function MonthRow({ month: m, maxTotal, cur, rt, shop, hoveredMfr, colorOf, name
 }) {
   const [open, setOpen] = useState(false);
   const segs = Object.entries(m.byMfr).sort((a, b) => b[1] - a[1]);
-  const items = [...m.items].sort((a, b) => ((a.data || "9999") < (b.data || "9999") ? -1 : 1));
+  // „Zapłacono" ma datę → sortuje po niej; „Do zapłaty" jej nie ma → sortuje po terminie.
+  const sortKey = (e: LedgerEvent) => e.data || e.termin || "9999";
+  const items = [...m.items].sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
 
   return (
     <div style={{ borderBottom: isLast ? "none" : "1px solid var(--border-soft)" }}>
@@ -365,9 +395,12 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
   e: LedgerEvent; cur: string; rt: Record<string, number>; shop: string; onContainerClick?: (id: number) => void;
 }) {
   const est = e.status !== "paid";
-  const dateColor = e.status === "plan" ? "var(--warning)" : (e.status === "open" ? "var(--text-lo)" : "var(--text-mid)");
-  const dateTxt = e.data ? fmtDay(e.data) : "bez daty";
+  // W „Do zapłaty" pozycja ma tylko termin (brak faktycznej daty) — pokazujemy termin jako datę płatności.
+  const dateTxt = e.data ? fmtDay(e.data) : (e.termin ? fmtDay(e.termin) : "bez terminu");
+  const dateColor = e.status === "plan" ? "var(--warning)" : ((e.data || e.termin) ? "var(--text-mid)" : "var(--text-lo)");
   const isZal = e.typ === "zaliczka";
+  // Opłacone zaliczki tego kontenera — pokazujemy jako kontekst tylko przy nieopłaconym balansie („Do zapłaty").
+  const zaliczki = (e.typ === "balance" && e.status !== "paid") ? (e.zaliczki_oplacone || []) : [];
   // Numer roboczy (Draft-…)/pusty nie pokazujemy — spójnie z kartami kontenerów.
   const nr = e.kontener && !/^draft-/i.test(e.kontener) ? e.kontener : null;
   const amount = cur === "PLN"
@@ -396,6 +429,22 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
         {e.mfr_name && nr && <span className="mono" style={{ fontSize: 10, color: "var(--text-lo)" }}>#{nr}</span>}
         {e.po && <span className="mono" style={{ fontSize: 10, color: "var(--text-lo)" }}>{e.po}</span>}
         {!shop && <span style={firmaTag}>{e.shop_name}</span>}
+        {zaliczki.length > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", paddingLeft: 8, flexShrink: 0 }}>
+            {zaliczki.map((z, zi) => (
+              <span key={zi} title={`Zaliczka opłacona${z.data ? ` — ${fmtDay(z.data)}` : ""}`} style={{
+                display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 9px", borderRadius: 99,
+                fontSize: 11, whiteSpace: "nowrap", background: "var(--info-soft)", color: "var(--info)",
+                border: "1px solid color-mix(in oklch, var(--info) 22%, transparent)",
+              }}>
+                <I.Customs size={11} />
+                <span style={{ fontWeight: 600 }}>Zaliczka</span>
+                <span className="num">{zaliczkaAmount(z, cur)}</span>
+                {z.data && <span className="num" style={{ opacity: 0.65 }}>· {fmtDay(z.data)}</span>}
+              </span>
+            ))}
+          </span>
+        )}
       </div>
       <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 99, letterSpacing: "0.03em", whiteSpace: "nowrap",
         background: isZal ? "var(--info-soft)" : "var(--accent-soft)", color: isZal ? "var(--info)" : "var(--accent)" }}>
