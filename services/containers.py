@@ -93,7 +93,7 @@ async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> L
     r = await db.execute(text(f"""
         SELECT l.id, l.manufacturer_id, l.order_number, l.position,
                l.waluta_towaru, l.zaliczka_procent, l.zaliczka_kwota, l.zaliczka_waluta, l.zaliczka_data,
-               l.balance_kwota, l.balance_waluta, l.zaplacono_data,
+               l.balance_kwota, l.balance_waluta, l.balance_termin, l.zaplacono_data,
                m.name AS manufacturer_name, m.color AS manufacturer_color
         FROM {settings.TABLE_CONTAINER_LOTS} l
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
@@ -115,6 +115,7 @@ async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> L
             zaliczka_data=d["zaliczka_data"],
             balance_kwota=(float(d["balance_kwota"]) if d["balance_kwota"] is not None else None),
             balance_waluta=(d["balance_waluta"] or d["waluta_towaru"] or "USD"),
+            balance_termin=d["balance_termin"],
             zaplacono_data=d["zaplacono_data"],
             total_units=t["u"], total_cbm=round(t["cbm"], 3), total_value=round(t["val"], 2),
         ))
@@ -150,7 +151,7 @@ async def fetch_advances_bulk(db: AsyncSession, container_ids: List[int], lot_id
     if not ids_c and not ids_l:
         return by_container, by_lot
     r = await db.execute(text(f"""
-        SELECT id, container_id, lot_id, position, procent, kwota, waluta, data
+        SELECT id, container_id, lot_id, position, procent, kwota, waluta, termin, data
         FROM {settings.TABLE_CONTAINER_ADVANCES}
         WHERE container_id = ANY(:cids) OR lot_id = ANY(:lids)
         ORDER BY position ASC, id ASC
@@ -162,6 +163,7 @@ async def fetch_advances_bulk(db: AsyncSession, container_ids: List[int], lot_id
             procent=(float(d["procent"]) if d["procent"] is not None else None),
             kwota=(float(d["kwota"]) if d["kwota"] is not None else None),
             waluta=(d["waluta"] or "USD"),
+            termin=d["termin"],
             data=d["data"],
         )
         if d["container_id"] is not None:
@@ -250,7 +252,7 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
     r = await db.execute(text(f"""
         SELECT l.container_id, l.id, l.manufacturer_id, l.order_number, l.position,
                l.waluta_towaru, l.zaliczka_procent, l.zaliczka_kwota, l.zaliczka_waluta, l.zaliczka_data,
-               l.balance_kwota, l.balance_waluta, l.zaplacono_data,
+               l.balance_kwota, l.balance_waluta, l.balance_termin, l.zaplacono_data,
                l.subiekt_wbite, l.subiekt_wbite_at,
                m.name AS manufacturer_name, m.color AS manufacturer_color
         FROM {settings.TABLE_CONTAINER_LOTS} l
@@ -275,6 +277,7 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
             zaliczka_data=d["zaliczka_data"],
             balance_kwota=(float(d["balance_kwota"]) if d["balance_kwota"] is not None else None),
             balance_waluta=(d["balance_waluta"] or d["waluta_towaru"] or "USD"),
+            balance_termin=d["balance_termin"],
             zaplacono_data=d["zaplacono_data"],
             subiekt_wbite=bool(d.get("subiekt_wbite")),
             subiekt_wbite_at=d.get("subiekt_wbite_at"),
@@ -300,7 +303,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
             c.koszt_transportu, c.koszt_spedycji, c.koszt_transportu_magazyn, c.folder, c.subiekt_nr,
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
-            c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.delivered_date, c.expected_delivery_date,
+            c.balance_kwota, c.balance_waluta, c.balance_termin, c.zaplacono_data, c.delivered_date, c.expected_delivery_date,
             c.subiekt_wbite, c.subiekt_wbite_at,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
@@ -372,6 +375,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "zaliczka_data": row["zaliczka_data"],
                 "balance_kwota": (float(row["balance_kwota"]) if row["balance_kwota"] is not None else None),
                 "balance_waluta": (row["balance_waluta"] or row["waluta_towaru"] or "USD"),
+                "balance_termin": row["balance_termin"],
                 "zaplacono_data": row["zaplacono_data"],
                 "delivered_date": row["delivered_date"],
                 "expected_delivery_date": row["expected_delivery_date"],
