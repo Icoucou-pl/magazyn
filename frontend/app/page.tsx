@@ -9,7 +9,7 @@
 // ============================================================
 
 import React, { useEffect, useState } from "react";
-import { getUser, logout, setUser, api } from "@/lib/api";
+import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/lib/api";
 import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
 import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
@@ -101,12 +101,57 @@ export default function Page() {
 
   // Sesja z localStorage + nasłuch wygaśnięcia (401)
   useEffect(() => {
-    setCurrentUser(getUser() as User | null);
+    const u = getUser() as User | null;
+    // Powrót po dłuższej przerwie (np. następnego dnia) — jeśli minął limit
+    // bezczynności, nie wpuszczamy do środka, tylko od razu na ekran logowania.
+    if (u && isIdleExpired()) {
+      logout();
+      setCurrentUser(null);
+    } else {
+      if (u) markActivity();
+      setCurrentUser(u);
+    }
     setReady(true);
     const onUnauth = () => { setCurrentUser(null); setView("dashboard"); };
     window.addEventListener("magazyn:unauthorized", onUnauth);
     return () => window.removeEventListener("magazyn:unauthorized", onUnauth);
   }, []);
+
+  // Auto-wylogowanie po 2h bezczynności (Model A — tylko front).
+  // Aktywność (klik/klawisz/scroll/mysz/dotyk) odświeża znacznik w localStorage;
+  // co 5 min oraz przy powrocie do karty sprawdzamy, czy minął limit.
+  // Limit czasu siedzi w IDLE_LIMIT_MS w lib/api.js.
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const doLogout = () => { logout(); setCurrentUser(null); setView("dashboard"); };
+
+    // Świeży start licznika na wejściu do zalogowanej sesji.
+    markActivity();
+
+    // Zapis aktywności dławiony — max raz na minutę (bez spamu do localStorage).
+    let lastMark = Date.now();
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - lastMark > 60 * 1000) { lastMark = now; markActivity(); }
+    };
+    const events: (keyof WindowEventMap)[] = ["mousedown", "keydown", "scroll", "mousemove", "touchstart"];
+    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
+
+    const check = () => { if (isIdleExpired()) doLogout(); };
+    const id = window.setInterval(check, 5 * 60 * 1000);
+
+    // Powrót do karty (odblokowanie ekranu, przełączenie zakładki) — sprawdź od razu.
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, onActivity));
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
 
   // Świeżość danych — ostatnie pobranie Sellasist/Subiekt (pasek pod menu).
   // Odświeżane na wejściu, co 5 min, oraz po ręcznym odświeżeniu Sellasista.
