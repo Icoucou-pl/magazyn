@@ -231,7 +231,7 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
       <div style={noteStyle}>
         {tab === "due"
           ? <><b>Do zapłaty</b> — otwarte zaliczki i balance, per producent, bucket po <b>terminie płatności</b> (płatności bez wpisanego terminu lądują w koszyku „Bez terminu" na górze). Przy balansie pokazujemy już <b>opłaconą zaliczkę</b> tego kontenera (ile i kiedy). W PLN kwoty otwarte są <b>szacunkiem</b> po dzisiejszym kursie (oznaczone „≈"). W trybie USD/CNY pokazujemy oryginalne kwoty faktur tylko dla zdarzeń danej waluty.</>
-          : <><b>Zapłacono</b> — wpłaty z datą ≤ dziś, per producent, bucket po miesiącu faktycznej płatności (realny wypływ kasy). <b>PLN</b> = kurs historyczny NBP z dnia płatności (zablokowany, dokładny). <b>USD / CNY</b> = oryginalne kwoty faktur, tylko zdarzenia danej waluty (+ PLN w podpisie). Dostawa ≠ zapłata — dostarczony kontener z nieopłaconym balance siedzi w „Do zapłaty".</>}
+          : <><b>Zapłacono</b> — wpłaty z datą ≤ dziś, per producent, bucket po miesiącu faktycznej płatności (realny wypływ kasy). Przy balansie pokazujemy też <b>opłaconą zaliczkę</b> tego kontenera (kiedy i ile) — zaliczki są dodatkowo rozpisane jako osobne pozycje. <b>PLN</b> = kurs historyczny NBP z dnia płatności (zablokowany, dokładny). <b>USD / CNY</b> = oryginalne kwoty faktur, tylko zdarzenia danej waluty (+ PLN w podpisie). Dostawa ≠ zapłata — dostarczony kontener z nieopłaconym balance siedzi w „Do zapłaty".</>}
       </div>
     </div>
   );
@@ -399,8 +399,9 @@ function PayRow({ e, cur, rt, shop, onContainerClick }: {
   const dateTxt = e.data ? fmtDay(e.data) : (e.termin ? fmtDay(e.termin) : "bez terminu");
   const dateColor = e.status === "plan" ? "var(--warning)" : ((e.data || e.termin) ? "var(--text-mid)" : "var(--text-lo)");
   const isZal = e.typ === "zaliczka";
-  // Opłacone zaliczki tego kontenera — pokazujemy jako kontekst tylko przy nieopłaconym balansie („Do zapłaty").
-  const zaliczki = (e.typ === "balance" && e.status !== "paid") ? (e.zaliczki_oplacone || []) : [];
+  // Opłacone zaliczki tego kontenera — kontekst przy balansie w obu zakładkach
+  // („Do zapłaty" i „Zapłacono"): informacyjnie, ile i kiedy już wpłacono.
+  const zaliczki = e.typ === "balance" ? (e.zaliczki_oplacone || []) : [];
   // Numer roboczy (Draft-…)/pusty nie pokazujemy — spójnie z kartami kontenerów.
   const nr = e.kontener && !/^draft-/i.test(e.kontener) ? e.kontener : null;
   const amount = cur === "PLN"
