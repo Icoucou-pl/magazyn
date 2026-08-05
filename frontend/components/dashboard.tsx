@@ -394,7 +394,10 @@ function KpiGrid({
   const showFin = can(user, "viewFinancials");
   const pts = history?.points ?? [];
   const stockValue = history?.current_value ?? 0;
-  const change90 = pts.length > 1 ? ((stockValue - pts[0].value) / (pts[0].value || 1)) * 100 : undefined;
+  // „vs 90 dni temu": szereg sięga teraz aż do 01.01.2026, więc pts[0] to już NIE 90 dni temu.
+  // Bierzemy punkt sprzed dokładnie 90 dni po indeksie, żeby etykieta i delta pozostały prawdziwe.
+  const base90 = pts.length > 91 ? pts[pts.length - 1 - 90].value : (pts[0]?.value ?? 0);
+  const change90 = pts.length > 1 ? ((stockValue - base90) / (base90 || 1)) * 100 : undefined;
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
   // Karta „Magazyn w drodze" liczona spójnie z JEDNEGO źródła — płatności kontenerowe:
   //   główna = zapłacone (Σ zaliczek + balance zielonych, skalowane udziałem sklepu),
@@ -457,19 +460,64 @@ function KpiGrid({
   );
 }
 
-// ── Wykres (karta z zakresem 7D/30D/90D) ─────────────────────
+// ── Pomocnicze: daty YYYY-MM-DD, arytmetyka w UTC (bez dryfu stref) ──
+const DASH_MIN_DATE = "2026-01-01";               // najwcześniejszy wybieralny dzień
+const _dToUTC = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+const _dFromUTC = (ms: number) => {
+  const dt = new Date(ms);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+};
+const _dAddDays = (iso: string, n: number) => _dFromUTC(_dToUTC(iso) + n * 86400000);
+const _dSpan = (a: string, b: string) => Math.round((_dToUTC(b) - _dToUTC(a)) / 86400000) + 1; // dni włącznie
+const _dLabel = (iso: string) => { const [, m, d] = iso.split("-"); return `${d}.${m}`; };       // „05.03"
+
+// ── Wykres (karta z pickerem dat + preset 30D) ─────────────────────
+//   Jeden fetch (01.01.2026 → dziś) leży w `points`; picker i porównanie TNĄ tę tablicę
+//   po stronie klienta — zero dodatkowych zapytań do backendu.
+//   Porównanie (Wariant A): poprzednie okno TEJ SAMEJ długości, cofnięte o tyle samo DNI
+//   (prev = [from−N, from−1]). Jeśli prev wychodzi przed 01.01.2026 → chip zamienia się w notatkę.
 function ValueChartCard({ points, canFin }: { points: StockPoint[]; canFin: boolean }) {
-  const [range, setRange] = useState<"7D" | "30D" | "90D">("90D");
   const [metricSel, setMetricSel] = useState<"value" | "units">(canFin ? "value" : "units");
   const metric: "value" | "units" = canFin ? metricSel : "units";
-  const ranges: Array<"7D" | "30D" | "90D"> = ["7D", "30D", "90D"];
-  const sliced = range === "7D" ? points.slice(-7) : range === "30D" ? points.slice(-30) : points;
 
+  // Granice pickera z danych: min = pierwszy punkt (≈01.01.2026), max = ostatni (dziś wg serwera).
+  const dataMin = points.length ? points[0].date : DASH_MIN_DATE;
+  const dataMax = points.length ? points[points.length - 1].date : DASH_MIN_DATE;
+  const minDate = dataMin < DASH_MIN_DATE ? DASH_MIN_DATE : dataMin;
+
+  // Domyślnie po wejściu: pełny zakres 01.01.2026 → dziś (auto-wybrany).
+  const [from, setFrom] = useState<string>(minDate);
+  const [to, setTo] = useState<string>(dataMax);
+
+  // Gdy dane się zmienią (przełączenie sklepu) — dosuwamy zakres do świeżych granic, ale tylko
+  // jeśli user trzyma domyślny pełny zakres; ręcznego wyboru nie nadpisujemy.
+  const fullRef = useRef(true);
+  useEffect(() => {
+    if (fullRef.current) { setFrom(minDate); setTo(dataMax); }
+  }, [minDate, dataMax]);
+
+  const apply = (f: string, t: string, isFull: boolean) => { fullRef.current = isFull; setFrom(f); setTo(t); };
+  const onFrom = (v: string) => { const f = v < minDate ? minDate : v > to ? to : v; apply(f, to, false); };
+  const onTo = (v: string) => { const t = v > dataMax ? dataMax : v < from ? from : v; apply(from, t, false); };
+  const from30 = _dAddDays(dataMax, -29) < minDate ? minDate : _dAddDays(dataMax, -29);
+  const preset30 = () => apply(from30, dataMax, false);
+  const is30 = from === from30 && to === dataMax;
+
+  // Wybrane okno (włącznie), cięte z jednej pobranej tablicy.
+  const sliced = points.filter((p) => p.date >= from && p.date <= to);
   const val = (p?: StockPoint) => (p ? (metric === "value" ? p.value : p.units) : 0);
-  const first = val(sliced[0]);
   const last = val(sliced[sliced.length - 1]);
-  const change = last - first;
-  const pct = first ? (change / first) * 100 : 0;
+  const isFullDefault = from === minDate && to === dataMax;
+
+  // Porównanie do poprzedniego okna tej samej długości.
+  const N = _dSpan(from, to);
+  const prevFrom = _dAddDays(from, -N);
+  const prevTo = _dAddDays(from, -1);               // koniec poprzedniego okna
+  const hasCompare = !isFullDefault && prevFrom >= minDate;
+  const byDate = (iso: string) => points.find((p) => p.date === iso);
+  const endPrev = val(byDate(prevTo));              // wartość na końcu poprzedniego okna
+  const change = last - endPrev;
+  const pct = endPrev ? (change / endPrev) * 100 : 0;
   const positive = change >= 0;
 
   const title = metric === "value" ? "Wartość magazynu" : "Liczba sztuk";
@@ -477,38 +525,53 @@ function ValueChartCard({ points, canFin }: { points: StockPoint[]; canFin: bool
   const fmtDelta = (n: number) => (metric === "value" ? fmtPLNk(n) : `${fmtNum(n)} szt`);
 
   const segBtn = (active: boolean): React.CSSProperties => ({
-    padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 6,
+    padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: "pointer",
     background: active ? "var(--surface-3)" : "transparent",
     color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
   });
+  const dateInput: React.CSSProperties = {
+    padding: "4px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6,
+    background: "var(--surface-2)", color: "var(--text-hi)",
+    border: "1px solid var(--border)", colorScheme: "dark",
+  };
 
   return (
     <Card>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "16px 20px 12px", gap: 16, flexWrap: "wrap" }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>{title}</span>
-            <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm" mono>{range}</Pill>
+            <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm" mono>{_dLabel(from)}–{_dLabel(to)}</Pill>
           </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 6 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 6, flexWrap: "wrap" }}>
             <div className="num" style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{fmtBig(last)}</div>
-            <span className="num" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 13, fontWeight: 600, color: positive ? "var(--ok)" : "var(--critical)" }}>
-              {positive ? <I.TrendUp size={13} /> : <I.TrendDown size={13} />}
-              {positive ? "+" : ""}{fmtDelta(change)} ({fmtPct(pct)})
-            </span>
+            {hasCompare ? (
+              <span className="num" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, color: positive ? "var(--ok)" : "var(--critical)" }}>
+                {positive ? <I.TrendUp size={13} /> : <I.TrendDown size={13} />}
+                {positive ? "+" : ""}{fmtDelta(change)} ({fmtPct(pct)})
+                <span style={{ color: "var(--text-lo)", fontWeight: 500 }}>vs {_dLabel(prevFrom)}–{_dLabel(prevTo)}</span>
+              </span>
+            ) : (
+              <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-lo)" }}>
+                {isFullDefault ? "Wybierz zakres dat, aby zobaczyć zmiany w magazynie." : "Brak zakresu dat do porównania."}
+              </span>
+            )}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           {canFin && (
             <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
               <button onClick={() => setMetricSel("value")} style={segBtn(metric === "value")}>zł</button>
               <button onClick={() => setMetricSel("units")} style={segBtn(metric === "units")}>szt</button>
             </div>
           )}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="date" value={from} min={minDate} max={to} onChange={(e) => onFrom(e.target.value)} style={dateInput} />
+            <span style={{ color: "var(--text-lo)", fontSize: 11 }}>–</span>
+            <input type="date" value={to} min={from} max={dataMax} onChange={(e) => onTo(e.target.value)} style={dateInput} />
+          </div>
           <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
-            {ranges.map((r) => (
-              <button key={r} onClick={() => setRange(r)} className="num" style={segBtn(r === range)}>{r}</button>
-            ))}
+            <button onClick={preset30} className="num" style={segBtn(is30)}>30D</button>
           </div>
         </div>
       </div>
@@ -1032,8 +1095,14 @@ export default function Dashboard({
       // W obserwowanych trzymamy tylko to, co firmy aktualnie sprzedają, więc boxy nie krzyczą o wycofanych SKU.
       // Kontenery (/containers) zostają globalne: wiozą fizyczny towar niezależnie od obserwacji.
       const shopQ = shop ? `&shop=${shop}` : "";
+      // Szereg od 01.01.2026 do dziś (jeden fetch). Picker dat i porównanie tną tę tablicę
+      // po stronie klienta — bez dodatkowych zapytań. Podłoga 90, gdyby ktoś odpalił przed marcem.
+      const _startMs = Date.UTC(2026, 0, 1);
+      const _now = new Date();
+      const _todayMs = Date.UTC(_now.getFullYear(), _now.getMonth(), _now.getDate());
+      const rangeDays = Math.max(90, Math.round((_todayMs - _startMs) / 86400000));
       const [h, cont, ano, shp, top, tw] = await Promise.allSettled([
-        api.get(`/stock-value-history?favorites_only=0&days=90${shopQ}`),
+        api.get(`/stock-value-history?favorites_only=0&days=${rangeDays}${shopQ}`),
         api.get("/containers"),
         api.get(`/anomalies?favorites_only=1${shopQ}`),
         api.get(`/shopping-list?favorites_only=1${shopQ}`),
