@@ -11,6 +11,12 @@ const API_BASE =
 
 const TOKEN_KEY = "magazyn_token";
 const USER_KEY = "magazyn_user";
+const ACTIVITY_KEY = "magazyn_last_activity";
+
+// Limit bezczynności (Model A — auto-wylogowanie na froncie).
+// Po tylu ms bez aktywności użytkownika sesja jest czyszczona i wraca ekran logowania.
+// Chcesz inny czas? Zmieniasz TYLKO tę jedną stałą.
+export const IDLE_LIMIT_MS = 2 * 60 * 60 * 1000; // 2h
 
 // ---- Sesja (localStorage, bezpieczne przy SSR) ----
 export function getToken() {
@@ -30,6 +36,34 @@ export function getUser() {
   } catch {
     return null;
   }
+}
+
+// ---- Aktywność / bezczynność (Model A) ----
+// Znacznik ostatniej aktywności trzymamy w localStorage → współdzielony między kartami.
+export function markActivity() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(ACTIVITY_KEY, String(Date.now()));
+  } catch {}
+}
+
+export function getLastActivity() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(ACTIVITY_KEY);
+    if (!raw) return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+// true → minął limit bezczynności. Brak znacznika (np. świeży deploy) NIE wylogowuje.
+export function isIdleExpired() {
+  const last = getLastActivity();
+  if (last == null) return false;
+  return Date.now() - last > IDLE_LIMIT_MS;
 }
 
 export function setSession(token, user) {
@@ -52,6 +86,7 @@ export function clearSession() {
   try {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(ACTIVITY_KEY);
   } catch {}
 }
 
@@ -125,6 +160,7 @@ export const api = {
 export async function login(email, password) {
   const data = await request("POST", "/auth/login", { email, password });
   setSession(data.access_token, data.user);
+  markActivity();
   return data.user;
 }
 
