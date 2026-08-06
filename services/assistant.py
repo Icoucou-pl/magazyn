@@ -55,6 +55,10 @@ _PROMPT_BASE = (
     "podaj parametr sklep = amh|acti|veluxa do narzędzi, które go przyjmują. Bez wskazania sklepu liczby są sumą wszystkich. "
     "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
     "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
+    "STAN PRODUKTU ma TRZY osobne liczby — rozróżniaj je i nigdy nie myl: „na stanie” (fizycznie w magazynie), „magazyn w drodze” "
+    "(wbite do drugiego magazynu w ERP, już w transporcie) oraz „w kontenerach” (jeszcze niewbite, płyną w kontenerach). Pole w_drodze_razem "
+    "to suma dwóch ostatnich. Podając stan wymień te liczby OSOBNO, gdy są niezerowe — NIE nazywaj sztuk „w kontenerach” po prostu „w drodze”. "
+    "Jeśli magazyn_w_drodze = 0, a w_kontenerach > 0, powiedz wprost, że w magazynie w drodze nic nie ma, a sztuki płyną w kontenerach (podaj najbliższą dostawę). "
 )
 
 _PROMPT_FINANCE = (
@@ -62,6 +66,7 @@ _PROMPT_FINANCE = (
     "PŁATNOŚCI ZA KONTENERY to INNY temat niż sprzedaż — nie licz ich z narzędzi sprzedażowych. „Ile do zapłaty / ile jeszcze zostało do zapłacenia” (otwarte zaliczki i balance, bucket po TERMINIE płatności, np. „ile do zapłaty w sierpniu i za jakich producentów”) → do_zaplaty. "
     "„Ile już zapłaciliśmy / ile wypłaciliśmy w danym miesiącu / ile zapłaciliśmy producentowi X” (realny wypływ kasy, bucket po dacie wpłaty) → zaplacono_kontenery. Płatności JEDNEGO kontenera lub zamówienia (PO) — „ile zostało za kontener TCKU…” → platnosci_kontenera. "
     "Zbiorczy stan „ile mam zamrożone w towarze / wartość magazynu / ile zostało do zapłaty za cały magazyn w drodze” → kapital_w_towarze. "
+    "do_zaplaty i zaplacono_kontenery zwracają też pole kontenery (numer, PO, producent, termin/data, kwota) — na pytania „lista/które kontenery do opłacenia w sierpniu” podaj numery z tej listy, NIE odmawiaj i nie odsyłaj do sprawdzania po jednym. "
     "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
     "Do sprzedaży za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat („wczoraj”, „ten tydzień”, „od 1 do 7 lipca”) użyj finanse_zakres(od, do) w formacie RRRR-MM-DD — dla jednego dnia „do” pomiń. "
     "Gdy finanse_zakres zwróci swieze=true, ZAWSZE prowadź odpowiedź LICZBĄ WSZYSTKICH zamówień (pole zamowien_razem) i wartością brutto wszystkich, a przychód netto/marżę podaj jako "
@@ -417,10 +422,11 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "do_zaplaty",
-            "description": ("Ile ZOSTAŁO DO ZAPŁATY za kontenery: otwarte (niezapłacone) zaliczki i balance, pogrupowane po "
-                            "producencie i po TERMINIE płatności. Do pytań „ile do zapłaty w sierpniu i za jakich producentów”, "
-                            "„co mamy otwarte bez ustalonego terminu”, „ile do zapłaty w najbliższych 30 dniach”. Kwoty w walutach "
-                            "obcych to szacunek po dzisiejszym kursie (dokładny kurs będzie znany dopiero w dniu wpłaty). "
+            "description": ("Ile ZOSTAŁO DO ZAPŁATY za kontenery: otwarte (niezapłacone) zaliczki i balance. Zwraca sumy per producent "
+                            "i per miesiąc ORAZ listę konkretnych KONTENERÓW (numer, PO, producent, termin, kwota) — użyj jej do pytań "
+                            "„lista/które kontenery do opłacenia w sierpniu”. Bucket po TERMINIE płatności. Do pytań „ile do zapłaty w sierpniu "
+                            "i za jakich producentów”, „co mamy otwarte bez ustalonego terminu”, „ile do zapłaty w najbliższych 30 dniach”. "
+                            "Kwoty w walutach obcych to szacunek po dzisiejszym kursie (dokładny kurs będzie znany dopiero w dniu wpłaty). "
                             "Dane finansowe — wymaga uprawnień."),
             "parameters": {
                 "type": "object",
@@ -438,9 +444,10 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "zaplacono_kontenery",
-            "description": ("Ile już ZAPŁACONO za kontenery — realny wypływ kasy (wpłaty z datą ≤ dziś), pogrupowane po producencie "
-                            "i po MIESIĄCU faktycznej płatności. Do pytań „ile wypłaciliśmy w lipcu”, „ile zapłaciliśmy producentowi X "
-                            "w tym roku”. PLN po kursie historycznym NBP z dnia wpłaty (dokładny). Dane finansowe — wymaga uprawnień."),
+            "description": ("Ile już ZAPŁACONO za kontenery — realny wypływ kasy (wpłaty z datą ≤ dziś). Zwraca sumy per producent i per "
+                            "miesiąc ORAZ listę konkretnych KONTENERÓW (numer, PO, producent, data, kwota). Bucket po MIESIĄCU faktycznej "
+                            "płatności. Do pytań „ile wypłaciliśmy w lipcu”, „które kontenery opłaciliśmy w lipcu”, „ile zapłaciliśmy "
+                            "producentowi X w tym roku”. PLN po kursie historycznym NBP z dnia wpłaty (dokładny). Dane finansowe — wymaga uprawnień."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -591,6 +598,11 @@ def _fmt_date(d: Optional[date]) -> Optional[str]:
     return d.strftime("%d.%m.%Y") if isinstance(d, date) else None
 
 
+def _dostawa_typ(src: Optional[str]) -> Optional[str]:
+    """Etykieta źródła najbliższej dostawy: delivered→dostarczona, expected→potwierdzona, estimate→szacowana."""
+    return {"delivered": "dostarczona", "expected": "potwierdzona", "estimate": "szacowana"}.get(src)
+
+
 def _deliveries(p) -> List[Dict[str, Any]]:
     out = []
     for d in (p.incoming_deliveries or []):
@@ -622,7 +634,12 @@ async def _tool_pobierz_stan(db: AsyncSession, user: CurrentUser, sku: str, skle
         return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     return {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name,
-        "stan": p.stock, "w_drodze": p.stock_in_transit,
+        "na_stanie": p.stock,
+        "magazyn_w_drodze": p.stock_in_transit_wbite,        # wbite do drugiego magazynu Subiektu
+        "w_kontenerach": p.stock_in_transit_containers,      # jeszcze niewbite, płyną w kontenerach
+        "w_drodze_razem": p.stock_in_transit,                # suma: magazyn_w_drodze + w_kontenerach
+        "najblizsza_dostawa": _fmt_date(p.nearest_delivery_date),
+        "najblizsza_dostawa_typ": _dostawa_typ(p.nearest_delivery_source),
         "status": p.status, "producent": p.manufacturer_name,
         "firma_wlasciciel": p.firma_name, "sklep": shop or "wszystkie",
     }
@@ -635,7 +652,8 @@ async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str, sklep: A
         return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     return {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name, "sklep": shop or "wszystkie",
-        "stan": p.stock, "w_drodze": p.stock_in_transit,
+        "na_stanie": p.stock, "w_drodze_razem": p.stock_in_transit,
+        "magazyn_w_drodze": p.stock_in_transit_wbite, "w_kontenerach": p.stock_in_transit_containers,
         "dni_do_wyczerpania": p.days_until_empty,
         "data_wyczerpania": _fmt_date(p.empty_date),
         "srednia_dzienna_sprzedaz": round((p.avg_monthly_weighted or 0) / 30.0, 2),
@@ -982,6 +1000,8 @@ async def _tool_stan_per_firma(db: AsyncSession, user: CurrentUser, sku: str) ->
                  [("amh", "AMH"), ("acti", "Acti"), ("veluxa", "Veluxa")]
     nazwa = None
     w_drodze = 0
+    magazyn_w_drodze = 0
+    w_kontenerach = 0
     rozklad = []
     razem = 0
     for slug, fname in firmy_list:
@@ -991,13 +1011,16 @@ async def _tool_stan_per_firma(db: AsyncSession, user: CurrentUser, sku: str) ->
             if nazwa is None:
                 nazwa = p.name
             w_drodze = p.stock_in_transit or 0   # ta sama wartość w każdym wywołaniu (nie sumujemy)
+            magazyn_w_drodze = p.stock_in_transit_wbite or 0
+            w_kontenerach = p.stock_in_transit_containers or 0
         rozklad.append({"firma": fname, "slug": slug, "stan": stan})
         razem += stan
     if nazwa is None:
         return {"znaleziono": False, "sku": symbol}
     return {
         "znaleziono": True, "sku": symbol, "nazwa": nazwa,
-        "rozklad_per_firma": rozklad, "razem_stan": razem, "w_drodze_razem": w_drodze,
+        "rozklad_per_firma": rozklad, "razem_stan": razem,
+        "w_drodze_razem": w_drodze, "magazyn_w_drodze": magazyn_w_drodze, "w_kontenerach": w_kontenerach,
     }
 
 
@@ -1147,6 +1170,37 @@ def _per_miesiac(events: List[Dict[str, Any]], rt: Dict[str, float], field: str)
     return sorted(agg.values(), key=lambda x: x["miesiac"])
 
 
+def _per_kontener(events: List[Dict[str, Any]], rt: Dict[str, float], date_field: str, limit: int = 60) -> List[Dict[str, Any]]:
+    """Grupuje płatności po kontenerze (fallback: numer PO). date_field: 'termin' (do zapłaty) lub 'data' (zapłacono)."""
+    agg: Dict[str, Dict[str, Any]] = {}
+    for e in events:
+        pln, szac = _ev_pln(e, rt)
+        if pln is None:
+            continue
+        key = e.get("kontener") or e.get("po") or "?"
+        a = agg.get(key)
+        if a is None:
+            a = agg[key] = {"kontener": e.get("kontener"), "po": e.get("po"), "sklep": e.get("shop"),
+                            "_prod": set(), "kwota_pln": 0.0, "_daty": [], "szacunek": False}
+        a["kwota_pln"] = round(a["kwota_pln"] + pln, 2)
+        if e.get("mfr_name"):
+            a["_prod"].add(e["mfr_name"])
+        if szac:
+            a["szacunek"] = True
+        d = e.get(date_field)
+        if d:
+            a["_daty"].append(d)
+    out = []
+    for a in agg.values():
+        row = {"kontener": a["kontener"], "po": a["po"],
+               "producent": ", ".join(sorted(a["_prod"])) or None,
+               "sklep": a["sklep"], "kwota_pln": a["kwota_pln"], "szacunek": a["szacunek"],
+               date_field: (min(a["_daty"]) if a["_daty"] else None)}
+        out.append(row)
+    out.sort(key=lambda r: (r.get(date_field) or "9999-99", -r["kwota_pln"]))
+    return out[:limit]
+
+
 def _sum_pln(events: List[Dict[str, Any]], rt: Dict[str, float]):
     total = 0.0
     brak = 0
@@ -1219,6 +1273,7 @@ async def _tool_do_zaplaty(db: AsyncSession, user: CurrentUser, miesiac: Any = N
         "najblizsze_30_dni_pln": n30_pln,
         "bez_terminu_pln": bt_pln,
         "bez_terminu_zdarzen": len(bez_terminu),
+        "kontenery": _per_kontener(ev, rt, "termin"),
         "sklep": shop or "wszystkie",
         "filtr_producent": producent,
     }
@@ -1274,6 +1329,7 @@ async def _tool_zaplacono_kontenery(db: AsyncSession, user: CurrentUser, miesiac
         "razem_pln": total,
         "liczba_wplat": len(ev),
         "per_producent": _per_producent(ev, rt),
+        "kontenery": _per_kontener(ev, rt, "data"),
         "sklep": shop or "wszystkie",
         "filtr_producent": producent,
     }
