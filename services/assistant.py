@@ -55,6 +55,8 @@ _PROMPT_BASE = (
     "podaj parametr sklep = amh|acti|veluxa do narzędzi, które go przyjmują. Bez wskazania sklepu liczby są sumą wszystkich. "
     "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
     "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
+    "PYTANIE O STAN („ile mamy X”, „stan X”, „ile jest X”): NATYCHMIAST wywołaj pobierz_stan z podanym tokenem jako sku (dokładne SKU, wielkość liter bez znaczenia). "
+    "NIE pytaj „co to jest / czy to fragment / które chodzi”, NIE używaj najpierw szukaj — nawet gdy token jest krótki. Dopiero gdy pobierz_stan zwróci znaleziono=false, użyj szukaj lub dopytaj. "
     "STAN PRODUKTU ma TRZY osobne liczby — rozróżniaj je i nigdy nie myl. Prezentuj je jako trzy osobne, wyraźnie nazwane pozycje: "
     "„Na stanie” (fizycznie w magazynie), „Magazyn w drodze” (wbite do drugiego magazynu w ERP, już w transporcie) oraz „W kontenerach” "
     "(jeszcze niewbite, płyną w kontenerach). Pole w_drodze_razem to suma dwóch ostatnich — NIE jest to osobna czwarta liczba. "
@@ -100,7 +102,9 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "pobierz_stan",
-            "description": "Aktualny stan magazynowy produktu po SKU: ile sztuk na stanie, ile w drodze, status, producent.",
+            "description": ("Aktualny stan magazynowy produktu po DOKŁADNYM SKU (1:1, bez względu na wielkość liter): na stanie (razem + per firma), "
+                            "magazyn w drodze, w kontenerach, najbliższa dostawa, właściciel, status, producent. Krótki token typu „szp1”, „d2b” to SKU — "
+                            "podaj go tu wprost. To PIERWSZE narzędzie przy pytaniu „ile mamy X / stan X”. Nie dopytuj i nie używaj szukaj, dopóki to nie zwróci znaleziono=false."),
             "parameters": {
                 "type": "object",
                 "properties": {"sku": {"type": "string", "description": "SKU produktu, np. D2B"}, "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa — liczby tylko tego sklepu"}},
@@ -551,8 +555,9 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "szukaj",
-            "description": ("Wyszukiwarka produktów po fragmencie nazwy, SKU lub EAN. Użyj gdy użytkownik nie zna dokładnego SKU "
-                            "(„znajdź krzesło biurowe”, „produkty z nazwą X”)."),
+            "description": ("Wyszukiwarka rozmyta po FRAGMENCIE nazwy/SKU/EAN — używaj TYLKO gdy nie znasz SKU („znajdź krzesło biurowe”) "
+                            "albo gdy pobierz_stan zwrócił znaleziono=false. NIE używaj jej do „ile mamy <SKU>” — od tego jest pobierz_stan. "
+                            "Jeśli fraza pokrywa się dokładnie z jakimś SKU, zwraca dokladne_trafienie — użyj go 1:1, nie pokazuj listy podobnych."),
             "parameters": {
                 "type": "object",
                 "properties": {"fraza": {"type": "string", "description": "szukany tekst (min. 2 znaki)"}},
@@ -1538,11 +1543,21 @@ async def _tool_szukaj(db: AsyncSession, user: CurrentUser, fraza: str) -> Dict[
     if len(q) < 2:
         return {"wyniki": [], "komunikat": "Podaj co najmniej 2 znaki."}
     res = await search_global(q=q, include_inactive=False, db=db)
+    products = res.get("products") or []
     prod = [{"sku": r.get("sku"), "nazwa": r.get("name"), "stan": r.get("stock"),
-             "producent": r.get("manufacturer_name")} for r in (res.get("products") or [])[:15]]
+             "producent": r.get("manufacturer_name")} for r in products[:15]]
     ean = [{"sku": r.get("sku"), "nazwa": r.get("name"), "ean": r.get("ean")}
            for r in (res.get("ean") or [])[:10]]
-    return {"liczba": len(prod) + len(ean), "produkty": prod, "po_ean": ean}
+    out = {"liczba": len(prod) + len(ean), "produkty": prod, "po_ean": ean}
+    # Dokładne trafienie po SKU (1:1, case-insensitive) — priorytet nad listą podobnych.
+    qn = q.upper()
+    exact = next((r for r in products if (r.get("sku") or "").strip().upper() == qn), None)
+    if exact:
+        out["dokladne_trafienie"] = {"sku": exact.get("sku"), "nazwa": exact.get("name"),
+                                     "producent": exact.get("manufacturer_name")}
+        out["komunikat"] = (f"Dokładne trafienie SKU {exact.get('sku')} — użyj go 1:1 (po stan wywołaj pobierz_stan), "
+                            f"nie pytaj o doprecyzowanie.")
+    return out
 
 
 async def _tool_swiezosc_danych(db: AsyncSession, user: CurrentUser) -> Dict[str, Any]:
