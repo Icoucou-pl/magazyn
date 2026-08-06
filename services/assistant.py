@@ -58,7 +58,10 @@ _PROMPT_BASE = (
 )
 
 _PROMPT_FINANCE = (
-    "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu, cashflow). "
+    "Do pytań o wartość magazynu, przychód, marżę, koszty i kanały sprzedaży użyj narzędzi finansowych (wartosc_magazynu, finanse_ogolne, finanse_produktu, sprzedaz_wg_kanalu). "
+    "PŁATNOŚCI ZA KONTENERY to INNY temat niż sprzedaż — nie licz ich z narzędzi sprzedażowych. „Ile do zapłaty / ile jeszcze zostało do zapłacenia” (otwarte zaliczki i balance, bucket po TERMINIE płatności, np. „ile do zapłaty w sierpniu i za jakich producentów”) → do_zaplaty. "
+    "„Ile już zapłaciliśmy / ile wypłaciliśmy w danym miesiącu / ile zapłaciliśmy producentowi X” (realny wypływ kasy, bucket po dacie wpłaty) → zaplacono_kontenery. Płatności JEDNEGO kontenera lub zamówienia (PO) — „ile zostało za kontener TCKU…” → platnosci_kontenera. "
+    "Zbiorczy stan „ile mam zamrożone w towarze / wartość magazynu / ile zostało do zapłaty za cały magazyn w drodze” → kapital_w_towarze. "
     "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
     "Do sprzedaży za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat („wczoraj”, „ten tydzień”, „od 1 do 7 lipca”) użyj finanse_zakres(od, do) w formacie RRRR-MM-DD — dla jednego dnia „do” pomiń. "
     "Gdy finanse_zakres zwróci swieze=true, ZAWSZE prowadź odpowiedź LICZBĄ WSZYSTKICH zamówień (pole zamowien_razem) i wartością brutto wszystkich, a przychód netto/marżę podaj jako "
@@ -413,12 +416,68 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "cashflow",
-            "description": ("Nadchodzące płatności za kontenery w najbliższych miesiącach (wartość dostaw wg miesiąca ETA). "
+            "name": "do_zaplaty",
+            "description": ("Ile ZOSTAŁO DO ZAPŁATY za kontenery: otwarte (niezapłacone) zaliczki i balance, pogrupowane po "
+                            "producencie i po TERMINIE płatności. Do pytań „ile do zapłaty w sierpniu i za jakich producentów”, "
+                            "„co mamy otwarte bez ustalonego terminu”, „ile do zapłaty w najbliższych 30 dniach”. Kwoty w walutach "
+                            "obcych to szacunek po dzisiejszym kursie (dokładny kurs będzie znany dopiero w dniu wpłaty). "
                             "Dane finansowe — wymaga uprawnień."),
             "parameters": {
                 "type": "object",
-                "properties": {"miesiace": {"type": "integer", "description": "ile miesięcy do przodu (domyślnie 6)"}},
+                "properties": {
+                    "miesiac": {"type": "string", "description": "opcjonalny miesiąc terminu płatności: 1-12 lub nazwa po polsku, np. „sierpień”"},
+                    "rok": {"type": "integer", "description": "opcjonalny rok terminu, np. 2026 (domyślnie bieżący, gdy podano miesiąc)"},
+                    "producent": {"type": "string", "description": "opcjonalna marka/producent — tylko jego płatności"},
+                    "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "zaplacono_kontenery",
+            "description": ("Ile już ZAPŁACONO za kontenery — realny wypływ kasy (wpłaty z datą ≤ dziś), pogrupowane po producencie "
+                            "i po MIESIĄCU faktycznej płatności. Do pytań „ile wypłaciliśmy w lipcu”, „ile zapłaciliśmy producentowi X "
+                            "w tym roku”. PLN po kursie historycznym NBP z dnia wpłaty (dokładny). Dane finansowe — wymaga uprawnień."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "miesiac": {"type": "string", "description": "opcjonalny miesiąc wpłaty: 1-12 lub nazwa po polsku, np. „lipiec”"},
+                    "rok": {"type": "integer", "description": "opcjonalny rok wpłaty, np. 2026 (domyślnie bieżący, gdy podano miesiąc)"},
+                    "producent": {"type": "string", "description": "opcjonalna marka/producent — tylko jego wpłaty"},
+                    "sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "platnosci_kontenera",
+            "description": ("Płatności KONKRETNEGO kontenera po numerze kontenera LUB numerze zamówienia (PO): zaliczki, balance, "
+                            "ile już zapłacono, ile zostało do zapłaty i terminy. Do pytań „ile zostało za kontener TCKU7064646”, "
+                            "„co zapłacone dla PO 123”. Dane finansowe — wymaga uprawnień."),
+            "parameters": {
+                "type": "object",
+                "properties": {"numer": {"type": "string", "description": "numer kontenera (np. TCKU7064646) albo numer zamówienia/PO"}},
+                "required": ["numer"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kapital_w_towarze",
+            "description": ("Zbiorczy stan finansowy magazynu NA DZIŚ: kapitał zamrożony w towarze, wartość magazynu, magazyn w drodze, "
+                            "kontenery w drodze, ile zapłacono za magazyn w drodze i ile pozostało do zapłaty. Opcjonalnie dla jednego "
+                            "sklepu. Do pytań „ile mam zamrożone w towarze”, „ile zostało do zapłaty za cały magazyn w drodze”. "
+                            "Dane finansowe — wymaga uprawnień."),
+            "parameters": {
+                "type": "object",
+                "properties": {"sklep": {"type": "string", "description": "opcjonalnie: amh, acti lub veluxa"}},
                 "required": [],
             },
         },
@@ -1014,21 +1073,283 @@ async def _tool_sprzedaz_wg_kanalu(db: AsyncSession, user: CurrentUser, sku: Opt
                        for c in ov.get("channels", [])]}
 
 
-async def _tool_cashflow(db: AsyncSession, user: CurrentUser, miesiace: Any = None) -> Dict[str, Any]:
+async def _ledger(db: AsyncSession, user: CurrentUser):
+    """Wspólne źródło: płaski rejestr płatności za kontenery + kursy „na dziś”."""
+    from routers.calendar import cashflow_ledger
+    led = await cashflow_ledger(db=db, user=user)
+    if not isinstance(led, dict):
+        return [], {}
+    return led.get("events", []) or [], led.get("rate_today", {}) or {}
+
+
+def _ev_pln(e: Dict[str, Any], rt: Dict[str, float]):
+    """PLN pojedynczego zdarzenia. Zwraca (pln, szacowany).
+
+    paid → kwota_pln (kurs historyczny, dokładny). plan/open w PLN → kwota wprost.
+    plan/open w obcej walucie → kwota × kurs „na dziś” (szacunek). Brak kursu → (None, False).
+    """
+    if e.get("kwota_pln") is not None:
+        return float(e["kwota_pln"]), False
+    cur = (e.get("waluta") or "PLN").upper()
+    kwota = float(e.get("kwota") or 0)
+    if cur == "PLN":
+        return round(kwota, 2), False
+    r = rt.get(cur)
+    if r is None:
+        return None, False
+    return round(kwota * r, 2), True
+
+
+def _ym(s: Optional[str]):
+    """'YYYY-MM-DD' → (rok, miesiac) albo None."""
+    if not s or len(s) < 7:
+        return None
+    try:
+        return int(s[:4]), int(s[5:7])
+    except ValueError:
+        return None
+
+
+def _iso(s: Optional[str]) -> Optional[date]:
+    """'YYYY-MM-DD' → date albo None (odporne na null/śmieci)."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _per_producent(events: List[Dict[str, Any]], rt: Dict[str, float]) -> List[Dict[str, Any]]:
+    agg: Dict[str, Dict[str, Any]] = {}
+    for e in events:
+        pln, _ = _ev_pln(e, rt)
+        if pln is None:
+            continue
+        key = e.get("mfr_name") or "Bez producenta"
+        a = agg.setdefault(key, {"producent": key, "kwota_pln": 0.0, "liczba_zdarzen": 0})
+        a["kwota_pln"] = round(a["kwota_pln"] + pln, 2)
+        a["liczba_zdarzen"] += 1
+    return sorted(agg.values(), key=lambda x: x["kwota_pln"], reverse=True)
+
+
+def _per_miesiac(events: List[Dict[str, Any]], rt: Dict[str, float], field: str) -> List[Dict[str, Any]]:
+    agg: Dict[str, Dict[str, Any]] = {}
+    for e in events:
+        pln, _ = _ev_pln(e, rt)
+        if pln is None:
+            continue
+        d = e.get(field)
+        key = d[:7] if (d and len(d) >= 7) else "bez_terminu"
+        a = agg.setdefault(key, {"miesiac": key, "kwota_pln": 0.0, "liczba_zdarzen": 0})
+        a["kwota_pln"] = round(a["kwota_pln"] + pln, 2)
+        a["liczba_zdarzen"] += 1
+    return sorted(agg.values(), key=lambda x: x["miesiac"])
+
+
+def _sum_pln(events: List[Dict[str, Any]], rt: Dict[str, float]):
+    total = 0.0
+    brak = 0
+    for e in events:
+        pln, _ = _ev_pln(e, rt)
+        if pln is None:
+            brak += 1
+        else:
+            total += pln
+    return round(total, 2), brak
+
+
+async def _tool_do_zaplaty(db: AsyncSession, user: CurrentUser, miesiac: Any = None, rok: Any = None,
+                           producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
     if not has_perm(user, "assistantFinancials"):
         return _brak_uprawnien()
-    from routers.calendar import cashflow
-    try:
-        m = max(1, min(int(miesiace), 24)) if miesiace else 6
-    except (TypeError, ValueError):
-        m = 6
-    cf = await cashflow(months=m, db=db, user=user)
-    months = cf.get("months", []) if isinstance(cf, dict) else []
-    return {
+    events, rt = await _ledger(db, user)
+    shop = _norm_shop(sklep)
+    mm = _parse_miesiac(miesiac)
+    yy = _parse_rok(rok)
+    if mm and not yy:
+        yy = date.today().year
+
+    # Do zapłaty = zdarzenia jeszcze nieopłacone (status plan/open).
+    ev = [e for e in events if e.get("status") != "paid"]
+    if shop:
+        ev = [e for e in ev if e.get("shop") == shop]
+    if producent:
+        needle = producent.strip().lower()
+        ev = [e for e in ev if needle in (e.get("mfr_name") or "").lower()]
+
+    today = date.today()
+    d30 = today + timedelta(days=30)
+
+    # Kontekst niezależny od filtra okresu (liczony na zbiorze po sklepie/producencie).
+    bez_terminu = [e for e in ev if not e.get("termin")]
+    bt_pln, _ = _sum_pln(bez_terminu, rt)
+    next30 = [e for e in ev if (t := _iso(e.get("termin"))) and today <= t <= d30]
+    n30_pln, _ = _sum_pln(next30, rt)
+
+    # Filtr okresu po TERMINIE płatności (zdarzenia bez terminu wypadają — raportujemy je osobno).
+    if mm or yy:
+        def _keep(e):
+            ym = _ym(e.get("termin"))
+            if not ym:
+                return False
+            y, mo = ym
+            if yy and y != yy:
+                return False
+            if mm and mo != mm:
+                return False
+            return True
+        ev = [e for e in ev if _keep(e)]
+
+    total, brak = _sum_pln(ev, rt)
+    if mm:
+        okres = f"{_MIES_PL[mm - 1]} {yy}"
+    elif yy:
+        okres = str(yy)
+    else:
+        okres = "wszystkie otwarte terminy"
+
+    out = {
         "waluta": "PLN",
-        "razem": (cf.get("total") if isinstance(cf, dict) else None),
-        "miesiace": [{"miesiac": mm.get("label"), "kwota": mm.get("total"),
-                      "liczba_kontenerow": len(mm.get("containers", []))} for mm in months],
+        "szacunek": True,
+        "okres": okres,
+        "razem_pln": total,
+        "liczba_zdarzen": len(ev),
+        "per_producent": _per_producent(ev, rt),
+        "najblizsze_30_dni_pln": n30_pln,
+        "bez_terminu_pln": bt_pln,
+        "bez_terminu_zdarzen": len(bez_terminu),
+        "sklep": shop or "wszystkie",
+        "filtr_producent": producent,
+    }
+    if not mm:
+        out["per_miesiac"] = _per_miesiac(ev, rt, "termin")
+    if brak:
+        out["brak_kursu_zdarzen"] = brak
+    return out
+
+
+async def _tool_zaplacono_kontenery(db: AsyncSession, user: CurrentUser, miesiac: Any = None, rok: Any = None,
+                                    producent: Optional[str] = None, sklep: Any = None) -> Dict[str, Any]:
+    if not has_perm(user, "assistantFinancials"):
+        return _brak_uprawnien()
+    events, rt = await _ledger(db, user)
+    shop = _norm_shop(sklep)
+    mm = _parse_miesiac(miesiac)
+    yy = _parse_rok(rok)
+    if mm and not yy:
+        yy = date.today().year
+
+    # Zapłacono = faktyczne wpłaty (status paid), bucket po dacie płatności.
+    ev = [e for e in events if e.get("status") == "paid"]
+    if shop:
+        ev = [e for e in ev if e.get("shop") == shop]
+    if producent:
+        needle = producent.strip().lower()
+        ev = [e for e in ev if needle in (e.get("mfr_name") or "").lower()]
+    if mm or yy:
+        def _keep(e):
+            ym = _ym(e.get("data"))
+            if not ym:
+                return False
+            y, mo = ym
+            if yy and y != yy:
+                return False
+            if mm and mo != mm:
+                return False
+            return True
+        ev = [e for e in ev if _keep(e)]
+
+    total, brak = _sum_pln(ev, rt)
+    if mm:
+        okres = f"{_MIES_PL[mm - 1]} {yy}"
+    elif yy:
+        okres = str(yy)
+    else:
+        okres = "wszystkie wpłaty"
+
+    out = {
+        "waluta": "PLN",
+        "okres": okres,
+        "razem_pln": total,
+        "liczba_wplat": len(ev),
+        "per_producent": _per_producent(ev, rt),
+        "sklep": shop or "wszystkie",
+        "filtr_producent": producent,
+    }
+    if not mm:
+        out["per_miesiac"] = _per_miesiac(ev, rt, "data")
+    if brak:
+        out["brak_kursu_wplat"] = brak
+    return out
+
+
+async def _tool_platnosci_kontenera(db: AsyncSession, user: CurrentUser, numer: str) -> Dict[str, Any]:
+    if not has_perm(user, "assistantFinancials"):
+        return _brak_uprawnien()
+    target = (numer or "").strip().upper()
+    if not target:
+        return {"znaleziono": False}
+    events, rt = await _ledger(db, user)
+    ev = [e for e in events
+          if (e.get("kontener") or "").upper() == target or (e.get("po") or "").upper() == target]
+    if not ev:
+        return {"znaleziono": False, "szukano": numer}
+
+    paid = [e for e in ev if e.get("status") == "paid"]
+    otwarte = [e for e in ev if e.get("status") != "paid"]
+    zaplacono, _ = _sum_pln(paid, rt)
+    pozostalo, brak = _sum_pln(otwarte, rt)
+
+    producenci = sorted({e.get("mfr_name") for e in ev if e.get("mfr_name")})
+    sklepy = sorted({e.get("shop") for e in ev if e.get("shop")})
+    etas = [e.get("eta") for e in ev if e.get("eta")]
+
+    def _row(e):
+        pln, szac = _ev_pln(e, rt)
+        return {
+            "typ": e.get("typ"), "status": e.get("status"),
+            "kwota": e.get("kwota"), "waluta": e.get("waluta"),
+            "kwota_pln": pln, "szacowany_pln": szac,
+            "data": e.get("data"), "termin": e.get("termin"),
+        }
+
+    out = {
+        "znaleziono": True,
+        "kontener": ev[0].get("kontener"),
+        "po": ev[0].get("po"),
+        "producent": ", ".join(producenci) if producenci else None,
+        "sklep": ", ".join(sklepy) if sklepy else None,
+        "eta": min(etas) if etas else None,
+        "zaplacono_pln": zaplacono,
+        "pozostalo_pln": pozostalo,
+        "pozostalo_szacunek": any(e.get("kwota_pln") is None and e.get("waluta") != "PLN" for e in otwarte),
+        "zdarzenia": [_row(e) for e in ev],
+    }
+    if brak:
+        out["brak_kursu_zdarzen"] = brak
+    return out
+
+
+async def _tool_kapital_w_towarze(db: AsyncSession, user: CurrentUser, sklep: Any = None) -> Dict[str, Any]:
+    if not has_perm(user, "assistantFinancials"):
+        return _brak_uprawnien()
+    from services.snapshots import build_kpi_rows
+    rows = await build_kpi_rows(db)
+    scope = _norm_shop(sklep) or "all"
+    row = next((r for r in rows if r.get("firma_slug") == scope), None)
+    if not row:
+        return {"znaleziono": False, "sklep": scope}
+    return {
+        "znaleziono": True,
+        "sklep": ("wszystkie" if scope == "all" else scope),
+        "kapital_w_towarze_pln": row.get("kapital_pln"),
+        "wartosc_magazynu_pln": row.get("magazyn_pln"),
+        "magazyn_w_drodze_pln": row.get("magazyn_w_drodze_pln"),
+        "kontenery_w_drodze_pln": row.get("kontenery_pln"),
+        "zaplacono_za_w_drodze_pln": row.get("zaplacono_pln"),
+        "pozostalo_do_zaplaty_pln": row.get("pozostalo_pln"),
+        "uwaga": "kapitał w towarze = wartość magazynu + magazyn w drodze; „pozostało do zapłaty” dotyczy niedostarczonych kontenerów.",
     }
 
 
@@ -1341,7 +1662,10 @@ _DISPATCH = {
     "porownaj_miesiace": _tool_porownaj_miesiace,
     "finanse_zakres": _tool_finanse_zakres,
     "sprzedaz_wg_kanalu": _tool_sprzedaz_wg_kanalu,
-    "cashflow": _tool_cashflow,
+    "do_zaplaty": _tool_do_zaplaty,
+    "zaplacono_kontenery": _tool_zaplacono_kontenery,
+    "platnosci_kontenera": _tool_platnosci_kontenera,
+    "kapital_w_towarze": _tool_kapital_w_towarze,
     # PACZKA 4 — dodatki
     "anomalie": _tool_anomalie,
     "sezonowosc": _tool_sezonowosc,
@@ -1387,7 +1711,8 @@ def _llm_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 _FINANCE_TOOL_NAMES = frozenset({
     "wartosc_magazynu", "finanse_ogolne", "finanse_produktu",
     "finanse_miesiac", "porownaj_miesiace", "finanse_zakres",
-    "sprzedaz_wg_kanalu", "cashflow",
+    "sprzedaz_wg_kanalu",
+    "do_zaplaty", "zaplacono_kontenery", "platnosci_kontenera", "kapital_w_towarze",
 })
 
 
