@@ -59,6 +59,8 @@ _PROMPT_BASE = (
     "(wbite do drugiego magazynu w ERP, już w transporcie) oraz „w kontenerach” (jeszcze niewbite, płyną w kontenerach). Pole w_drodze_razem "
     "to suma dwóch ostatnich. Podając stan wymień te liczby OSOBNO, gdy są niezerowe — NIE nazywaj sztuk „w kontenerach” po prostu „w drodze”. "
     "Jeśli magazyn_w_drodze = 0, a w_kontenerach > 0, powiedz wprost, że w magazynie w drodze nic nie ma, a sztuki płyną w kontenerach (podaj najbliższą dostawę). "
+    "STAN A FIRMA: gdy użytkownik pyta o stan i NIE wskazał sklepu, NIE dodawaj parametru sklep — pobierz_stan policzy stan per firma i zwróci na_stanie_razem, per_firma oraz firma_wlasciciel. "
+    "Prowadź odpowiedź stanem u właściciela (np. produkt Veluxy → podaj stan Veluxy) i podaj rozbicie per firma, gdy towar leży w kilku firmach. Nie zakładaj, że produkt jest w AMH — właściciel wynika z danych. "
 )
 
 _PROMPT_FINANCE = (
@@ -614,40 +616,90 @@ def _deliveries(p) -> List[Dict[str, Any]]:
     return out
 
 
+_FIND_STATUSES = {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}
+
+
 async def _find_product(db: AsyncSession, sku: str, shop: str = ""):
-    """Szuka produktu po SKU BEZ względu na wielkość liter. shop='' = wszystkie sklepy (suma);
-    'amh'/'acti'/'veluxa' = stan i sprzedaż tylko tego sklepu. Zwraca ProductSummary lub None."""
+    """Szuka produktu po SKU BEZ względu na wielkość liter. shop='' = wszystkie sklepy;
+    'amh'/'acti'/'veluxa' = stan i sprzedaż tylko tego sklepu. Zwraca ProductSummary lub None.
+
+    Gdy w danym sklepie nie znaleziono, próbuje globalnie — produkt może należeć do innej firmy.
+    """
     target = (sku or "").strip().upper()
     if not target:
         return None
-    prods = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
+    prods = await fetch_products(db, _FIND_STATUSES, shop)
     for p in prods:
-        if (p.sku or "").upper() == target:
+        if (p.sku or "").strip().upper() == target:
             return p
+    if shop:  # nie znaleziono w tym sklepie — spróbuj globalnie
+        for p in await fetch_products(db, _FIND_STATUSES, ""):
+            if (p.sku or "").strip().upper() == target:
+                return p
     return None
+
+
+async def _firma_rows(db: AsyncSession):
+    """Lista (slug, nazwa) firm w kolejności; fallback na AMH/Acti/Veluxa."""
+    rows = (await db.execute(text(
+        f"SELECT slug, name FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
+    ))).mappings().all()
+    return [(r["slug"], r["name"]) for r in rows if r["slug"]] or \
+           [("amh", "AMH"), ("acti", "Acti"), ("veluxa", "Veluxa")]
+
+
+async def _resolve_product(db: AsyncSession, sku: str, shop: str):
+    """Zwraca (produkt, rozklad_per_firma).
+
+    shop podany → jedna firma (rozklad = []).
+    shop pusty → liczymy PER FIRMA (niezawodne dla Acti/Veluxa; globalny wiersz potrafi zaniżyć
+    stan przez sklejanie Sellasist po sku_canon) i za „produkt” bierzemy firmę z największym stanem
+    (właściciela) — z niej idą transit, dostawa i nazwa. Fallback: wiersz globalny.
+    """
+    if shop:
+        return await _find_product(db, sku, shop), []
+    rozklad, owner, best = [], None, -1
+    for slug, fname in await _firma_rows(db):
+        p = await _find_product(db, sku, slug)
+        if not p:
+            continue
+        stan = p.stock or 0
+        rozklad.append({"firma": fname, "slug": slug, "na_stanie": stan})
+        if stan > best:
+            best, owner = stan, p
+    if owner is None:  # sample/produkt bez stanu w żadnej firmie
+        owner = await _find_product(db, sku, "")
+    return owner, rozklad
 
 
 async def _tool_pobierz_stan(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
     shop = _norm_shop(sklep)
-    p = await _find_product(db, sku, shop)
+    p, rozklad = await _resolve_product(db, sku, shop)
     if not p:
         return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
-    return {
+    out = {
         "znaleziono": True, "sku": p.sku, "nazwa": p.name,
-        "na_stanie": p.stock,
         "magazyn_w_drodze": p.stock_in_transit_wbite,        # wbite do drugiego magazynu Subiektu
         "w_kontenerach": p.stock_in_transit_containers,      # jeszcze niewbite, płyną w kontenerach
         "w_drodze_razem": p.stock_in_transit,                # suma: magazyn_w_drodze + w_kontenerach
         "najblizsza_dostawa": _fmt_date(p.nearest_delivery_date),
         "najblizsza_dostawa_typ": _dostawa_typ(p.nearest_delivery_source),
         "status": p.status, "producent": p.manufacturer_name,
-        "firma_wlasciciel": p.firma_name, "sklep": shop or "wszystkie",
+        "firma_wlasciciel": p.firma_name,
     }
+    if shop:
+        out["na_stanie"] = p.stock
+        out["sklep"] = shop
+    else:
+        out["na_stanie_razem"] = sum(r["na_stanie"] for r in rozklad) if rozklad else (p.stock or 0)
+        out["per_firma"] = rozklad or [{"firma": p.firma_name or "AMH", "slug": "amh", "na_stanie": p.stock or 0}]
+        out["sklep"] = "wszystkie"
+    return out
 
 
 async def _tool_prognoza(db: AsyncSession, user: CurrentUser, sku: str, sklep: Any = None) -> Dict[str, Any]:
     shop = _norm_shop(sklep)
-    p = await _find_product(db, sku, shop)
+    p, _ = await _resolve_product(db, sku, shop)
     if not p:
         return {"znaleziono": False, "sku": sku, "sklep": shop or "wszystkie"}
     return {
