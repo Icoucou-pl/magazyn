@@ -65,13 +65,16 @@ def _next_run_at(now, start_h: int, end_h: int):
 
 
 async def _sellasist_auto_loop():
-    """Harmonogram: o pełnych godzinach 7–17 (czas warszawski) odświeża dane Sellasista.
-    Woła funkcję bezpośrednio (nie endpoint), pomija bieg jeśli akurat trwa ręczny,
-    każdy błąd łapany — pętla nigdy nie umiera. Działa tylko gdy skonfigurowane."""
+    """Harmonogram: o pełnych godzinach w oknie [START_HOUR..END_HOUR] (czas warszawski,
+    domyślnie 7–20) odświeża dane Sellasista, a zaraz po nim — NIEZALEŻNIE — Fakturownię
+    (Acti/Veluxa), tak samo jak ręczny przycisk „Odśwież". Woła funkcje bezpośrednio (nie
+    endpoint), pomija bieg jeśli akurat trwa ręczny, każdy błąd łapany — pętla nigdy nie
+    umiera. Działa tylko gdy skonfigurowane."""
     if not settings.SELLASIST_AUTO_ENABLED:
         print("[sellasist] automat wyłączony (SELLASIST_AUTO_ENABLED=false)")
         return
     from services.sellasist import is_configured, is_running, mark_started, run_refresh, get_status
+    from services import fakturownia as fakt
     start_h = settings.SELLASIST_AUTO_START_HOUR
     end_h = settings.SELLASIST_AUTO_END_HOUR
     while True:
@@ -86,6 +89,19 @@ async def _sellasist_auto_loop():
                 print(f"[sellasist] auto: {st.get('error') or st.get('message')}")
         except Exception as e:
             print(f"[sellasist] auto błąd (pomijam, pętla działa dalej): {e}")
+
+        # Fakturownia (Acti/Veluxa) — ten sam automat godzinowy, ale NIEZALEŻNIE od
+        # Sellasista: własny guard i osobny try, więc błąd/brak konfiguracji jednego nie
+        # blokuje drugiego (jak w routerze /api/sellasist/refresh). Bieg ~6 s, osobny
+        # wpis w app_sync_log jako fakturownia:<slug>.
+        try:
+            if fakt.is_configured() and not fakt.is_running():
+                fakt.mark_started()
+                await fakt.run_refresh()
+                fst = fakt.get_status()
+                print(f"[fakturownia] auto: {fst.get('error') or fst.get('message')}")
+        except Exception as e:
+            print(f"[fakturownia] auto błąd (pomijam, pętla działa dalej): {e}")
 
 
 SNAPSHOT_TIMES = ((7, 5, "rano"), (20, 5, "wieczor"))   # (godz, min, nazwa pory) — czas warszawski
