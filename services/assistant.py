@@ -74,6 +74,9 @@ _PROMPT_FINANCE = (
     "„Ile już zapłaciliśmy / ile wypłaciliśmy w danym miesiącu / ile zapłaciliśmy producentowi X” (realny wypływ kasy, bucket po dacie wpłaty) → zaplacono_kontenery. Płatności JEDNEGO kontenera lub zamówienia (PO) — „ile zostało za kontener TCKU…” → platnosci_kontenera. "
     "Zbiorczy stan „ile mam zamrożone w towarze / wartość magazynu / ile zostało do zapłaty za cały magazyn w drodze” → kapital_w_towarze. "
     "do_zaplaty i zaplacono_kontenery zwracają też pole kontenery (numer, PO, producent, termin/data, kwota) — na pytania „lista/które kontenery do opłacenia w sierpniu” podaj numery z tej listy, NIE odmawiaj i nie odsyłaj do sprawdzania po jednym. "
+    "PRZY KONTENERZE ZAWSZE podawaj numer PO (pole po) obok numeru kontenera — gdy kontener_to_draft=true, numer „Draft-…” to placeholder (prawdziwy będzie po produkcji), więc bez PO nie da się go znaleźć. "
+    "„Przeterminowany / po terminie” mów TYLKO gdy pole przeterminowany (lub nadchodzacy_termin_przeterminowany) = true — NIE oceniaj tego samodzielnie po dacie (dni_do_terminu ≥ 0 znaczy, że termin jeszcze nie minął). "
+    "Opisuj wyłącznie zdarzenia zwrócone w polu zdarzenia. Gdy ma_zaliczki=false, NIE wspominaj o żadnej zaliczce i nie sugeruj, że jakaś była lub została zapłacona — takiego kontenera zaliczka po prostu nie dotyczy. "
     "Do pytań o KONKRETNY miesiąc kalendarzowy (np. „sprzedaż w maju 2026”, „ile zrobiliśmy w lipcu”) użyj finanse_miesiac, a do porównań miesięcy („lipiec vs czerwiec”, „porównaj maj do kwietnia”) — porownaj_miesiace; NIE licz tego z okresów 30/90/365. "
     "Do sprzedaży za KONKRETNY DZIEŃ, TYDZIEŃ lub dowolny przedział dat („wczoraj”, „ten tydzień”, „od 1 do 7 lipca”) użyj finanse_zakres(od, do) w formacie RRRR-MM-DD — dla jednego dnia „do” pomiń. "
     "Gdy finanse_zakres zwróci swieze=true, ZAWSZE prowadź odpowiedź LICZBĄ WSZYSTKICH zamówień (pole zamowien_razem) i wartością brutto wszystkich, a przychód netto/marżę podaj jako "
@@ -474,8 +477,9 @@ TOOLS: List[Dict[str, Any]] = [
         "function": {
             "name": "platnosci_kontenera",
             "description": ("Płatności KONKRETNEGO kontenera po numerze kontenera LUB numerze zamówienia (PO): zaliczki, balance, "
-                            "ile już zapłacono, ile zostało do zapłaty i terminy. Do pytań „ile zostało za kontener TCKU7064646”, "
-                            "„co zapłacone dla PO 123”. Dane finansowe — wymaga uprawnień."),
+                            "ile już zapłacono, ile zostało, terminy oraz per zdarzenie flaga przeterminowany i dni_do_terminu (liczone od dziś). "
+                            "Zwraca też ma_zaliczki (czy w ogóle są zaliczki), kontener_to_draft (numer to placeholder „Draft-…”, prawdziwy nr będzie po produkcji) "
+                            "i po (numer PO). Do pytań „ile zostało za kontener TCKU7064646”, „czy PO 123 opłacone”. Dane finansowe — wymaga uprawnień."),
             "parameters": {
                 "type": "object",
                 "properties": {"numer": {"type": "string", "description": "numer kontenera (np. TCKU7064646) albo numer zamówienia/PO"}},
@@ -1418,8 +1422,10 @@ async def _tool_platnosci_kontenera(db: AsyncSession, user: CurrentUser, numer: 
 
     paid = [e for e in ev if e.get("status") == "paid"]
     otwarte = [e for e in ev if e.get("status") != "paid"]
+    zaliczki = [e for e in ev if e.get("typ") == "zaliczka"]
     zaplacono, _ = _sum_pln(paid, rt)
     pozostalo, brak = _sum_pln(otwarte, rt)
+    today = date.today()
 
     producenci = sorted({e.get("mfr_name") for e in ev if e.get("mfr_name")})
     sklepy = sorted({e.get("shop") for e in ev if e.get("shop")})
@@ -1427,16 +1433,23 @@ async def _tool_platnosci_kontenera(db: AsyncSession, user: CurrentUser, numer: 
 
     def _row(e):
         pln, szac = _ev_pln(e, rt)
+        t = _iso(e.get("termin"))
+        over = bool(t and e.get("status") != "paid" and t < today)
         return {
             "typ": e.get("typ"), "status": e.get("status"),
             "kwota": e.get("kwota"), "waluta": e.get("waluta"),
             "kwota_pln": pln, "szacowany_pln": szac,
             "data": e.get("data"), "termin": e.get("termin"),
+            "przeterminowany": over,
+            "dni_do_terminu": (t - today).days if t else None,   # <0 = po terminie
         }
 
+    numer_kontenera = ev[0].get("kontener")
+    open_terminy = sorted(t for e in otwarte if (t := _iso(e.get("termin"))))
     out = {
         "znaleziono": True,
-        "kontener": ev[0].get("kontener"),
+        "kontener": numer_kontenera,
+        "kontener_to_draft": bool((numer_kontenera or "").upper().startswith("DRAFT-")),
         "po": ev[0].get("po"),
         "producent": ", ".join(producenci) if producenci else None,
         "sklep": ", ".join(sklepy) if sklepy else None,
@@ -1444,6 +1457,11 @@ async def _tool_platnosci_kontenera(db: AsyncSession, user: CurrentUser, numer: 
         "zaplacono_pln": zaplacono,
         "pozostalo_pln": pozostalo,
         "pozostalo_szacunek": any(e.get("kwota_pln") is None and e.get("waluta") != "PLN" for e in otwarte),
+        "ma_zaliczki": bool(zaliczki),
+        "liczba_zaliczek": len(zaliczki),
+        "zaliczki_zaplacone": sum(1 for e in zaliczki if e.get("status") == "paid"),
+        "nadchodzacy_termin": open_terminy[0].isoformat() if open_terminy else None,
+        "nadchodzacy_termin_przeterminowany": bool(open_terminy and open_terminy[0] < today),
         "zdarzenia": [_row(e) for e in ev],
     }
     if brak:
