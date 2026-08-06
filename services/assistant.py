@@ -55,10 +55,12 @@ _PROMPT_BASE = (
     "podaj parametr sklep = amh|acti|veluxa do narzędzi, które go przyjmują. Bez wskazania sklepu liczby są sumą wszystkich. "
     "Gdy użytkownik chce ROZBICIE stanu jednego produktu na firmy naraz („ile SZP0 w Acti a ile w AMH”, „rozdziel stan X per firma”), użyj stan_per_firma. "
     "Do „czy X sezonowy / kiedy szczyt” użyj sezonowosc, do skoków/spadków sprzedaży — anomalie, do kursu waluty — kurs_waluty. "
-    "STAN PRODUKTU ma TRZY osobne liczby — rozróżniaj je i nigdy nie myl: „na stanie” (fizycznie w magazynie), „magazyn w drodze” "
-    "(wbite do drugiego magazynu w ERP, już w transporcie) oraz „w kontenerach” (jeszcze niewbite, płyną w kontenerach). Pole w_drodze_razem "
-    "to suma dwóch ostatnich. Podając stan wymień te liczby OSOBNO, gdy są niezerowe — NIE nazywaj sztuk „w kontenerach” po prostu „w drodze”. "
-    "Jeśli magazyn_w_drodze = 0, a w_kontenerach > 0, powiedz wprost, że w magazynie w drodze nic nie ma, a sztuki płyną w kontenerach (podaj najbliższą dostawę). "
+    "STAN PRODUKTU ma TRZY osobne liczby — rozróżniaj je i nigdy nie myl. Prezentuj je jako trzy osobne, wyraźnie nazwane pozycje: "
+    "„Na stanie” (fizycznie w magazynie), „Magazyn w drodze” (wbite do drugiego magazynu w ERP, już w transporcie) oraz „W kontenerach” "
+    "(jeszcze niewbite, płyną w kontenerach). Pole w_drodze_razem to suma dwóch ostatnich — NIE jest to osobna czwarta liczba. "
+    "NIGDY nie wrzucaj sztuk „w kontenerach” pod etykietę „w drodze” — to DWIE różne rzeczy (magazyn w drodze vs kontenery). "
+    "NIE twórz pozycji „razem dostępne” sumującej stan z kontenerami — towar w kontenerach jeszcze nie dotarł, więc nie jest dostępny. "
+    "Jeśli magazyn_w_drodze = 0, a w_kontenerach > 0, powiedz wprost: w magazynie w drodze nic nie ma, sztuki płyną w kontenerach (podaj najbliższą dostawę). "
     "STAN A FIRMA: gdy użytkownik pyta o stan i NIE wskazał sklepu, NIE dodawaj parametru sklep — pobierz_stan policzy stan per firma i zwróci na_stanie_razem, per_firma oraz firma_wlasciciel. "
     "Prowadź odpowiedź stanem u właściciela (np. produkt Veluxy → podaj stan Veluxy) i podaj rozbicie per firma, gdy towar leży w kilku firmach. Nie zakładaj, że produkt jest w AMH — właściciel wynika z danych. "
 )
@@ -619,11 +621,13 @@ def _deliveries(p) -> List[Dict[str, Any]]:
 _FIND_STATUSES = {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}
 
 
-async def _find_product(db: AsyncSession, sku: str, shop: str = ""):
+async def _find_product(db: AsyncSession, sku: str, shop: str = "", fallback: bool = True):
     """Szuka produktu po SKU BEZ względu na wielkość liter. shop='' = wszystkie sklepy;
     'amh'/'acti'/'veluxa' = stan i sprzedaż tylko tego sklepu. Zwraca ProductSummary lub None.
 
-    Gdy w danym sklepie nie znaleziono, próbuje globalnie — produkt może należeć do innej firmy.
+    fallback=True i shop podany: gdy w tym sklepie nie ma produktu, szuka globalnie (produkt może
+    należeć do innej firmy). fallback=False: ściśle w danym sklepie — używane w rozbiciu per firma,
+    żeby firmie bez tego produktu NIE przypisać cudzego (globalnego) stanu.
     """
     target = (sku or "").strip().upper()
     if not target:
@@ -632,7 +636,7 @@ async def _find_product(db: AsyncSession, sku: str, shop: str = ""):
     for p in prods:
         if (p.sku or "").strip().upper() == target:
             return p
-    if shop:  # nie znaleziono w tym sklepie — spróbuj globalnie
+    if shop and fallback:  # nie znaleziono w tym sklepie — spróbuj globalnie
         for p in await fetch_products(db, _FIND_STATUSES, ""):
             if (p.sku or "").strip().upper() == target:
                 return p
@@ -651,16 +655,17 @@ async def _firma_rows(db: AsyncSession):
 async def _resolve_product(db: AsyncSession, sku: str, shop: str):
     """Zwraca (produkt, rozklad_per_firma).
 
-    shop podany → jedna firma (rozklad = []).
-    shop pusty → liczymy PER FIRMA (niezawodne dla Acti/Veluxa; globalny wiersz potrafi zaniżyć
-    stan przez sklejanie Sellasist po sku_canon) i za „produkt” bierzemy firmę z największym stanem
-    (właściciela) — z niej idą transit, dostawa i nazwa. Fallback: wiersz globalny.
+    shop podany → ŚCIŚLE ta firma (bez globalnego fallbacku, żeby nie pokazać cudzego stanu jako
+    stanu tej firmy); rozklad = [].
+    shop pusty → liczymy PER FIRMA ściśle (firma bez produktu = pomijana, NIE dostaje globalnego
+    stanu) i za „produkt” bierzemy firmę z największym stanem (właściciela) — z niej idą transit,
+    dostawa i nazwa. Gdy żadna firma nie ma stanu (np. sample), bierzemy wiersz globalny.
     """
     if shop:
-        return await _find_product(db, sku, shop), []
+        return await _find_product(db, sku, shop, fallback=False), []
     rozklad, owner, best = [], None, -1
     for slug, fname in await _firma_rows(db):
-        p = await _find_product(db, sku, slug)
+        p = await _find_product(db, sku, slug, fallback=False)
         if not p:
             continue
         stan = p.stock or 0
@@ -668,7 +673,7 @@ async def _resolve_product(db: AsyncSession, sku: str, shop: str):
         if stan > best:
             best, owner = stan, p
     if owner is None:  # sample/produkt bez stanu w żadnej firmie
-        owner = await _find_product(db, sku, "")
+        owner = await _find_product(db, sku, "", fallback=False)
     return owner, rozklad
 
 
@@ -1040,39 +1045,22 @@ async def _tool_firmy(db: AsyncSession, user: CurrentUser) -> Dict[str, Any]:
 
 
 async def _tool_stan_per_firma(db: AsyncSession, user: CurrentUser, sku: str) -> Dict[str, Any]:
-    """Rozbija stan SKU po firmach. Uwaga: 'w drodze' (kontenery/import) nie jest per-sklep —
-    liczone tak samo w każdym wywołaniu (import = AMH), więc pokazujemy je raz, nie per firma."""
+    """Rozbija stan SKU po firmach (ściśle — firma bez produktu wypada, nie dostaje cudzego stanu).
+    Magazyn w drodze i kontenery bierzemy od firmy-właściciela (największy stan)."""
     symbol = (sku or "").strip().upper()
     if not symbol:
         return {"znaleziono": False}
-    rows = (await db.execute(text(
-        f"SELECT slug, name FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
-    ))).mappings().all()
-    firmy_list = [(r["slug"], r["name"]) for r in rows if r["slug"]] or \
-                 [("amh", "AMH"), ("acti", "Acti"), ("veluxa", "Veluxa")]
-    nazwa = None
-    w_drodze = 0
-    magazyn_w_drodze = 0
-    w_kontenerach = 0
-    rozklad = []
-    razem = 0
-    for slug, fname in firmy_list:
-        p = await _find_product(db, symbol, slug)
-        stan = (p.stock if p else 0) or 0
-        if p:
-            if nazwa is None:
-                nazwa = p.name
-            w_drodze = p.stock_in_transit or 0   # ta sama wartość w każdym wywołaniu (nie sumujemy)
-            magazyn_w_drodze = p.stock_in_transit_wbite or 0
-            w_kontenerach = p.stock_in_transit_containers or 0
-        rozklad.append({"firma": fname, "slug": slug, "stan": stan})
-        razem += stan
-    if nazwa is None:
+    p, rozklad = await _resolve_product(db, symbol, "")
+    if not p:
         return {"znaleziono": False, "sku": symbol}
+    razem = sum(r["na_stanie"] for r in rozklad) if rozklad else (p.stock or 0)
     return {
-        "znaleziono": True, "sku": symbol, "nazwa": nazwa,
-        "rozklad_per_firma": rozklad, "razem_stan": razem,
-        "w_drodze_razem": w_drodze, "magazyn_w_drodze": magazyn_w_drodze, "w_kontenerach": w_kontenerach,
+        "znaleziono": True, "sku": symbol, "nazwa": p.name,
+        "firma_wlasciciel": p.firma_name,
+        "rozklad_per_firma": rozklad or [{"firma": p.firma_name or "AMH", "slug": "amh", "na_stanie": p.stock or 0}],
+        "razem_stan": razem,
+        "magazyn_w_drodze": p.stock_in_transit_wbite, "w_kontenerach": p.stock_in_transit_containers,
+        "w_drodze_razem": p.stock_in_transit,
     }
 
 
