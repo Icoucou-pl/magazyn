@@ -61,8 +61,9 @@ _PROMPT_BASE = (
     "NIGDY nie wrzucaj sztuk „w kontenerach” pod etykietę „w drodze” — to DWIE różne rzeczy (magazyn w drodze vs kontenery). "
     "NIE twórz pozycji „razem dostępne” sumującej stan z kontenerami — towar w kontenerach jeszcze nie dotarł, więc nie jest dostępny. "
     "Jeśli magazyn_w_drodze = 0, a w_kontenerach > 0, powiedz wprost: w magazynie w drodze nic nie ma, sztuki płyną w kontenerach (podaj najbliższą dostawę). "
-    "STAN A FIRMA: gdy użytkownik pyta o stan i NIE wskazał sklepu, NIE dodawaj parametru sklep — pobierz_stan policzy stan per firma i zwróci na_stanie_razem, per_firma oraz firma_wlasciciel. "
-    "Prowadź odpowiedź stanem u właściciela (np. produkt Veluxy → podaj stan Veluxy) i podaj rozbicie per firma, gdy towar leży w kilku firmach. Nie zakładaj, że produkt jest w AMH — właściciel wynika z danych. "
+    "STAN A FIRMA: gdy użytkownik pyta o stan i NIE wskazał sklepu, NIE dodawaj parametru sklep — pobierz_stan zwróci na_stanie_razem, per_firma (on-hand rozbity po firmach) oraz firma_wlasciciel. "
+    "firma_wlasciciel to firma-matka produktu; magazyn w drodze i kontenery NALEŻĄ do właściciela, nawet jeśli więcej sztuk on-hand leży w innej firmie (np. produkt Veluxy z zapasem w AMH — kontenery i tak są Veluxy). "
+    "Podaj stan razem z rozbiciem per firma, wskaż właściciela, a magazyn w drodze i kontenery pokaż z jego danych. Nie zakładaj, że produkt jest w AMH — właściciel wynika z firma_wlasciciel. "
 )
 
 _PROMPT_FINANCE = (
@@ -643,37 +644,55 @@ async def _find_product(db: AsyncSession, sku: str, shop: str = "", fallback: bo
     return None
 
 
-async def _firma_rows(db: AsyncSession):
-    """Lista (slug, nazwa) firm w kolejności; fallback na AMH/Acti/Veluxa."""
+async def _firma_maps(db: AsyncSession):
+    """Zwraca (lista [(slug, nazwa)], mapa {firma_id: slug}). Fallback: AMH/Acti/Veluxa."""
     rows = (await db.execute(text(
-        f"SELECT slug, name FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
+        f"SELECT id, slug, name FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
     ))).mappings().all()
-    return [(r["slug"], r["name"]) for r in rows if r["slug"]] or \
-           [("amh", "AMH"), ("acti", "Acti"), ("veluxa", "Veluxa")]
+    firmy = [(r["slug"], r["name"]) for r in rows if r["slug"]]
+    id2slug = {r["id"]: r["slug"] for r in rows if r["slug"]}
+    if not firmy:
+        firmy = [("amh", "AMH"), ("acti", "Acti"), ("veluxa", "Veluxa")]
+    return firmy, id2slug
 
 
 async def _resolve_product(db: AsyncSession, sku: str, shop: str):
-    """Zwraca (produkt, rozklad_per_firma).
+    """Zwraca (produkt_właściciela, rozklad_per_firma).
 
-    shop podany → ŚCIŚLE ta firma (bez globalnego fallbacku, żeby nie pokazać cudzego stanu jako
-    stanu tej firmy); rozklad = [].
-    shop pusty → liczymy PER FIRMA ściśle (firma bez produktu = pomijana, NIE dostaje globalnego
-    stanu) i za „produkt” bierzemy firmę z największym stanem (właściciela) — z niej idą transit,
-    dostawa i nazwa. Gdy żadna firma nie ma stanu (np. sample), bierzemy wiersz globalny.
+    shop podany → ŚCIŚLE ta firma (bez globalnego fallbacku); rozklad = [].
+    shop pusty → sweep ściśle po firmach. „Produkt” = wiersz FIRMY-WŁAŚCICIELA (przypisana firma
+    produktu z firma_id; NULL = AMH), a NIE firmy z największym stanem — bo transit, kontenery i
+    najbliższa dostawa wiszą przy firmie-matce, nawet gdy on-hand jest większy w innej firmie.
+    Rozklad = stan on-hand per firma (tylko firmy, które realnie mają ten produkt).
     """
     if shop:
         return await _find_product(db, sku, shop, fallback=False), []
-    rozklad, owner, best = [], None, -1
-    for slug, fname in await _firma_rows(db):
+
+    firmy, id2slug = await _firma_maps(db)
+    per: Dict[str, Any] = {}          # slug -> (nazwa, produkt)
+    firma_id = None
+    for slug, fname in firmy:
         p = await _find_product(db, sku, slug, fallback=False)
         if not p:
             continue
-        stan = p.stock or 0
-        rozklad.append({"firma": fname, "slug": slug, "na_stanie": stan})
-        if stan > best:
-            best, owner = stan, p
-    if owner is None:  # sample/produkt bez stanu w żadnej firmie
-        owner = await _find_product(db, sku, "", fallback=False)
+        per[slug] = (fname, p)
+        if firma_id is None and p.firma_id is not None:
+            firma_id = p.firma_id     # firma-właściciel (stała niezależnie od scope)
+
+    if not per:                        # brak stanu w żadnej firmie (np. sample) — wiersz globalny
+        g = await _find_product(db, sku, "", fallback=False)
+        return g, []
+
+    owner_slug = id2slug.get(firma_id, "amh") if firma_id else "amh"
+    if owner_slug in per:
+        owner = per[owner_slug][1]
+    else:
+        # Firma-matka nie wpadła do sweepu (np. 0 on-hand i brak sprzedaży w jej scope) —
+        # dociągamy jej wiersz osobno, bo to z niego biorą się kontenery i magazyn w drodze.
+        owner = await _find_product(db, sku, owner_slug, fallback=False) or next(iter(per.values()))[1]
+
+    rozklad = [{"firma": fn, "slug": s, "na_stanie": p.stock or 0}
+               for s, (fn, p) in per.items() if (p.stock or 0) != 0]
     return owner, rozklad
 
 
