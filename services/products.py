@@ -256,8 +256,8 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         incoming_by_sku.setdefault(key, []).append(inc)
 
     # Magazyn „w drodze" z ERP — źródło zależne od firmy (identycznie jak w Raportach):
-    #   AMH  → drugi magazyn Subiektu (subiekt_dwa_magazyny.stan_magazyn_w_drodze)
-    #   Acti → Fakturownia „Towary w drodze" (fakturownia_stock.in_transit_qty)
+    #   AMH        → drugi magazyn Subiektu (subiekt_dwa_magazyny.stan_magazyn_w_drodze)
+    #   Acti/Veluxa→ Fakturownia „Towary w drodze" (fakturownia_stock.in_transit_qty)
     # Klucz LOWER(TRIM(sku)) — spójnie z resztą sklejania po SKU.
     subiekt_transit: Dict[str, int] = {}
     r = await db.execute(text(f"""
@@ -269,16 +269,23 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
     for m in r.mappings():
         subiekt_transit[m["k"]] = int(m["q"] or 0)
 
-    fakturownia_transit: Dict[str, int] = {}
+    # Fakturownia „w drodze" per firma (Acti, Veluxa, …) — trzymamy PER-FIRMA, żeby
+    # zakładka jednej firmy nie zassała transitu drugiej dla wspólnych SKU. Do trybu SUMA
+    # (shop="") dokładamy fakturownia_transit_all = Σ po firmach na dany SKU.
+    fakturownia_transit_by_firma: Dict[str, Dict[str, int]] = {}
+    fakturownia_transit_all: Dict[str, int] = {}
     r = await db.execute(text(f"""
-        SELECT LOWER(TRIM(fs.sku)) AS k, COALESCE(SUM(fs.in_transit_qty), 0) AS q
+        SELECT LOWER(f.slug) AS slug, LOWER(TRIM(fs.sku)) AS k,
+               COALESCE(SUM(fs.in_transit_qty), 0) AS q
         FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
         JOIN {settings.TABLE_FIRMY} f ON f.id = fs.firma_id
-        WHERE LOWER(f.slug) = 'acti' AND fs.sku IS NOT NULL AND fs.in_transit_qty > 0
-        GROUP BY LOWER(TRIM(fs.sku))
+        WHERE fs.sku IS NOT NULL AND fs.in_transit_qty > 0
+        GROUP BY LOWER(f.slug), LOWER(TRIM(fs.sku))
     """))
     for m in r.mappings():
-        fakturownia_transit[m["k"]] = int(m["q"] or 0)
+        q = int(m["q"] or 0)
+        fakturownia_transit_by_firma.setdefault(m["slug"], {})[m["k"]] = q
+        fakturownia_transit_all[m["k"]] = fakturownia_transit_all.get(m["k"], 0) + q
 
     # Stan sióstr (Sellasist) per SKU — osobne lekkie zapytanie, mergowane po SKU (jak incoming).
     # Bez parametru :shop — filtr „inny magazyn niż wybrany" robimy w calculate_forecast.
@@ -300,7 +307,7 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             # wszystkich firmach — realne „ile mam i mogę przerzucić". STAN jest już sumą
             # (SALES_QUERY dla shop='' sumuje Subiekt + wszystkie Sellasisty). „W drodze"
             # sumujemy z obu magazynów ERP; kontenery bierzemy wszystkie (bez firma-scope).
-            erp = subiekt_transit.get(sku_key, 0) + fakturownia_transit.get(sku_key, 0)
+            erp = subiekt_transit.get(sku_key, 0) + fakturownia_transit_all.get(sku_key, 0)
             inc_lines = incoming_by_sku.get(sku_key, [])
             skip_wbite = True
         else:
@@ -308,16 +315,16 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             cf = shop
             if cf == "amh":
                 erp = subiekt_transit.get(sku_key, 0)
-            elif cf == "acti":
-                erp = fakturownia_transit.get(sku_key, 0)
             else:
-                erp = 0
+                # Każda firma z wpiętą Fakturownią (Acti, Veluxa, …) — jej WŁASNY transit.
+                erp = fakturownia_transit_by_firma.get(cf, {}).get(sku_key, 0)
             # Kontenery tylko na zakładce firmy produktu — bez przecieku na obcą firmę.
             inc_lines = incoming_by_sku.get(sku_key, [])
             if p_firma != shop:
                 inc_lines = []
-            # Wbite wykluczamy tylko dla firm z wpiętym ERP (AMH, Acti); Veluxa liczy wszystko.
-            skip_wbite = cf in ("amh", "acti")
+            # Wbite wykluczamy dla firm z wpiętym ERP „w drodze" (AMH→Subiekt,
+            # Acti/Veluxa→Fakturownia) — zielone loty są już w erp_transit, inaczej dubel.
+            skip_wbite = cf in ("amh", "acti", "veluxa")
         results.append(calculate_forecast(
             p, inc_lines,
             transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop,

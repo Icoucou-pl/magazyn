@@ -11,12 +11,11 @@ zapis jest idempotentny (ON CONFLICT DO UPDATE) i uzupełniany przy starcie apki
 gdy proces nie żył o właściwej godzinie.
 
 Rozłączność ilości (żeby nic nie liczyło się podwójnie) — model jednakowy dla firm
-z wpiętym magazynem „w drodze" (AMH, Acti):
-  stan_glowny    — magazyn główny (AMH→Subiekt, Acti→Sellasist)
+z wpiętym magazynem „w drodze" (AMH, Acti, Veluxa):
+  stan_glowny    — magazyn główny (AMH→Subiekt, Acti/Veluxa→Sellasist)
   stan_w_drodze  — magazyn „w drodze" z ERP (AMH→drugi magazyn Subiektu,
-                   Acti→Fakturownia „Towary w drodze"); towar już wbity
+                   Acti/Veluxa→Fakturownia „Towary w drodze"); towar już wbity
   w_kontenerze   — TYLKO czerwone loty (jeszcze niewbite do ERP tej firmy)
-Veluxa: brak wpiętej Fakturowni → stan_w_drodze = 0, w_kontenerze = wszystko, co płynie.
 """
 from datetime import date
 from typing import Dict, List, Optional
@@ -33,10 +32,9 @@ ALL_STATUSES = {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}
 SLOTS = ("rano", "wieczor")
 DEFAULT_FIRMA_SLUG = "amh"
 # Firmy z wpiętym magazynem „w drodze" z ERP (AMH→Subiekt drugi magazyn,
-# Acti→Fakturownia „Towary w drodze"). Dla nich zielone (wbite) loty pomijamy
+# Acti/Veluxa→Fakturownia „Towary w drodze"). Dla nich zielone (wbite) loty pomijamy
 # w „w kontenerze", bo są już policzone w stan_w_drodze — inaczej dubel.
-# Veluxa jeszcze niewpięta (brak Fakturowni) → liczymy jej wszystko z kontenerów.
-TRANSIT_WIRED_FIRMY = {"amh", "acti"}
+TRANSIT_WIRED_FIRMY = {"amh", "acti", "veluxa"}
 
 
 # ── pomocnicze ───────────────────────────────────────────────
@@ -99,8 +97,8 @@ async def _transit_warehouse_value(db: AsyncSession) -> float:
 
 
 async def _fakturownia_transit_value(db: AsyncSession, slug: str) -> float:
-    """Magazyn „w drodze" Acti = Σ in_transit_qty × purchase_price_net (Fakturownia).
-    Analog _transit_warehouse_value dla AMH. Veluxa: brak wpiętej Fakturowni → 0."""
+    """Magazyn „w drodze" firmy = Σ in_transit_qty × purchase_price_net (Fakturownia).
+    Analog _transit_warehouse_value dla AMH. Firma bez Fakturowni → 0 (brak wierszy)."""
     try:
         r = await db.execute(text(f"""
             SELECT COALESCE(SUM(fs.in_transit_qty * COALESCE(fs.purchase_price_net, 0)), 0)
@@ -163,29 +161,31 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
     """4 KPI dla zakresu globalnego ('all') i każdej firmy.
 
     magazyn_pln     — Σ stock_value z katalogu (ten sam co pulpit, wszystkie statusy)
-    w_drodze_pln    — magazyn „w drodze" z ERP firmy (AMH→Subiekt, Acti→Fakturownia); Veluxa 0
+    w_drodze_pln    — magazyn „w drodze" z ERP firmy (AMH→Subiekt, Acti/Veluxa→Fakturownia)
     kontenery_pln   — czerwone loty, zawężone do firmy
     kapital_pln     — magazyn + w drodze
     """
     containers = await fetch_containers(db)
+    slugs = await _firma_slugs(db)
     transit_amh = await _transit_warehouse_value(db)          # AMH → drugi magazyn Subiektu
-    transit_acti = await _fakturownia_transit_value(db, "acti")  # Acti → Fakturownia „w drodze"
+    # Fakturownia „w drodze" (wartościowo) per firma nie-AMH (Acti, Veluxa, …).
+    # Firma bez wpiętej Fakturowni ma tu 0 (brak wierszy → SUM = 0).
+    transit_fakt = {s: await _fakturownia_transit_value(db, s)
+                    for s in slugs if s != DEFAULT_FIRMA_SLUG}
     rows: List[dict] = []
 
-    for scope in ["all"] + await _firma_slugs(db):
+    for scope in ["all"] + slugs:
         shop = "" if scope == "all" else scope
         products = await fetch_products(db, ALL_STATUSES, shop)
         magazyn = round(sum(float(p.stock_value or 0.0) for p in products), 2)
-        # Magazyn „w drodze" z ERP tej firmy: AMH → Subiekt, Acti → Fakturownia.
-        # 'all' sumuje oba. Veluxa: 0, aż wepnie się jej Fakturownia.
+        # Magazyn „w drodze" z ERP tej firmy: AMH → Subiekt, pozostałe → Fakturownia.
+        # 'all' sumuje AMH + wszystkie Fakturownie.
         if scope == DEFAULT_FIRMA_SLUG:
             w_drodze = transit_amh
-        elif scope == "acti":
-            w_drodze = transit_acti
         elif scope == "all":
-            w_drodze = round(transit_amh + transit_acti, 2)
+            w_drodze = round(transit_amh + sum(transit_fakt.values()), 2)
         else:
-            w_drodze = 0.0
+            w_drodze = transit_fakt.get(scope, 0.0)
         kontenery = _red_container_value(containers, shop)
         zaplacono, pozostalo = _payment_totals(containers, shop)
         rows.append({
@@ -208,14 +208,12 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
     """Stany per SKU × FIRMA — semantyka identyczna jak w zakładce Produkty.
 
       AMH         → magazyn główny (Subiekt) + „w drodze" z Subiektu (subiekt_dwa_magazyny)
-      Acti        → stan główny z Sellasista + „w drodze" z Fakturowni (in_transit_qty)
-      Veluxa      → stan główny z Sellasista („w drodze" = 0, aż wepnie się jej Fakturownia)
+      Acti/Veluxa → stan główny z Sellasista + „w drodze" z Fakturowni (in_transit_qty)
       w_kontenerze→ sztuki z kontenerów, przypisane po firmie PRODUKTU (app_product_attrs)
 
-    Dla firm z wpiętym „w drodze" (AMH, Acti) liczymy tylko CZERWONE loty — zielone (wbite)
-    są już w magazynie „w drodze" ERP (Subiekt/Fakturownia), więc doliczanie ich drugi raz
-    byłoby dublem. Dla Veluxy (bez Fakturowni) — wszystko, co płynie, bo jej stan „w drodze"
-    aktualizuje się dopiero po dostawie.
+    Dla firm z wpiętym „w drodze" (AMH, Acti, Veluxa) liczymy tylko CZERWONE loty — zielone
+    (wbite) są już w magazynie „w drodze" ERP (Subiekt/Fakturownia), więc doliczanie ich
+    drugi raz byłoby dublem.
     """
     rows: Dict[tuple, dict] = {}
 
@@ -273,14 +271,14 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
         if not t["cena_jednostkowa"]:
             t["cena_jednostkowa"] = price_by_sku.get(key, 0.0)
 
-    # 2b) Acti — magazyn „w drodze" z Fakturowni (analog drugiego magazynu Subiektu dla AMH).
-    # Tylko firmy z wpiętą Fakturownią (na razie Acti). Veluxa ma tu 0, dopóki jej nie wepniemy.
+    # 2b) Acti/Veluxa — magazyn „w drodze" z Fakturowni (analog drugiego magazynu Subiektu dla AMH).
+    # Wszystkie firmy z wpiętą Fakturownią; klucz per (sku, slug), więc każda firma osobno.
     r = await db.execute(text(f"""
         SELECT UPPER(TRIM(fs.sku)) AS sku, LOWER(f.slug) AS slug,
                COALESCE(SUM(fs.in_transit_qty), 0) AS transit
         FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
         JOIN {settings.TABLE_FIRMY} f ON f.id = fs.firma_id
-        WHERE LOWER(f.slug) = 'acti' AND fs.sku IS NOT NULL AND TRIM(fs.sku) <> ''
+        WHERE fs.sku IS NOT NULL AND TRIM(fs.sku) <> ''
         GROUP BY UPPER(TRIM(fs.sku)), LOWER(f.slug)
     """))
     for row in r:
@@ -313,9 +311,8 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
             if not key:
                 continue
             firma = firma_of.get(key, DEFAULT_FIRMA_SLUG)
-            # Firmy z wpiętym „w drodze" z ERP (AMH→Subiekt, Acti→Fakturownia): zielone
-            # (wbite) pomijamy — są już policzone w stan_w_drodze, inaczej dubel.
-            # Veluxa (bez Fakturowni) liczy wszystko z kontenerów.
+            # Firmy z wpiętym „w drodze" z ERP (AMH→Subiekt, Acti/Veluxa→Fakturownia):
+            # zielone (wbite) pomijamy — są już policzone w stan_w_drodze, inaczej dubel.
             if firma in TRANSIT_WIRED_FIRMY:
                 wbite = wbite_lot.get(getattr(it, "lot_id", None), False) if consolidated else bool(c.subiekt_wbite)
                 if wbite:
