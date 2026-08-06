@@ -1,6 +1,6 @@
 # 📦 Magazyn
 
-Aplikacja do zarządzania magazynem - integracja Subiekt + Sellasist.
+Aplikacja do zarządzania magazynem - integracja Subiekt + Sellasist + Fakturownia.
 
 ## Stack
 
