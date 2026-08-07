@@ -316,7 +316,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     const green = lots.filter((l) => !!l.subiekt_wbite);
     const red = lots.filter((l) => !l.subiekt_wbite);
     const redValue = red.reduce((s, l) => s + redValOf(l.firma_breakdown, l.total_value || 0), 0);
-    const redRemaining = red.reduce((s, l) => s + (l.pozostalo_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
+    const redRemaining = red.reduce((s, l) => s + (l.do_zaplacenia_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const greenPaid = green.reduce((s, l) => s + (l.zaplacono_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const greenRemaining = green.reduce((s, l) => s + (l.do_zaplacenia_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const missingRates = lots.reduce((s, l) => s + (l.brak_kursu ?? 0), 0);
@@ -340,7 +340,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     looseRed: 0,
     greenWhole: !isRed && rel,
     looseGreen: 0,
-    redRemaining: isRed ? (c.pozostalo_pln ?? 0) * ratio : 0,
+    redRemaining: isRed ? (c.do_zaplacenia_pln ?? 0) * ratio : 0,
     greenPaid: isRed ? 0 : (c.zaplacono_pln ?? 0) * ratio,
     greenRemaining: isRed ? 0 : (c.do_zaplacenia_pln ?? 0) * ratio,
     missingRates: c.brak_kursu ?? 0,
@@ -408,10 +408,11 @@ function KpiGrid({
   //   bez zmian. Wcześniej było greenRemaining = wartość_towaru − zapłacone (zła metoda).
   const magPaidLabel = fmtPLNk(mag.paid);
   const magToPay = fmtPLNk(mag.remaining);
-  const magSub = `${countLabel(mag.containers, mag.looseLots)} · do zapłacenia ${magToPay}`;
+  const magSub = `do zapłacenia ${magToPay}`;
   const magSubCount = countLabel(mag.containers, mag.looseLots);   // wariant bez kwoty (maskowany)
-  // „W Prognozie" (czerwone = jeszcze nie w Subiekcie): ile jeszcze zapłacimy za nieopłacone
-  // kontenery tej firmy (redRemaining już skalowany udziałem sklepu). Pod spodem tylko liczba.
+  // „W Prognozie" (czerwone = jeszcze nie w Subiekcie): niezapłacone zaliczki+balance tych
+  // kontenerów (do_zaplacenia_pln, kwoty bez daty zapłaty, kurs dzisiejszy), skalowane udziałem
+  // sklepu — symetrycznie do „do zapłacenia" zielonych. Pod spodem tylko liczba kontenerów.
   const kontSub = countLabel(kont.containers, kont.looseLots);
   const kapital = stockValue + mag.paid;   // kapitał w towarze: magazyn + zapłacone w drodze
 
