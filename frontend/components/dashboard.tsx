@@ -57,10 +57,11 @@ type ContainerOut = {
   is_consolidated?: boolean;
   subiekt_wbite?: boolean | null;
   lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null; firma_breakdown?: Record<string, FirmaShare>;
-           zaplacono_pln?: number; pozostalo_pln?: number; brak_kursu?: number }[];
+           zaplacono_pln?: number; pozostalo_pln?: number; do_zaplacenia_pln?: number; brak_kursu?: number }[];
   // Płatności przeliczone na PLN po kursie NBP z dnia poprzedzającego wpłatę (liczy backend).
   zaplacono_pln?: number;
   pozostalo_pln?: number;
+  do_zaplacenia_pln?: number;
   brak_kursu?: number;
   firma_breakdown?: Record<string, FirmaShare>;   // slug -> udział firmy (może nie przyjść ze starego backendu)
   expected_delivery_date?: string | null;          // „u nas" — umówiona data odbioru
@@ -317,7 +318,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     const redValue = red.reduce((s, l) => s + redValOf(l.firma_breakdown, l.total_value || 0), 0);
     const redRemaining = red.reduce((s, l) => s + (l.pozostalo_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const greenPaid = green.reduce((s, l) => s + (l.zaplacono_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
-    const greenRemaining = green.reduce((s, l) => s + (l.pozostalo_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
+    const greenRemaining = green.reduce((s, l) => s + (l.do_zaplacenia_pln ?? 0) * ratioOf(l.firma_breakdown, l.total_value || 0), 0);
     const missingRates = lots.reduce((s, l) => s + (l.brak_kursu ?? 0), 0);
     const relevant = lots.filter((l) => carries(l.firma_breakdown));
     const redRel = red.filter((l) => carries(l.firma_breakdown));
@@ -341,7 +342,7 @@ function splitSubiekt(c: ContainerOut, shop: string) {
     looseGreen: 0,
     redRemaining: isRed ? (c.pozostalo_pln ?? 0) * ratio : 0,
     greenPaid: isRed ? 0 : (c.zaplacono_pln ?? 0) * ratio,
-    greenRemaining: isRed ? 0 : (c.pozostalo_pln ?? 0) * ratio,
+    greenRemaining: isRed ? 0 : (c.do_zaplacenia_pln ?? 0) * ratio,
     missingRates: c.brak_kursu ?? 0,
   };
 }
@@ -401,11 +402,10 @@ function KpiGrid({
   const sparkLast30 = pts.slice(-30).map((p) => p.value);
   // Karta „Magazyn w drodze" liczona spójnie z JEDNEGO źródła — płatności kontenerowe:
   //   główna = zapłacone (Σ zaliczek + balance zielonych, skalowane udziałem sklepu),
-  //   „do zapłacenia" = pozostałe saldo tych samych zielonych kontenerów (greenRemaining).
-  // Dzięki temu zapłacone + do zapłacenia = wartość zielonych, a liczby sumują się po
-  // sklepach do „Wszyscy" i działają też dla Acti/Veluxy (mają swój udział, choć nie ma
-  // ich w Subiekcie). Wcześniej „do zapłacenia" = wartość_subiektowa(AMH) − zapłacone
-  // mieszało dwa zakresy i dawało rozjazdy między zakładkami oraz puste Acti/Veluxę.
+  //   „do zapłacenia" = suma NIEZAPŁACONYCH zaliczek i balansów tych samych zielonych
+  //   kontenerów (backend: do_zaplacenia_pln, kwoty bez daty zapłaty, kurs dzisiejszy),
+  //   skalowana udziałem sklepu. Liczone live per firma; „magazyn w drodze" (greenPaid)
+  //   bez zmian. Wcześniej było greenRemaining = wartość_towaru − zapłacone (zła metoda).
   const magPaidLabel = fmtPLNk(mag.paid);
   const magToPay = fmtPLNk(mag.remaining);
   const magSub = `${countLabel(mag.containers, mag.looseLots)} · do zapłacenia ${magToPay}`;
