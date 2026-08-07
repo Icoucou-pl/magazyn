@@ -410,6 +410,7 @@ class ContainerLotOut(BaseModel):
     # Płatności przeliczone na PLN (kurs NBP z dnia poprzedzającego wpłatę).
     zaplacono_pln: float = 0.0    # faktycznie zapłacone (zaliczki z datą + balance z zaplacono_data)
     pozostalo_pln: float = 0.0    # wartość towaru − zapłacone, nie schodzi poniżej 0
+    do_zaplacenia_pln: float = 0.0  # niezapłacone raty+balance (bez daty), kurs dzisiejszy — KPI „Do zapłacenia"
     brak_kursu: int = 0           # ile wpłat nie dało się przeliczyć (brak notowania NBP)
 
 
@@ -485,6 +486,7 @@ class ContainerOut(BaseModel):
     # Płatności przeliczone na PLN (kurs NBP z dnia poprzedzającego wpłatę).
     zaplacono_pln: float = 0.0    # faktycznie zapłacone (zaliczki z datą + balance z zaplacono_data)
     pozostalo_pln: float = 0.0    # wartość towaru − zapłacone, nie schodzi poniżej 0
+    do_zaplacenia_pln: float = 0.0  # niezapłacone raty+balance (bez daty), kurs dzisiejszy — KPI „Do zapłacenia"
     brak_kursu: int = 0           # ile wpłat nie dało się przeliczyć (brak notowania NBP)
     warehouse_delivery_date: Optional[date] = None   # KPI: delivered_date → expected_delivery_date → ETA + odprawa
     notes: Optional[str]
