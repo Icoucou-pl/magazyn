@@ -10,7 +10,7 @@
 
 import React, { useEffect, useState } from "react";
 import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/lib/api";
-import { UserContext as RawUserContext, canEdit } from "@/lib/permissions";
+import { UserContext as RawUserContext } from "@/lib/permissions";
 import LoginScreen from "@/components/login";
 import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
@@ -57,22 +57,6 @@ function ComingSoon({ view }: { view: string }) {
       <p style={{ color: "var(--text-lo)", fontSize: 13, marginTop: 6 }}>
         Ten widok zostanie zaprojektowany w kolejnym etapie.
       </p>
-    </div>
-  );
-}
-
-function ReadOnlyBanner() {
-  return (
-    <div style={{
-      background: "color-mix(in oklch, var(--warning) 12%, var(--bg))",
-      borderBottom: "1px solid color-mix(in oklch, var(--warning) 35%, var(--border))",
-      padding: "7px 24px",
-      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-      fontSize: 11, color: "var(--warning)", fontWeight: 600,
-      letterSpacing: "0.04em", textTransform: "uppercase",
-    }}>
-      <I.Alert size={12}/>
-      Tryb tylko do odczytu — Twoja rola nie pozwala na zmiany
     </div>
   );
 }
@@ -285,8 +269,6 @@ export default function Page() {
             freshness={freshness}
             onChangePassword={() => setView("settings")}
           />
-
-      {!canEdit(currentUser) && <ReadOnlyBanner/>}
 
       <main className="app-main" style={{
         width: "100%",
