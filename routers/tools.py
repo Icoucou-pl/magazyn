@@ -194,7 +194,13 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
             m.name AS manufacturer_name,
             m.color AS manufacturer_color
         FROM catalog_dedup cd
-        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON LOWER(TRIM(pa.sku)) = cd.sku_canon
+        LEFT JOIN (
+            SELECT DISTINCT ON (LOWER(TRIM(sku)))
+                   LOWER(TRIM(sku)) AS sku_canon,
+                   manufacturer_id
+            FROM {settings.TABLE_PRODUCT_ATTRS}
+            ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+        ) pa ON pa.sku_canon = cd.sku_canon
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
         WHERE (LOWER(cd.sku) LIKE :q OR LOWER(cd.name) LIKE :q)
           {vis_prod}
