@@ -244,6 +244,72 @@ async def fetch_payments_pln(db: AsyncSession, container_ids: List[int], lot_ids
     return by_container, by_lot
 
 
+async def fetch_unpaid_pln(db: AsyncSession, container_ids: List[int], lot_ids: List[int]):
+    """NIEZAPŁACONE kwoty w PLN — per kontener i per lot (KPI „Do zapłacenia").
+
+    Bliźniacza do fetch_payments_pln, ale liczy odwrotność: raty i balance, które
+    NIE mają jeszcze daty zapłaty (zaliczka `data IS NULL`, balance `zaplacono_data IS NULL`).
+    Skonsolidowane kontenery mają wiele rat i balance per lot — wszystkie wchodzą.
+
+    Przewalutowanie: terminy płatności są przyszłościowe, więc kursu z terminu nie znamy —
+    wyceniamy po AKTUALNYM kursie (ostatnie notowanie NBP przed dziś, `rate_date < CURRENT_DATE`).
+
+    Zwraca (by_container, by_lot): {id: {"pln": float, "brak_kursu": int}}.
+    """
+    by_container: dict = {}
+    by_lot: dict = {}
+    ids_c = list(container_ids or [])
+    ids_l = list(lot_ids or [])
+    if not ids_c and not ids_l:
+        return by_container, by_lot
+
+    r = await db.execute(text(f"""
+        WITH pay AS (
+            SELECT a.container_id, a.lot_id, a.kwota AS kwota, UPPER(a.waluta) AS waluta
+            FROM {settings.TABLE_CONTAINER_ADVANCES} a
+            WHERE (a.container_id = ANY(:cids) OR a.lot_id = ANY(:lids))
+              AND a.kwota IS NOT NULL AND a.data IS NULL
+            UNION ALL
+            SELECT c.id, NULL, c.balance_kwota, UPPER(c.balance_waluta)
+            FROM {settings.TABLE_CONTAINERS} c
+            WHERE c.id = ANY(:cids)
+              AND c.balance_kwota IS NOT NULL AND c.zaplacono_data IS NULL
+            UNION ALL
+            SELECT NULL, l.id, l.balance_kwota, UPPER(l.balance_waluta)
+            FROM {settings.TABLE_CONTAINER_LOTS} l
+            WHERE l.id = ANY(:lids)
+              AND l.balance_kwota IS NOT NULL AND l.zaplacono_data IS NULL
+        )
+        SELECT p.container_id, p.lot_id,
+               COALESCE(SUM(CASE WHEN COALESCE(p.waluta, 'PLN') = 'PLN'
+                                 THEN p.kwota ELSE p.kwota * fx.mid END), 0) AS pln,
+               COUNT(*) FILTER (WHERE COALESCE(p.waluta, 'PLN') <> 'PLN' AND fx.mid IS NULL) AS brak_kursu
+        FROM pay p
+        LEFT JOIN LATERAL (
+            SELECT r.mid
+            FROM {settings.TABLE_FX_RATES} r
+            WHERE r.currency = p.waluta AND r.rate_date < CURRENT_DATE
+            ORDER BY r.rate_date DESC
+            LIMIT 1
+        ) fx ON TRUE
+        GROUP BY p.container_id, p.lot_id
+    """), {"cids": (ids_c or [0]), "lids": (ids_l or [0])})
+
+    for row in r:
+        d = dict(row._mapping)
+        entry = {"pln": round(float(d["pln"] or 0), 2), "brak_kursu": int(d["brak_kursu"] or 0)}
+        if d["container_id"] is not None:
+            tgt = by_container.setdefault(d["container_id"], {"pln": 0.0, "brak_kursu": 0})
+        elif d["lot_id"] is not None:
+            tgt = by_lot.setdefault(d["lot_id"], {"pln": 0.0, "brak_kursu": 0})
+        else:
+            continue
+        tgt["pln"] = round(tgt["pln"] + entry["pln"], 2)
+        tgt["brak_kursu"] += entry["brak_kursu"]
+
+    return by_container, by_lot
+
+
 async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals_by_cid: dict) -> dict:
     """Loty dla wielu kontenerów jednym zapytaniem (zamiast N× fetch_lots).
     Zwraca {container_id: [ContainerLotOut,...]}; kolejność w obrębie kontenera jak wcześniej (position ASC, id ASC)."""
@@ -448,6 +514,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     # Faktycznie zapłacone (PLN) — jedno zapytanie na kontenery i wszystkie ich loty.
     all_lot_ids = [lot.id for lots in lots_by_cid.values() for lot in lots]
     paid_by_cid, paid_by_lot = await fetch_payments_pln(db, cids, all_lot_ids)
+    # Niezapłacone raty+balance (PLN, kurs dzisiejszy) — KPI „Do zapłacenia".
+    unpaid_by_cid, unpaid_by_lot = await fetch_unpaid_pln(db, cids, all_lot_ids)
     for cid in containers_dict:
         containers_dict[cid]["attachments"] = attachments_by_cid.get(cid, [])
         containers_dict[cid]["lots"] = lots_by_cid.get(cid, [])
@@ -455,16 +523,22 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
 
         # Kontener zbiera własne wpłaty + wpłaty swoich lotów (skonsolidowany płaci per lot).
         own = paid_by_cid.get(cid, {"pln": 0.0, "brak_kursu": 0})
+        own_unpaid = unpaid_by_cid.get(cid, {"pln": 0.0, "brak_kursu": 0})
         paid = own["pln"]
+        unpaid = own_unpaid["pln"]
         missing = own["brak_kursu"]
         for lot in containers_dict[cid]["lots"]:
             lp = paid_by_lot.get(lot.id, {"pln": 0.0, "brak_kursu": 0})
+            lu = unpaid_by_lot.get(lot.id, {"pln": 0.0, "brak_kursu": 0})
             lot.zaplacono_pln = lp["pln"]
             lot.pozostalo_pln = round(max((lot.total_value or 0.0) - lp["pln"], 0.0), 2)
+            lot.do_zaplacenia_pln = lu["pln"]
             lot.brak_kursu = lp["brak_kursu"]
             paid += lp["pln"]
+            unpaid += lu["pln"]
             missing += lp["brak_kursu"]
         containers_dict[cid]["zaplacono_pln"] = round(paid, 2)
+        containers_dict[cid]["do_zaplacenia_pln"] = round(unpaid, 2)
         containers_dict[cid]["brak_kursu"] = missing
         # doklej rozbicie firm per lot (z ContainerFirmaShare-friendly dict-ów)
         lot_firma = containers_dict[cid]["_lot_firma"]
