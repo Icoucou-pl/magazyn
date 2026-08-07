@@ -114,7 +114,7 @@ async def _fakturownia_transit_value(db: AsyncSession, slug: str) -> float:
 # ── KPI ──────────────────────────────────────────────────────
 
 def _payment_totals(containers, shop: str) -> tuple:
-    """(zaplacono_pln, pozostalo_pln, do_zaplacenia_pln) dla niedostarczonych kontenerów.
+    """(zaplacono_pln, pozostalo_pln) dla niedostarczonych kontenerów.
 
     Lustro frontowego splitSubiekt(): zapłacone liczymy po stronie ZIELONEJ (wbite do
     Subiektu), a resztę do zapłaty po CZERWONEJ. Kwoty skalujemy udziałem firmy — po
@@ -136,7 +136,6 @@ def _payment_totals(containers, shop: str) -> tuple:
 
     paid = 0.0
     left = 0.0
-    do_zap = 0.0   # „Do zapłacenia": niezapłacone raty+balance po ZIELONEJ stronie (wbite)
     for c in containers:
         if (c.effective_status or c.status) == "DELIVERED":
             continue
@@ -147,17 +146,15 @@ def _payment_totals(containers, shop: str) -> tuple:
                 r = ratio(l.firma_breakdown, float(l.total_value or 0.0))
                 if l.subiekt_wbite:
                     paid += float(l.zaplacono_pln or 0.0) * r
-                    do_zap += float(getattr(l, "do_zaplacenia_pln", 0.0) or 0.0) * r
                 else:
                     left += float(l.pozostalo_pln or 0.0) * r
         else:
             r = ratio(c.firma_breakdown, float(c.total_value or 0.0))
             if c.subiekt_wbite:
                 paid += float(c.zaplacono_pln or 0.0) * r
-                do_zap += float(getattr(c, "do_zaplacenia_pln", 0.0) or 0.0) * r
             else:
                 left += float(c.pozostalo_pln or 0.0) * r
-    return round(paid, 2), round(left, 2), round(do_zap, 2)
+    return round(paid, 2), round(left, 2)
 
 
 async def build_kpi_rows(db: AsyncSession) -> List[dict]:
@@ -190,7 +187,7 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
         else:
             w_drodze = transit_fakt.get(scope, 0.0)
         kontenery = _red_container_value(containers, shop)
-        zaplacono, pozostalo, do_zaplacenia = _payment_totals(containers, shop)
+        zaplacono, pozostalo = _payment_totals(containers, shop)
         rows.append({
             "firma_slug": scope,
             "magazyn_pln": magazyn,
@@ -201,7 +198,6 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
             # które pokazuje pulpit pod „Magazynem w drodze" i „Kontenerami w drodze".
             "zaplacono_pln": zaplacono,
             "pozostalo_pln": pozostalo,
-            "do_zaplacenia_pln": do_zaplacenia,
         })
     return rows
 
@@ -345,8 +341,8 @@ async def store_snapshot(db: AsyncSession, slot: str, snap_date: Optional[date] 
         await db.execute(text(f"""
             INSERT INTO {settings.TABLE_KPI_SNAPSHOTS}
                 (snap_date, snap_slot, firma_slug, kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln,
-                 zaplacono_pln, pozostalo_pln, do_zaplacenia_pln, captured_at)
-            VALUES (:d, :s, :f, :kap, :mag, :wdr, :kon, :zap, :poz, :dza, CURRENT_TIMESTAMP)
+                 zaplacono_pln, pozostalo_pln, captured_at)
+            VALUES (:d, :s, :f, :kap, :mag, :wdr, :kon, :zap, :poz, CURRENT_TIMESTAMP)
             ON CONFLICT (snap_date, snap_slot, firma_slug) DO UPDATE SET
                 kapital_pln = EXCLUDED.kapital_pln,
                 magazyn_pln = EXCLUDED.magazyn_pln,
@@ -354,12 +350,10 @@ async def store_snapshot(db: AsyncSession, slot: str, snap_date: Optional[date] 
                 kontenery_pln = EXCLUDED.kontenery_pln,
                 zaplacono_pln = EXCLUDED.zaplacono_pln,
                 pozostalo_pln = EXCLUDED.pozostalo_pln,
-                do_zaplacenia_pln = EXCLUDED.do_zaplacenia_pln,
                 captured_at = CURRENT_TIMESTAMP
         """), {"d": d, "s": slot, "f": row["firma_slug"], "kap": row["kapital_pln"],
                "mag": row["magazyn_pln"], "wdr": row["magazyn_w_drodze_pln"], "kon": row["kontenery_pln"],
-               "zap": row["zaplacono_pln"], "poz": row["pozostalo_pln"],
-               "dza": row["do_zaplacenia_pln"]})
+               "zap": row["zaplacono_pln"], "poz": row["pozostalo_pln"]})
 
     stock_rows = await build_stock_rows(db)
     for row in stock_rows:
