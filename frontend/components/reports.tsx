@@ -14,8 +14,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, download } from "@/lib/api";
 import { fmtPLNk } from "@/lib/format";
+import { useUser, can } from "@/lib/permissions";
 import { I, Card } from "@/components/ui";
 import { toast } from "@/components/toast";
+import OccupancyReport from "@/components/occupancy";
 
 type KpiRow = { label: string; snap_date: string; snap_slot: string; [k: string]: string | number };
 type KpiSummary = { key: string; label: string; start: number | null; end: number | null; delta: number | null; delta_pct: number | null };
@@ -452,7 +454,10 @@ function SkuReport({ from, to, setFrom, setTo, scope, minDate }: { from: string;
 // ── Ekran główny ─────────────────────────────────────────────
 
 export default function ReportsView() {
-  const [mode, setMode] = useState<null | "kpi" | "sku">(null);
+  // Zajętość magazynu jest za osobnym uprawnieniem `viewOccupancy`, którego CELOWO
+  // nie ma w ROLE_PERMS — bez jawnego ptaszka nie widzi jej nikt, łącznie z ADMIN.
+  const showOccupancy = can(useUser(), "viewOccupancy");
+  const [mode, setMode] = useState<null | "kpi" | "sku" | "occupancy">(null);
   const [scope, setScope] = useState("amh");          // domyślnie AMH; fragmentator firm — wspólny dla wszystkich raportów
   const [minDate, setMinDate] = useState("");         // pierwszy dzień, z którego mamy snapshot
   const [from, setFrom] = useState(today());
@@ -469,7 +474,7 @@ export default function ReportsView() {
       .catch(() => setMinDate(today()));
   }, []);
 
-  const box = (id: "kpi" | "sku", title: string, desc: string, icon: React.ReactNode, formats: string) => (
+  const box = (id: "kpi" | "sku" | "occupancy", title: string, desc: string, icon: React.ReactNode, formats: string) => (
     <Card style={{ padding: "22px 24px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }}>
       <div onClick={() => setMode(id)} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -502,22 +507,23 @@ export default function ReportsView() {
         <div style={segWrap}>
           {SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}
         </div>
-        <span style={{ fontSize: 11, color: "var(--text-lo)" }}>dotyczy obu raportów</span>
+        <span style={{ fontSize: 11, color: "var(--text-lo)" }}>dotyczy wszystkich raportów</span>
       </Card>
 
       {mode === null ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
           {box("kpi", "Raport zbiorczy magazynu", "Wartości magazynu w czasie — wybierz dzień lub zakres, zdecyduj ptaszkami, które pozycje mają się pokazać.", <I.TrendUp size={18} />, "Podgląd · PDF · Excel")}
           {box("sku", "Raport magazynu per SKU", "Stany i wartość per produkt. Przy zakresie dat pokaże początek, koniec i zmianę. Filtr obserwowanych i ręczny wybór SKU.", <I.Box size={18} />, "Podgląd · Excel")}
+          {showOccupancy && box("occupancy", "Zajętość magazynu", "Ile miejsca (m³) zajmuje towar dziś i ile zajmie po dostawach — suwak przesuwa datę. Alarm, gdy jeden SKU zjada za dużo hali.", <I.Container size={18} />, "Podgląd")}
         </div>
       ) : (
         <>
           <button onClick={() => setMode(null)} style={{ ...btnGhost, alignSelf: "flex-start", padding: "6px 11px", fontSize: 12 }}>
             ‹ Wszystkie raporty
           </button>
-          {mode === "kpi"
-            ? <KpiReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />
-            : <SkuReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />}
+          {mode === "kpi" && <KpiReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />}
+          {mode === "sku" && <SkuReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />}
+          {mode === "occupancy" && showOccupancy && <OccupancyReport scope={scope} />}
         </>
       )}
     </div>
