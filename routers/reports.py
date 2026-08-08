@@ -491,6 +491,35 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         cbm_by_sku[m["sku"]] = float(m["cbm"] or 0)
         firma_of[m["sku"]] = (m["slug"] or "amh")
 
+    # ── nazwy: Subiekt zna tylko AMH, więc dokładamy resztę ──
+    # Kolejność od najsłabszego do najmocniejszego źródła (późniejsze nadpisuje):
+    #   1. product_name z pozycji zamówień Sellasista  → jedyne źródło nazw dla Acti/Veluxa,
+    #   2. nazwa z tabeli subiektowej                  → AMH,
+    #   3. name_override z atrybutów produktu          → ręczna nadpiska, wygrywa zawsze.
+    # Bez tego SKU spoza Subiektu (czyli większość Acti/Veluxy) miały pustą nazwę.
+    names: Dict[str, str] = {}
+    for sql_txt in (
+        f"""SELECT UPPER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku, MAX(oi.product_name) AS n
+            FROM {settings.TABLE_ORDER_ITEMS} oi
+            WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
+              AND oi.product_name IS NOT NULL AND TRIM(oi.product_name) <> ''
+            GROUP BY UPPER(TRIM(oi.{settings.COL_ITEM_SKU}))""",
+        f"""SELECT UPPER(TRIM(sku)) AS sku, MAX(nazwa) AS n
+            FROM {settings.TABLE_SUBIEKT_DWA}
+            WHERE sku IS NOT NULL AND TRIM(sku) <> '' AND nazwa IS NOT NULL AND TRIM(nazwa) <> ''
+            GROUP BY UPPER(TRIM(sku))""",
+        f"""SELECT UPPER(TRIM(sku)) AS sku, name_override AS n
+            FROM {settings.TABLE_PRODUCT_ATTRS}
+            WHERE sku IS NOT NULL AND name_override IS NOT NULL AND TRIM(name_override) <> ''""",
+    ):
+        try:
+            r = await db.execute(text(sql_txt))
+            for m in r.mappings():
+                if m["sku"] and m["n"]:
+                    names[m["sku"]] = m["n"]
+        except Exception:
+            pass
+
     # ── agregat per (SKU, magazyn) ───────────────────────────
     acc: Dict[tuple, dict] = {}
 
@@ -541,7 +570,7 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
     for slug, cap in caps.items():
         per_firma[slug] = {"slug": slug, "label": OCC_FIRMA_LABELS.get(slug, slug.upper()),
                            "capacity_m3": round(float(cap or 0), 2), "stock_m3": 0.0, "incoming_m3": 0.0,
-                           "sku_count": 0, "over_count": 0}
+                           "sku_count": 0, "over_count": 0, "no_cbm_count": 0}
 
     rows: List[dict] = []
     missing_sku, missing_units = 0, 0
@@ -549,20 +578,27 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         qty = c["stock_qty"] + c["incoming_qty"]
         if qty <= 0:
             continue
-        if c["cbm"] <= 0:
+        no_cbm = c["cbm"] <= 0
+        if no_cbm:
             missing_sku += 1
             missing_units += qty
-            continue
         if firma not in per_firma:
             per_firma[firma] = {"slug": firma, "label": OCC_FIRMA_LABELS.get(firma, firma.upper()),
-                                "capacity_m3": 0.0, "stock_m3": 0.0, "incoming_m3": 0.0, "sku_count": 0, "over_count": 0}
+                                "capacity_m3": 0.0, "stock_m3": 0.0, "incoming_m3": 0.0, "sku_count": 0,
+                                "over_count": 0, "no_cbm_count": 0}
         stock_m3 = c["cbm"] * c["stock_qty"]
         incoming_m3 = c["cbm"] * c["incoming_qty"]
         per_firma[firma]["stock_m3"] += stock_m3
         per_firma[firma]["incoming_m3"] += incoming_m3
-        per_firma[firma]["sku_count"] += 1
+        # SKU bez kubatury zostaje w tabeli (żebyś wiedział, które uzupełnić), ale nie
+        # udaje, że coś zajmuje — nie wchodzi do sumy m³ ani do licznika SKU firmy.
+        if no_cbm:
+            per_firma[firma]["no_cbm_count"] += 1
+        else:
+            per_firma[firma]["sku_count"] += 1
         rows.append({
-            "sku": c["sku"], "nazwa": c["nazwa"], "firma_slug": firma,
+            "sku": c["sku"], "nazwa": names.get(key) or c["nazwa"] or "", "firma_slug": firma,
+            "no_cbm": no_cbm,
             "cbm_per_unit": round(c["cbm"], 3),
             "stock_qty": c["stock_qty"], "incoming_qty": c["incoming_qty"], "qty": qty,
             "stock_m3": round(stock_m3, 3), "incoming_m3": round(incoming_m3, 3),
@@ -576,6 +612,11 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         firm_cap = per_firma[r_["firma_slug"]]["capacity_m3"]
         r_["share_firm_pct"] = round((r_["volume_m3"] / firm_cap) * 100, 2) if firm_cap > 0 else 0.0
         r_["share_scope_pct"] = round((r_["volume_m3"] / scope_cap) * 100, 2) if scope_cap > 0 else 0.0
+        if r_.get("no_cbm"):
+            r_["threshold_label"] = "Brak CBM"
+            r_["threshold_tone"] = "pending"
+            r_["over"] = False
+            continue
         hit = _occ_match(thresholds["product"], r_["share_firm_pct"])
         r_["threshold_label"] = hit["label"]
         r_["threshold_tone"] = hit["tone"]
@@ -625,7 +666,9 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         "firms": firms,
         "rows": rows,
         "timeline": tl,
-        "missing_cbm": {"sku_count": missing_sku, "units": missing_units},
+        "missing_cbm": {"sku_count": sum(1 for r_ in rows if r_.get("no_cbm")),
+                        "units": sum(r_["qty"] for r_ in rows if r_.get("no_cbm")),
+                        "sku_count_all": missing_sku, "units_all": missing_units},
         "thresholds": thresholds,
         "caps": {k: round(float(v or 0), 2) for k, v in caps.items()},
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
