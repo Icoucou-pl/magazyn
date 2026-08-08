@@ -13,7 +13,7 @@
  *
  * Widok bramkuje uprawnienie `viewOccupancy` (patrz reports.tsx).
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { I, Card, Pill } from "@/components/ui";
@@ -267,7 +267,14 @@ function ConfigPanel({ caps, thresholds, onSaved, onClose }: {
 }
 
 // ── widok główny ─────────────────────────────────────────────
+const HORIZON_DEBOUNCE_MS = 350;
+
 export default function OccupancyReport({ scope }: { scope: string }) {
+  // Dwa stany celowo: `horizonInput` idzie za palcem (płynny suwak), `horizon` to
+  // wartość, dla której faktycznie pytamy backend. Endpoint przelicza kontenery i stany
+  // wszystkich firm, więc strzelanie nim przy każdym pikselu przeciągnięcia zabijało go
+  // serią równoległych zapytań wyprzedzających się nawzajem.
+  const [horizonInput, setHorizonInput] = useState(0);
   const [horizon, setHorizon] = useState(0);
   const [data, setData] = useState<OccData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -277,13 +284,25 @@ export default function OccupancyReport({ scope }: { scope: string }) {
   const [filter, setFilter] = useState<"all" | "over" | "nocbm">("all");
   const [sort, setSort] = useState<{ key: keyof OccRow; dir: "asc" | "desc" }>({ key: "volume_m3", dir: "desc" });
 
+  useEffect(() => {
+    if (horizonInput === horizon) return;
+    const t = setTimeout(() => setHorizon(horizonInput), HORIZON_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [horizonInput, horizon]);
+
+  // Numer żądania: odpowiedź z nieaktualnego zapytania jest ignorowana, więc wynik
+  // sprzed przeciągnięcia nie nadpisze świeższego (ani nie wyrzuci błędu na wierzch).
+  const reqRef = useRef(0);
   const load = useCallback(() => {
+    const id = ++reqRef.current;
     setLoading(true);
-    setErr("");
     api.get(`/reports/occupancy?scope=${scope}&horizon=${horizon}`)
-      .then((d: OccData) => setData(d))
-      .catch((e: { status?: number }) => setErr(e?.status === 403 ? "Brak uprawnienia do tego raportu." : "Nie udało się pobrać danych zajętości."))
-      .finally(() => setLoading(false));
+      .then((d: OccData) => { if (id === reqRef.current) { setData(d); setErr(""); } })
+      .catch((e: { status?: number }) => {
+        if (id !== reqRef.current) return;
+        setErr(e?.status === 403 ? "Brak uprawnienia do tego raportu." : "Nie udało się pobrać danych zajętości.");
+      })
+      .finally(() => { if (id === reqRef.current) setLoading(false); });
   }, [scope, horizon]);
 
   useEffect(() => { load(); }, [load]);
@@ -310,8 +329,17 @@ export default function OccupancyReport({ scope }: { scope: string }) {
   );
 
   if (loading && !data) return <Card style={{ padding: 28, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>Liczę kubaturę…</Card>;
-  if (err) return <Card style={{ padding: 28, textAlign: "center", color: "var(--critical)", fontSize: 13 }}>{err}</Card>;
+  if (err && !data) return <Card style={{ padding: 28, textAlign: "center", color: "var(--critical)", fontSize: 13 }}>{err}</Card>;
   if (!data) return null;
+
+  // Data odcięcia liczona lokalnie z pozycji suwaka — nagłówek nadąża za palcem,
+  // zanim wrócą policzone liczby.
+  const cutoffLocal = (() => {
+    const d = new Date(data.as_of + "T00:00:00");
+    d.setDate(d.getDate() + horizonInput);
+    return d.toISOString().slice(0, 10);
+  })();
+  const stale = loading || horizonInput !== horizon;
 
   const segments = (scope === "all" ? data.firms : data.firms.filter((f) => f.slug === scope))
     .map((f) => ({ key: f.slug, label: f.label, value: f.stock_m3, color: firmColor(f.slug) }));
@@ -329,27 +357,34 @@ export default function OccupancyReport({ scope }: { scope: string }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
           <div>
             <div style={labStyle}>Stan na dzień</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginTop: 3 }}>
-              <span style={{ fontSize: 15, fontWeight: 650 }}>{horizon === 0 ? "dziś" : dayLabel(data.cutoff)}</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginTop: 3, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 15, fontWeight: 650 }}>{horizonInput === 0 ? "dziś" : dayLabel(cutoffLocal)}</span>
               <span className="num" style={{ fontSize: 12, color: "var(--text-lo)" }}>
-                {horizon === 0 ? "sam stan hali" : `+${horizon} dni · z dostawami, które do wtedy dojadą`}
+                {horizonInput === 0 ? "sam stan hali" : `+${horizonInput} dni · z dostawami, które do wtedy dojadą`}
               </span>
+              {stale && <span style={{ fontSize: 11, color: "var(--accent)" }}>przeliczam…</span>}
             </div>
           </div>
           <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
             {HORIZON_PRESETS.map((h) => (
-              <button key={h} onClick={() => setHorizon(h)} style={{
+              <button key={h} onClick={() => setHorizonInput(h)} style={{
                 ...btnGhost, padding: "6px 11px", fontSize: 12,
-                background: horizon === h ? "var(--accent-soft)" : "var(--surface-1)",
-                color: horizon === h ? "var(--accent)" : "var(--text-mid)",
-                borderColor: horizon === h ? "var(--accent)" : "var(--border)",
+                background: horizonInput === h ? "var(--accent-soft)" : "var(--surface-1)",
+                color: horizonInput === h ? "var(--accent)" : "var(--text-mid)",
+                borderColor: horizonInput === h ? "var(--accent)" : "var(--border)",
               }}>{h === 0 ? "dziś" : `+${h} dni`}</button>
             ))}
             <button onClick={load} style={{ ...btnGhost, padding: 7 }} title="Przelicz"><I.Refresh size={14} /></button>
           </div>
         </div>
-        <input type="range" min={0} max={90} step={1} value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}
+        <input type="range" min={0} max={90} step={1} value={horizonInput}
+               onChange={(e) => setHorizonInput(Number(e.target.value))}
                style={{ width: "100%", accentColor: "var(--accent)" }} />
+        {err && (
+          <div style={{ fontSize: 11.5, color: "var(--critical)", display: "flex", alignItems: "center", gap: 7 }}>
+            <I.Alert size={13} /> {err} Pokazane liczby są z poprzedniego przeliczenia.
+          </div>
+        )}
         {nextArrivals.length > 0 && (
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--text-lo)" }}>
             <span>Poza horyzontem:</span>
@@ -363,7 +398,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
       </Card>
 
       {/* wypełnienie */}
-      <Card style={{ padding: "18px 20px" }}>
+      <Card style={{ padding: "18px 20px", opacity: stale ? 0.55 : 1, transition: "opacity .15s" }}>
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
             <span className="num" style={{ fontSize: 40, fontWeight: 650, letterSpacing: "-0.03em", lineHeight: 1, color: tc(data.fill_tone) }}>
@@ -395,7 +430,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
         {data.free_m3 < 0 && (
           <div style={{ marginTop: 10, fontSize: 12, color: "var(--critical)", display: "flex", alignItems: "center", gap: 7 }}>
             <I.Alert size={14} />
-            {horizon === 0
+            {data.horizon_days === 0
               ? `Hala jest przepełniona o ${m3(-data.free_m3)} m³.`
               : `Do ${dayLabel(data.cutoff)} zabraknie ${m3(-data.free_m3)} m³ miejsca — towar z kontenerów nie zmieści się w hali.`}
           </div>
@@ -413,7 +448,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
       {/* KPI */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         <Kpi label="Wypełnienie" value={pc(data.fill_pct)} sub={data.fill_label} tone={data.fill_tone} icon={<I.TrendUp size={15} />} />
-        <Kpi label="Zajęte" value={`${m3(data.used_m3)} m³`} sub={horizon === 0 ? "towar w hali" : `w hali ${m3(data.stock_m3)} + w drodze ${m3(data.incoming_m3)}`} icon={<I.Box size={15} />} />
+        <Kpi label="Zajęte" value={`${m3(data.used_m3)} m³`} sub={data.horizon_days === 0 ? "towar w hali" : `w hali ${m3(data.stock_m3)} + w drodze ${m3(data.incoming_m3)}`} icon={<I.Box size={15} />} />
         <Kpi label={data.free_m3 < 0 ? "Brakuje miejsca" : "Wolne miejsce"} value={`${m3(Math.abs(data.free_m3))} m³`}
              sub={data.free_m3 < 0 ? "ponad pojemność hali" : "do zapełnienia"} tone={data.free_m3 < 0 ? "critical" : "ok"} icon={<I.Ship size={15} />} />
         <Kpi label={`Nad progiem ${data.over_threshold_pct}%`} value={num(data.over_count)}
