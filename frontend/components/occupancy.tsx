@@ -25,14 +25,14 @@ type Thresholds = { product: Threshold[]; fill: Threshold[] };
 type FirmRow = {
   slug: string; label: string; capacity_m3: number; stock_m3: number; incoming_m3: number;
   used_m3: number; free_m3: number; fill_pct: number; sku_count: number; over_count: number;
-  threshold_label: string; threshold_tone: string;
+  no_cbm_count?: number; threshold_label: string; threshold_tone: string;
 };
 type OccRow = {
   sku: string; nazwa: string; firma_slug: string; cbm_per_unit: number;
   stock_qty: number; incoming_qty: number; qty: number;
   stock_m3: number; incoming_m3: number; volume_m3: number;
   share_firm_pct: number; share_scope_pct: number;
-  threshold_label: string; threshold_tone: string; over: boolean;
+  threshold_label: string; threshold_tone: string; over: boolean; no_cbm?: boolean;
 };
 type TimelineRow = { date: string; container_number: string; m3: number; firmy: Record<string, number> };
 type OccData = {
@@ -41,7 +41,7 @@ type OccData = {
   fill_pct: number; fill_label: string; fill_tone: string;
   over_count: number; over_threshold_pct: number; over_threshold_label: string;
   firms: FirmRow[]; rows: OccRow[]; timeline: TimelineRow[];
-  missing_cbm: { sku_count: number; units: number };
+  missing_cbm: { sku_count: number; units: number; sku_count_all?: number; units_all?: number };
   thresholds: Thresholds; caps: Record<string, number>;
   generated_at?: string;
 };
@@ -274,7 +274,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
   const [err, setErr] = useState("");
   const [cfgOpen, setCfgOpen] = useState(false);
   const [q, setQ] = useState("");
-  const [onlyOver, setOnlyOver] = useState(false);
+  const [filter, setFilter] = useState<"all" | "over" | "nocbm">("all");
   const [sort, setSort] = useState<{ key: keyof OccRow; dir: "asc" | "desc" }>({ key: "volume_m3", dir: "desc" });
 
   const load = useCallback(() => {
@@ -292,14 +292,15 @@ export default function OccupancyReport({ scope }: { scope: string }) {
     if (!data) return [];
     const s = q.trim().toLowerCase();
     let out = data.rows.filter((r) => !s || r.sku.toLowerCase().includes(s) || (r.nazwa || "").toLowerCase().includes(s));
-    if (onlyOver) out = out.filter((r) => r.over);
+    if (filter === "over") out = out.filter((r) => r.over);
+    if (filter === "nocbm") out = out.filter((r) => r.no_cbm);
     const dir = sort.dir === "asc" ? 1 : -1;
     return [...out].sort((a, b) => {
       const av = a[sort.key], bv = b[sort.key];
       if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv) * dir;
       return ((av as number) - (bv as number)) * dir;
     });
-  }, [data, q, onlyOver, sort]);
+  }, [data, q, filter, sort]);
 
   const head = (key: keyof OccRow, label: string, align: "left" | "right" = "right") => (
     <th onClick={() => setSort((s) => ({ key, dir: s.key === key && s.dir === "desc" ? "asc" : "desc" }))}
@@ -400,10 +401,12 @@ export default function OccupancyReport({ scope }: { scope: string }) {
           </div>
         )}
         {data.missing_cbm.sku_count > 0 && (
-          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 7 }}>
+          <button onClick={() => { setFilter("nocbm"); setSort({ key: "qty", dir: "desc" }); }}
+                  style={{ marginTop: 10, fontSize: 11.5, color: "var(--pending)", display: "flex", alignItems: "center", gap: 7,
+                           background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
             <I.Alert size={13} />
-            {num(data.missing_cbm.sku_count)} SKU bez wpisanego CBM ({num(data.missing_cbm.units)} szt.) — nie wchodzi do wyliczenia, więc realna zajętość jest wyższa.
-          </div>
+            {num(data.missing_cbm.sku_count)} SKU bez wpisanego CBM ({num(data.missing_cbm.units)} szt.) — nie wchodzi do wyliczenia, więc realna zajętość jest wyższa. Pokaż listę ›
+          </button>
         )}
       </Card>
 
@@ -443,7 +446,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
             </div>
           ))}
           {data.over_count > overRows.length && (
-            <button onClick={() => { setOnlyOver(true); setSort({ key: "share_firm_pct", dir: "desc" }); }}
+            <button onClick={() => { setFilter("over"); setSort({ key: "share_firm_pct", dir: "desc" }); }}
                     style={{ ...btnGhost, border: "none", borderTop: "1px solid var(--surface-3)", borderRadius: 0, width: "100%", justifyContent: "flex-start", padding: "10px 18px" }}>
               Pokaż pozostałe {data.over_count - overRows.length} w tabeli <I.ChevronR size={12} />
             </button>
@@ -475,8 +478,8 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                   {f.free_m3 >= 0 ? "Wolne " : "Brakuje "}
                   <span className="num" style={{ color: f.free_m3 >= 0 ? "var(--ok)" : "var(--critical)", fontWeight: 650 }}>{m3(Math.abs(f.free_m3))} m³</span>
                 </span>
-                <span style={{ color: f.over_count ? "var(--critical)" : "var(--text-lo)" }}>
-                  {f.over_count ? `${f.over_count} SKU nad progiem` : "brak SKU nad progiem"}
+                <span style={{ color: f.over_count ? "var(--critical)" : f.no_cbm_count ? "var(--pending)" : "var(--text-lo)" }}>
+                  {f.over_count ? `${f.over_count} SKU nad progiem` : f.no_cbm_count ? `${f.no_cbm_count} SKU bez CBM` : "brak SKU nad progiem"}
                 </span>
               </div>
             </Card>
@@ -502,12 +505,20 @@ export default function OccupancyReport({ scope }: { scope: string }) {
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Szukaj SKU lub nazwy…"
                    style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--text-hi)", fontSize: 13, fontFamily: "inherit" }} />
           </div>
-          <button onClick={() => setOnlyOver(!onlyOver)} style={{
+          <button onClick={() => setFilter(filter === "over" ? "all" : "over")} style={{
             ...btnGhost, padding: "7px 12px",
-            background: onlyOver ? "var(--critical-soft)" : "var(--surface-1)",
-            color: onlyOver ? "var(--critical)" : "var(--text-mid)",
-            borderColor: onlyOver ? "var(--critical)" : "var(--border)",
-          }}>Tylko nad progiem ({data.over_count})</button>
+            background: filter === "over" ? "var(--critical-soft)" : "var(--surface-1)",
+            color: filter === "over" ? "var(--critical)" : "var(--text-mid)",
+            borderColor: filter === "over" ? "var(--critical)" : "var(--border)",
+          }}>Nad progiem ({data.over_count})</button>
+          {data.missing_cbm.sku_count > 0 && (
+            <button onClick={() => setFilter(filter === "nocbm" ? "all" : "nocbm")} style={{
+              ...btnGhost, padding: "7px 12px",
+              background: filter === "nocbm" ? "var(--pending-soft)" : "var(--surface-1)",
+              color: filter === "nocbm" ? "var(--pending)" : "var(--text-mid)",
+              borderColor: filter === "nocbm" ? "var(--pending)" : "var(--border)",
+            }}>Bez CBM ({data.missing_cbm.sku_count})</button>
+          )}
           <div style={{ flex: 1 }} />
           <span style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
             {visible.length} z {data.rows.length} SKU · razem <span className="num">{m3(visible.reduce((a, r) => a + r.volume_m3, 0))} m³</span>
@@ -531,7 +542,8 @@ export default function OccupancyReport({ scope }: { scope: string }) {
             </thead>
             <tbody>
               {visible.map((r) => (
-                <tr key={r.sku + r.firma_slug} style={r.over ? { background: "var(--critical-soft)" } : undefined}>
+                <tr key={r.sku + r.firma_slug}
+                    style={r.over ? { background: "var(--critical-soft)" } : r.no_cbm ? { background: "var(--pending-soft)" } : undefined}>
                   <td style={{ ...td, textAlign: "left" }}><span className="mono" style={{ fontSize: 11.5, color: "var(--text-mid)" }}>{r.sku}</span></td>
                   <td style={{ ...td, textAlign: "left", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis" }}>{r.nazwa || "—"}</td>
                   {scope === "all" && (
@@ -539,19 +551,23 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                       <Pill bg="var(--surface-2)" fg={firmColor(r.firma_slug)} size="sm">{r.firma_slug.toUpperCase()}</Pill>
                     </td>
                   )}
-                  <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-mid)" }}>{r.cbm_per_unit.toFixed(3).replace(".", ",")}</td>
+                  <td className="num" style={{ ...td, textAlign: "right", color: r.no_cbm ? "var(--pending)" : "var(--text-mid)" }}>
+                    {r.no_cbm ? "brak" : r.cbm_per_unit.toFixed(3).replace(".", ",")}
+                  </td>
                   <td className="num" style={{ ...td, textAlign: "right" }}>{num(r.stock_qty)}</td>
                   <td className="num" style={{ ...td, textAlign: "right", color: r.incoming_qty ? "var(--text-mid)" : "var(--text-lo)" }}>{r.incoming_qty ? num(r.incoming_qty) : "—"}</td>
-                  <td className="num" style={{ ...td, textAlign: "right", fontWeight: 650 }}>{m3(r.volume_m3)}</td>
+                  <td className="num" style={{ ...td, textAlign: "right", fontWeight: 650, color: r.no_cbm ? "var(--text-lo)" : "var(--text-hi)" }}>
+                    {r.no_cbm ? "—" : m3(r.volume_m3)}
+                  </td>
                   <td style={{ ...td, textAlign: "right" }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
                       <span style={{ width: 56, height: 5, background: "var(--surface-3)", borderRadius: 99, overflow: "hidden" }}>
                         <span style={{ display: "block", width: `${Math.min(100, (r.share_firm_pct / Math.max(data.over_threshold_pct * 1.6, 1)) * 100)}%`, height: "100%", background: tc(r.threshold_tone) }} />
                       </span>
-                      <span className="num" style={{ fontWeight: 650, color: tc(r.threshold_tone), minWidth: 46 }}>{pc(r.share_firm_pct)}</span>
+                      <span className="num" style={{ fontWeight: 650, color: tc(r.threshold_tone), minWidth: 46 }}>{r.no_cbm ? "—" : pc(r.share_firm_pct)}</span>
                     </span>
                   </td>
-                  {scope === "all" && <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-lo)" }}>{pc(r.share_scope_pct)}</td>}
+                  {scope === "all" && <td className="num" style={{ ...td, textAlign: "right", color: "var(--text-lo)" }}>{r.no_cbm ? "—" : pc(r.share_scope_pct)}</td>}
                   <td style={{ ...td, textAlign: "left" }}>
                     <Pill bg={tsoft(r.threshold_tone)} fg={tc(r.threshold_tone)} size="sm">{r.threshold_label}</Pill>
                   </td>
@@ -559,7 +575,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
               ))}
               {visible.length === 0 && (
                 <tr><td colSpan={scope === "all" ? 10 : 8} style={{ padding: "36px 16px", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
-                  Brak SKU spełniających filtr. Wyczyść szukanie albo wyłącz „tylko nad progiem".
+                  Brak SKU spełniających filtr. Wyczyść szukanie albo przełącz filtr.
                 </td></tr>
               )}
             </tbody>

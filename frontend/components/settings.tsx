@@ -1237,7 +1237,7 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
       </div>
       <p style={{ fontSize: 11, color: "var(--text-mid)", margin: "0 0 12px" }}>
         Domyślne uprawnienia wynikają z roli. Możesz je nadpisać indywidualnie dla tej osoby — np. dać Viewerowi edycję produktów albo ukryć komuś dane finansowe.
-        {isSuper && " Super-admin ma zawsze pełny dostęp (zablokowane)."}
+        {isSuper && " To konto super-administratora — widzisz stan rzeczywisty i możesz go zmieniać. Uwaga: backend nie robi wyjątku dla super-admina, więc odebranie sobie uprawnienia naprawdę je odbiera (konta i tak nie da się usunąć)."}
       </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
@@ -1245,8 +1245,8 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
           <div key={group} style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8, overflow: "hidden" }}>
             <div style={{ padding: "7px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", borderBottom: "1px solid var(--border-soft)", background: "var(--bg-elevated)" }}>{group}</div>
             {perms.map(perm => {
-              const on = isSuper ? true : eff(perm.key);
-              const ovr = !isSuper && isOverridden(perm.key);
+              const on = eff(perm.key);
+              const ovr = isOverridden(perm.key);
               return (
                 <div key={perm.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderTop: "1px solid var(--border-soft)" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -1256,7 +1256,7 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
                     </div>
                     <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 1 }}>{perm.desc}</div>
                   </div>
-                  <Toggle on={on} disabled={isSuper} onClick={() => toggle(perm.key)}/>
+                  <Toggle on={on} onClick={() => toggle(perm.key)}/>
                 </div>
               );
             })}
