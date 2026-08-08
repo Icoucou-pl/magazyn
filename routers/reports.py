@@ -1,14 +1,18 @@
-"""Raporty: zbiorczy (KPI w czasie) i per SKU — z podglądem live i eksportem do Excela.
+"""Raporty: zbiorczy (KPI w czasie), per SKU i zajętość magazynu (m³).
 
 Dane pochodzą ze snapshotów zbieranych 2× dziennie (7:05 / 20:05), więc są DOKŁADNE
 — nie rekonstruujemy przeszłości. Okres bez snapshotów zwraca pustkę, nie zmyślone liczby.
+
+Zajętość magazynu liczona jest zawsze NA ŻYWO (nie ze snapshotów) i siedzi za osobnym
+uprawnieniem `viewOccupancy` — patrz sekcja na dole pliku.
 """
 from datetime import date, datetime, timedelta
 from io import BytesIO
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +20,9 @@ from config import settings
 from database import get_db
 from models import CurrentUser
 from security import get_current_user, has_perm
+from services.containers import fetch_containers
 from services.snapshots import store_snapshot, build_kpi_rows, build_stock_rows, SLOTS
+from audit import log_audit
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -359,6 +365,333 @@ async def live_sku(favorites_only: bool = Query(False), skus: str = Query(""), s
                    db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports)):
     """Stany per SKU NA TERAZ — liczone na żywo, nic nie zapisuje."""
     return await _live_sku(db, favorites_only, skus, scope)
+
+
+# ══════════════════════════════════════════════════════════════
+# ZAJĘTOŚĆ MAGAZYNU (m³)
+#
+# Ile miejsca zajmuje towar dziś — i ile będzie zajmował w dniu X, po
+# rozładowaniu kontenerów, które do tego dnia dojadą.
+#
+# Uprawnienie `viewOccupancy` CELOWO nie istnieje w ROLE_PERMS (security.py),
+# więc ma je wyłącznie user z jawnym wpisem w kolumnie `permissions`.
+#
+# Rozłączność objętości (nic nie liczy się dwa razy):
+#   · na stanie  = magazyn GŁÓWNY (AMH→Subiekt, Acti/Veluxa→Sellasist) — towar
+#                  fizycznie stojący w hali,
+#   · w drodze   = pozycje niedostarczonych kontenerów z datą wejścia na magazyn
+#                  PO dzisiaj. Magazyn „w drodze" z ERP (drugi magazyn Subiektu /
+#                  Fakturownia) świadomie POMIJAMY: to ten sam towar co w kontenerach,
+#                  tylko wbity księgowo, a on nie zajmuje jeszcze miejsca w hali.
+#
+# Data wejścia na magazyn = warehouse_delivery_date z services/containers.py:
+#   delivered_date → expected_delivery_date → ETA + CONTAINER_CUSTOMS_DAYS (7).
+# Ta sama reguła, co w Kalendarzu i Prognozie — jedna prawda o dacie.
+# ══════════════════════════════════════════════════════════════
+
+OCC_DEFAULT_CAPS = {"amh": 800.0, "acti": 600.0, "veluxa": 200.0}
+OCC_FIRMA_LABELS = {"amh": "AMH", "acti": "Acti", "veluxa": "Veluxa"}
+OCC_TONES = {"ok", "warning", "critical", "info", "pending", "anomaly", "accent"}
+OCC_MAX_HORIZON = 365
+
+OCC_DEFAULT_THRESHOLDS = {
+    "product": [("W normie", 0.0, "ok"), ("Dużo miejsca", 5.0, "warning"), ("Za dużo", 10.0, "critical")],
+    "fill":    [("Luźno", 0.0, "info"), ("Optymalnie", 55.0, "ok"), ("Ciasno", 85.0, "warning"), ("Przepełniony", 100.0, "critical")],
+}
+
+
+def _require_occupancy(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not has_perm(user, "viewOccupancy"):
+        raise HTTPException(403, "Brak uprawnienia do raportu zajętości magazynu")
+    return user
+
+
+class OccThresholdIn(BaseModel):
+    label: str = Field(min_length=1, max_length=40)
+    from_pct: float = 0.0
+    tone: str = "info"
+
+
+class OccConfigIn(BaseModel):
+    caps: Dict[str, float] = {}
+    product: List[OccThresholdIn] = []
+    fill: List[OccThresholdIn] = []
+
+
+def _occ_defaults(kind: str) -> List[dict]:
+    return [{"label": l, "from_pct": p, "tone": t} for l, p, t in OCC_DEFAULT_THRESHOLDS[kind]]
+
+
+async def _occ_caps(db: AsyncSession) -> Dict[str, float]:
+    """Pojemności hal. Brak tabeli lub pusto → wartości domyślne (nie wywalamy raportu)."""
+    caps = dict(OCC_DEFAULT_CAPS)
+    try:
+        r = await db.execute(text("SELECT LOWER(firma_slug) AS slug, capacity_m3 FROM app_warehouse_capacity"))
+        found = {m["slug"]: float(m["capacity_m3"] or 0) for m in r.mappings() if m["slug"]}
+        if found:
+            caps.update(found)
+    except Exception:
+        pass
+    return caps
+
+
+async def _occ_thresholds(db: AsyncSession) -> Dict[str, List[dict]]:
+    """Progi z bazy; pusto → domyślne. Zawsze posortowane rosnąco po from_pct."""
+    out = {"product": [], "fill": []}
+    try:
+        r = await db.execute(text("""
+            SELECT kind, label, from_pct, tone
+            FROM app_occupancy_thresholds
+            ORDER BY kind, from_pct
+        """))
+        for m in r.mappings():
+            k = (m["kind"] or "").strip().lower()
+            if k in out:
+                out[k].append({"label": m["label"], "from_pct": float(m["from_pct"] or 0), "tone": m["tone"] or "info"})
+    except Exception:
+        pass
+    for k in ("product", "fill"):
+        if not out[k]:
+            out[k] = _occ_defaults(k)
+        out[k].sort(key=lambda t: t["from_pct"])
+    return out
+
+
+def _occ_match(thresholds: List[dict], value: float) -> dict:
+    """Etykieta = najwyższy próg, który wartość przekroczyła."""
+    hit = thresholds[0] if thresholds else {"label": "—", "from_pct": 0.0, "tone": "info"}
+    for t in thresholds:
+        if value >= t["from_pct"]:
+            hit = t
+    return hit
+
+
+async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
+    scope = (scope or "all").strip().lower()
+    horizon = max(0, min(int(horizon or 0), OCC_MAX_HORIZON))
+    today = date.today()
+    cutoff = today + timedelta(days=horizon)
+
+    caps = await _occ_caps(db)
+    thresholds = await _occ_thresholds(db)
+    top_product = thresholds["product"][-1] if thresholds["product"] else {"from_pct": 10.0, "label": "Za dużo", "tone": "critical"}
+
+    # ── kubatura + przypisanie firmy z atrybutów produktu ────
+    cbm_by_sku: Dict[str, float] = {}
+    firma_of: Dict[str, str] = {}
+    r = await db.execute(text(f"""
+        SELECT UPPER(TRIM(a.sku)) AS sku,
+               COALESCE(a.cbm_per_unit, 0) AS cbm,
+               LOWER(COALESCE(f.slug, 'amh')) AS slug
+        FROM {settings.TABLE_PRODUCT_ATTRS} a
+        LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = a.firma_id
+        WHERE a.sku IS NOT NULL AND TRIM(a.sku) <> ''
+    """))
+    for m in r.mappings():
+        cbm_by_sku[m["sku"]] = float(m["cbm"] or 0)
+        firma_of[m["sku"]] = (m["slug"] or "amh")
+
+    # ── agregat per (SKU, magazyn) ───────────────────────────
+    acc: Dict[tuple, dict] = {}
+
+    def cell(sku_raw: str, firma: str) -> dict:
+        key = ((sku_raw or "").strip().upper(), firma)
+        if key not in acc:
+            acc[key] = {"sku": (sku_raw or "").strip(), "nazwa": "", "firma_slug": firma,
+                        "cbm": cbm_by_sku.get(key[0], 0.0), "stock_qty": 0, "incoming_qty": 0}
+        return acc[key]
+
+    # 1) stan fizyczny — magazyn GŁÓWNY (bez „w drodze" z ERP)
+    for e in await build_stock_rows(db):
+        firma = (e.get("firma_slug") or "amh").strip().lower()
+        c = cell(e.get("sku") or "", firma)
+        c["stock_qty"] += int(e.get("stan_glowny") or 0)
+        if not c["nazwa"]:
+            c["nazwa"] = e.get("nazwa") or ""
+
+    # 2) w drodze — kontenery z datą wejścia na magazyn w horyzoncie
+    timeline: Dict[tuple, dict] = {}
+    for cont in await fetch_containers(db):
+        if (cont.effective_status or cont.status) == "DELIVERED":
+            continue
+        arrival = getattr(cont, "warehouse_delivery_date", None)
+        if not arrival or arrival <= today:
+            # Bez daty nie wiemy, kiedy zajmie miejsce; data przeszła → towar
+            # powinien już siedzieć w stanie głównym, doliczanie byłoby dublem.
+            continue
+        for it in (cont.items or []):
+            key = (getattr(it, "sku", "") or "").strip().upper()
+            if not key:
+                continue
+            qty = int(getattr(it, "quantity", 0) or 0)
+            if qty <= 0:
+                continue
+            firma = firma_of.get(key, "amh")
+            vol = cbm_by_sku.get(key, 0.0) * qty
+            tkey = (arrival, cont.container_number or f"#{cont.id}")
+            t = timeline.setdefault(tkey, {"date": arrival.isoformat(), "container_number": tkey[1], "m3": 0.0, "firmy": {}})
+            if scope in ("all", firma):
+                t["m3"] += vol
+                t["firmy"][firma] = round(t["firmy"].get(firma, 0.0) + vol, 3)
+            if arrival <= cutoff:
+                cell(getattr(it, "sku", key), firma)["incoming_qty"] += qty
+
+    # ── wiersze + podsumowania per firma ─────────────────────
+    per_firma: Dict[str, dict] = {}
+    for slug, cap in caps.items():
+        per_firma[slug] = {"slug": slug, "label": OCC_FIRMA_LABELS.get(slug, slug.upper()),
+                           "capacity_m3": round(float(cap or 0), 2), "stock_m3": 0.0, "incoming_m3": 0.0,
+                           "sku_count": 0, "over_count": 0}
+
+    rows: List[dict] = []
+    missing_sku, missing_units = 0, 0
+    for (key, firma), c in acc.items():
+        qty = c["stock_qty"] + c["incoming_qty"]
+        if qty <= 0:
+            continue
+        if c["cbm"] <= 0:
+            missing_sku += 1
+            missing_units += qty
+            continue
+        if firma not in per_firma:
+            per_firma[firma] = {"slug": firma, "label": OCC_FIRMA_LABELS.get(firma, firma.upper()),
+                                "capacity_m3": 0.0, "stock_m3": 0.0, "incoming_m3": 0.0, "sku_count": 0, "over_count": 0}
+        stock_m3 = c["cbm"] * c["stock_qty"]
+        incoming_m3 = c["cbm"] * c["incoming_qty"]
+        per_firma[firma]["stock_m3"] += stock_m3
+        per_firma[firma]["incoming_m3"] += incoming_m3
+        per_firma[firma]["sku_count"] += 1
+        rows.append({
+            "sku": c["sku"], "nazwa": c["nazwa"], "firma_slug": firma,
+            "cbm_per_unit": round(c["cbm"], 3),
+            "stock_qty": c["stock_qty"], "incoming_qty": c["incoming_qty"], "qty": qty,
+            "stock_m3": round(stock_m3, 3), "incoming_m3": round(incoming_m3, 3),
+            "volume_m3": round(stock_m3 + incoming_m3, 3),
+        })
+
+    # Udział produktu liczymy ZAWSZE względem hali, w której towar stoi — bo tam
+    # fizycznie blokuje miejsce. Przy „Wszyscy" dokładamy udział w sumie hal.
+    scope_cap = sum(f["capacity_m3"] for f in per_firma.values()) if scope == "all" else float(caps.get(scope, 0) or 0)
+    for r_ in rows:
+        firm_cap = per_firma[r_["firma_slug"]]["capacity_m3"]
+        r_["share_firm_pct"] = round((r_["volume_m3"] / firm_cap) * 100, 2) if firm_cap > 0 else 0.0
+        r_["share_scope_pct"] = round((r_["volume_m3"] / scope_cap) * 100, 2) if scope_cap > 0 else 0.0
+        hit = _occ_match(thresholds["product"], r_["share_firm_pct"])
+        r_["threshold_label"] = hit["label"]
+        r_["threshold_tone"] = hit["tone"]
+        r_["over"] = r_["share_firm_pct"] >= top_product["from_pct"]
+        if r_["over"]:
+            per_firma[r_["firma_slug"]]["over_count"] += 1
+
+    if scope != "all":
+        rows = [r_ for r_ in rows if r_["firma_slug"] == scope]
+
+    for f in per_firma.values():
+        used = f["stock_m3"] + f["incoming_m3"]
+        f["stock_m3"] = round(f["stock_m3"], 2)
+        f["incoming_m3"] = round(f["incoming_m3"], 2)
+        f["used_m3"] = round(used, 2)
+        f["free_m3"] = round(f["capacity_m3"] - used, 2)
+        f["fill_pct"] = round((used / f["capacity_m3"]) * 100, 2) if f["capacity_m3"] > 0 else 0.0
+        hit = _occ_match(thresholds["fill"], f["fill_pct"])
+        f["threshold_label"] = hit["label"]
+        f["threshold_tone"] = hit["tone"]
+
+    firms = [per_firma[s] for s in sorted(per_firma, key=lambda x: (x != "amh", x))]
+    in_scope = firms if scope == "all" else [f for f in firms if f["slug"] == scope]
+
+    stock_m3 = round(sum(f["stock_m3"] for f in in_scope), 2)
+    incoming_m3 = round(sum(f["incoming_m3"] for f in in_scope), 2)
+    used_m3 = round(stock_m3 + incoming_m3, 2)
+    capacity = round(sum(f["capacity_m3"] for f in in_scope), 2)
+    fill_pct = round((used_m3 / capacity) * 100, 2) if capacity > 0 else 0.0
+    fill_hit = _occ_match(thresholds["fill"], fill_pct)
+
+    rows.sort(key=lambda x: x["volume_m3"], reverse=True)
+    tl = sorted(timeline.values(), key=lambda t: t["date"])
+    tl = [t for t in tl if t["m3"] > 0][:60]
+    for t in tl:
+        t["m3"] = round(t["m3"], 2)
+
+    return {
+        "scope": scope, "horizon_days": horizon,
+        "as_of": today.isoformat(), "cutoff": cutoff.isoformat(),
+        "capacity_m3": capacity,
+        "stock_m3": stock_m3, "incoming_m3": incoming_m3, "used_m3": used_m3,
+        "free_m3": round(capacity - used_m3, 2),
+        "fill_pct": fill_pct, "fill_label": fill_hit["label"], "fill_tone": fill_hit["tone"],
+        "over_count": sum(1 for r_ in rows if r_["over"]),
+        "over_threshold_pct": top_product["from_pct"], "over_threshold_label": top_product["label"],
+        "firms": firms,
+        "rows": rows,
+        "timeline": tl,
+        "missing_cbm": {"sku_count": missing_sku, "units": missing_units},
+        "thresholds": thresholds,
+        "caps": {k: round(float(v or 0), 2) for k, v in caps.items()},
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+@router.get("/reports/occupancy")
+async def occupancy(
+    scope: str = Query("all"), horizon: int = Query(0, ge=0, le=OCC_MAX_HORIZON),
+    db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_occupancy),
+):
+    """Zajętość hal w m³ na dziś + po dostawach do dnia `dziś + horizon`."""
+    return await _occ_compute(db, scope, horizon)
+
+
+@router.get("/reports/occupancy/config")
+async def occupancy_config(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_occupancy)):
+    """Pojemności hal i progi — do panelu ustawień raportu."""
+    return {"caps": {k: round(float(v or 0), 2) for k, v in (await _occ_caps(db)).items()},
+            "thresholds": await _occ_thresholds(db)}
+
+
+@router.put("/reports/occupancy/config")
+async def occupancy_config_save(
+    payload: OccConfigIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_occupancy),
+):
+    """Zapis pojemności i progów. Progi nadpisujemy w całości — lista z UI jest źródłem prawdy."""
+    for slug, val in (payload.caps or {}).items():
+        s = (slug or "").strip().lower()
+        if not s:
+            continue
+        if val is None or val < 0:
+            raise HTTPException(400, f"Pojemność dla {s} nie może być ujemna")
+        await db.execute(text("""
+            INSERT INTO app_warehouse_capacity (firma_slug, capacity_m3, updated_at)
+            VALUES (:slug, :cap, CURRENT_TIMESTAMP)
+            ON CONFLICT (firma_slug) DO UPDATE SET capacity_m3 = EXCLUDED.capacity_m3, updated_at = CURRENT_TIMESTAMP
+        """), {"slug": s, "cap": float(val)})
+
+    for kind, items in (("product", payload.product), ("fill", payload.fill)):
+        if items is None:
+            continue
+        clean = []
+        for t in items:
+            tone = t.tone if t.tone in OCC_TONES else "info"
+            pct = max(0.0, min(float(t.from_pct or 0), 1000.0))
+            label = (t.label or "").strip()
+            if label:
+                clean.append({"label": label[:40], "from_pct": pct, "tone": tone})
+        if not clean:
+            clean = _occ_defaults(kind)
+        clean.sort(key=lambda x: x["from_pct"])
+        # Pierwszy próg musi startować od 0 — inaczej wartości poniżej nie dostałyby etykiety.
+        clean[0]["from_pct"] = 0.0
+        await db.execute(text("DELETE FROM app_occupancy_thresholds WHERE kind = :k"), {"k": kind})
+        for i, t in enumerate(clean):
+            await db.execute(text("""
+                INSERT INTO app_occupancy_thresholds (kind, label, from_pct, tone, sort_order, updated_at)
+                VALUES (:k, :l, :p, :t, :o, CURRENT_TIMESTAMP)
+            """), {"k": kind, "l": t["label"], "p": t["from_pct"], "t": t["tone"], "o": i})
+
+    await db.commit()
+    await log_audit(db, user, "OCCUPANCY_CONFIG_SAVED", "reports", "occupancy",
+                    f"caps={payload.caps}")
+    return {"caps": {k: round(float(v or 0), 2) for k, v in (await _occ_caps(db)).items()},
+            "thresholds": await _occ_thresholds(db)}
 
 
 # ── eksport XLSX ─────────────────────────────────────────────
