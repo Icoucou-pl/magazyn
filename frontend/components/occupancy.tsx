@@ -24,12 +24,12 @@ type Threshold = { label: string; from_pct: number; tone: string };
 type Thresholds = { product: Threshold[]; fill: Threshold[] };
 type FirmRow = {
   slug: string; label: string; capacity_m3: number; stock_m3: number; incoming_m3: number;
-  used_m3: number; free_m3: number; fill_pct: number; sku_count: number; over_count: number;
+  sold_m3?: number; used_m3: number; free_m3: number; fill_pct: number; sku_count: number; over_count: number;
   no_cbm_count?: number; threshold_label: string; threshold_tone: string;
 };
 type OccRow = {
   sku: string; nazwa: string; firma_slug: string; cbm_per_unit: number;
-  stock_qty: number; incoming_qty: number; qty: number;
+  stock_qty: number; incoming_qty: number; qty: number; sold_qty?: number; qty_left?: number;
   stock_m3: number; incoming_m3: number; volume_m3: number;
   share_firm_pct: number; share_scope_pct: number;
   threshold_label: string; threshold_tone: string; over: boolean; no_cbm?: boolean;
@@ -37,7 +37,8 @@ type OccRow = {
 type TimelineRow = { date: string; container_number: string; m3: number; firmy: Record<string, number> };
 type OccData = {
   scope: string; horizon_days: number; as_of: string; cutoff: string;
-  capacity_m3: number; stock_m3: number; incoming_m3: number; used_m3: number; free_m3: number;
+  capacity_m3: number; stock_m3: number; incoming_m3: number; sold_m3?: number;
+  sales_included?: boolean; sales_window_days?: number; used_m3: number; free_m3: number;
   fill_pct: number; fill_label: string; fill_tone: string;
   over_count: number; over_threshold_pct: number; over_threshold_label: string;
   firms: FirmRow[]; rows: OccRow[]; timeline: TimelineRow[];
@@ -276,6 +277,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
   // serią równoległych zapytań wyprzedzających się nawzajem.
   const [horizonInput, setHorizonInput] = useState(0);
   const [horizon, setHorizon] = useState(0);
+  const [withSales, setWithSales] = useState(true);
   const [data, setData] = useState<OccData | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -296,14 +298,14 @@ export default function OccupancyReport({ scope }: { scope: string }) {
   const load = useCallback(() => {
     const id = ++reqRef.current;
     setLoading(true);
-    api.get(`/reports/occupancy?scope=${scope}&horizon=${horizon}`)
+    api.get(`/reports/occupancy?scope=${scope}&horizon=${horizon}&sales=${withSales}`)
       .then((d: OccData) => { if (id === reqRef.current) { setData(d); setErr(""); } })
       .catch((e: { status?: number }) => {
         if (id !== reqRef.current) return;
         setErr(e?.status === 403 ? "Brak uprawnienia do tego raportu." : "Nie udało się pobrać danych zajętości.");
       })
       .finally(() => { if (id === reqRef.current) setLoading(false); });
-  }, [scope, horizon]);
+  }, [scope, horizon, withSales]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -374,6 +376,16 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                 borderColor: horizonInput === h ? "var(--accent)" : "var(--border)",
               }}>{h === 0 ? "dziś" : `+${h} dni`}</button>
             ))}
+            <button onClick={() => setWithSales((v) => !v)}
+                    title="Odejmuj przewidywaną sprzedaż (średnia dzienna z 90 dni × liczba dni)"
+                    style={{
+                      ...btnGhost, padding: "6px 11px", fontSize: 12,
+                      background: withSales ? "var(--ok-soft)" : "var(--surface-1)",
+                      color: withSales ? "var(--ok)" : "var(--text-lo)",
+                      borderColor: withSales ? "var(--ok)" : "var(--border)",
+                    }}>
+              {withSales ? "− sprzedaż" : "bez sprzedaży"}
+            </button>
             <button onClick={load} style={{ ...btnGhost, padding: 7 }} title="Przelicz"><I.Refresh size={14} /></button>
           </div>
         </div>
@@ -418,6 +430,12 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                 {s.label} <span className="num" style={{ color: "var(--text-lo)" }}>{m3(s.value)} m³</span>
               </span>
             ))}
+            {!!data.sold_m3 && data.sold_m3 > 0 && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ok)" }}>
+                <I.TrendDown size={12} />
+                Sprzedaż <span className="num">−{m3(data.sold_m3)} m³</span>
+              </span>
+            )}
             {data.incoming_m3 > 0 && (
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-mid)" }}>
                 <span style={{ width: 9, height: 9, borderRadius: 2, backgroundColor: "var(--surface-2)", backgroundImage: "repeating-linear-gradient(115deg, var(--text-lo) 0 2px, transparent 2px 5px)" }} />
@@ -448,7 +466,11 @@ export default function OccupancyReport({ scope }: { scope: string }) {
       {/* KPI */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         <Kpi label="Wypełnienie" value={pc(data.fill_pct)} sub={data.fill_label} tone={data.fill_tone} icon={<I.TrendUp size={15} />} />
-        <Kpi label="Zajęte" value={`${m3(data.used_m3)} m³`} sub={data.horizon_days === 0 ? "towar w hali" : `w hali ${m3(data.stock_m3)} + w drodze ${m3(data.incoming_m3)}`} icon={<I.Box size={15} />} />
+        <Kpi label="Zajęte" value={`${m3(data.used_m3)} m³`}
+             sub={data.horizon_days === 0
+               ? "towar w hali"
+               : `zostaje ${m3(data.stock_m3)} + dojedzie ${m3(data.incoming_m3)}${data.sold_m3 ? ` · sprzedaż −${m3(data.sold_m3)}` : ""}`}
+             icon={<I.Box size={15} />} />
         <Kpi label={data.free_m3 < 0 ? "Brakuje miejsca" : "Wolne miejsce"} value={`${m3(Math.abs(data.free_m3))} m³`}
              sub={data.free_m3 < 0 ? "ponad pojemność hali" : "do zapełnienia"} tone={data.free_m3 < 0 ? "critical" : "ok"} icon={<I.Ship size={15} />} />
         <Kpi label={`Nad progiem ${data.over_threshold_pct}%`} value={num(data.over_count)}
@@ -569,6 +591,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                 {head("cbm_per_unit", "m³ / szt")}
                 {head("stock_qty", "Na stanie")}
                 {head("incoming_qty", "W drodze")}
+                {data.horizon_days > 0 && data.sales_included && head("sold_qty", "Sprzedaż")}
                 {head("volume_m3", "Objętość m³")}
                 {head("share_firm_pct", scope === "all" ? "% hali" : "% magazynu")}
                 {scope === "all" && head("share_scope_pct", "% całości")}
@@ -591,6 +614,11 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                   </td>
                   <td className="num" style={{ ...td, textAlign: "right" }}>{num(r.stock_qty)}</td>
                   <td className="num" style={{ ...td, textAlign: "right", color: r.incoming_qty ? "var(--text-mid)" : "var(--text-lo)" }}>{r.incoming_qty ? num(r.incoming_qty) : "—"}</td>
+                  {data.horizon_days > 0 && data.sales_included && (
+                    <td className="num" style={{ ...td, textAlign: "right", color: r.sold_qty ? "var(--ok)" : "var(--text-lo)" }}>
+                      {r.sold_qty ? `−${num(r.sold_qty)}` : "—"}
+                    </td>
+                  )}
                   <td className="num" style={{ ...td, textAlign: "right", fontWeight: 650, color: r.no_cbm ? "var(--text-lo)" : "var(--text-hi)" }}>
                     {r.no_cbm ? "—" : m3(r.volume_m3)}
                   </td>
@@ -609,7 +637,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                 </tr>
               ))}
               {visible.length === 0 && (
-                <tr><td colSpan={scope === "all" ? 10 : 8} style={{ padding: "36px 16px", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
+                <tr><td colSpan={(scope === "all" ? 10 : 8) + (data.horizon_days > 0 && data.sales_included ? 1 : 0)} style={{ padding: "36px 16px", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
                   Brak SKU spełniających filtr. Wyczyść szukanie albo przełącz filtr.
                 </td></tr>
               )}
@@ -621,6 +649,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
       <div style={{ fontSize: 11, color: "var(--text-lo)" }}>
         Liczone na żywo{data.generated_at ? ` · ${data.generated_at}` : ""}. Na stanie = magazyn główny.
         W drodze = kontenery z datą wejścia na magazyn do {dayLabel(data.cutoff)} (potwierdzona dostawa → umówiony odbiór → ETA + 7 dni odprawy).
+        {data.sales_included && ` Sprzedaż odjęta na podstawie średniej dziennej z ostatnich ${data.sales_window_days || 90} dni — bez uwzględnienia sezonowości.`}
       </div>
     </div>
   );
