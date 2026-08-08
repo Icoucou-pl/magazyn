@@ -23,9 +23,15 @@ export const PERMISSIONS = [
   { key: "manageUsers",    label: "Zarządzanie userami",   desc: "Dodawanie, role, uprawnienia",              group: "Administracja" },
   { key: "viewAudit",      label: "Dziennik audytu",       desc: "Podgląd historii zdarzeń",                  group: "Administracja" },
   { key: "viewReports",    label: "Raporty",               desc: "Dostęp do raportów miesięcznych (KPI, PDF/Excel)", group: "Widoczność" },
+  { key: "viewOccupancy",  label: "Zajętość magazynu",     desc: "Raport kubatury (m³) i kafelek zajętości na pulpicie", group: "Widoczność" },
 ];
 
 // Domyślne uprawnienia per rola — nadpisywalne per użytkownik
+//
+// UWAGA — klucze CELOWO nieobecne poniżej (can() zwróci dla nich false dla KAŻDEJ roli,
+// łącznie z ADMIN; dostęp daje wyłącznie ptaszek postawiony konkretnemu userowi):
+//   · viewOccupancy — Zajętość magazynu.
+// Lustro tej samej reguły po stronie backendu siedzi w security.py → ROLE_PERMS.
 export const ROLE_PERMS = {
   ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true },
   IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false },
