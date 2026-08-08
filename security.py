@@ -118,6 +118,11 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 
 # ===== GRANULARNE UPRAWNIENIA (1:1 z frontend/lib/permissions.js) =====
 # Domyślne uprawnienia per rola. Override per-user (kolumna `permissions`) je nadpisuje.
+#
+# UWAGA — klucze CELOWO nieobecne poniżej (has_perm zwróci dla nich False dla KAŻDEJ roli,
+# łącznie z ADMIN; dostęp daje wyłącznie wpis w kolumnie `permissions` konkretnego usera):
+#   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
+# Dopisanie takiego klucza do ROLE_PERMS otworzy go całej roli — rób to świadomie.
 ROLE_PERMS = {
     "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True},
     "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False},
@@ -150,3 +155,4 @@ def require_perm(perm: str):
 require_view_financials = require_perm("viewFinancials")
 require_edit_containers = require_perm("editContainers")
 require_export = require_perm("export")
+require_occupancy = require_perm("viewOccupancy")
