@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
+from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from models import CurrentUser
 from security import get_current_user, has_perm
@@ -379,6 +379,9 @@ async def live_sku(favorites_only: bool = Query(False), skus: str = Query(""), s
 # Rozłączność objętości (nic nie liczy się dwa razy):
 #   · na stanie  = magazyn GŁÓWNY (AMH→Subiekt, Acti/Veluxa→Sellasist) — towar
 #                  fizycznie stojący w hali,
+#   · sprzedaż   = przy horyzoncie > 0 odejmujemy przewidywany rozchód: średnia dzienna
+#                  z ostatnich 90 dni × liczba dni. Liczona z zamówień już w bazie
+#                  (sellasist_orders), więc nie wołamy API Sellasista.
 #   · w drodze   = pozycje niedostarczonych kontenerów z datą wejścia na magazyn
 #                  PO dzisiaj. Magazyn „w drodze" z ERP (drugi magazyn Subiektu /
 #                  Fakturownia) świadomie POMIJAMY: to ten sam towar co w kontenerach,
@@ -466,7 +469,7 @@ def _occ_match(thresholds: List[dict], value: float) -> dict:
     return hit
 
 
-async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
+async def _occ_compute(db: AsyncSession, scope: str, horizon: int, include_sales: bool = True) -> dict:
     scope = (scope or "all").strip().lower()
     horizon = max(0, min(int(horizon or 0), OCC_MAX_HORIZON))
     today = date.today()
@@ -520,6 +523,30 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         except Exception:
             pass
 
+    # ── przewidywany rozchód: średnia dzienna z 90 dni ───────
+    # Okno 90-dniowe zamiast 30, bo wygładza pojedyncze duże zamówienia. Filtr statusów
+    # ten sam, co w SALES_QUERY (per sklep), żeby liczby zgadzały się z resztą systemu.
+    daily_sales: Dict[tuple, float] = {}
+    if include_sales and horizon > 0:
+        try:
+            r = await db.execute(text(f"""
+                SELECT UPPER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku,
+                       LOWER(TRIM(o.shop)) AS shop,
+                       SUM(oi.{settings.COL_ITEM_QTY}) AS qty
+                FROM {settings.TABLE_ORDER_ITEMS} oi
+                JOIN {settings.TABLE_ORDERS} o
+                  ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID} AND o.shop = oi.shop
+                WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '90 days'
+                  {INCLUDED_STATUS_FILTER}
+                  AND oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
+                GROUP BY UPPER(TRIM(oi.{settings.COL_ITEM_SKU})), LOWER(TRIM(o.shop))
+            """))
+            for m in r.mappings():
+                if m["sku"] and m["shop"]:
+                    daily_sales[(m["sku"], m["shop"])] = float(m["qty"] or 0) / 90.0
+        except Exception:
+            daily_sales = {}
+
     # ── agregat per (SKU, magazyn) ───────────────────────────
     acc: Dict[tuple, dict] = {}
 
@@ -570,7 +597,7 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
     for slug, cap in caps.items():
         per_firma[slug] = {"slug": slug, "label": OCC_FIRMA_LABELS.get(slug, slug.upper()),
                            "capacity_m3": round(float(cap or 0), 2), "stock_m3": 0.0, "incoming_m3": 0.0,
-                           "sku_count": 0, "over_count": 0, "no_cbm_count": 0}
+                           "sold_m3": 0.0, "sku_count": 0, "over_count": 0, "no_cbm_count": 0}
 
     rows: List[dict] = []
     missing_sku, missing_units = 0, 0
@@ -584,12 +611,20 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
             missing_units += qty
         if firma not in per_firma:
             per_firma[firma] = {"slug": firma, "label": OCC_FIRMA_LABELS.get(firma, firma.upper()),
-                                "capacity_m3": 0.0, "stock_m3": 0.0, "incoming_m3": 0.0, "sku_count": 0,
-                                "over_count": 0, "no_cbm_count": 0}
-        stock_m3 = c["cbm"] * c["stock_qty"]
-        incoming_m3 = c["cbm"] * c["incoming_qty"]
+                                "capacity_m3": 0.0, "stock_m3": 0.0, "incoming_m3": 0.0, "sold_m3": 0.0,
+                                "sku_count": 0, "over_count": 0, "no_cbm_count": 0}
+        # Przewidywana sprzedaż zjada najpierw to, co stoi w hali, a dopiero potem to,
+        # co dojedzie. Nie schodzimy poniżej zera — magazyn nie ma ujemnej objętości.
+        sold_qty = min(qty, int(round(daily_sales.get((key, firma), 0.0) * horizon)))
+        left_stock = max(0, c["stock_qty"] - sold_qty)
+        left_incoming = max(0, qty - sold_qty - left_stock)
+
+        stock_m3 = c["cbm"] * left_stock
+        incoming_m3 = c["cbm"] * left_incoming
+        sold_m3 = c["cbm"] * sold_qty
         per_firma[firma]["stock_m3"] += stock_m3
         per_firma[firma]["incoming_m3"] += incoming_m3
+        per_firma[firma]["sold_m3"] += sold_m3
         # SKU bez kubatury zostaje w tabeli (żebyś wiedział, które uzupełnić), ale nie
         # udaje, że coś zajmuje — nie wchodzi do sumy m³ ani do licznika SKU firmy.
         if no_cbm:
@@ -601,7 +636,9 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
             "no_cbm": no_cbm,
             "cbm_per_unit": round(c["cbm"], 3),
             "stock_qty": c["stock_qty"], "incoming_qty": c["incoming_qty"], "qty": qty,
+            "sold_qty": sold_qty, "qty_left": qty - sold_qty,
             "stock_m3": round(stock_m3, 3), "incoming_m3": round(incoming_m3, 3),
+            "sold_m3": round(sold_m3, 3),
             "volume_m3": round(stock_m3 + incoming_m3, 3),
         })
 
@@ -631,6 +668,7 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         used = f["stock_m3"] + f["incoming_m3"]
         f["stock_m3"] = round(f["stock_m3"], 2)
         f["incoming_m3"] = round(f["incoming_m3"], 2)
+        f["sold_m3"] = round(f["sold_m3"], 2)
         f["used_m3"] = round(used, 2)
         f["free_m3"] = round(f["capacity_m3"] - used, 2)
         f["fill_pct"] = round((used / f["capacity_m3"]) * 100, 2) if f["capacity_m3"] > 0 else 0.0
@@ -643,6 +681,7 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
 
     stock_m3 = round(sum(f["stock_m3"] for f in in_scope), 2)
     incoming_m3 = round(sum(f["incoming_m3"] for f in in_scope), 2)
+    sold_m3 = round(sum(f["sold_m3"] for f in in_scope), 2)
     used_m3 = round(stock_m3 + incoming_m3, 2)
     capacity = round(sum(f["capacity_m3"] for f in in_scope), 2)
     fill_pct = round((used_m3 / capacity) * 100, 2) if capacity > 0 else 0.0
@@ -658,7 +697,9 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
         "scope": scope, "horizon_days": horizon,
         "as_of": today.isoformat(), "cutoff": cutoff.isoformat(),
         "capacity_m3": capacity,
-        "stock_m3": stock_m3, "incoming_m3": incoming_m3, "used_m3": used_m3,
+        "stock_m3": stock_m3, "incoming_m3": incoming_m3, "sold_m3": sold_m3,
+        "sales_included": bool(include_sales and horizon > 0), "sales_window_days": 90,
+        "used_m3": used_m3,
         "free_m3": round(capacity - used_m3, 2),
         "fill_pct": fill_pct, "fill_label": fill_hit["label"], "fill_tone": fill_hit["tone"],
         "over_count": sum(1 for r_ in rows if r_["over"]),
@@ -678,10 +719,14 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int) -> dict:
 @router.get("/reports/occupancy")
 async def occupancy(
     scope: str = Query("all"), horizon: int = Query(0, ge=0, le=OCC_MAX_HORIZON),
+    sales: bool = Query(True),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_occupancy),
 ):
-    """Zajętość hal w m³ na dziś + po dostawach do dnia `dziś + horizon`."""
-    return await _occ_compute(db, scope, horizon)
+    """Zajętość hal w m³ na dziś + po dostawach do dnia `dziś + horizon`.
+
+    `sales=false` wyłącza odejmowanie przewidywanego rozchodu (scenariusz „nic się nie sprzeda").
+    """
+    return await _occ_compute(db, scope, horizon, include_sales=sales)
 
 
 @router.get("/reports/occupancy/config")
