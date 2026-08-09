@@ -463,8 +463,9 @@ async def finance_product(
     AMH/„Wszystkie", stan Sellasista (sellasist_stock) dla wybranego sklepu. Dzięki temu karta
     Acti/Veluxa pokazuje stan z ich magazynu, a nie z Subiektu (AMH) — i działa też dla produktów,
     których w ogóle nie ma w Subiekcie (3/4 asortymentu Acti/Veluxa). Koszt jednostkowy z
-    COALESCE(app_product_attrs.cena_zakupu, subiekt.cena_zakupu_netto) — to samo źródło co Produkty,
-    czyli ceny uzupełnione ręcznie dla Acti/Veluxa też wchodzą do marży."""
+    COALESCE(app_product_attrs.cena_zakupu, subiekt.cena) — to samo źródło co Produkty,
+    czyli ceny uzupełnione ręcznie dla Acti/Veluxa też wchodzą do marży. `subiekt` jest
+    warstwowe: nowa tabela (cena_jednostkowa) wiedzie, stara łata brakujące SKU i zerowe ceny."""
     custom = _custom_period(from_date, to_date) if period == "custom" else None
     if custom is not None:
         period = "custom"
@@ -498,13 +499,38 @@ async def finance_product(
             FROM {settings.TABLE_ORDER_ITEMS}
             WHERE LOWER(TRIM({settings.COL_ITEM_SKU})) = LOWER(TRIM(:symbol))
         ),
-        subiekt AS (
+        subiekt_nowy AS (
+            -- Druga tabela subiektowa (AMH): świeże ceny i stan magazynu podstawowego.
+            SELECT nazwa                     AS nazwa,
+                   stan_magazyn_podstawowy   AS stan,
+                   cena_jednostkowa          AS cena
+            FROM {settings.TABLE_SUBIEKT_DWA}
+            WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:symbol))
+            LIMIT 1
+        ),
+        subiekt_stary AS (
             SELECT {settings.COL_PRODUCT_NAME}       AS nazwa,
                    {settings.COL_PRODUCT_STOCK}      AS stan,
                    {settings.COL_PRODUCT_PRICE}      AS cena
             FROM {settings.TABLE_PRODUCTS}
             WHERE LOWER(TRIM({settings.COL_PRODUCT_SKU})) = LOWER(TRIM(:symbol))
             LIMIT 1
+        ),
+        subiekt AS (
+            -- Warstwowo, 1:1 z katalogiem w sql.py: nowa tabela wiedzie, stara łata dziury
+            -- (pusta nazwa, zerowa cena, SKU nieobecne w nowej). Kotwicą jest sztuczny wiersz,
+            -- więc CTE zwraca dokładnie jeden rekord także wtedy, gdy nie ma go w żadnej tabeli.
+            -- found_flag zastępuje dawne wykrywanie po `nazwa IS NOT NULL` — produkt istniejący
+            -- w Subiekcie z pustą nazwą nie jest już fałszywie raportowany jako nieznaleziony.
+            SELECT COALESCE(NULLIF(TRIM(n.nazwa), ''), o.nazwa)      AS nazwa,
+                   COALESCE(n.stan, o.stan)                          AS stan,
+                   COALESCE(NULLIF(n.cena, 0), o.cena)               AS cena,
+                   (n.stan IS NOT NULL OR n.cena IS NOT NULL
+                        OR o.stan IS NOT NULL OR o.cena IS NOT NULL
+                        OR n.nazwa IS NOT NULL OR o.nazwa IS NOT NULL) AS found_flag
+            FROM (SELECT 1) kotwica
+            LEFT JOIN subiekt_nowy n ON TRUE
+            LEFT JOIN subiekt_stary o ON TRUE
         )
         SELECT
             COALESCE(NULLIF(TRIM(pa.name_override), ''), s.nazwa, ord.nazwa, ea.symbol, :symbol) AS name,
@@ -517,7 +543,7 @@ async def finance_product(
             m.name                                                                  AS mfr_name,
             m.color                                                                 AS mfr_color,
             lt.lead_time_days                                                       AS lead_time_days,
-            (s.nazwa IS NOT NULL OR ea.qty > 0 OR ord.nazwa IS NOT NULL
+            (COALESCE(s.found_flag, FALSE) OR ea.qty > 0 OR ord.nazwa IS NOT NULL
                  OR pa.sku IS NOT NULL)                                             AS found
         FROM ext
         CROSS JOIN ext_all ea
