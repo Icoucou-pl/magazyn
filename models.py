@@ -539,14 +539,28 @@ class SeasonPoint(BaseModel):
 
 
 class Anomaly(BaseModel):
+    """Anomalia na dashboardzie.
+
+    Typy sprzedażowe (spike/drop/stock_drain) używają pól sales_*/change_pct.
+    Typ `wbite_shortfall` (niedobór w magazynie „w drodze" wobec zielonych kropek)
+    ich nie ma — dlatego dostały wartości domyślne — a niesie własne pola opcjonalne.
+    Front trzyma `type` jako luźny string i renderuje go generycznie, więc nowy typ
+    nie wymaga zmian po tamtej stronie.
+    """
     sku: str
     name: str
     severity: Literal["high", "medium", "low"]
-    type: Literal["sales_spike", "sales_drop", "stock_drain"]
+    type: Literal["sales_spike", "sales_drop", "stock_drain", "wbite_shortfall"]
     message: str
-    sales_1m: int
-    sales_3m_avg: float
-    change_pct: float
+    sales_1m: int = 0
+    sales_3m_avg: float = 0.0
+    change_pct: float = 0.0
+    # --- tylko dla wbite_shortfall ---
+    firma_slug: Optional[str] = None      # firma, której ERP nie pokrywa deklaracji
+    expected_qty: Optional[int] = None    # ile powinno być wg zielonych kropek
+    actual_qty: Optional[int] = None      # ile realnie jest w ERP tej firmy
+    missing_qty: Optional[int] = None     # expected - actual
+    containers: Optional[List[str]] = None  # kandydaci do sprawdzenia (najświeżej wbite)
 
 
 class ImportRow(BaseModel):
