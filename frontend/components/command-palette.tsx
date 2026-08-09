@@ -70,7 +70,10 @@ export default function CommandPalette({ open, onClose, onProduct, onContainer, 
     const t = setTimeout(async () => {
       try {
         const inc = readShowInactive() ? "&include_inactive=1" : "";
-        const data = (await api.get(`/search/global?q=${encodeURIComponent(query)}${inc}`)) as GlobalSearchResponse;
+        // Paleta pokazuje wyłącznie SKU obserwowane + sample — zestawy i outlety zaśmiecały
+        // podpowiedzi. Pełny katalog jest dostępny w module Produkty. Parametr jest opt-in,
+        // więc picker w Finansach i asystent dalej widzą wszystko.
+        const data = (await api.get(`/search/global?q=${encodeURIComponent(query)}${inc}&only_watched=1`)) as GlobalSearchResponse;
         if (reqId !== seq.current) return; // odrzuć nieaktualną odpowiedź
         setRes(data || EMPTY);
         setActive(0);
