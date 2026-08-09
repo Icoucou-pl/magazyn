@@ -130,15 +130,33 @@ def _visible_products_clause(sku_raw_sql: str) -> str:
 
 
 @router.get("/search/global")
-async def search_global(q: str = Query(..., min_length=2), include_inactive: bool = False, db: AsyncSession = Depends(get_db)):
+async def search_global(q: str = Query(..., min_length=2), include_inactive: bool = False,
+                        only_watched: bool = False, db: AsyncSession = Depends(get_db)):
     """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera.
     Produkty INACTIVE (zero stanu i zero sprzedaży 12m) są domyślnie pomijane
     (_visible_products_clause). include_inactive=1 (z preferencji "Nieaktywne" we froncie)
-    wyłącza filtr, żeby dało się je odnaleźć."""
+    wyłącza filtr, żeby dało się je odnaleźć.
+
+    only_watched=1 zawęża wyniki do SKU obserwowanych (is_favorite) i sampli (is_sample) —
+    zestawy i outlety znikają z podpowiedzi, a pełny katalog zostaje w module Produkty.
+    Parametr jest OPT-IN, bo ten endpoint ma trzech konsumentów: paletę Ctrl+K (chce zawężenia),
+    picker symbolu w Finansach i narzędzie `szukaj` asystenta (oba muszą widzieć cały katalog).
+    Filtry są ortogonalne: include_inactive rządzi aktywnością, only_watched — obserwowaniem.
+    """
     query_lower = f"%{q.lower()}%"
     # Pusty fragment = brak filtra (pokaż też nieaktywne); inaczej dokładamy predykat widoczności.
     vis_prod = "" if include_inactive else f"AND {_visible_products_clause('cd.sku')}"
     vis_ean = "" if include_inactive else f"AND {_visible_products_clause(f'oi.{settings.COL_ITEM_SKU}')}"
+
+    # Zawężenie do obserwowanych + sampli. Dla produktów po zdeduplikowanym `pa`,
+    # dla EAN-ów przez EXISTS (ta gałąź nie ma joinu do atrybutów).
+    watch_prod = ("AND (COALESCE(pa.is_favorite, FALSE) OR COALESCE(pa.is_sample, FALSE))"
+                  if only_watched else "")
+    watch_ean = (f"""AND EXISTS (
+                        SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} pw
+                        WHERE LOWER(TRIM(pw.sku)) = LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+                          AND (COALESCE(pw.is_favorite, FALSE) OR COALESCE(pw.is_sample, FALSE))
+                     )""" if only_watched else "")
 
     # 1. Produkty (SKU + nazwa) — pełny katalog, ta sama unia 4 źródeł co SALES_QUERY.catalog:
     #    1) Subiekt (AMH), 2) historia zamówień Sellasist (Acti/Veluxa sprzedane),
@@ -197,13 +215,16 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
         LEFT JOIN (
             SELECT DISTINCT ON (LOWER(TRIM(sku)))
                    LOWER(TRIM(sku)) AS sku_canon,
-                   manufacturer_id
+                   manufacturer_id,
+                   is_favorite,
+                   is_sample
             FROM {settings.TABLE_PRODUCT_ATTRS}
             ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
         ) pa ON pa.sku_canon = cd.sku_canon
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
         WHERE (LOWER(cd.sku) LIKE :q OR LOWER(cd.name) LIKE :q)
           {vis_prod}
+          {watch_prod}
         ORDER BY
             CASE WHEN LOWER(cd.sku) = LOWER(:exact) THEN 0 ELSE 1 END,
             cd.sku
@@ -224,6 +245,7 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
                 ON LOWER(TRIM(p.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
             WHERE oi.{settings.COL_ITEM_EAN} LIKE :q
               {vis_ean}
+              {watch_ean}
             GROUP BY oi.{settings.COL_ITEM_SKU}, oi.{settings.COL_ITEM_EAN}
             LIMIT 10
         """), {"q": query_lower})
