@@ -1,6 +1,16 @@
 """
 Surowe zapytania SQL budowane z nazw tabel/kolumn z konfiguracji.
 SALES_QUERY liczy sprzedaż w oknach 1-4m, 12m oraz YoY (rok temu, te same 30 dni).
+
+Katalog produktów jest WARSTWOWY (kolumna `pri`, niższa wygrywa w catalog_dedup):
+  0 — subiekt_dwa_magazyny  (AMH: świeże ceny + stan magazynu podstawowego)
+  1 — subiekt_towary        (stara tabela: tylko dla SKU nieobecnych w nowej)
+  2 — sellasist_order_items (produkty znane wyłącznie ze sprzedaży)
+  3 — sellasist_stock       (produkty tylko w magazynach Acti/Veluxa)
+  4 — app_product_attrs     (SAMPLE — nieobecne nigdzie indziej)
+Nowa tabela nie pokrywa całego asortymentu AMH (SKU wyprzedane do zera potrafią z niej
+zniknąć), dlatego stara zostaje jako zapchajdziura nazwy i ceny — bez niej takie SKU
+wypadały z zakładki AMH i wyceniały się na zero.
 """
 
 from config import settings, INCLUDED_STATUS_FILTER
@@ -43,15 +53,46 @@ sellasist_skus AS (
     WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
 ),
-catalog AS (
-    SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})) AS sku_canon,
-           {settings.COL_PRODUCT_SKU} AS sku_raw,
-           {settings.COL_PRODUCT_NAME} AS nazwa,
+stare_subiekt AS (
+    -- Stara tabela subiektowa zdeduplikowana po sku_canon. Używana w DWÓCH rolach:
+    -- (a) uzupełnianie nazwy/ceny dla SKU obecnych w nowej tabeli (pri 0),
+    -- (b) samodzielne źródło dla SKU, których w nowej tabeli w ogóle nie ma (pri 1).
+    -- DISTINCT ON, bo case-warianty symbolu (Subiekt vs Sellasist) potrafią dać >1 wiersz.
+    SELECT DISTINCT ON (LOWER(TRIM({settings.COL_PRODUCT_SKU})))
+           LOWER(TRIM({settings.COL_PRODUCT_SKU})) AS sku_canon,
+           {settings.COL_PRODUCT_SKU}   AS sku_raw,
+           {settings.COL_PRODUCT_NAME}  AS nazwa,
            {settings.COL_PRODUCT_STOCK} AS stan,
-           {settings.COL_PRODUCT_PRICE} AS cena,
-           1 AS pri
+           {settings.COL_PRODUCT_PRICE} AS cena
     FROM {settings.TABLE_PRODUCTS}
     WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL AND TRIM({settings.COL_PRODUCT_SKU}) <> ''
+    ORDER BY LOWER(TRIM({settings.COL_PRODUCT_SKU})),
+             {settings.COL_PRODUCT_PRICE} DESC NULLS LAST,
+             {settings.COL_PRODUCT_SKU}
+),
+catalog AS (
+    -- 0. źródło GŁÓWNE dla AMH: druga tabela subiektowa — świeże ceny (cena_jednostkowa)
+    --    i stan magazynu podstawowego. Kolumna `nazwa` została tu dorobiona później, a ceny
+    --    nowych SKU bywają jeszcze zerowe, więc oba pola podpieramy starą tabelą przez
+    --    LEFT JOIN (zdeduplikowaną → jeden wiersz na SKU, bez fan-outu).
+    --    UWAGA: dedup w catalog_dedup wybiera CAŁY wiersz, nie kolumnę po kolumnie —
+    --    dlatego fallback musi siedzieć tutaj, a nie w finalnym COALESCE.
+    SELECT LOWER(TRIM(dwa.sku)) AS sku_canon,
+           dwa.sku AS sku_raw,
+           COALESCE(NULLIF(TRIM(dwa.nazwa), ''), stare.nazwa) AS nazwa,
+           COALESCE(dwa.stan_magazyn_podstawowy, 0)::numeric  AS stan,
+           COALESCE(NULLIF(dwa.cena_jednostkowa, 0), stare.cena, 0)::numeric AS cena,
+           0 AS pri
+    FROM {settings.TABLE_SUBIEKT_DWA} dwa
+    LEFT JOIN stare_subiekt stare ON stare.sku_canon = LOWER(TRIM(dwa.sku))
+    WHERE dwa.sku IS NOT NULL AND TRIM(dwa.sku) <> ''
+    UNION ALL
+    -- 1. źródło: STARA tabela subiektowa jako zapchajdziura dla SKU, których nowa nie zna
+    --    (sieroty: zerowy stan, ale żywa sprzedaż i realna cena). Bez tego wypadały
+    --    z zakładki AMH (warunek na src_pri) i traciły nazwę oraz cenę.
+    --    Dla SKU obecnych w obu wygrywa pri 0, więc ten wiersz jest wtedy ignorowany.
+    SELECT sku_canon, sku_raw, nazwa, stan, cena, 1 AS pri
+    FROM stare_subiekt
     UNION ALL
     SELECT sku_canon, sku_raw, nazwa, 0::numeric AS stan, 0::numeric AS cena, 2 AS pri
     FROM sellasist_skus
@@ -141,6 +182,10 @@ SELECT
           THEN COALESCE(pa.sample_stock, 0)
           ELSE (COALESCE(p.{settings.COL_PRODUCT_STOCK}, 0) + COALESCE(esg.qty, 0))
      END)::int AS stock_global,
+    -- Priorytet ceny: 1) ręczna (świadomy override — musi być na szczycie, inaczej każdy
+    -- sync po cichu ją kasuje), 2) Fakturownia (jedyne źródło dla Acti/Veluxa), 3) katalog,
+    -- czyli nowa tabela subiektowa z fallbackiem na starą (rozstrzygnięte w CTE `catalog`).
+    -- Fakturownia stoi nad Subiektem bez konfliktu — dotyczą rozłącznych firm.
     COALESCE(NULLIF(pa.cena_zakupu, 0), NULLIF(fd.ppn, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     pa.cena_zakupu::float AS cena_zakupu_manual,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
@@ -194,7 +239,9 @@ LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
 LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
 WHERE (
     :shop = ''
-    OR (:shop = 'amh' AND p.src_pri = 1)
+    -- Zakładka AMH = obie tabele subiektowe: nowa (0) i stara jako zapchajdziura (1).
+    -- Samo `= 0` wywaliłoby stąd sieroty żyjące tylko w starej tabeli.
+    OR (:shop = 'amh' AND p.src_pri IN (0, 1))
     OR (:shop <> '' AND :shop <> 'amh' AND (es.qty IS NOT NULL OR sp.sku_normalized IS NOT NULL))
     -- Czysty sample (pri 4) nie ma ani stanu w Sellasiście, ani sprzedaży, więc wypadłby
     -- z każdej zakładki sklepu. Pokazujemy go w zakładce jego firmy (brak firmy → AMH).
