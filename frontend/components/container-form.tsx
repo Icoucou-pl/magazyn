@@ -238,24 +238,22 @@ export default function ContainerFormModal({
   // ma własny lot (własnego dostawcę), więc lista musi wynosić na górę producenta TEGO lotu.
   // Wcześniej sortowanie było liczone raz dla całego formularza i w trybie skonsolidowanym
   // w ogóle nie działało (zwracało surowe `products`), przez co przy pozycji Benny na górze
-  // dalej siedziało Anji. Cache po mfrId — sortujemy raz na producenta, nie raz na wiersz.
-  const productsForMfr = useMemo(() => {
-    const cache = new Map<number | null, Product[]>();
-    return (mfrId: number | null): Product[] => {
-      const hit = cache.get(mfrId);
-      if (hit) return hit;
-      const arr = [...selectableProducts].sort((a, b) => {
-        if (mfrId != null) {
-          const am = a.manufacturer_id === mfrId ? 0 : 1;
-          const bm = b.manufacturer_id === mfrId ? 0 : 1;
-          if (am !== bm) return am - bm;
-        }
-        return a.sku.localeCompare(b.sku);
-      });
-      cache.set(mfrId, arr);
-      return arr;
-    };
-  }, [selectableProducts]);
+  // dalej siedziało Anji. Warianty liczymy raz na producenta, nie raz na wiersz.
+  const productVariants = useMemo(() => {
+    // Baza posortowana po SKU. Sort w JS jest stabilny, więc kolejne sortowanie po
+    // „czy to ten producent" zachowuje alfabetyczną kolejność wewnątrz obu grup.
+    const base = [...selectableProducts].sort((a, b) => a.sku.localeCompare(b.sku));
+    const byMfr = new Map<number, Product[]>(
+      manufacturers.map((m) => [
+        m.id,
+        [...base].sort((a, b) =>
+          (a.manufacturer_id === m.id ? 0 : 1) - (b.manufacturer_id === m.id ? 0 : 1)),
+      ]),
+    );
+    return { base, byMfr };
+  }, [selectableProducts, manufacturers]);
+  const productsForMfr = (mfrId: number | null): Product[] =>
+    (mfrId != null ? productVariants.byMfr.get(mfrId) : null) ?? productVariants.base;
 
   // Producent, wg którego sortujemy listę w danym wierszu: przy skonsolidowanym z lotu
   // przypisanego do pozycji, inaczej z producenta kontenera.
@@ -285,7 +283,12 @@ export default function ContainerFormModal({
   const fillPct = capacity > 0 ? (totalCbm / capacity) * 100 : 0;
   const fillColor = fillPct > 100 ? "var(--critical)" : fillPct > 90 ? "var(--warning)" : fillPct > 70 ? "var(--ok)" : "var(--info)";
 
-  const addItem = () => setItems([...items, { sku: "", quantity: "", unit_cost: "", lotRef: "" }]);
+  // Przy jednym locie nie ma czego wybierać — przypisujemy od razu, żeby blokada
+  // „najpierw lot" nie zmuszała do klikania oczywistego wyboru.
+  const addItem = () => setItems([...items, {
+    sku: "", quantity: "", unit_cost: "",
+    lotRef: isConsolidated && lots.length === 1 ? "0" : "",
+  }]);
   const removeItem = (idx: number) => setItems(items.filter((_, i) => i !== idx));
   const updateItem = (idx: number, field: keyof ItemDraft, value: string) => {
     const next = [...items];
@@ -874,11 +877,27 @@ function ItemRow({
   const lotMfrId = consolidated && item.lotRef !== "" ? lots[Number(item.lotRef)]?.manufacturer_id : "";
   const lotMismatch = !!(consolidated && item.product?.manufacturer_id && lotMfrId && Number(lotMfrId) !== item.product.manufacturer_id);
   const warn = item.isMixed || lotMismatch;
+  // Blokujemy wybór produktu, dopóki nie ma lotu — ale tylko dla pustych wierszy.
+  // Stare pozycje bez przypisanego lotu (dane sprzed lotów) zostają edytowalne.
+  const lotFirst = consolidated && item.lotRef === "" && !item.sku;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 80px 90px 30px", gap: 6, alignItems: "flex-start", padding: 8, background: warn ? "color-mix(in oklch, var(--warning) 8%, var(--surface-2))" : "var(--surface-2)", border: `1px solid ${warn ? "color-mix(in oklch, var(--warning) 40%, var(--border))" : "var(--border-soft)"}`, borderRadius: 8 }}>
       <div style={{ minWidth: 0 }}>
-        <select value={item.sku} onChange={(e) => onChange("sku", e.target.value)} disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%" }}>
-          <option value="">— wybierz produkt —</option>
+        {/* Kolejność ma znaczenie: lot niesie dostawcę, a lista produktów sortuje się wg niego.
+            Dlatego lot idzie PIERWSZY — przy odwrotnej kolejności produkt wybierało się
+            z listy jeszcze nieposortowanej pod właściwego producenta. */}
+        {consolidated && (
+          <select value={item.lotRef} onChange={(e) => onChange("lotRef", e.target.value)} disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%", marginBottom: 4 }}>
+            <option value="">— najpierw wybierz lot (dostawcę) —</option>
+            {lots.map((l, i) => {
+              const mName = l.manufacturer_id ? manufacturers.find((m) => m.id === Number(l.manufacturer_id))?.name : null;
+              return <option key={i} value={String(i)}>#{i + 1} {mName || "bez dostawcy"}{l.order_number ? ` · ${l.order_number}` : ""}</option>;
+            })}
+          </select>
+        )}
+
+        <select value={item.sku} onChange={(e) => onChange("sku", e.target.value)} disabled={disabled || lotFirst} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%", opacity: lotFirst ? 0.5 : 1 }}>
+          <option value="">{lotFirst ? "— wybierz lot powyżej —" : "— wybierz produkt —"}</option>
           {sortedProducts.map((p) => (
             <option key={p.sku} value={p.sku}>
               {p.sku} — {p.name.length > 34 ? p.name.slice(0, 34) + "…" : p.name}
@@ -887,16 +906,6 @@ function ItemRow({
             </option>
           ))}
         </select>
-
-        {consolidated && (
-          <select value={item.lotRef} onChange={(e) => onChange("lotRef", e.target.value)} disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%", marginTop: 4 }}>
-            <option value="">— przypisz lot —</option>
-            {lots.map((l, i) => {
-              const mName = l.manufacturer_id ? manufacturers.find((m) => m.id === Number(l.manufacturer_id))?.name : null;
-              return <option key={i} value={String(i)}>#{i + 1} {mName || "bez dostawcy"}{l.order_number ? ` · ${l.order_number}` : ""}</option>;
-            })}
-          </select>
-        )}
 
         {item.product && (
           warn ? (
