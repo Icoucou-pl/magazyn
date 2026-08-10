@@ -755,17 +755,43 @@ function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean;
     );
   }
 
+  // Box klikalny → wyróżniony delikatnym tintem akcentu + plakietką „Edytuj", żeby nie trzeba
+  // było zgadywać, że data jest edytowalna. Dla ról bez edycji zostaje neutralny (jak reszta KPI).
   return (
-    <div onClick={editable ? open : undefined} title={editable ? "Kliknij, aby ustawić datę dostawy" : undefined}
-      style={{ padding: "8px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 7, cursor: editable ? "pointer" : "default" }}>
-      <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", display: "flex", alignItems: "center", gap: 4 }}>
-        Dostawa na magazyn {editable && <I.Calendar size={9} style={{ color: "var(--text-disabled)" }} />}
+    <>
+      <div onClick={editable ? open : undefined} className={editable ? "delivery-cell-edit" : undefined}
+        title={editable ? "Kliknij, aby ustawić datę dostawy na magazyn" : undefined}
+        style={{
+          padding: "8px 10px",
+          background: editable ? "var(--accent-soft)" : "var(--surface-2)",
+          border: `1px solid ${editable ? "color-mix(in oklch, var(--accent) 45%, var(--border))" : "var(--border-soft)"}`,
+          borderRadius: 7,
+          cursor: editable ? "pointer" : "default",
+          transition: "background 0.12s, border-color 0.12s",
+        }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Dostawa na magazyn
+          </span>
+          {editable && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0,
+              fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em",
+              color: "var(--accent)", background: "var(--surface-1)",
+              border: "1px solid color-mix(in oklch, var(--accent) 40%, var(--border))",
+              borderRadius: 99, padding: "1px 6px", whiteSpace: "nowrap",
+            }}>
+              <I.Calendar size={8} /> Edytuj
+            </span>
+          )}
+        </div>
+        <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{fmtDatePL(whd)}</div>
+        <div style={{ fontSize: 10, marginTop: 1, fontWeight: (confirmed || expected) ? 600 : 400, color: confirmed ? "var(--ok)" : expected ? "var(--info)" : "var(--text-lo)" }}>
+          {confirmed ? "potwierdzona" : expected ? "umówiona · u nas" : "auto · szac."}
+        </div>
       </div>
-      <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{fmtDatePL(whd)}</div>
-      <div style={{ fontSize: 10, marginTop: 1, fontWeight: (confirmed || expected) ? 600 : 400, color: confirmed ? "var(--ok)" : expected ? "var(--info)" : "var(--text-lo)" }}>
-        {confirmed ? "potwierdzona" : expected ? "umówiona · u nas" : "auto · szac."}
-      </div>
-    </div>
+      <style>{`.delivery-cell-edit:hover { background: color-mix(in oklch, var(--accent) 22%, var(--surface-2)); border-color: var(--accent); }`}</style>
+    </>
   );
 }
 

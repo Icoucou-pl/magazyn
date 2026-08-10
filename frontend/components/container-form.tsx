@@ -105,6 +105,9 @@ export default function ContainerFormModal({
   const [etaDate, setEtaDate] = useState(initial?.eta_date || plus90());
   // „U nas" — umówiona data odbioru. Nie domyka statusu (to robi dopiero potwierdzenie dostawy).
   const [expectedDelivery, setExpectedDelivery] = useState(initial?.expected_delivery_date || "");
+  // Potwierdzona (ręczna) data wejścia towaru na magazyn — ta sama, którą ustawia klikalny box
+  // „Dostawa na magazyn" na rozwiniętym kontenerze. Wpis domyka kontener (status „Dostarczone").
+  const [deliveredDate, setDeliveredDate] = useState(initial?.delivered_date || "");
   // Przełączniki „w Subiekcie" — zapisywane od razu, osobnym endpointem (nie czekają na Zapisz).
   const [subiektWbite, setSubiektWbite] = useState(!!initial?.subiekt_wbite);
   const [lotSubiekt, setLotSubiekt] = useState<Record<number, boolean>>(
@@ -149,6 +152,22 @@ export default function ContainerFormModal({
   };
   const [status, setStatus] = useState(initial?.status || "ORDERED");
   const [notes, setNotes] = useState(initial?.notes || "");
+
+  // Data dostawy i status chodzą w parze — tak samo jak w klikalnym boxie „Dostawa na magazyn"
+  // na rozwiniętym kontenerze. Wpisanie daty domyka kontener, wyczyszczenie cofa go do „W drodze"
+  // (dalej liczy się wtedy szacunek ETA + okno odprawy).
+  const handleDeliveredChange = (v: string) => {
+    setDeliveredDate(v);
+    if (v) setStatus("DELIVERED");
+    else if (status === "DELIVERED") setStatus("IN_TRANSIT");
+  };
+  // Druga strona tej samej pary: ręczne kliknięcie „Dostarczone" bez daty wstawia dzisiejszą
+  // (tak jak robił to backend), a zejście ze statusu zdejmuje potwierdzenie.
+  const handleStatusChange = (s: string) => {
+    setStatus(s);
+    if (s === "DELIVERED") { if (!deliveredDate) setDeliveredDate(today()); }
+    else if (deliveredDate) setDeliveredDate("");
+  };
   const [isConsolidated, setIsConsolidated] = useState(!!initial?.is_consolidated && initialLots.length > 0);
   const [lots, setLots] = useState<LotDraft[]>(initialLots.length ? initialLots : [emptyLot()]);
   // Koszty spedycji + dokumenty (zawsze na kontenerze)
@@ -365,6 +384,7 @@ export default function ContainerFormModal({
       order_date: orderDate,
       eta_date: etaDate,
       expected_delivery_date: dateOrNull(expectedDelivery),
+      delivered_date: dateOrNull(deliveredDate),
       status,
       notes: notes.trim() || null,
       is_consolidated: isConsolidated,
@@ -541,6 +561,15 @@ export default function ContainerFormModal({
                       : "Umówiona data odbioru — wpisz, gdy znasz ją z odprawy."}
                   </span>
                 </Field>
+                <Field label="Dostarczono na magazyn">
+                  <input type="date" value={deliveredDate} onChange={(e) => handleDeliveredChange(e.target.value)} disabled={!showEdit}
+                    style={{ ...inputStyle, ...(deliveredDate ? { border: "1px solid color-mix(in oklch, var(--ok) 45%, var(--border))" } : {}) }} />
+                  <span style={{ display: "block", fontSize: 10.5, color: deliveredDate ? "var(--ok)" : "var(--text-lo)", marginTop: 4, fontWeight: deliveredDate ? 600 : 400 }}>
+                    {deliveredDate
+                      ? "Dostawa potwierdzona — status przestawiony na „Dostarczone”."
+                      : "Faktyczne wejście towaru na magazyn. Wpis domyka kontener."}
+                  </span>
+                </Field>
               </div>
             </Section>
 
@@ -668,7 +697,7 @@ export default function ContainerFormModal({
                   const Icon = meta.icon;
                   const active = status === s;
                   return (
-                    <button key={s} onClick={() => showEdit && setStatus(s)} disabled={!showEdit} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px 12px", background: active ? meta.bg : "var(--surface-2)", color: active ? meta.fg : "var(--text-mid)", border: `1px solid ${active ? meta.accent : "var(--border-soft)"}`, borderRadius: 8, fontSize: 12, fontWeight: 600, letterSpacing: "0.02em", transition: "all 0.12s" }}>
+                    <button key={s} onClick={() => showEdit && handleStatusChange(s)} disabled={!showEdit} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px 12px", background: active ? meta.bg : "var(--surface-2)", color: active ? meta.fg : "var(--text-mid)", border: `1px solid ${active ? meta.accent : "var(--border-soft)"}`, borderRadius: 8, fontSize: 12, fontWeight: 600, letterSpacing: "0.02em", transition: "all 0.12s" }}>
                       <Icon size={13} /> {meta.label}
                     </button>
                   );
