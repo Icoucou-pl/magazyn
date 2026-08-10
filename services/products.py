@@ -116,6 +116,7 @@ def calculate_forecast(row: dict, incoming: List[dict],
             wbite=wbite,
             is_consolidated=bool(inc.get("is_consolidated")),
             lot_order_number=inc.get("lot_order_number"),
+            container_order_number=inc.get("container_order_number"),
             manufacturer_name=inc.get("manufacturer_name"),
         ))
         # „W kontenerach" = TYLKO czerwone (niewbite). Wbite idą do „magazynu w drodze" z ERP.
