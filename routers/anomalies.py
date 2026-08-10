@@ -37,6 +37,24 @@ def _sync_source(slug: str) -> str:
     return "subiekt" if slug == DEFAULT_FIRMA_SLUG else f"fakturownia:{slug}"
 
 
+def _container_label(nr: str, po: str, mfr: str) -> str:
+    """Etykieta kontenera dla człowieka — port reguły z frontendu (ui.tsx → containerLabel).
+
+    Roboczy numer „Draft-<Producent>" to wewnętrzny placeholder, a nie coś, czego użytkownik
+    szuka w Subiekcie czy w mailu. Kolejność: prawdziwy numer kontenera → numer zamówienia
+    (PO) → sama nazwa producenta. Bez tego podpowiedź „Sprawdź: …" prowadziłaby donikąd.
+    """
+    nr = (nr or "").strip()
+    if nr and not nr.lower().startswith("draft-"):
+        return nr
+    po = (po or "").strip()
+    if po:
+        return po
+    # Ostatnia deska: nazwa producenta. Świadomie NIE wracamy do „Draft-…" — lepiej pominąć
+    # podpowiedź niż wysłać człowieka po numer, którego nigdzie nie znajdzie (tak samo robi front).
+    return (mfr or "").strip() or "—"
+
+
 def _threshold_h(lag_by_source: Dict[str, float], slug: str) -> float:
     """Ile godzin po wbiciu zaczynamy rozliczać kontener. Brak wpisu → sufit."""
     lag = lag_by_source.get(_sync_source(slug))
@@ -74,6 +92,8 @@ async def _detect_wbite_shortfall(db: AsyncSession, shop: str = "") -> List[Anom
     r = await db.execute(text(f"""
         SELECT ci.sku                                        AS sku,
                c.container_number                            AS container_number,
+               COALESCE(l.order_number, c.order_number)      AS order_number,
+               COALESCE(lm.name, cm.name)                    AS manufacturer_name,
                COALESCE(ci.quantity, 0)                      AS quantity,
                COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE) AS wbite,
                EXTRACT(EPOCH FROM (NOW() - COALESCE(l.subiekt_wbite_at, c.subiekt_wbite_at)))
@@ -81,6 +101,8 @@ async def _detect_wbite_shortfall(db: AsyncSession, shop: str = "") -> List[Anom
         FROM {settings.TABLE_CONTAINER_ITEMS} ci
         JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
         LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
+        LEFT JOIN {settings.TABLE_MANUFACTURERS} cm ON cm.id = c.manufacturer_id
+        LEFT JOIN {settings.TABLE_MANUFACTURERS} lm ON lm.id = l.manufacturer_id
         WHERE c.status <> 'DELIVERED'
           AND ci.sku IS NOT NULL AND TRIM(ci.sku) <> ''
     """))
@@ -168,8 +190,9 @@ async def _detect_wbite_shortfall(db: AsyncSession, shop: str = "") -> List[Anom
         key = (slug, canon)
         expected[key] = expected.get(key, 0) + int(it["quantity"] or 0)
         sku_raw.setdefault(canon, it["sku"])
-        if it["container_number"]:
-            cands.setdefault(key, []).append((age_h, str(it["container_number"])))
+        label = _container_label(it["container_number"], it["order_number"], it["manufacturer_name"])
+        if label and label != "—":
+            cands.setdefault(key, []).append((age_h, label))
 
     # 6) Porównanie i budowa anomalii.
     sklep = (shop or "").strip().lower()
