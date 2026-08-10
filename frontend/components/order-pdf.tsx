@@ -6,7 +6,7 @@
 // Kontenery skonsolidowane: PO generuje się per dostawca (wybór lotu).
 // ============================================================
 import React, { useEffect, useMemo, useState } from "react";
-import { I } from "./ui";
+import { I, ContainerNr } from "./ui";
 import { Portal, Checkbox, modalBackdrop, modalCard, btnPrimary, btnSecondary, type Manufacturer } from "./products-ui";
 import type { Container, ContainerItem } from "./containers-ui";
 import { api } from "@/lib/api";
@@ -238,7 +238,7 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                     <span style={{ width: 8, height: 8, borderRadius: 99, background: group.mfrColor }}/>{group.mfrName}
                   </span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><I.Ship size={11}/><span className="mono">{container.container_number}</span></span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><I.Ship size={11}/><ContainerNr c={container} size={11} /></span>
                 </div>
               </div>
             </div>

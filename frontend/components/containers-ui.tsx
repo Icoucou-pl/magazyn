@@ -7,7 +7,7 @@
 // ============================================================
 
 import React from "react";
-import { I, Pill, MfrChip } from "./ui";
+import { I, Pill, MfrChip, ContainerNr, isDraftNumber } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { download } from "@/lib/api";
@@ -188,7 +188,7 @@ export function ContainersToolbar({
   const showFin = can(user, "viewFinancials");
   const exportAll = () => {
     const cols: CsvColumn<Container>[] = [
-      { key: "container_number", label: "Nr kontenera" },
+      { label: "Nr kontenera", get: (c) => (isDraftNumber(c.container_number) ? "" : c.container_number) },
       { key: "order_number", label: "Nr zamowienia" },
       { key: "container_type_name", label: "Typ" },
       { key: "manufacturer_name", label: "Producent" },
@@ -465,9 +465,7 @@ export function ContainerCard({
               ? lots.map((l) => <MfrTitle key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
               : (c.manufacturer_id && c.manufacturer_name
                   ? <MfrTitle name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />
-                  : (realNr
-                      ? <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>#{realNr}</span>
-                      : <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-lo)" }}>—</span>))}
+                  : <ContainerNr c={c} size={14} color="var(--text-hi)" />)}
             {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty, istnieje tytuł-producent i jest prawdziwy numer */}
             {!expanded && hasMfrTitle && realNr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
             {subiektSt && <SubiektDot state={subiektSt} erpLoc={erpLocOfContainer(c)} />}

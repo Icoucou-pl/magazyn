@@ -23,6 +23,7 @@ export type IncomingDelivery = {
   wbite: boolean;                                  // wbite do subiektowego „w drodze" (zielona kropka)
   is_consolidated: boolean;
   lot_order_number: string | null;                 // nr PO lotu (skonsolidowane)
+  container_order_number: string | null;           // nr PO kontenera (nieskonsolidowane)
   manufacturer_name: string | null;
 };
 export type Product = {

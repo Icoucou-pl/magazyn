@@ -246,3 +246,62 @@ export function Avatar({ initials, size = 28 }: { initials: string; size?: numbe
     }}>{initials}</div>
   );
 }
+
+// ── Etykieta kontenera (nr + PO) ─────────────────────────────
+// Numer roboczy „Draft-Anji” jest nadawany wyłącznie wewnętrznie, żeby zapewnić
+// unikalność zanim fabryka poda prawdziwy numer. NIGDZIE nie powinien trafić do UI.
+// Reguła: prawdziwy numer jako główny + PO mniejszymi literami obok; sam draft →
+// głównym zostaje PO; brak jednego i drugiego → nazwa producenta (isFallback=true,
+// żeby wołający nie doklejał „#” przed nazwą firmy).
+export type ContainerLabelSource = {
+  container_number?: string | null;
+  order_number?: string | null;
+  manufacturer_name?: string | null;
+  is_consolidated?: boolean;
+  // Loty celowo jako unknown[]: każdy moduł ma własny, lokalny typ lotu (dashboard nie
+  // deklaruje order_number, containers-ui tak) i wąski kontrakt wywalałby się na regule
+  // słabych typów. PO wyciągamy defensywnie niżej.
+  lots?: ReadonlyArray<unknown> | null;
+};
+
+export type ContainerLabel = { nr: string; po: string | null; isFallback: boolean };
+
+export function isDraftNumber(v?: string | null): boolean {
+  return /^\s*draft-/i.test(v || "");
+}
+
+export function containerLabel(c: ContainerLabelSource): ContainerLabel {
+  const raw = (c.container_number || "").trim();
+  const realNr = raw && !isDraftNumber(raw) ? raw : null;
+
+  // Skonsolidowany ma PO na lotach, nie na kontenerze — zbieramy wszystkie po przecinku.
+  const source = c.is_consolidated && c.lots?.length
+    ? c.lots.map((l) => (l as { order_number?: string | null } | null)?.order_number)
+    : [c.order_number];
+  const poList = Array.from(new Set(
+    source.map((v) => (v || "").trim()).filter(Boolean)
+  ));
+  const po = poList.length ? poList.join(", ") : null;
+
+  if (realNr) return { nr: realNr, po, isFallback: false };
+  if (po) return { nr: po, po: null, isFallback: false };
+  return { nr: (c.manufacturer_name || "").trim() || "—", po: null, isFallback: true };
+}
+
+// Gotowy render etykiety: numer (mono, z „#") + PO mniejszymi literami obok.
+// Gdy numeru nie ma i podkładamy nazwę producenta, „#" nie jest doklejane.
+export function ContainerNr({ c, size = 11.5, color = "inherit" }: { c: ContainerLabelSource; size?: number; color?: string }) {
+  const lab = containerLabel(c);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "baseline", gap: 5, minWidth: 0, flexWrap: "wrap" }}>
+      <span className={lab.isFallback ? undefined : "mono"} style={{ fontSize: size, fontWeight: 600, color }}>
+        {lab.isFallback ? lab.nr : `#${lab.nr}`}
+      </span>
+      {lab.po && (
+        <span className="mono" style={{ fontSize: Math.max(9, size - 1.5), fontWeight: 500, color: "var(--text-disabled)" }}>
+          {lab.po}
+        </span>
+      )}
+    </span>
+  );
+}

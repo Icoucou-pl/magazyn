@@ -16,7 +16,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { I, Card, Pill } from "@/components/ui";
+import { I, Card, Pill, containerLabel } from "@/components/ui";
 import { toast } from "@/components/toast";
 
 // ── typy ─────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ type OccRow = {
   share_firm_pct: number; share_scope_pct: number;
   threshold_label: string; threshold_tone: string; over: boolean; no_cbm?: boolean;
 };
-type TimelineRow = { date: string; container_number: string; m3: number; firmy: Record<string, number> };
+type TimelineRow = { date: string; container_number: string; order_number?: string | null; m3: number; firmy: Record<string, number> };
 type OccData = {
   scope: string; horizon_days: number; as_of: string; cutoff: string;
   capacity_m3: number; stock_m3: number; incoming_m3: number; sold_m3?: number;
@@ -402,7 +402,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
             <span>Poza horyzontem:</span>
             {nextArrivals.map((t) => (
               <span key={t.container_number + t.date} className="num">
-                {t.date} · {t.container_number} · {m3(t.m3)} m³
+                {t.date} · {containerLabel(t).nr} · {m3(t.m3)} m³
               </span>
             ))}
           </div>

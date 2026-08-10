@@ -15,7 +15,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  I, Card, CardHeader, HoverRow, Pill, StatusPill, MfrChip, CONTAINER_STATUS_META,
+  I, Card, CardHeader, HoverRow, Pill, StatusPill, MfrChip, CONTAINER_STATUS_META, ContainerNr,
 } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
@@ -720,7 +720,7 @@ function DeliveriesCard({
                     </Pill>
                   ))}
                 </div>
-                <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-lo)", marginTop: 2 }}>#{c.container_number}</div>
+                <div style={{ marginTop: 2 }}><ContainerNr c={c} size={10.5} color="var(--text-lo)" /></div>
                 <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
                   {share
                     ? <>{share.items} SKU · {fmtNum(share.units)} szt</>

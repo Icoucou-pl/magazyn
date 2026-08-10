@@ -10,7 +10,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { I } from "@/components/ui";
+import { I, containerLabel } from "@/components/ui";
 import { Portal, modalBackdrop, modalCard, readShowInactive } from "@/components/products-ui";
 
 // ── Kształt odpowiedzi /search/global ────────────────────────
@@ -99,7 +99,11 @@ export default function CommandPalette({ open, onClose, onProduct, onContainer, 
       out.push({ kind: "manufacturer", id: m.id, label: m.name, sub: "Producent", dot: m.color || undefined });
     }
     for (const c of res.containers) {
-      out.push({ kind: "container", id: c.id, label: c.container_number, sub: c.manufacturer_name || c.order_number || c.status, dot: c.manufacturer_color || undefined });
+      // Draft-… nie może trafić do podpowiedzi: głównym zostaje prawdziwy numer,
+      // a gdy go nie ma — PO (backend podkłada tam też PO lotów dla skonsolidowanych).
+      const lab = containerLabel(c);
+      const sub = [c.manufacturer_name, lab.po].filter(Boolean).join(" · ") || c.status;
+      out.push({ kind: "container", id: c.id, label: lab.nr, sub, dot: c.manufacturer_color || undefined });
     }
     return out;
   }, [res]);

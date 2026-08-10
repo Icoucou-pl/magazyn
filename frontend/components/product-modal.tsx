@@ -7,7 +7,7 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { I, Pill, MfrChip, STATUS_META } from "./ui";
+import { I, Pill, MfrChip, STATUS_META, ContainerNr } from "./ui";
 import {
   StatusPillExt, displayStatus, monthsDisplay,
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
@@ -405,6 +405,7 @@ type CardAgg = {
   container_id: number; container_number: string; effective_status: string;
   warehouse_delivery_date: string; date_source: string; eta_date: string;
   wbite: boolean; is_consolidated: boolean; lot_order_number: string | null;
+  container_order_number: string | null;
   manufacturer_name: string | null; qty: number;
 };
 
@@ -419,6 +420,7 @@ function ContainersSection({ product, onContainerClick, onClose }: { product: Pr
       effective_status: d.effective_status, warehouse_delivery_date: d.warehouse_delivery_date,
       date_source: d.date_source, eta_date: d.eta_date, wbite: d.wbite,
       is_consolidated: d.is_consolidated, lot_order_number: d.lot_order_number,
+      container_order_number: d.container_order_number ?? null,
       manufacturer_name: d.manufacturer_name, qty: d.quantity,
     });
   }
@@ -450,7 +452,7 @@ function ContainersSection({ product, onContainerClick, onClose }: { product: Pr
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 34px 10px 14px" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" }}>{c.manufacturer_name || "—"}</div>
-                  <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-lo)", marginTop: 2 }}>#{c.container_number}</div>
+                  <div style={{ marginTop: 2 }}><ContainerNr c={{ ...c, order_number: c.container_order_number ?? c.lot_order_number }} size={11.5} color="var(--text-lo)" /></div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7 }}>
                     <Pill bg={meta.soft} fg={meta.color} dot={meta.color} size="sm">{meta.label}</Pill>
                     {c.is_consolidated && <Pill bg="var(--warning-soft)" fg="var(--warning)" size="sm">Skonsolidowany</Pill>}

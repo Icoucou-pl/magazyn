@@ -16,7 +16,7 @@ import { api } from "@/lib/api";
 import { fmtPLNk, fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
 import { toast, exportCsv, type CsvColumn } from "./toast";
-import { I, Pill, MfrChip } from "./ui";
+import { I, Pill, MfrChip, ContainerNr } from "./ui";
 import { MiniStat, STATUS_FULL_META, type Container } from "./containers-ui";
 import {
   Checkbox, modalBackdrop, modalCard, iconBtnGhost, Portal,
@@ -788,7 +788,7 @@ function ManufacturerModal({
                   return (
                     <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
                       <span style={{ color: m.fg, display: "flex" }}><Icon size={14} /></span>
-                      <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>#{c.container_number}</span>
+                      <ContainerNr c={c} size={12} />
                       <Pill bg={m.bg} fg={m.fg} size="sm">{m.label}</Pill>
                       <span style={{ flex: 1 }} />
                       <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{c.total_units} szt · {showFin ? fmtPLNk(c.total_value) : "•••"} · za {days}d</span>

@@ -12,7 +12,7 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
-import { I, Card, CardHeader, Pill, MfrChip } from "./ui";
+import { I, Card, CardHeader, Pill, MfrChip, containerLabel, isDraftNumber } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { fmtNum } from "@/lib/format";
@@ -82,11 +82,16 @@ const mondayOf = (d: Date) => { const x = new Date(d); const wd = (x.getDay() + 
 
 // Etykieta zdarzenia: dostawa pokazuje producenta (fallback: nr kontenera), reszta SKU
 const eventLabel = (e: CalEvent) =>
-  e.type === "DELIVERY" ? (e.manufacturer_name ?? e.container_number ?? "Dostawa") : e.sku ?? "";
+  e.type === "DELIVERY"
+    ? (e.manufacturer_name ?? (isDraftNumber(e.container_number) ? (e.order_number || "Dostawa") : (e.container_number ?? "Dostawa")))
+    : e.sku ?? "";
 // Podtytuł: dostawa → "nr kontenera · N szt" (producent poszedł na 1 plan), reszta → nazwa produktu
 const eventSub = (e: CalEvent) => {
   if (e.type !== "DELIVERY") return e.name ?? "";
-  return [e.container_number, `${fmtNum(e.total_units)} szt`].filter(Boolean).join(" · ");
+  // Numer roboczy „Draft-…" nie idzie do UI — zastępuje go PO (containerLabel).
+  const lab = containerLabel(e);
+  const nr = lab.isFallback ? null : [lab.nr, lab.po].filter(Boolean).join(" ");
+  return [nr, `${fmtNum(e.total_units)} szt`].filter(Boolean).join(" · ");
 };
 
 // ── Utrwalanie stanu widoku (sessionStorage) ─────────────────
