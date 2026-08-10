@@ -79,6 +79,9 @@ export default function ContainerFormModal({
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
+  // Załączniki (faktury, proformy, BL) — osobne uprawnienie. Bez niego sekcja w ogóle
+  // nie istnieje w formularzu, a backend i tak nie odda ani listy, ani pliku.
+  const showAtt = can(user, "viewAttachments");
   const showFin = can(user, "viewFinancials");
   const isNew = !initial;
 
@@ -709,6 +712,7 @@ export default function ContainerFormModal({
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} disabled={!showEdit} placeholder="Opcjonalne komentarze (np. statek, dodatkowe info)" style={{ ...inputStyle, resize: "vertical", minHeight: 60 }} />
             </Section>
 
+            {showAtt && (
             <Section title={`Załączniki (${attachments.length})`}>
               <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                 onChange={(e) => { onFiles(Array.from(e.target.files || [])); if (fileRef.current) fileRef.current.value = ""; }} />
@@ -742,6 +746,7 @@ export default function ContainerFormModal({
                 })}
               </div>
             </Section>
+            )}
 
             <Section title={`Produkty (${items.length})`} required action={showEdit ? (
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>

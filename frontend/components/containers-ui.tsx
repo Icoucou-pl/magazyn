@@ -533,6 +533,9 @@ function ContainerCardBody({
   const user = useUser();
   const showEdit = canEdit(user);
   const showFin = can(user, "viewFinancials");
+  // Załączniki to faktury/proformy/BL — osobne uprawnienie, niezależne od widoczności PLN.
+  // Backend i tak czyści listę bez viewAttachments; tu tylko nie pokazujemy pustej sekcji.
+  const showAtt = can(user, "viewAttachments");
   const cap = c.container_capacity_cbm ?? 0;
   const fill = c.fill_percentage ?? 0;
   const lots = c.lots ?? [];
@@ -666,7 +669,7 @@ function ContainerCardBody({
         </div>
       </div>
 
-      {c.attachments && c.attachments.length > 0 && (
+      {showAtt && c.attachments && c.attachments.length > 0 && (
         <div>
           <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><I.External size={11} /> Załączniki ({c.attachments.length})</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -755,16 +758,16 @@ function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean;
     );
   }
 
-  // Box klikalny → wyróżniony delikatnym tintem akcentu + plakietką „Edytuj", żeby nie trzeba
-  // było zgadywać, że data jest edytowalna. Dla ról bez edycji zostaje neutralny (jak reszta KPI).
+  // Box zawsze wyróżniony delikatnym tintem akcentu (żeby był widoczny jako osobna, ważna data).
+  // Plakietka „Edytuj" tylko dla ról z edycją — viewerowi nie obiecujemy kliknięcia.
   return (
     <>
       <div onClick={editable ? open : undefined} className={editable ? "delivery-cell-edit" : undefined}
         title={editable ? "Kliknij, aby ustawić datę dostawy na magazyn" : undefined}
         style={{
           padding: "8px 10px",
-          background: editable ? "var(--accent-soft)" : "var(--surface-2)",
-          border: `1px solid ${editable ? "color-mix(in oklch, var(--accent) 45%, var(--border))" : "var(--border-soft)"}`,
+          background: "var(--accent-soft)",
+          border: "1px solid color-mix(in oklch, var(--accent) 45%, var(--border))",
           borderRadius: 7,
           cursor: editable ? "pointer" : "default",
           transition: "background 0.12s, border-color 0.12s",
