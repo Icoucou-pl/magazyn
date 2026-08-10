@@ -267,6 +267,9 @@ SELECT
     -- Dla skonsolidowanych flaga siedzi na locie, dla zwykłych na kontenerze.
     COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE) AS wbite,
     l.order_number AS lot_order_number,
+    -- PO kontenera (nieskonsolidowany). Front pokazuje je zamiast numeru roboczego
+    -- „Draft-…", który jest wyłącznie wewnętrznym gwarantem unikalności.
+    c.order_number AS container_order_number,
     COALESCE(lm.name, m.name) AS manufacturer_name
 FROM {settings.TABLE_CONTAINER_ITEMS} ci
 JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id

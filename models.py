@@ -112,6 +112,7 @@ class IncomingDelivery(BaseModel):
     wbite: bool = False                            # wbite do subiektowego „w drodze" (zielona kropka)
     is_consolidated: bool = False
     lot_order_number: Optional[str] = None         # nr PO lotu (skonsolidowane)
+    container_order_number: Optional[str] = None   # nr PO kontenera (nieskonsolidowane) — zastępuje „Draft-…" w UI
     manufacturer_name: Optional[str] = None
 
 
