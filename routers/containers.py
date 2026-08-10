@@ -18,7 +18,7 @@ from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
     AttachmentOut, AttachmentCreate, CurrentUser, SubiektWbiteIn,
 )
-from security import get_current_user, require_edit_containers, require_export, has_perm
+from security import get_current_user, require_edit_containers, require_export, require_attachments, has_perm
 from services.containers import fetch_containers, get_container_by_id
 
 router = APIRouter(prefix="/api", tags=["containers"])
@@ -46,6 +46,19 @@ def _mask_container_financials(containers, user):
             lot.balance_kwota = None
             for adv in lot.advances:
                 adv.kwota = None
+    return containers
+
+
+def _mask_container_attachments(containers, user):
+    """Ukrycie listy załączników (faktury, proformy, BL) dla usera bez viewAttachments.
+
+    Sama lista zdradza nazwy plików, więc czyścimy ją po stronie serwera — front tylko
+    powiela tę decyzję wizualnie. Pobieranie pliku pilnuje osobno endpoint /download.
+    """
+    if has_perm(user, "viewAttachments"):
+        return containers
+    for c in containers:
+        c.attachments = []
     return containers
 
 
@@ -302,13 +315,14 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
 
 @router.get("/containers", response_model=List[ContainerOut])
 async def list_containers(status: Optional[ContainerStatus] = None, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    return _mask_container_financials(await fetch_containers(db, status), user)
+    return _mask_container_attachments(_mask_container_financials(await fetch_containers(db, status), user), user)
 
 
 @router.get("/containers/{cid}", response_model=ContainerOut)
 async def get_container(cid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     c = await get_container_by_id(db, cid)
     _mask_container_financials([c], user)
+    _mask_container_attachments([c], user)
     return c
 
 
@@ -663,8 +677,8 @@ def _content_disposition(filename: str) -> str:
 
 
 @router.get("/attachments/{aid}/download")
-async def download_attachment(aid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    """Zwraca zawartość pliku załącznika."""
+async def download_attachment(aid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_attachments)):
+    """Zwraca zawartość pliku załącznika (tylko dla ról z uprawnieniem viewAttachments)."""
     r = await db.execute(text(f"SELECT filename, content_type, file_data FROM {settings.TABLE_ATTACHMENTS} WHERE id = :id"), {"id": aid})
     row = r.first()
     if not row or row.file_data is None:
