@@ -320,6 +320,7 @@ class ContainerCreate(BaseModel):
     order_date: date
     eta_date: date
     expected_delivery_date: Optional[date] = None   # „u nas" — realna, umówiona data odbioru (nie domyka statusu)
+    delivered_date: Optional[date] = None           # potwierdzone wejście na magazyn (kontener dodany wstecz)
     status: ContainerStatus = "ORDERED"
     notes: Optional[str] = None
     is_consolidated: bool = False
