@@ -124,9 +124,9 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 #   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
 # Dopisanie takiego klucza do ROLE_PERMS otworzy go całej roli — rób to świadomie.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False},
 }
 
 
@@ -156,3 +156,6 @@ require_view_financials = require_perm("viewFinancials")
 require_edit_containers = require_perm("editContainers")
 require_export = require_perm("export")
 require_occupancy = require_perm("viewOccupancy")
+# Załączniki kontenerów to faktury, proformy i BL — pilnujemy ich osobnym uprawnieniem,
+# niezależnym od viewFinancials (viewer widzi wartości w PLN, ale nie ma wglądu w dokumenty).
+require_attachments = require_perm("viewAttachments")
