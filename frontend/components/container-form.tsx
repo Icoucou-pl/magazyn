@@ -222,15 +222,51 @@ export default function ContainerFormModal({
   const containerType = containerTypes.find((t) => String(t.id) === containerTypeId);
   const capacity = containerType?.capacity_cbm || 0;
 
-  const sortedProducts = useMemo(() => {
-    if (isConsolidated || !manufacturerId) return products;
-    const mfrId = Number(manufacturerId);
-    return [...products].sort((a, b) => {
-      const am = a.manufacturer_id === mfrId ? 0 : 1;
-      const bm = b.manufacturer_id === mfrId ? 0 : 1;
-      return am - bm || a.sku.localeCompare(b.sku);
-    });
-  }, [manufacturerId, products, isConsolidated]);
+  // Pula do wyboru: tylko obserwowane SKU (gwiazdka) + sample. Outlety, dead stock
+  // i reszta śmieciowych SKU zaśmiecały rozwijaną listę. Wyjątek: pozycje już wpisane
+  // w kontenerze zostają na liście, żeby edycja starego kontenera nie gubiła SKU.
+  const legacySkus = useMemo(
+    () => new Set((initial?.items || []).map((i) => i.sku)),
+    [initial],
+  );
+  const selectableProducts = useMemo(
+    () => products.filter((p) => p.is_favorite || p.is_sample || legacySkus.has(p.sku)),
+    [products, legacySkus],
+  );
+
+  // Sortowanie jest per wiersz, nie globalne: w skonsolidowanym kontenerze każda pozycja
+  // ma własny lot (własnego dostawcę), więc lista musi wynosić na górę producenta TEGO lotu.
+  // Wcześniej sortowanie było liczone raz dla całego formularza i w trybie skonsolidowanym
+  // w ogóle nie działało (zwracało surowe `products`), przez co przy pozycji Benny na górze
+  // dalej siedziało Anji. Cache po mfrId — sortujemy raz na producenta, nie raz na wiersz.
+  const productsForMfr = useMemo(() => {
+    const cache = new Map<number | null, Product[]>();
+    return (mfrId: number | null): Product[] => {
+      const hit = cache.get(mfrId);
+      if (hit) return hit;
+      const arr = [...selectableProducts].sort((a, b) => {
+        if (mfrId != null) {
+          const am = a.manufacturer_id === mfrId ? 0 : 1;
+          const bm = b.manufacturer_id === mfrId ? 0 : 1;
+          if (am !== bm) return am - bm;
+        }
+        return a.sku.localeCompare(b.sku);
+      });
+      cache.set(mfrId, arr);
+      return arr;
+    };
+  }, [selectableProducts]);
+
+  // Producent, wg którego sortujemy listę w danym wierszu: przy skonsolidowanym z lotu
+  // przypisanego do pozycji, inaczej z producenta kontenera.
+  const rowMfrId = (lotRef: string): number | null => {
+    if (isConsolidated) {
+      if (lotRef === "") return null;
+      const id = lots[Number(lotRef)]?.manufacturer_id;
+      return id ? Number(id) : null;
+    }
+    return manufacturerId ? Number(manufacturerId) : null;
+  };
 
   const itemDetails = items.map((item) => {
     const product = productBySku.get(item.sku);
@@ -272,7 +308,8 @@ export default function ContainerFormModal({
 
     const usedSkus = new Set(items.map((i) => i.sku).filter(Boolean));
     const mfrId = !isConsolidated && manufacturerId ? Number(manufacturerId) : null;
-    const pool = products.filter((p) => !usedSkus.has(p.sku) && (mfrId === null || p.manufacturer_id === mfrId));
+    // Ta sama pula co w rozwijanej liście (obserwowane), ale bez sampli — próbek się nie dozamawia.
+    const pool = selectableProducts.filter((p) => !p.is_sample && !usedSkus.has(p.sku) && (mfrId === null || p.manufacturer_id === mfrId));
 
     if (capacity - totalCbm <= 1e-6) { toast("Kontener już pełny — brak wolnego miejsca na autouzupełnienie", "info"); return; }
 
@@ -765,7 +802,7 @@ export default function ContainerFormModal({
             ) : undefined}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {itemDetails.map((item, idx) => (
-                  <ItemRow key={idx} item={item} sortedProducts={sortedProducts} manufacturers={manufacturers} disabled={!showEdit} showFin={showFin}
+                  <ItemRow key={idx} item={item} sortedProducts={productsForMfr(rowMfrId(item.lotRef))} manufacturers={manufacturers} disabled={!showEdit} showFin={showFin}
                     consolidated={isConsolidated} lots={lots}
                     onChange={(field, val) => updateItem(idx, field, val)} onRemove={() => removeItem(idx)} />
                 ))}
