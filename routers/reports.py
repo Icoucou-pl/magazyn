@@ -585,7 +585,17 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int, include_sales
             firma = firma_of.get(key, "amh")
             vol = cbm_by_sku.get(key, 0.0) * qty
             tkey = (arrival, cont.container_number or f"#{cont.id}")
-            t = timeline.setdefault(tkey, {"date": arrival.isoformat(), "container_number": tkey[1], "m3": 0.0, "firmy": {}})
+            # PO obok numeru: skonsolidowany trzyma je na lotach, zwykły na sobie.
+            # Front (containerLabel) podmienia numer roboczy „Draft-…" właśnie na to pole.
+            po_c = (getattr(cont, "order_number", None) or "").strip()
+            if not po_c:
+                po_c = ", ".join(sorted({
+                    (getattr(l, "order_number", None) or "").strip()
+                    for l in (getattr(cont, "lots", None) or [])
+                    if (getattr(l, "order_number", None) or "").strip()
+                }))
+            t = timeline.setdefault(tkey, {"date": arrival.isoformat(), "container_number": tkey[1],
+                                           "order_number": po_c or None, "m3": 0.0, "firmy": {}})
             if scope in ("all", firma):
                 t["m3"] += vol
                 t["firmy"][firma] = round(t["firmy"].get(firma, 0.0) + vol, 3)

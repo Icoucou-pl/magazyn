@@ -261,14 +261,30 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
     manufacturers = [dict(r._mapping) for r in mfrs_result]
 
     # 4. Kontenery
+    #    order_number podajemy „gotowe do wyświetlenia": kontener skonsolidowany ma PO
+    #    na lotach, nie na sobie, więc podkładamy je sklejone przecinkami. Dzięki temu
+    #    front (containerLabel) ma jedno pole i nie musi znać wariantu kontenera —
+    #    a numer roboczy „Draft-…" nigdy nie zostaje bez czytelnej alternatywy.
+    #    Szukamy też PO lotów, inaczej skonsolidowanego nie dało się znaleźć po jego PO.
     containers_result = await db.execute(text(f"""
+        WITH lot_po AS (
+            SELECT container_id,
+                   STRING_AGG(DISTINCT TRIM(order_number), ', ' ORDER BY TRIM(order_number)) AS po
+            FROM {settings.TABLE_CONTAINER_LOTS}
+            WHERE order_number IS NOT NULL AND TRIM(order_number) <> ''
+            GROUP BY container_id
+        )
         SELECT
-            c.id, c.container_number, c.order_number, c.eta_date, c.status,
+            c.id, c.container_number,
+            COALESCE(NULLIF(TRIM(c.order_number), ''), lp.po) AS order_number,
+            c.eta_date, c.status,
             m.name AS manufacturer_name, m.color AS manufacturer_color
         FROM {settings.TABLE_CONTAINERS} c
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
+        LEFT JOIN lot_po lp ON lp.container_id = c.id
         WHERE LOWER(c.container_number) LIKE :q
            OR LOWER(COALESCE(c.order_number, '')) LIKE :q
+           OR LOWER(COALESCE(lp.po, '')) LIKE :q
            OR LOWER(COALESCE(c.notes, '')) LIKE :q
         ORDER BY c.eta_date DESC
         LIMIT 10
