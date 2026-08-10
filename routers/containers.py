@@ -340,10 +340,10 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
             (container_number, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
              koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr,
              waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
-             balance_kwota, balance_waluta, balance_termin, zaplacono_data, expected_delivery_date)
+             balance_kwota, balance_waluta, balance_termin, zaplacono_data, expected_delivery_date, delivered_date)
             VALUES (:n, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
                     :kt, :ks, :ktm, :fol, :sub,
-                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd, :edd)
+                    :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd, :edd, :dd)
             RETURNING id
         """),
         {"n": nr,
@@ -365,7 +365,9 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
          "bwal": (None if cons else (payload.balance_waluta or default_cur)),
          "bt": (None if cons else payload.balance_termin),
          "pd": (None if cons else payload.zaplacono_data),
-         "edd": payload.expected_delivery_date}
+         "edd": payload.expected_delivery_date,
+         # Ręczna data dostawy przy tworzeniu = kontener dodawany wstecz (już na magazynie).
+         "dd": payload.delivered_date}
     )
     cid = r.scalar_one()
 
