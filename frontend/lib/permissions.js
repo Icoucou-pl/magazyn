@@ -24,6 +24,7 @@ export const PERMISSIONS = [
   { key: "viewAudit",      label: "Dziennik audytu",       desc: "Podgląd historii zdarzeń",                  group: "Administracja" },
   { key: "viewReports",    label: "Raporty",               desc: "Dostęp do raportów miesięcznych (KPI, PDF/Excel)", group: "Widoczność" },
   { key: "viewOccupancy",  label: "Zajętość magazynu",     desc: "Raport kubatury (m³) i kafelek zajętości na pulpicie", group: "Widoczność" },
+  { key: "viewAttachments", label: "Załączniki kontenerów", desc: "Podgląd i pobieranie plików (faktury, proformy, packing list, BL)", group: "Widoczność" },
 ];
 
 // Domyślne uprawnienia per rola — nadpisywalne per użytkownik
@@ -33,9 +34,9 @@ export const PERMISSIONS = [
 //   · viewOccupancy — Zajętość magazynu.
 // Lustro tej samej reguły po stronie backendu siedzi w security.py → ROLE_PERMS.
 export const ROLE_PERMS = {
-  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false },
+  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
