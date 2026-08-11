@@ -17,6 +17,7 @@ import { MiniStat } from "./containers-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { useUser, isAdmin } from "@/lib/permissions";
+import { useShop } from "@/lib/shop";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Status = "paid" | "plan" | "open";
@@ -44,7 +45,6 @@ type Bucket = { key: string; label: string; short: string; total: number; byMfr:
 type Agg = { months: Bucket[]; peak: Bucket | null; mfrs: MfrAgg[]; total: number; maxTotal: number; count: number };
 
 // ── Stałe ────────────────────────────────────────────────────
-const SHOPS: [string, string][] = [["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"], ["", "Wszystkie"]];
 const CURS: string[] = ["PLN", "USD", "CNY"];
 const CUR_SYM: Record<string, string> = { PLN: "zł", USD: "$", CNY: "¥" };
 const MONTH_SHORT = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
@@ -127,7 +127,8 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const [loading, setLoading] = useState(true);
   const [refilling, setRefilling] = useState(false);
   const [tab, setTab] = useState<"due" | "paid">("due");
-  const [shop, setShop] = useState("amh");
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  const { shop } = useShop();
   const [cur, setCur] = useState("PLN");
   const [year, setYear] = useState("2026");
   const [hoveredMfr, setHoveredMfr] = useState<string | null>(null);
@@ -199,10 +200,9 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
         </div>
       </div>
 
-      {/* Filtry: sklep + rok + waluta */}
+      {/* Filtry: rok + waluta (firma → fragmentator w Topbarze) */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <Seg label="" options={SHOPS} value={shop} onChange={setShop} />
           {yearOpts.length > 1 && <Seg label="Rok" options={yearOpts} value={year} onChange={setYear} />}
         </div>
         <Seg label="Waluta" options={CURS.map(c => [c, c] as [string, string])} value={cur} onChange={setCur} />

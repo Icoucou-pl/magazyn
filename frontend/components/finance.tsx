@@ -15,6 +15,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
+import { useShop } from "@/lib/shop";
 import { I } from "./ui";
 
 // ── Typy: Przegląd ───────────────────────────────────────────
@@ -77,10 +78,6 @@ const MONTH_NAMES = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wr
 const PERIODS: [string, string][] = [
   ["ytd", "Ten rok"], ["365", "365 dni"], ["90", "90 dni"], ["30", "30 dni"], ["prev_year", "Zeszły rok"],
 ];
-// Filtr sklepu — "" = wszystkie. Identyczny zestaw jak na dashboardzie (dashboard.tsx SHOPS).
-const SHOPS: [string, string][] = [
-  ["amh", "AMH"], ["acti", "Acti"], ["veluxa", "Veluxa"], ["", "Wszystkie"],
-];
 const dec1 = (n: number) => n.toFixed(1).replace(".", ",");
 // Własny zakres („Zakres"): dolny limit 01.01.2025, górny = dziś (data lokalna).
 const CUSTOM_MIN = "2025-01-01";
@@ -103,7 +100,8 @@ export default function FinanceView({ density }: { density?: string }) {
   const showFin = can(useUser(), "viewFinancials");
   const [tab, setTab] = useState<"overview" | "product">("overview");
   const [period, setPeriod] = useState("ytd");
-  const [shop, setShop] = useState("amh"); // domyślnie AMH; "" = wszystkie sklepy; globalny dla obu zakładek
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop) — wspólna dla obu zakładek.
+  const { shop } = useShop();
   const [fromDate, setFromDate] = useState(CUSTOM_MIN);   // własny zakres — start (domyślnie 01.01.2025)
   const [toDate, setToDate] = useState(todayISO);         // własny zakres — koniec (domyślnie dziś)
 
@@ -160,22 +158,6 @@ export default function FinanceView({ density }: { density?: string }) {
                 onChange={(e) => setToDate(e.target.value || todayISO())} style={dateInput} />
             </div>
           )}
-        </div>
-      </div>
-
-      {/* Pasek sklepu — globalny filtr dla obu zakładek (styl 1:1 jak na dashboardzie) */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
-          {SHOPS.map(([v, l]) => {
-            const active = shop === v;
-            return (
-              <button key={v || "all"} onClick={() => setShop(v)} style={{
-                padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
-                background: active ? "var(--surface-3)" : "transparent",
-                color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
-              }}>{l}</button>
-            );
-          })}
         </div>
       </div>
 

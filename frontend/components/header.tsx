@@ -1,7 +1,9 @@
 "use client";
 // ============================================================
-// MAGAZYN — Sidebar (lewe pionowe menu) + Topbar (search z lewej + akcje).
+// MAGAZYN — Sidebar (lewe pionowe menu) + Topbar (fragmentator firm z lewej,
+//           search na środku, akcje z prawej).
 //   - układ: logo + nawigacja w lewym sidebarze (góra→dół), pasek narzędzi na górze
+//   - fragmentator AMH/Acti/Veluxa/Wszyscy: globalny (lib/shop), widoczny na każdym widoku
 //   - nawigacja gate'owana can(user, perm) z lib/permissions
 //   - Sun/Moon → onToggleTheme (shell zmienia t.theme)
 //   - menu usera: Zmień hasło / Dziennik audytu (super) / Wyloguj
@@ -12,6 +14,7 @@
 import React, { useEffect, useState } from "react";
 import { I, Avatar, Pill, type IconProps } from "./ui";
 import { can } from "@/lib/permissions";
+import { ShopSwitcher } from "@/lib/shop";
 
 export type User = {
   id?: number | string;
@@ -22,6 +25,9 @@ export type User = {
   isSuper?: boolean;
   perms?: Record<string, boolean>;
   show_onboarding?: boolean;
+  // Zakres firmowy (przyszłe uprawnienia). Dziś backend tego nie zwraca →
+  // undefined = dostęp do wszystkich firm = obecne zachowanie.
+  company_scope?: string | null;
 };
 
 type IconCmp = (props: IconProps) => React.ReactElement;
@@ -132,7 +138,7 @@ type TopbarProps = {
   onAuditLog?: () => void;
 };
 
-// ── Topbar (search z lewej + świeżość + akcje) ───────────────
+// ── Topbar (fragmentator z lewej + search na środku + świeżość + akcje) ──
 export function Topbar({
   view, setView, user, theme, onToggleTheme, onLogout,
   onOpenSearch, onOpenScan, onRefresh, refreshing, freshness, onChangePassword, onAuditLog,
@@ -167,7 +173,7 @@ export function Topbar({
           padding: "10px 24px",
           display: "flex", flexDirection: "column", gap: 8,
         }}>
-          {/* Wiersz 1: hamburger/logo (mobile) + search z lewej + akcje z prawej */}
+          {/* Wiersz 1: hamburger/logo (mobile) + fragmentator z lewej + search na środku + akcje z prawej */}
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {/* Hamburger + logo (MAGAZYN nad i-coucou) — tylko mobile (sidebar schowany) */}
             <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn} title="Menu">
@@ -175,7 +181,13 @@ export function Topbar({
             </button>
             <div className="show-mobile"><Brand stacked/></div>
 
-            {/* Search — z LEWEJ (desktop pełny pasek; na mobile ikona przeniesiona do akcji) */}
+            {/* Fragmentator firm — z LEWEJ, globalny dla wszystkich widoków (lib/shop) */}
+            <ShopSwitcher/>
+
+            {/* Spacer lewy — razem z prawym centruje wyszukiwarkę */}
+            <div style={{ flex: 1 }}/>
+
+            {/* Search — na ŚRODKU (desktop pełny pasek; na mobile ikona w akcjach) */}
             <button onClick={onOpenSearch} style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "8px 12px",
@@ -192,7 +204,7 @@ export function Topbar({
               <kbd>Ctrl+K</kbd>
             </button>
 
-            {/* Spacer — dosuwa akcje do prawej */}
+            {/* Spacer prawy — dosuwa akcje do prawej */}
             <div style={{ flex: 1 }}/>
 
             {/* Akcje */}

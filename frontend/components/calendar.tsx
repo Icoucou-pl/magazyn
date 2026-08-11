@@ -15,6 +15,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { I, Card, CardHeader, Pill, MfrChip, containerLabel, isDraftNumber } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
+import { useShop } from "@/lib/shop";
 import { fmtNum } from "@/lib/format";
 
 // ── Typy ─────────────────────────────────────────────────────
@@ -63,12 +64,6 @@ const EVENT_META: Record<EventType, EventMeta> = {
 const MODE_LABEL: Record<Mode, string> = { month: "Mies", week: "Tydz", day: "Dzień" };
 
 // Sklep/magazyn — te same slugi i etykiety co na dashboardzie. "" = wszystkie sklepy (suma).
-const SHOPS: Array<{ v: string; l: string }> = [
-  { v: "amh", l: "AMH" },
-  { v: "acti", l: "Acti" },
-  { v: "veluxa", l: "Veluxa" },
-  { v: "", l: "Wszystkie" },
-];
 
 const MONTH_NAMES = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAY_NAMES   = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
@@ -101,7 +96,7 @@ const eventSub = (e: CalEvent) => {
 // wyłącznie po stronie klienta (page.tsx: `if (!ready) return null`), więc odczyt w
 // inicjalizatorze useState jest bezpieczny — brak hydration mismatch.
 const CAL_STATE_KEY = "magazyn:calendar:view";
-type PersistedCalState = { mode: Mode; cursorTs: number; selected: string; shop: string; scope: Scope; filters: Filters };
+type PersistedCalState = { mode: Mode; cursorTs: number; selected: string; scope: Scope; filters: Filters };
 function loadCalState(): Partial<PersistedCalState> {
   if (typeof window === "undefined") return {};
   try {
@@ -126,9 +121,9 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
   // Zakres SKU: "watched" = tylko obserwowane (gwiazdka), "active" = wszystkie aktywne.
   // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy są zawsze widoczne.
   const [scope, setScope] = useState<Scope>(saved.scope ?? "watched");
-  // Sklep: "" = wszystkie, "amh"/"acti"/"veluxa" = tylko dany magazyn (jak na dashboardzie).
-  // ORDER/EMPTY liczone są wtedy per-sklep, DELIVERY zawężone do kontenerów z towarem tej firmy.
-  const [shop, setShop] = useState(saved.shop ?? "amh");
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  // ORDER/EMPTY liczone są per-firma, DELIVERY zawężone do kontenerów z towarem tej firmy.
+  const { shop } = useShop();
 
   // Zapis stanu widoku przy każdej zmianie — dzięki temu po powrocie z popupu kontenera
   // (remount) kalendarz odtwarza dokładnie ten sam widok.
@@ -136,10 +131,10 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
     if (typeof window === "undefined") return;
     try {
       window.sessionStorage.setItem(CAL_STATE_KEY, JSON.stringify({
-        mode, cursorTs: cursor.getTime(), selected, shop, scope, filters,
+        mode, cursorTs: cursor.getTime(), selected, scope, filters,
       }));
     } catch { /* quota / tryb prywatny — ignorujemy */ }
-  }, [mode, cursor, selected, shop, scope, filters]);
+  }, [mode, cursor, selected, scope, filters]);
 
   useEffect(() => {
     let mounted = true;
@@ -262,22 +257,6 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
 
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 }}>
-      {/* Selektor sklepu — 1:1 z dashboardem. "" = wszystkie sklepy. */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
-          {SHOPS.map((s) => {
-            const active = shop === s.v;
-            return (
-              <button key={s.v || "all"} onClick={() => setShop(s.v)} style={{
-                padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
-                background: active ? "var(--surface-3)" : "transparent",
-                color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
-              }}>{s.l}</button>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Toolbar */}
       <CalendarToolbar
         label={label}

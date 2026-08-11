@@ -15,6 +15,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, download } from "@/lib/api";
 import { fmtPLNk } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
+import { useShop, shopToScope } from "@/lib/shop";
 import { I, Card } from "@/components/ui";
 import { toast } from "@/components/toast";
 import OccupancyReport from "@/components/occupancy";
@@ -458,7 +459,10 @@ export default function ReportsView() {
   // nie ma w ROLE_PERMS — bez jawnego ptaszka nie widzi jej nikt, łącznie z ADMIN.
   const showOccupancy = can(useUser(), "viewOccupancy");
   const [mode, setMode] = useState<null | "kpi" | "sku" | "occupancy">(null);
-  const [scope, setScope] = useState("amh");          // domyślnie AMH; fragmentator firm — wspólny dla wszystkich raportów
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  // Raporty jadą na własnej konwencji: "all" zamiast "" dla wszystkich firm.
+  const { shop } = useShop();
+  const scope = shopToScope(shop);
   const [minDate, setMinDate] = useState("");         // pierwszy dzień, z którego mamy snapshot
   const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());
@@ -502,13 +506,6 @@ export default function ReportsView() {
           </p>
         </div>
       </div>
-
-      <Card style={{ padding: "12px 16px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={segWrap}>
-          {SCOPES.map((s) => <button key={s.id} onClick={() => setScope(s.id)} style={segBtn(scope === s.id)}>{s.label}</button>)}
-        </div>
-        <span style={{ fontSize: 11, color: "var(--text-lo)" }}>dotyczy wszystkich raportów</span>
-      </Card>
 
       {mode === null ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>

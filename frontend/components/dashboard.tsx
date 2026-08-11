@@ -20,6 +20,7 @@ import {
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { can, canEdit, useUser } from "@/lib/permissions";
+import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
 import WyprzedazModal from "./wyprzedaz-modal";
 import type { Product } from "./products-ui";
@@ -1027,7 +1028,8 @@ export default function Dashboard({
   const [shopping, setShopping] = useState<ShoppingGroup[]>([]);
   const [topSellers, setTopSellers] = useState<TopSeller[]>([]);
   const [transitWh, setTransitWh] = useState<{ value_pln: number; sku_count: number } | null>(null);
-  const [shop, setShop] = useState("amh");
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  const { shop } = useShop();
   const cacheRef = useRef<Record<string, {
     history: StockHistory | null;
     containers: ContainerOut[]; anomalies: Anomaly[]; shopping: ShoppingGroup[]; topSellers: TopSeller[];
@@ -1187,33 +1189,8 @@ export default function Dashboard({
       .sort((a, b) => a.days_until_empty - b.days_until_empty);
   }, [shopping]);
 
-  const SHOPS: Array<{ v: string; l: string }> = [
-    { v: "amh", l: "AMH" },
-    { v: "acti", l: "Acti" },
-    { v: "veluxa", l: "Veluxa" },
-    { v: "", l: "Wszystkie" },
-  ];
-
-  const shopSelector = (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
-        {SHOPS.map((s) => {
-          const active = shop === s.v;
-          return (
-            <button key={s.v || "all"} onClick={() => setShop(s.v)} style={{
-              padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
-              background: active ? "var(--surface-3)" : "transparent",
-              color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
-            }}>{s.l}</button>
-          );
-        })}
-      </div>
-    </div>
-  );
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }} className="fade-in">
-      {shopSelector}
       {loading ? <DashboardSkeleton gap={gap} /> : (
         <>
           {can(user, "viewDashboardKpi") && (

@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { fmtPLNk } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
+import { useShop } from "@/lib/shop";
 import { I } from "./ui";
 import {
   ContainersToolbar, ContainerCard, MiniStat, MonthGroup, monthLabelPL,
@@ -51,7 +52,8 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
-  const [shop, setShop] = useState("amh");     // domyślnie AMH; "" = wszystkie firmy
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  const { shop } = useShop();
   const [mfr, setMfr] = useState("");       // "" = wszyscy producenci
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
   const [openMonths, setOpenMonths] = useState<Set<string>>(() => new Set());
@@ -324,20 +326,6 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
 
       <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8 }}>
-            {[{ v: "amh", l: "AMH" }, { v: "acti", l: "Acti" }, { v: "veluxa", l: "Veluxa" }, { v: "", l: "Wszyscy" }].map((sh) => {
-              const active = shop === sh.v;
-              return (
-                <button key={sh.v || "all"} onClick={() => setShop(sh.v)} style={{
-                  padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer",
-                  background: active ? "var(--surface-3)" : "transparent",
-                  color: active ? "var(--text-hi)" : "var(--text-mid)", border: "none",
-                }}>{sh.l}</button>
-              );
-            })}
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>Producent</span>
           <select value={mfr} onChange={(e) => setMfr(e.target.value)} style={{
             padding: "6px 10px", fontSize: 12, borderRadius: 8, minWidth: 150,
@@ -347,8 +335,8 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
             {mfrOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
           </select>
         </div>
-        {(shop || mfr) && (
-          <button onClick={() => { setShop(""); setMfr(""); }} style={{
+        {mfr && (
+          <button onClick={() => setMfr("")} style={{
             padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: "pointer",
             background: "transparent", border: "1px solid var(--border)", color: "var(--text-mid)",
           }}>Wyczyść</button>

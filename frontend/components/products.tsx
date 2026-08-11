@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, can } from "@/lib/permissions";
+import { useShop } from "@/lib/shop";
 import {
   ProductsToolbar, ProductsTable, ColPickerModal, BulkBar, AddSampleModal,
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
@@ -50,8 +51,8 @@ export default function ProductsView({
   const [search, setSearch] = useState("");
   // Domyślny widok po wejściu w Produkty = Obserwowane (is_favorite), nie Aktywne.
   const [filter, setFilter] = useState("favorites");
-  // Selektor sklepu (Faza 3 na Produktach): "" = Wszystkie (suma), "amh"/"acti"/"veluxa" = liczby per sklep.
-  const [shop, setShop] = useState("amh");
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  const { shop } = useShop();
   // Start false (SSR-safe: brak window), wczytaj zapamiętaną preferencję po montażu.
   const [showInactive, setShowInactive] = useState(false);
   useEffect(() => { setShowInactive(readShowInactive()); }, []);
@@ -94,14 +95,15 @@ export default function ProductsView({
     })();
   }, []);
 
-  // Drill-down z Dashboardu / globalnej wyszukiwarki: otwórz modal wskazanego SKU
-  // w trybie SUMA („Wszyscy") — realny obraz „ile mam łącznie i mogę przerzucić".
+  // Drill-down z Dashboardu / globalnej wyszukiwarki: otwórz modal wskazanego SKU.
   // Dociągamy produkt WPROST przez get_product (nie z listy) — lista przy pierwszym
   // wejściu bywa jeszcze pusta i dawniej dawała fałszywe „Nie znaleziono produktu".
+  // get_product zwraca SUMĘ po firmach niezależnie od wybranej zakładki, więc modal
+  // pokazuje pełny obraz, a globalny fragmentator zostaje NIETKNIĘTY (dawniej robił
+  // tu setShop(""), przez co po zamknięciu modalu cała apka siedziała na „Wszyscy").
   useEffect(() => {
     if (!openSku) return;
     let cancelled = false;
-    setShop("");  // pod modalem zostaje „Wszyscy" (suma), spójnie z tym, co pokazuje modal
     (async () => {
       try {
         const p = (await api.get(`/products/${encodeURIComponent(openSku)}`)) as Product;
@@ -125,8 +127,8 @@ export default function ProductsView({
     return allSel ? new Set() : new Set(rows.map((r) => r.sku));
   });
   const clearSel = () => setSelected(new Set());
-  // Zmiana sklepu: czyścimy zaznaczenie, bo lista SKU się zmienia (inaczej bulk mógłby trafić w SKU spoza widoku).
-  const changeShop = useCallback((v: string) => { setShop(v); setSelected(new Set()); }, []);
+  // Zmiana firmy: czyścimy zaznaczenie, bo lista SKU się zmienia (inaczej bulk mógłby trafić w SKU spoza widoku).
+  useEffect(() => { setSelected(new Set()); }, [shop]);
 
   const onToggleFav = async (p: Product) => {
     try {
@@ -225,7 +227,6 @@ export default function ProductsView({
       <ProductsToolbar
         search={search} setSearch={setSearch}
         filter={filter} setFilter={setFilter}
-        shop={shop} setShop={changeShop}
         showInactive={showInactive} setShowInactive={toggleInactive}
         counts={counts}
         resultCount={filtered.length}

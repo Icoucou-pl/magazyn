@@ -4,6 +4,9 @@
 //   Macierz heatmap: wiersze = SKU, kolumny = miesiące, komórka =
 //   prognozowany stan, kolor wg miesięcy zapasu (months-of-cover).
 //   Dane realne: /products (+ incoming_deliveries) i /manufacturers.
+//   FIRMA (fragmentator z Topbara): filtrowanie po WŁAŚCICIELU SKU (firma_id,
+//   NULL = AMH) i wyłącznie w tym widoku — backend zostaje nietknięty. Zakładka
+//   Acti pokazuje więc producentów, którzy mają produkty Acti, i nic poza tym.
 //   Projekcja liczona klientowo (jak mock projectProduct) — backendowy
 //   /projection jest dzienny i służy modalowi produktu.
 //   Sterowanie: zakładki producenta, sezonowość, sort, horyzont,
@@ -15,9 +18,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtPLNk, fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
+import { useShop } from "@/lib/shop";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { I, Pill, MfrChip, ContainerNr } from "./ui";
 import { MiniStat, STATUS_FULL_META, type Container } from "./containers-ui";
+import type { Firma } from "./products-ui";
 import {
   Checkbox, modalBackdrop, modalCard, iconBtnGhost, Portal,
   StatusPillExt, displayStatus, monthsDisplay,
@@ -136,7 +141,10 @@ export default function ForecastView({
   const gap = density === "compact" ? 12 : 14;
   const showFin = can(useUser(), "viewFinancials");
 
-  const [products, setProducts] = useState<Product[]>([]);
+  const [allProducts, setProducts] = useState<Product[]>([]);
+  const [firmy, setFirmy] = useState<Firma[]>([]);
+  // Firma z globalnego fragmentatora w Topbarze (lib/shop).
+  const { shop } = useShop();
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [loading, setLoading] = useState(true);
@@ -168,12 +176,15 @@ export default function ForecastView({
       api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
       api.get("/manufacturers"),
       api.get("/containers"),
-    ]).then(([prod, mfr, cont]) => {
+      // Mapa firm — potrzebna, bo produkt niesie firma_id, a fragmentator operuje slugiem.
+      api.get("/firmy"),
+    ]).then(([prod, mfr, cont, fir]) => {
       if (!alive) return;
       if (prod.status === "fulfilled") setProducts((prod.value as Product[]) || []);
       else toast("Nie udało się wczytać produktów", "warning");
       if (mfr.status === "fulfilled") setManufacturers((mfr.value as Manufacturer[]) || []);
       if (cont.status === "fulfilled") setContainers((cont.value as Container[]) || []);
+      if (fir.status === "fulfilled") setFirmy((fir.value as Firma[]) || []);
       setLoading(false);
     });
     return () => { alive = false; };
@@ -195,10 +206,40 @@ export default function ForecastView({
       .finally(() => setSeasLoading(false));
   }, [seasonality, seasLoaded, seasLoading]);
 
+  // Zakładka firmy = produkty, których WŁAŚCICIELEM jest ta firma (firma_id na SKU,
+  // NULL => AMH — ta sama konwencja co w firma_breakdown kontenerów). Filtrujemy
+  // wyłącznie tutaj: żaden inny widok ani backend się o tym nie dowie.
+  const products = useMemo(() => {
+    if (!shop) return allProducts;
+    const idOf = new Map(firmy.map((f) => [f.slug.toLowerCase(), f.id]));
+    const wanted = idOf.get(shop);
+    if (shop === "amh") {
+      // AMH = własne SKU + sieroty bez przypisanej firmy (NULL traktujemy jak AMH).
+      return allProducts.filter((p) => p.firma_id == null || p.firma_id === wanted);
+    }
+    if (wanted == null) return allProducts;   // nieznany slug — nie ukrywamy nic po cichu
+    return allProducts.filter((p) => p.firma_id === wanted);
+  }, [allProducts, firmy, shop]);
+
+  // Chipy producentów z produktów w zakresie — inaczej na zakładce Acti wisieliby
+  // producenci bez ani jednego SKU tej firmy (stąd Medik-Medical świecił na AMH).
+  const scopedManufacturers = useMemo(() => {
+    if (!shop) return manufacturers;
+    const present = new Set(products.map((p) => p.manufacturer_id).filter((id) => id != null));
+    return manufacturers.filter((m) => present.has(m.id));
+  }, [manufacturers, products, shop]);
+
   const monthCols = useMemo(() => buildMonthCols(horizon), [horizon]);
   const mfr = useMemo(() => manufacturers.find((m) => m.id === mfrId), [manufacturers, mfrId]);
 
   // Reset ręcznych nadpisań przy zmianie producenta
+  // Zmiana firmy: wybrany producent bez SKU w nowym zakresie → wracamy na „Wszyscy",
+  // inaczej tabela byłaby pusta, a aktywny chip niewidoczny na liście.
+  useEffect(() => {
+    if (mfrId === "ALL") return;
+    if (!scopedManufacturers.some((m) => m.id === mfrId)) setMfrId("ALL");
+  }, [scopedManufacturers, mfrId]);
+
   useEffect(() => { setHiddenSkus(new Set()); setExtraSkus(new Set()); }, [mfrId]);
 
   useEffect(() => {
@@ -323,7 +364,7 @@ export default function ForecastView({
         background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)",
       }}>
         <div style={{ display: "flex", gap: 4, padding: 3, background: "var(--surface-2)", borderRadius: 8, flexWrap: "wrap" }}>
-          {([{ id: "ALL" as MfrId, name: "Wszyscy", color: "var(--text-lo)" }, ...manufacturers]).map((m) => {
+          {([{ id: "ALL" as MfrId, name: "Wszyscy", color: "var(--text-lo)" }, ...scopedManufacturers]).map((m) => {
             const active = mfrId === m.id;
             return (
               <button key={String(m.id)} onClick={() => setMfrId(m.id as MfrId)} style={{
