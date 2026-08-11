@@ -156,8 +156,11 @@ async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_d
             current += eta_map[cd]
             ev = eta_names[cd]
         if offset > 0:
-            current -= base_daily
-        points.append(StockProjectionPoint(date=cd, stock=max(0, int(current)), event=ev))
+            # Podłoga na zerze — patrz forecast.tsx. Bez niej stan schodził pod zero,
+            # a dostawa dopisywana do ujemnego salda była zaniżona o sprzedaż z okresu,
+            # w którym magazyn i tak był pusty.
+            current = max(0.0, current - base_daily)
+        points.append(StockProjectionPoint(date=cd, stock=int(current), event=ev))
     return points
 
 
