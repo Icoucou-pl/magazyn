@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from sql import PRODUCT_NAMES_QUERY, PRODUCT_PRICES_QUERY
 from services.products import fetch_products
 from services.containers import fetch_containers
 
@@ -221,6 +222,22 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
     """
     rows: Dict[tuple, dict] = {}
 
+    # Nazwy i ceny ze WSPÓLNYCH źródeł (sql.py), nie tylko z subiekt_dwa_magazyny.
+    # Wcześniej oba słowniki budowały się wyłącznie z tabeli AMH, więc towar Acti/Veluxa,
+    # którego Subiekt nie zna, wychodził w raporcie bez nazwy i z ceną 0 — mimo że nazwa
+    # i cena zakupu siedzą dla niego w Fakturowni.
+    name_by_sku: Dict[str, str] = {}
+    r = await db.execute(text(PRODUCT_NAMES_QUERY))
+    for row in r.mappings():
+        if row["sku"] and row["n"]:
+            name_by_sku[row["sku"]] = row["n"]
+
+    price_by_sku: Dict[str, float] = {}
+    r = await db.execute(text(PRODUCT_PRICES_QUERY))
+    for row in r.mappings():
+        if row["sku"] and row["cena"] is not None:
+            price_by_sku[row["sku"]] = round(float(row["cena"]), 2)
+
     def slot(sku_raw: str, firma: str) -> dict:
         key = ((sku_raw or "").strip().upper(), firma)
         if key not in rows:
@@ -237,19 +254,15 @@ async def build_stock_rows(db: AsyncSession) -> List[dict]:
         FROM {settings.TABLE_SUBIEKT_DWA}
         WHERE sku IS NOT NULL AND TRIM(sku) <> ''
     """))
-    price_by_sku: Dict[str, float] = {}
-    name_by_sku: Dict[str, str] = {}
     for row in r:
         d = dict(row._mapping)
         t = slot(d["sku"], DEFAULT_FIRMA_SLUG)
-        t["nazwa"] = d.get("nazwa") or None
-        t["cena_jednostkowa"] = round(float(d["cena"] or 0), 2)
+        key = (d["sku"] or "").strip().upper()
+        # Wspólne źródło ma pierwszeństwo — uwzględnia ręczną nadpiskę, której ta tabela nie zna.
+        t["nazwa"] = name_by_sku.get(key) or d.get("nazwa") or None
+        t["cena_jednostkowa"] = price_by_sku.get(key, round(float(d["cena"] or 0), 2))
         t["stan_glowny"] += int(d["gl"] or 0)
         t["stan_w_drodze"] += int(d["wd"] or 0)
-        key = (d["sku"] or "").strip().upper()
-        price_by_sku[key] = t["cena_jednostkowa"]
-        if d.get("nazwa"):
-            name_by_sku[key] = d["nazwa"]
 
     # 2) Acti/Veluxa — stany z Sellasista (tabela trzyma wyłącznie sklepy nie-AMH).
     # Nazwy biorą się z name_by_sku (subiekt_dwa_magazyny). Był tu LEFT JOIN do

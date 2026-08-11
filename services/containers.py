@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from sql import PRODUCT_NAMES_CTE
+from sql import PRODUCT_NAMES_CTE, PRODUCT_PRICES_CTE
 from models import ContainerOut, ContainerItemOut, ContainerLotOut, ContainerAdvanceOut, AttachmentOut
 
 # Strefa PL — żeby status liczony z ETA przeskakiwał o północy w Polsce, nie w UTC.
@@ -366,20 +366,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     where = "WHERE c.status = :status" if status else ""
     r = await db.execute(text(f"""
         WITH {PRODUCT_NAMES_CTE},
-        prod_price AS (
-            -- Cena katalogowa po sku_canon. DISTINCT ON, bo case-warianty symbolu potrafią dać
-            -- >1 wiersz — bez dedupu join rozmnożyłby pozycje kontenera.
-            SELECT DISTINCT ON (sku_canon) sku_canon, cena
-            FROM (
-                SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(cena_jednostkowa, 0) AS cena, 0 AS pri
-                FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
-                UNION ALL
-                SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF({settings.COL_PRODUCT_PRICE}, 0), 1
-                FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
-            ) c2
-            WHERE c2.cena IS NOT NULL
-            ORDER BY sku_canon, pri
-        )
+             {PRODUCT_PRICES_CTE}
         SELECT
             c.id, c.container_number, c.order_number, c.container_type_id, c.manufacturer_id,
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
@@ -391,7 +378,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
             pn.nazwa AS product_name,
-            COALESCE(NULLIF(pa.cena_zakupu, 0), pp.cena, 0) AS purchase_price,
+            COALESCE(pp.cena, 0) AS purchase_price,   -- prod_prices ma już ręczną nadpiskę na pri 0
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
             pa.firma_id,
             f.slug AS firma_slug, f.name AS firma_name, f.color AS firma_color
@@ -400,7 +387,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
         LEFT JOIN {settings.TABLE_CONTAINER_ITEMS} ci ON ci.container_id = c.id
         LEFT JOIN prod_names pn ON pn.sku_canon = LOWER(TRIM(ci.sku))
-        LEFT JOIN prod_price pp ON pp.sku_canon = LOWER(TRIM(ci.sku))
+        LEFT JOIN prod_prices pp ON pp.sku_canon = LOWER(TRIM(ci.sku))
         LEFT JOIN (
             SELECT DISTINCT ON (LOWER(TRIM(sku)))
                    LOWER(TRIM(sku)) AS sku_canon,
