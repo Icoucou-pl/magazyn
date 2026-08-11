@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings, INCLUDED_STATUS_FILTER
+from sql import PRODUCT_NAMES_QUERY
 from database import get_db
 from models import CurrentUser
 from security import get_current_user, has_perm
@@ -494,34 +495,18 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int, include_sales
         cbm_by_sku[m["sku"]] = float(m["cbm"] or 0)
         firma_of[m["sku"]] = (m["slug"] or "amh")
 
-    # ── nazwy: Subiekt zna tylko AMH, więc dokładamy resztę ──
-    # Kolejność od najsłabszego do najmocniejszego źródła (późniejsze nadpisuje):
-    #   1. product_name z pozycji zamówień Sellasista  → jedyne źródło nazw dla Acti/Veluxa,
-    #   2. nazwa z tabeli subiektowej                  → AMH,
-    #   3. name_override z atrybutów produktu          → ręczna nadpiska, wygrywa zawsze.
-    # Bez tego SKU spoza Subiektu (czyli większość Acti/Veluxy) miały pustą nazwę.
+    # ── nazwy: jedno źródło dla całego systemu (sql.PRODUCT_NAMES_QUERY) ──
+    # Wcześniej były tu trzy osobne zapytania nadpisujące się w pętli, bez Fakturowni
+    # i bez starego Subiektu — przez co część SKU Acti/Veluxa nie miała nazwy w raporcie,
+    # mimo że w module Produkty nazwa była widoczna.
     names: Dict[str, str] = {}
-    for sql_txt in (
-        f"""SELECT UPPER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku, MAX(oi.product_name) AS n
-            FROM {settings.TABLE_ORDER_ITEMS} oi
-            WHERE oi.{settings.COL_ITEM_SKU} IS NOT NULL AND TRIM(oi.{settings.COL_ITEM_SKU}) <> ''
-              AND oi.product_name IS NOT NULL AND TRIM(oi.product_name) <> ''
-            GROUP BY UPPER(TRIM(oi.{settings.COL_ITEM_SKU}))""",
-        f"""SELECT UPPER(TRIM(sku)) AS sku, MAX(nazwa) AS n
-            FROM {settings.TABLE_SUBIEKT_DWA}
-            WHERE sku IS NOT NULL AND TRIM(sku) <> '' AND nazwa IS NOT NULL AND TRIM(nazwa) <> ''
-            GROUP BY UPPER(TRIM(sku))""",
-        f"""SELECT UPPER(TRIM(sku)) AS sku, name_override AS n
-            FROM {settings.TABLE_PRODUCT_ATTRS}
-            WHERE sku IS NOT NULL AND name_override IS NOT NULL AND TRIM(name_override) <> ''""",
-    ):
-        try:
-            r = await db.execute(text(sql_txt))
-            for m in r.mappings():
-                if m["sku"] and m["n"]:
-                    names[m["sku"]] = m["n"]
-        except Exception:
-            pass
+    try:
+        r = await db.execute(text(PRODUCT_NAMES_QUERY))
+        for m in r.mappings():
+            if m["sku"] and m["n"]:
+                names[m["sku"]] = m["n"]
+    except Exception:
+        pass
 
     # ── przewidywany rozchód: średnia dzienna z 90 dni ───────
     # Okno 90-dniowe zamiast 30, bo wygładza pojedyncze duże zamówienia. Filtr statusów
