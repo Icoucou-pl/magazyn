@@ -27,13 +27,19 @@ from audit import log_audit
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
+# Klucze celowo zostają przy starych nazwach kolumn w tabeli snapshotów — zmieniamy TREŚĆ,
+# którą niosą, i etykiety, a nie schemat bazy (nie chcemy migracji dla zmiany nazewnictwa):
+#   zaplacono_pln      → zapłacone zaliczki+balance ZIELONYCH kontenerów  (pulpit: „Magazyn w drodze")
+#   do_zaplacenia_pln  → niezapłacone kwoty tych samych ZIELONYCH         (pulpit: podpis „do zapłacenia")
+#   pozostalo_pln      → niezapłacone kwoty CZERWONYCH                    (pulpit: „W Prognozie")
+# Kolumny magazyn_w_drodze_pln i kontenery_pln nadal się zapisują (wartość towaru z ERP
+# i wartość czerwonych lotów), tylko nie są już pokazywane — liczyły co innego niż pulpit.
 KPI_FIELDS = [
     ("kapital_pln", "Kapitał w towarze"),
     ("magazyn_pln", "Wartość magazynu"),
-    ("magazyn_w_drodze_pln", "Magazyn w drodze"),
-    ("kontenery_pln", "Kontenery w drodze"),
-    ("zaplacono_pln", "Zapłacone za magazyn w drodze"),
-    ("pozostalo_pln", "Pozostało do zapłaty"),
+    ("zaplacono_pln", "Magazyn w drodze — opłacone"),
+    ("do_zaplacenia_pln", "Magazyn w drodze — do zapłaty"),
+    ("pozostalo_pln", "W prognozie"),
 ]
 # 'wieczor' ma pierwszeństwo — to „stan na koniec dnia".
 SLOT_ORDER = "CASE snap_slot WHEN 'wieczor' THEN 0 ELSE 1 END"
@@ -120,7 +126,7 @@ async def kpi_range(
                    CASE snap_slot WHEN 'rano' THEN 'rano' ELSE 'wieczór' END AS label,
                    snap_date, snap_slot,
                    kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln,
-                   zaplacono_pln, pozostalo_pln
+                   zaplacono_pln, pozostalo_pln, do_zaplacenia_pln
             FROM {settings.TABLE_KPI_SNAPSHOTS}
             WHERE firma_slug = :f AND snap_date = :a
             ORDER BY CASE snap_slot WHEN 'rano' THEN 0 ELSE 1 END
@@ -130,7 +136,7 @@ async def kpi_range(
             SELECT DISTINCT ON ({key_expr})
                    {label_expr} AS label, snap_date, snap_slot,
                    kapital_pln, magazyn_pln, magazyn_w_drodze_pln, kontenery_pln,
-                   zaplacono_pln, pozostalo_pln
+                   zaplacono_pln, pozostalo_pln, do_zaplacenia_pln
             FROM {settings.TABLE_KPI_SNAPSHOTS}
             WHERE firma_slug = :f AND snap_date >= :a AND snap_date <= :b{slot_where}
             ORDER BY {key_expr}, snap_date DESC, {SLOT_ORDER}
