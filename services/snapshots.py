@@ -55,6 +55,27 @@ async def _firma_slugs(db: AsyncSession) -> List[str]:
     return slugs
 
 
+def _share(fb, slug: str):
+    """Udział firmy z firma_breakdown — odporny na to, czy to obiekt Pydantic czy dict.
+
+    Loty dostają firma_breakdown przez przypisanie do pola już zwalidowanego modelu,
+    a Pydantic v2 domyślnie takiego przypisania NIE waliduje. Historycznie siedziały tam
+    więc zwykłe dicty i getattr(share, "value") cicho zwracał default 0 — KPI zawężone
+    do firmy gubiły całe kontenery skonsolidowane. Źródło poprawione w services/containers.py,
+    ten helper zostaje jako zabezpieczenie, żeby ten sam błąd nie wrócił inną drogą.
+    """
+    s = (fb or {}).get(slug)
+    return s
+
+
+def _sv(share, field: str) -> float:
+    """Pole liczbowe z udziału firmy, niezależnie od reprezentacji."""
+    if share is None:
+        return 0.0
+    v = share.get(field) if isinstance(share, dict) else getattr(share, field, 0.0)
+    return float(v or 0.0)
+
+
 def _red_container_value(containers, shop: str) -> float:
     """Wartość CZERWONEJ części (jeszcze nie w Subiekcie) niedostarczonych kontenerów.
 
@@ -72,16 +93,14 @@ def _red_container_value(containers, shop: str) -> float:
                 if l.subiekt_wbite:
                     continue                      # zielony → liczony z magazynu subiektowego
                 if shop:
-                    share = (l.firma_breakdown or {}).get(shop)
-                    total += float(getattr(share, "value", 0.0) or 0.0) if share else 0.0
+                    total += _sv(_share(l.firma_breakdown, shop), "value")
                 else:
                     total += float(l.total_value or 0.0)
         else:
             if c.subiekt_wbite:
                 continue
             if shop:
-                share = (c.firma_breakdown or {}).get(shop)
-                total += float(getattr(share, "value", 0.0) or 0.0) if share else 0.0
+                total += _sv(_share(c.firma_breakdown, shop), "value")
             else:
                 total += float(c.total_value or 0.0)
     return round(total, 2)
@@ -138,13 +157,11 @@ def _payment_totals(containers, shop: str) -> tuple:
             return 1.0
         fb = fb or {}
         if total_value > 0:
-            share = fb.get(shop)
-            return (float(getattr(share, "value", 0.0) or 0.0) / total_value) if share else 0.0
-        units = sum(float(getattr(v, "units", 0) or 0) for v in fb.values())
+            return _sv(_share(fb, shop), "value") / total_value
+        units = sum(_sv(v, "units") for v in fb.values())
         if units <= 0:
             return 0.0
-        share = fb.get(shop)
-        return (float(getattr(share, "units", 0) or 0) / units) if share else 0.0
+        return _sv(_share(fb, shop), "units") / units
 
     paid = 0.0
     w_prognozie = 0.0   # niezapłacone raty+balance po CZERWONEJ stronie (jeszcze nie w Subiekcie)
