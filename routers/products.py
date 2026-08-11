@@ -31,6 +31,7 @@ def _mask_financials(products, user):
         p.stock_value = 0.0
         p.purchase_price = 0.0
         p.cena_zakupu_manual = None
+        p.price_source = None   # cena wyzerowana → etykieta źródła nie ma czego opisywać
     return products
 
 
