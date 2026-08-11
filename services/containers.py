@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from sql import PRODUCT_NAMES_CTE
 from models import ContainerOut, ContainerItemOut, ContainerLotOut, ContainerAdvanceOut, AttachmentOut
 
 # Strefa PL — żeby status liczony z ETA przeskakiwał o północy w Polsce, nie w UTC.
@@ -364,33 +365,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     """Lista kontenerów z pozycjami + załącznikami + wyliczeniami wypełnienia/wartości."""
     where = "WHERE c.status = :status" if status else ""
     r = await db.execute(text(f"""
-        WITH prod_names AS (
-            -- Nazwy w tej samej kolejności źródeł co katalog produktów (sql.py):
-            -- ręczna nadpiska > Fakturownia (Acti/Veluxa) > nowy Subiekt > stary Subiekt > Sellasist.
-            -- Wcześniej kontener czytał nazwę WYŁĄCZNIE ze starego subiekt_towary (joinem po
-            -- surowym symbolu, bez LOWER/TRIM) z fallbackiem na sprzedaż w Sellasiście — przez co
-            -- towar Acti nigdy nie sprzedany w Sellasiście nie miał nazwy, a przy różnicy
-            -- wielkości liter join nie trafiał w ogóle.
-            SELECT DISTINCT ON (sku_canon) sku_canon, nazwa
-            FROM (
-                SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(TRIM(name_override), '') AS nazwa, 0 AS pri
-                FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
-                UNION ALL
-                SELECT sku_canon, NULLIF(TRIM(nazwa), ''), 1
-                FROM {settings.TABLE_FAKTUROWNIA_STOCK}
-                UNION ALL
-                SELECT LOWER(TRIM(sku)), NULLIF(TRIM(nazwa), ''), 2
-                FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
-                UNION ALL
-                SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF(TRIM({settings.COL_PRODUCT_NAME}), ''), 3
-                FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
-                UNION ALL
-                SELECT LOWER(TRIM({settings.COL_ITEM_SKU})), NULLIF(TRIM(product_name), ''), 4
-                FROM {settings.TABLE_ORDER_ITEMS} WHERE {settings.COL_ITEM_SKU} IS NOT NULL
-            ) n
-            WHERE n.nazwa IS NOT NULL
-            ORDER BY sku_canon, pri
-        ),
+        WITH {PRODUCT_NAMES_CTE},
         prod_price AS (
             -- Cena katalogowa po sku_canon. DISTINCT ON, bo case-warianty symbolu potrafią dać
             -- >1 wiersz — bez dedupu join rozmnożyłby pozycje kontenera.
