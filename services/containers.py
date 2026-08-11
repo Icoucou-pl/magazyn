@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from sql import PRODUCT_NAMES_CTE, PRODUCT_PRICES_CTE
-from models import ContainerOut, ContainerItemOut, ContainerLotOut, ContainerAdvanceOut, AttachmentOut
+from models import ContainerOut, ContainerItemOut, ContainerLotOut, ContainerAdvanceOut, AttachmentOut, ContainerFirmaShare
 
 # Strefa PL — żeby status liczony z ETA przeskakiwał o północy w Polsce, nie w UTC.
 try:
@@ -533,13 +533,18 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         containers_dict[cid]["zaplacono_pln"] = round(paid, 2)
         containers_dict[cid]["do_zaplacenia_pln"] = round(unpaid, 2)
         containers_dict[cid]["brak_kursu"] = missing
-        # doklej rozbicie firm per lot (z ContainerFirmaShare-friendly dict-ów)
+        # doklej rozbicie firm per lot
+        # ContainerFirmaShare(**share), a NIE surowy dict: Pydantic v2 domyślnie nie waliduje
+        # przy przypisaniu do pola, więc `lot.firma_breakdown = {...}` zostawiało tam zwykłe
+        # dicty. Serializacja do JSON i tak wychodziła poprawna (front działał), ale kod
+        # backendowy czytający to przez getattr(share, "value") dostawał default 0 — przez co
+        # KPI zawężone do firmy pomijały CAŁE kontenery skonsolidowane.
         lot_firma = containers_dict[cid]["_lot_firma"]
         for lot in containers_dict[cid]["lots"]:
             fb = lot_firma.get(lot.id, {})
             for share in fb.values():
                 share["value"] = round(share["value"], 2)
-            lot.firma_breakdown = fb
+            lot.firma_breakdown = {k: ContainerFirmaShare(**v) for k, v in fb.items()}
 
     for c in containers_dict.values():
         c.pop("_lot_totals", None)
