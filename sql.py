@@ -357,3 +357,45 @@ PRODUCT_NAMES_QUERY = f"""
 WITH {PRODUCT_NAMES_CTE}
 SELECT UPPER(sku_canon) AS sku, nazwa AS n FROM prod_names;
 """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JEDNO ŹRÓDŁO CEN ZAKUPU
+# ─────────────────────────────────────────────────────────────────────────────
+# Analogicznie do PRODUCT_NAMES_CTE — ta sama kolejność, co finalny COALESCE
+# w SALES_QUERY (i to samo, co raportuje pole `price_source`):
+#   0. app_product_attrs.cena_zakupu  — ręczna nadpiska
+#   1. fakturownia_stock              — Acti/Veluxa
+#   2. subiekt_dwa_magazyny           — nowy Subiekt (AMH)
+#   3. subiekt_towary                 — stary Subiekt
+# Fakturownia i Subiekt dotyczą rozłącznych firm, więc nie konkurują ze sobą.
+# Moduły, które składały cenę same, pomijały Fakturownię i pokazywały zero
+# dla towaru Acti/Veluxa (raport per SKU, wartość pozycji kontenera).
+# NULLIF(...,0) wszędzie, bo zerowa cena w tych tabelach znaczy „nie wiem",
+# a nie „za darmo" — bez tego zero z Subiektu przykrywałoby realną cenę z Fakturowni.
+PRODUCT_PRICES_CTE = f"""
+prod_prices AS (
+    SELECT DISTINCT ON (sku_canon) sku_canon, cena
+    FROM (
+        SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(cena_zakupu, 0)::float AS cena, 0 AS pri
+        FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
+        UNION ALL
+        SELECT sku_canon, NULLIF(purchase_price_net, 0)::float, 1
+        FROM {settings.TABLE_FAKTUROWNIA_STOCK}
+        UNION ALL
+        SELECT LOWER(TRIM(sku)), NULLIF(cena_jednostkowa, 0)::float, 2
+        FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
+        UNION ALL
+        SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF({settings.COL_PRODUCT_PRICE}, 0)::float, 3
+        FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
+    ) c
+    WHERE c.cena IS NOT NULL
+    ORDER BY sku_canon, pri
+)
+"""
+
+# Wariant samodzielny dla kodu budującego słownik w Pythonie (snapshoty / raport per SKU).
+PRODUCT_PRICES_QUERY = f"""
+WITH {PRODUCT_PRICES_CTE}
+SELECT UPPER(sku_canon) AS sku, cena FROM prod_prices;
+"""
