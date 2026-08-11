@@ -364,6 +364,47 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     """Lista kontenerów z pozycjami + załącznikami + wyliczeniami wypełnienia/wartości."""
     where = "WHERE c.status = :status" if status else ""
     r = await db.execute(text(f"""
+        WITH prod_names AS (
+            -- Nazwy w tej samej kolejności źródeł co katalog produktów (sql.py):
+            -- ręczna nadpiska > Fakturownia (Acti/Veluxa) > nowy Subiekt > stary Subiekt > Sellasist.
+            -- Wcześniej kontener czytał nazwę WYŁĄCZNIE ze starego subiekt_towary (joinem po
+            -- surowym symbolu, bez LOWER/TRIM) z fallbackiem na sprzedaż w Sellasiście — przez co
+            -- towar Acti nigdy nie sprzedany w Sellasiście nie miał nazwy, a przy różnicy
+            -- wielkości liter join nie trafiał w ogóle.
+            SELECT DISTINCT ON (sku_canon) sku_canon, nazwa
+            FROM (
+                SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(TRIM(name_override), '') AS nazwa, 0 AS pri
+                FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
+                UNION ALL
+                SELECT sku_canon, NULLIF(TRIM(nazwa), ''), 1
+                FROM {settings.TABLE_FAKTUROWNIA_STOCK}
+                UNION ALL
+                SELECT LOWER(TRIM(sku)), NULLIF(TRIM(nazwa), ''), 2
+                FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
+                UNION ALL
+                SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF(TRIM({settings.COL_PRODUCT_NAME}), ''), 3
+                FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
+                UNION ALL
+                SELECT LOWER(TRIM({settings.COL_ITEM_SKU})), NULLIF(TRIM(product_name), ''), 4
+                FROM {settings.TABLE_ORDER_ITEMS} WHERE {settings.COL_ITEM_SKU} IS NOT NULL
+            ) n
+            WHERE n.nazwa IS NOT NULL
+            ORDER BY sku_canon, pri
+        ),
+        prod_price AS (
+            -- Cena katalogowa po sku_canon. DISTINCT ON, bo case-warianty symbolu potrafią dać
+            -- >1 wiersz — bez dedupu join rozmnożyłby pozycje kontenera.
+            SELECT DISTINCT ON (sku_canon) sku_canon, cena
+            FROM (
+                SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(cena_jednostkowa, 0) AS cena, 0 AS pri
+                FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
+                UNION ALL
+                SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF({settings.COL_PRODUCT_PRICE}, 0), 1
+                FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
+            ) c2
+            WHERE c2.cena IS NOT NULL
+            ORDER BY sku_canon, pri
+        )
         SELECT
             c.id, c.container_number, c.order_number, c.container_type_id, c.manufacturer_id,
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
@@ -374,12 +415,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
-            COALESCE(
-                NULLIF(TRIM(p.{settings.COL_PRODUCT_NAME}), ''),
-                NULLIF(TRIM(sell.product_name), ''),
-                NULLIF(TRIM(pa.name_override), '')
-            ) AS product_name,
-            COALESCE(NULLIF(pa.cena_zakupu, 0), p.{settings.COL_PRODUCT_PRICE}, 0) AS purchase_price,
+            pn.nazwa AS product_name,
+            COALESCE(NULLIF(pa.cena_zakupu, 0), pp.cena, 0) AS purchase_price,
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
             pa.firma_id,
             f.slug AS firma_slug, f.name AS firma_name, f.color AS firma_color
@@ -387,14 +424,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         LEFT JOIN {settings.TABLE_CONTAINER_TYPES} ct ON ct.id = c.container_type_id
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
         LEFT JOIN {settings.TABLE_CONTAINER_ITEMS} ci ON ci.container_id = c.id
-        LEFT JOIN {settings.TABLE_PRODUCTS} p ON p.{settings.COL_PRODUCT_SKU} = ci.sku
-        LEFT JOIN (
-            SELECT LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_canon,
-                   MAX(oi.product_name) AS product_name
-            FROM {settings.TABLE_ORDER_ITEMS} oi
-            WHERE oi.product_name IS NOT NULL AND TRIM(oi.product_name) <> ''
-            GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
-        ) sell ON sell.sku_canon = LOWER(TRIM(ci.sku))
+        LEFT JOIN prod_names pn ON pn.sku_canon = LOWER(TRIM(ci.sku))
+        LEFT JOIN prod_price pp ON pp.sku_canon = LOWER(TRIM(ci.sku))
         LEFT JOIN (
             SELECT DISTINCT ON (LOWER(TRIM(sku)))
                    LOWER(TRIM(sku)) AS sku_canon,
