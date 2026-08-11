@@ -292,3 +292,59 @@ FROM {settings.TABLE_EXTERNAL_STOCK}
 WHERE quantity > 0 AND shop IS NOT NULL AND TRIM(shop) <> ''
 GROUP BY sku_canon, shop;
 """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JEDNO ŹRÓDŁO NAZW PRODUKTÓW
+# ─────────────────────────────────────────────────────────────────────────────
+# Nazwa produktu żyje w pięciu tabelach i żadna nie zna całego asortymentu.
+# Wcześniej każdy moduł (kontenery, wyszukiwarka globalna, raport zajętości)
+# miał WŁASNĄ, uboższą kopię tej kolejności — i każda gubiła inne SKU:
+#   • kontenery i wyszukiwarka nie znały Fakturowni,
+#   • raport zajętości nie znał starego Subiektu,
+#   • wyszukiwarka nie znała nowego Subiektu ani ręcznych nadpisek.
+# Fakturownia jest tu kluczowa: dla towaru Acti/Veluxa, który nigdy się nie sprzedał,
+# to JEDYNE miejsce z prawdziwą nazwą — bez niej SKU zostawało puste albo pokazywało
+# własny symbol podstawiony jako zapchajdziura w sellasist_stock.
+#
+# Kolejność (niższe pri wygrywa) jest ta sama, co w finalnym SELECT katalogu wyżej:
+#   0. app_product_attrs.name_override — ręczna nadpiska, zawsze wygrywa
+#   1. fakturownia_stock               — Acti/Veluxa
+#   2. subiekt_dwa_magazyny            — nowy Subiekt (AMH)
+#   3. subiekt_towary                  — stary Subiekt (zapchajdziura dla sierot)
+#   4. sellasist_order_items           — nazwa ze sprzedaży, ostatnia deska ratunku
+#
+# Klucz to sku_canon = LOWER(TRIM(sku)) — joinować WYŁĄCZNIE po nim. Join po surowym
+# symbolu nie trafia, bo warianty wielkości liter między Subiektem a Sellasistem
+# są w tych danych normalne. DISTINCT ON gwarantuje 1 wiersz na SKU — bez niego
+# join rozmnożyłby wiersze po stronie wywołującego (np. pozycje kontenera).
+PRODUCT_NAMES_CTE = f"""
+prod_names AS (
+    SELECT DISTINCT ON (sku_canon) sku_canon, nazwa
+    FROM (
+        SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(TRIM(name_override), '') AS nazwa, 0 AS pri
+        FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
+        UNION ALL
+        SELECT sku_canon, NULLIF(TRIM(nazwa), ''), 1
+        FROM {settings.TABLE_FAKTUROWNIA_STOCK}
+        UNION ALL
+        SELECT LOWER(TRIM(sku)), NULLIF(TRIM(nazwa), ''), 2
+        FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
+        UNION ALL
+        SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF(TRIM({settings.COL_PRODUCT_NAME}), ''), 3
+        FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
+        UNION ALL
+        SELECT LOWER(TRIM({settings.COL_ITEM_SKU})), NULLIF(TRIM(product_name), ''), 4
+        FROM {settings.TABLE_ORDER_ITEMS} WHERE {settings.COL_ITEM_SKU} IS NOT NULL
+    ) n
+    WHERE n.nazwa IS NOT NULL
+    ORDER BY sku_canon, pri
+)
+"""
+
+# Wariant samodzielny dla kodu, który buduje słownik nazw w Pythonie (raport zajętości).
+# Klucz UPPER, bo tamten moduł indeksuje po UPPER(TRIM(sku)).
+PRODUCT_NAMES_QUERY = f"""
+WITH {PRODUCT_NAMES_CTE}
+SELECT UPPER(sku_canon) AS sku, nazwa AS n FROM prod_names;
+"""
