@@ -83,7 +83,15 @@ const inputStyle: React.CSSProperties = {
 };
 const th: React.CSSProperties = {
   textAlign: "right", fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--text-lo)",
-  fontWeight: 650, padding: "0 10px 8px", borderBottom: "1px solid var(--border-soft)", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none",
+  fontWeight: 650, padding: "8px 10px", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none",
+  // Nagłówek przyklejony do góry kontenera przewijania — przy 199 wierszach bez tego
+  // po zjechaniu w dół nie wiadomo, która kolumna jest która.
+  position: "sticky", top: 0, zIndex: 2,
+  // Tło musi być nieprzezroczyste, inaczej wiersze przewijają się WIDOCZNE pod nagłówkiem.
+  background: "var(--surface-1)",
+  // Kreska przez boxShadow, nie borderBottom: przy borderCollapse:"collapse" krawędzie
+  // elementów sticky nie jadą razem z nimi i obramowanie znika podczas przewijania.
+  boxShadow: "inset 0 -1px 0 var(--border-soft)",
 };
 const td: React.CSSProperties = { padding: "9px 10px", borderBottom: "1px solid var(--surface-3)", fontSize: 12.5, whiteSpace: "nowrap" };
 
@@ -581,7 +589,11 @@ export default function OccupancyReport({ scope }: { scope: string }) {
             {visible.length} z {data.rows.length} SKU · razem <span className="num">{m3(visible.reduce((a, r) => a + r.volume_m3, 0))} m³</span>
           </span>
         </div>
-        <div style={{ overflowX: "auto", maxHeight: 560, overflowY: "auto" }}>
+        {/* Wysokość liczona z okna, nie sztywne 560px. Przy wysokim ekranie tabela zajmowała
+            stały kawałek w środku strony i po zjechaniu na dół widać było tylko jej część.
+            calc(100vh - 260px) zostawia miejsce na nagłówek strony i pasek filtrów, a resztę
+            oddaje tabeli — po przewinięciu strony wypełnia ekran od góry. */}
+        <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "max(320px, calc(100vh - 260px))" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
             <thead>
               <tr>
