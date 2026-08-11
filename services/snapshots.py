@@ -29,7 +29,10 @@ from services.products import fetch_products
 from services.containers import fetch_containers
 
 # Kapitał w towarze to CAŁY stan, niezależnie od klasyfikacji sprzedażowej.
-ALL_STATUSES = {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}
+# Zestaw statusów dla KPI „Wartość magazynu" — MUSI być ten sam, co w /stock-value-history
+# (routers/calendar.py), bo z tamtego endpointu pulpit bierze swój kafelek. Raport liczył
+# wcześniej wszystkie pięć statusów, czyli dokładał INACTIVE i SAMPLE, i wychodził wyżej.
+KPI_STOCK_STATUSES = {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"}
 SLOTS = ("rano", "wieczor")
 DEFAULT_FIRMA_SLUG = "amh"
 # Firmy z wpiętym magazynem „w drodze" z ERP (AMH→Subiekt drugi magazyn,
@@ -194,7 +197,7 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
 
     for scope in ["all"] + slugs:
         shop = "" if scope == "all" else scope
-        products = await fetch_products(db, ALL_STATUSES, shop)
+        products = await fetch_products(db, KPI_STOCK_STATUSES, shop)
         magazyn = round(sum(float(p.stock_value or 0.0) for p in products), 2)
         # Magazyn „w drodze" z ERP tej firmy: AMH → Subiekt, pozostałe → Fakturownia.
         # 'all' sumuje AMH + wszystkie Fakturownie.
