@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings, included_status_clause
+from sql import PRODUCT_NAMES_CTE
 from database import get_db
 from models import AutoSuggestRequest, AutoSuggestItem, AutoSuggestResponse, OrderPdfRequest
 from services.products import fetch_products
@@ -204,14 +205,16 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
                    sku_raw AS sku, name, stock, sku_canon
             FROM catalog
             ORDER BY sku_canon, pri, stock DESC NULLS LAST, sku_raw
-        )
+        ),
+        {PRODUCT_NAMES_CTE}
         SELECT
             cd.sku AS sku,
-            cd.name AS name,
+            COALESCE(pn.nazwa, cd.name) AS name,
             COALESCE(cd.stock, 0) AS stock,
             m.name AS manufacturer_name,
             m.color AS manufacturer_color
         FROM catalog_dedup cd
+        LEFT JOIN prod_names pn ON pn.sku_canon = cd.sku_canon
         LEFT JOIN (
             SELECT DISTINCT ON (LOWER(TRIM(sku)))
                    LOWER(TRIM(sku)) AS sku_canon,
@@ -222,7 +225,7 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
             ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
         ) pa ON pa.sku_canon = cd.sku_canon
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
-        WHERE (LOWER(cd.sku) LIKE :q OR LOWER(cd.name) LIKE :q)
+        WHERE (LOWER(cd.sku) LIKE :q OR LOWER(cd.name) LIKE :q OR LOWER(pn.nazwa) LIKE :q)
           {vis_prod}
           {watch_prod}
         ORDER BY
@@ -236,13 +239,14 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
     ean_products = []
     if q.replace(" ", "").isdigit() or any(c.isdigit() for c in q):
         ean_result = await db.execute(text(f"""
+            WITH {PRODUCT_NAMES_CTE}
             SELECT DISTINCT
                 oi.{settings.COL_ITEM_SKU} AS sku,
                 oi.{settings.COL_ITEM_EAN} AS ean,
-                MAX(p.{settings.COL_PRODUCT_NAME}) AS name
+                MAX(pn.nazwa) AS name
             FROM {settings.TABLE_ORDER_ITEMS} oi
-            LEFT JOIN {settings.TABLE_PRODUCTS} p
-                ON LOWER(TRIM(p.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+            LEFT JOIN prod_names pn
+                ON pn.sku_canon = LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
             WHERE oi.{settings.COL_ITEM_EAN} LIKE :q
               {vis_ean}
               {watch_ean}
