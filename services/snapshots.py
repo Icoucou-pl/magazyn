@@ -115,12 +115,20 @@ async def _fakturownia_transit_value(db: AsyncSession, slug: str) -> float:
 # ── KPI ──────────────────────────────────────────────────────
 
 def _payment_totals(containers, shop: str) -> tuple:
-    """(zaplacono_pln, pozostalo_pln, do_zaplacenia_pln) dla niedostarczonych kontenerów.
+    """(zaplacono_pln, w_prognozie_pln, do_zaplacenia_pln) dla niedostarczonych kontenerów.
 
-    Lustro frontowego splitSubiekt(): zapłacone liczymy po stronie ZIELONEJ (wbite do
-    Subiektu), a resztę do zapłaty po CZERWONEJ. Kwoty skalujemy udziałem firmy — po
-    wartości, a gdy wartość jest zerowa (SKU bez ceny) po sztukach, żeby wpłata nie
-    przepadła przez mnożenie przez zero.
+    Dokładne lustro frontowego splitSubiekt() z pulpitu — trzy kwoty, wszystkie z tego
+    samego pola `do_zaplacenia_pln` / `zaplacono_pln`, rozdzielone stroną:
+      zaplacono   = zapłacone raty+balance ZIELONYCH  → pulpit „Magazyn w drodze"
+      do_zap      = niezapłacone tych samych ZIELONYCH → pulpit podpis „do zapłacenia"
+      w_prognozie = niezapłacone CZERWONYCH            → pulpit „W Prognozie"
+
+    Czerwona strona brała wcześniej `pozostalo_pln` (reszta wartości TOWARU), a pulpit
+    liczy `do_zaplacenia_pln` (niezapłacone KWOTY rat i balansu). To dwie różne rzeczy
+    i stąd rozjazd między raportem a pulpitem.
+
+    Kwoty skalujemy udziałem firmy — po wartości, a gdy wartość jest zerowa (SKU bez ceny)
+    po sztukach, żeby wpłata nie przepadła przez mnożenie przez zero.
     """
     def ratio(fb, total_value: float) -> float:
         if not shop:
@@ -136,8 +144,8 @@ def _payment_totals(containers, shop: str) -> tuple:
         return (float(getattr(share, "units", 0) or 0) / units) if share else 0.0
 
     paid = 0.0
-    left = 0.0
-    do_zap = 0.0   # „Do zapłacenia": niezapłacone raty+balance po ZIELONEJ stronie (wbite)
+    w_prognozie = 0.0   # niezapłacone raty+balance po CZERWONEJ stronie (jeszcze nie w Subiekcie)
+    do_zap = 0.0        # niezapłacone raty+balance po ZIELONEJ stronie (wbite)
     for c in containers:
         if (c.effective_status or c.status) == "DELIVERED":
             continue
@@ -150,24 +158,30 @@ def _payment_totals(containers, shop: str) -> tuple:
                     paid += float(l.zaplacono_pln or 0.0) * r
                     do_zap += float(getattr(l, "do_zaplacenia_pln", 0.0) or 0.0) * r
                 else:
-                    left += float(l.pozostalo_pln or 0.0) * r
+                    w_prognozie += float(getattr(l, "do_zaplacenia_pln", 0.0) or 0.0) * r
         else:
             r = ratio(c.firma_breakdown, float(c.total_value or 0.0))
             if c.subiekt_wbite:
                 paid += float(c.zaplacono_pln or 0.0) * r
                 do_zap += float(getattr(c, "do_zaplacenia_pln", 0.0) or 0.0) * r
             else:
-                left += float(c.pozostalo_pln or 0.0) * r
-    return round(paid, 2), round(left, 2), round(do_zap, 2)
+                w_prognozie += float(getattr(c, "do_zaplacenia_pln", 0.0) or 0.0) * r
+    return round(paid, 2), round(w_prognozie, 2), round(do_zap, 2)
 
 
 async def build_kpi_rows(db: AsyncSession) -> List[dict]:
-    """4 KPI dla zakresu globalnego ('all') i każdej firmy.
+    """KPI dla zakresu globalnego ('all') i każdej firmy — liczone jak kafelki pulpitu.
 
-    magazyn_pln     — Σ stock_value z katalogu (ten sam co pulpit, wszystkie statusy)
-    w_drodze_pln    — magazyn „w drodze" z ERP firmy (AMH→Subiekt, Acti/Veluxa→Fakturownia)
-    kontenery_pln   — czerwone loty, zawężone do firmy
-    kapital_pln     — magazyn + w drodze
+    Pokazywane w raporcie:
+      magazyn_pln       — Σ stock_value z katalogu (ten sam co pulpit, wszystkie statusy)
+      zaplacono_pln     — zapłacone raty+balance ZIELONYCH   → „Magazyn w drodze — opłacone"
+      do_zaplacenia_pln — niezapłacone tych samych ZIELONYCH → „Magazyn w drodze — do zapłaty"
+      pozostalo_pln     — niezapłacone CZERWONYCH            → „W prognozie"
+      kapital_pln       — magazyn_pln + zaplacono_pln
+
+    Zapisywane, ale nie pokazywane (liczą wartość TOWARU, nie płatności):
+      magazyn_w_drodze_pln — „w drodze" z ERP firmy (AMH→Subiekt, Acti/Veluxa→Fakturownia)
+      kontenery_pln        — wartość czerwonych lotów
     """
     containers = await fetch_containers(db)
     slugs = await _firma_slugs(db)
@@ -191,17 +205,20 @@ async def build_kpi_rows(db: AsyncSession) -> List[dict]:
         else:
             w_drodze = transit_fakt.get(scope, 0.0)
         kontenery = _red_container_value(containers, shop)
-        zaplacono, pozostalo, do_zaplacenia = _payment_totals(containers, shop)
+        zaplacono, w_prognozie, do_zaplacenia = _payment_totals(containers, shop)
         rows.append({
             "firma_slug": scope,
             "magazyn_pln": magazyn,
+            # Zapisywane dalej, ale już nie pokazywane w raporcie: wartość TOWARU w drodze
+            # z ERP i wartość czerwonych lotów. Pulpit liczy te kafelki z płatności, nie
+            # z wartości towaru — raport pokazuje teraz to samo, co pulpit.
             "magazyn_w_drodze_pln": w_drodze,
             "kontenery_pln": kontenery,
-            "kapital_pln": round(magazyn + w_drodze, 2),
-            # Płatności (kurs NBP z dnia poprzedzającego wpłatę) — te same liczby,
-            # które pokazuje pulpit pod „Magazynem w drodze" i „Kontenerami w drodze".
+            # Kapitał jak na pulpicie: wartość magazynu + ZAPŁACONE za towar w drodze.
+            # Wcześniej doliczana była wartość towaru z ERP, co dawało inną liczbę niż pulpit.
+            "kapital_pln": round(magazyn + zaplacono, 2),
             "zaplacono_pln": zaplacono,
-            "pozostalo_pln": pozostalo,
+            "pozostalo_pln": w_prognozie,
             "do_zaplacenia_pln": do_zaplacenia,
         })
     return rows
