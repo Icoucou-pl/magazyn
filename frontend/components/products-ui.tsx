@@ -34,6 +34,7 @@ export type Product = {
   stock_value: number;
   purchase_price: number;
   cena_zakupu_manual?: number | null;
+  price_source?: "manual" | "fakturownia" | "subiekt" | null;
   stock_in_transit: number;
   stock_in_transit_wbite: number;        // zielone: wbite do subiektowego „w drodze"
   stock_in_transit_containers: number;   // czerwone: jeszcze w kontenerach (niewbite)

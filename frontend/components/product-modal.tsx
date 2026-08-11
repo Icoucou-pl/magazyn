@@ -572,7 +572,7 @@ function AttributesCard({
                 value={draft.cena}
                 placeholder={product.purchase_price ? String(product.purchase_price) : "z Subiektu"}
                 onChange={(e) => setDraft({ ...draft, cena: e.target.value })}
-                title="Puste = cena z Subiektu. Wpisana wartość nadpisuje (PLN netto)."
+                title="Puste = cena z Fakturowni (Acti/Veluxa) albo Subiektu (AMH). Wpisana wartość nadpisuje (PLN netto)."
                 style={{ padding: "4px 8px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: 120, textAlign: "right" }}
               />
               <span style={{ fontSize: 11, color: "var(--text-lo)", minWidth: 22 }}>zł</span>
@@ -581,7 +581,11 @@ function AttributesCard({
             <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>
               {fmtNum(product.purchase_price)} zł{" "}
               <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>
-                {product.cena_zakupu_manual != null && product.cena_zakupu_manual > 0 ? "(ręczna)" : "(Subiekt)"}
+                {product.cena_zakupu_manual != null && product.cena_zakupu_manual > 0
+                  ? "(ręczna)"
+                  : product.price_source === "fakturownia" ? "(Fakturownia)"
+                  : product.price_source === "subiekt" ? "(Subiekt)"
+                  : ""}
               </span>
             </span>
           )}
