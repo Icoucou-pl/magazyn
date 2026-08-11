@@ -187,6 +187,15 @@ SELECT
     -- czyli nowa tabela subiektowa z fallbackiem na starą (rozstrzygnięte w CTE `catalog`).
     -- Fakturownia stoi nad Subiektem bez konfliktu — dotyczą rozłącznych firm.
     COALESCE(NULLIF(pa.cena_zakupu, 0), NULLIF(fd.ppn, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
+    -- Które z trzech źródeł wyżej faktycznie zadziałało. Front pokazywał na sztywno
+    -- „(Subiekt)", więc dla Acti/Veluxa kłamał — ich cena idzie z Fakturowni.
+    -- Kolejność CASE musi być identyczna jak w COALESCE powyżej.
+    CASE
+        WHEN NULLIF(pa.cena_zakupu, 0) IS NOT NULL              THEN 'manual'
+        WHEN NULLIF(fd.ppn, 0) IS NOT NULL                      THEN 'fakturownia'
+        WHEN NULLIF(p.{settings.COL_PRODUCT_PRICE}, 0) IS NOT NULL THEN 'subiekt'
+        ELSE NULL
+    END AS price_source,
     pa.cena_zakupu::float AS cena_zakupu_manual,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
     COALESCE(pa.cbm_per_unit, 0)::float AS cbm_per_unit,

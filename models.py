@@ -124,6 +124,7 @@ class ProductSummary(BaseModel):
     stock_value: float
     purchase_price: float = 0  # cena zakupu efektywna (ręczna override, inaczej Subiekt)
     cena_zakupu_manual: Optional[float] = None  # ręczny override PLN netto (None = brak, jedzie z Subiektu)
+    price_source: Optional[str] = None          # "manual" | "fakturownia" | "subiekt" — skąd realnie przyszła cena
     stock_in_transit: int
     stock_in_transit_wbite: int = 0          # zielone: wbite do subiektowego „w drodze"
     stock_in_transit_containers: int = 0     # czerwone: jeszcze w kontenerach (niewbite)
