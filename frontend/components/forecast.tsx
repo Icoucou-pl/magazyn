@@ -93,7 +93,11 @@ function projectProduct(p: Product, monthCols: MonthCol[], curve: number[] | nul
     if (deliveriesByMonth[i]) stock += deliveriesByMonth[i];
     const monthIdx = (today.getMonth() + i) % 12;
     const monthly = curve ? baseMonthly * (curve[monthIdx] ?? 1) : baseMonthly;
-    const endStock = Math.round(stock - monthly);
+    // Podłoga na zerze. Bez niej stan schodził pod zero i ujemne saldo jechało dalej,
+    // a dostawa dopisywana do minusa traciła sztuki na sprzedaż, której nie dało się zrobić
+    // (nie było z czego). Produkt pusty przez 2 miesiące „zjadał" 2 miesiące z dostawy.
+    // Brak towaru = sprzedaż utracona, nie dług do odrobienia.
+    const endStock = Math.max(0, Math.round(stock - monthly));
     stock = endStock;
     return { stock: endStock, bucket: classifyCover(endStock, monthly), delivery: deliveriesByMonth[i] || 0 };
   });
