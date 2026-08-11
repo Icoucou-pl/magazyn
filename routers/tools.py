@@ -229,10 +229,20 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
           {vis_prod}
           {watch_prod}
         ORDER BY
-            CASE WHEN LOWER(cd.sku) = LOWER(:exact) THEN 0 ELSE 1 END,
+            -- Ranking trafień. Bez tego sortowanie było czysto alfabetyczne po SKU, więc
+            -- „szp" wyrzucało na górę MC_SZP2 i POK_SZP1 (trafienie w ŚRODKU symbolu),
+            -- a właściwe SZP1/SZP3 lądowały poniżej. Prefiks jest tym, czego user szuka,
+            -- gdy zaczyna pisać symbol — trafienie w środku to dopiero fallback.
+            CASE
+                WHEN LOWER(cd.sku) = LOWER(:exact)                    THEN 0  -- dokładny symbol
+                WHEN LOWER(cd.sku) LIKE :prefix                       THEN 1  -- symbol zaczyna się od frazy
+                WHEN LOWER(COALESCE(pn.nazwa, cd.name)) LIKE :prefix  THEN 2  -- nazwa zaczyna się od frazy
+                WHEN LOWER(cd.sku) LIKE :q                            THEN 3  -- fraza w środku symbolu
+                ELSE 4                                                        -- tylko w nazwie
+            END,
             cd.sku
         LIMIT 15
-    """), {"q": query_lower, "exact": q})
+    """), {"q": query_lower, "prefix": f"{q.lower()}%", "exact": q})
     products = [dict(r._mapping) for r in products_result]
 
     # 2. Wyszukiwanie po EAN (jeśli zapytanie wygląda jak liczba)
