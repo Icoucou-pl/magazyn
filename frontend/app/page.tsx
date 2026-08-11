@@ -6,11 +6,14 @@
 //   - motyw: useTweaks + applyTweaks; Sun/Moon w headerze ↔ AppearancePanel (sync przez wspólny stan)
 //   - density → padding main (prop poleci do widoków w kolejnych etapach)
 //   - Ctrl+K / przycisk Szukaj → globalna wyszukiwarka (CommandPalette)
+//   - ShopProvider (lib/shop) — globalny fragmentator firm; wybór trzyma się
+//     między widokami i przeżywa odświeżenie strony (localStorage)
 // ============================================================
 
 import React, { useEffect, useState } from "react";
 import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/lib/api";
 import { UserContext as RawUserContext } from "@/lib/permissions";
+import { ShopProvider } from "@/lib/shop";
 import LoginScreen from "@/components/login";
 import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
@@ -252,6 +255,7 @@ export default function Page() {
 
   return (
     <UserContext.Provider value={currentUser}>
+     <ShopProvider companyScope={currentUser.company_scope}>
       <div style={{ display: "flex", alignItems: "flex-start", minHeight: "100dvh" }}>
         <Sidebar view={view} setView={setView} user={currentUser}/>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: "100dvh" }}>
@@ -366,6 +370,7 @@ export default function Page() {
       )}
 
       <ToastHost/>
+     </ShopProvider>
     </UserContext.Provider>
   );
 }
