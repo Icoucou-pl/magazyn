@@ -107,27 +107,14 @@ export function ToastHost() {
   );
 }
 
-// ── CSV export (Windows-1250 — co polski Excel czyta domyślnie) ──
-const CP1250: Record<string, number> = {
-  "ą":0xB9,"ć":0xE6,"ę":0xEA,"ł":0xB3,"ń":0xF1,"ó":0xF3,"ś":0x9C,"ź":0x9F,"ż":0xBF,
-  "Ą":0xA5,"Ć":0xC6,"Ę":0xCA,"Ł":0xA3,"Ń":0xD1,"Ó":0xD3,"Ś":0x8C,"Ź":0x8F,"Ż":0xAF,
-  "„":0x84,"\u201D":0x94,"–":0x96,"—":0x97,"…":0x85,"°":0xB0,"§":0xA7,"€":0x80,"©":0xA9,
-};
-// Nieznany unicode → fallback ASCII
-const ASCII_FALLBACK: Record<string, string> = { "³":"3","²":"2","→":"->","←":"<-","·":"-","•":"-","\u2019":"'","\u2018":"'" };
-
-function toCp1250(str: string): Uint8Array<ArrayBuffer> {
-  const bytes: number[] = [];
-  for (const ch of str) {
-    const code = ch.charCodeAt(0);
-    if (code < 128) { bytes.push(code); continue; }
-    if (CP1250[ch] != null) { bytes.push(CP1250[ch]); continue; }
-    const fb = ASCII_FALLBACK[ch];
-    if (fb != null) { for (const c of fb) bytes.push(c.charCodeAt(0)); continue; }
-    bytes.push(0x3F); // '?'
-  }
-  return new Uint8Array(bytes);
-}
+// ── CSV export ──
+// UTF-8 z BOM. Wcześniej plik szedł w Windows-1250 BEZ znacznika kodowania — bajty były
+// poprawne, ale Excel nie ma skąd wiedzieć, że to CP1250 (nagłówka MIME z bloba nie czyta),
+// więc otwierał plik w domyślnej stronie kodowej systemu. Na polskim Windowsie trafiał
+// przypadkiem, na Macu i na systemie z inną lokalizacją — nie, i stąd krzaki.
+// BOM (EF BB BF) rozwiązuje to jednoznacznie: Excel na Windows i Mac rozpoznaje go sam.
+// Efekt uboczny na plus: znika stratna podmiana znaków spoza CP1250 — „m³" zostaje „m³",
+// a nie „m3", i nic nie ląduje już jako „?".
 
 export type CsvColumn<T> = {
   label: string;
@@ -146,8 +133,8 @@ export function exportCsv<T>(filename: string, columns: CsvColumn<T>[], rows: T[
     typeof c.get === "function" ? c.get(r) : (r as Record<string, unknown>)[c.key as string];
   const header = columns.map((c) => esc(c.label)).join(sep);
   const body = rows.map((r) => columns.map((c) => esc(cell(c, r))).join(sep)).join("\r\n");
-  const csv = header + "\r\n" + body;
-  const blob = new Blob([toCp1250(csv)], { type: "text/csv;charset=windows-1250;" });
+  const csv = "\uFEFF" + header + "\r\n" + body;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename.endsWith(".csv") ? filename : filename + ".csv";

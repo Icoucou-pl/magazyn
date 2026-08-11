@@ -76,7 +76,7 @@ export type Firma = { id: number; slug: string; name: string; color: string };
 export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 1, ZAMOW_WKROTCE: 2, W_DRODZE: 3, OK: 4, SAMPLE: 5, DEAD_STOCK: 6 };
 
 type ColId =
-  | "fav" | "sku" | "name" | "mfr" | "stock" | "magWDrodze" | "wKontenerach"
+  | "fav" | "sku" | "name" | "firma" | "mfr" | "stock" | "magWDrodze" | "wKontenerach"
   | "sales_1m" | "sales_2m" | "sales_3m" | "sales_4m"
   | "avgMonth" | "yoy" | "yoyNext" | "months" | "price" | "value" | "lt" | "cbm" | "status";
 
@@ -91,6 +91,7 @@ export const PRODUCT_COLS: ColDef[] = [
   { id: "fav", label: "", w: 36, align: "center", sortKey: null, alwaysVisible: true },
   { id: "sku", label: "SKU", w: 132, align: "left", sortKey: "sku", alwaysVisible: true },
   { id: "name", label: "Nazwa", w: "minmax(180px, 1fr)", align: "left", sortKey: "name", alwaysVisible: true },
+  { id: "firma", label: "Firma", w: 110, align: "left", sortKey: "firma_name" },
   { id: "mfr", label: "Producent", w: 150, align: "left", sortKey: "manufacturer_name" },
   { id: "stock", label: "Stan", w: 70, align: "right", sortKey: "stock" },
   { id: "magWDrodze", label: "Magazyn w drodze", w: 110, align: "right", sortKey: "stock_in_transit_wbite" },
@@ -110,7 +111,9 @@ export const PRODUCT_COLS: ColDef[] = [
   { id: "status", label: "Status", w: 130, align: "left", sortKey: "status", alwaysVisible: true },
 ];
 
-export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "mfr", "stock", "magWDrodze", "wKontenerach", "sales_1m", "sales_2m", "avgMonth", "yoy", "yoyNext", "months", "value", "status"];
+// Domyślnie otwarte kolumny. "fav" (gwiazdka) to nie kolumna danych tylko przełącznik
+// obserwowania — jest alwaysVisible i musi tu zostać, inaczej znika przycisk gwiazdki.
+export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "firma", "mfr", "stock", "magWDrodze", "wKontenerach", "sales_1m", "months", "price", "cbm", "status"];
 
 const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }> = [
   { id: "favorites", label: "Obserwowane", icon: <I.StarFill size={11} /> },
@@ -380,6 +383,8 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
       return <div style={baseStyle}><span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span></div>;
     case "name":
       return <div style={baseStyle}><span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span></div>;
+    case "firma":
+      return <div style={baseStyle}>{p.firma_name ? <MfrChip name={p.firma_name} color={p.firma_color ?? "var(--text-lo)"} /> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
     case "mfr":
       return <div style={baseStyle}>{p.manufacturer_id && p.manufacturer_name ? <MfrChip name={p.manufacturer_name} color={p.manufacturer_color ?? "var(--text-lo)"} /> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
     case "stock":
