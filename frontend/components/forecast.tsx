@@ -633,7 +633,7 @@ export default function ForecastView({
         <ManufacturerModal
           mfr={manufacturers.find((m) => m.id === detailMfrId) || null}
           products={products.filter((p) => p.manufacturer_id === detailMfrId)}
-          containers={containers.filter((c) => c.manufacturer_id === detailMfrId)}
+          containers={containers}
           showFin={showFin}
           onClose={() => setDetailMfrId(null)}
           onProductClick={(sku) => { setDetailMfrId(null); onProductClick?.(sku); }}

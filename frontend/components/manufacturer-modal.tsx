@@ -18,6 +18,7 @@ import {
   type Product, type Manufacturer,
 } from "./products-ui";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
+import { mfrPipeline, belongsToMfr, isUndelivered, countLabel, plPick } from "@/lib/pipeline";
 
 // „Wymaga zamówienia" w szczegółach producenta = ta sama reguła co Pożary na
 // Dashboardzie. Tam listę robi backend (/shopping-list?favorites_only=1), więc outlety,
@@ -25,6 +26,13 @@ import { SeasonChart, type SeasonPoint } from "./season-chart";
 // z /products (pełen asortyment, bo macierz prognozy ma pokazywać wszystko),
 // dlatego ten sam filtr trzeba nałożyć klientowo — inaczej w modalu wyskakują
 // outletowe SKU, których nie zamawiamy.
+// Wartość magazynu = te same statusy co na pulpicie. Pulpit liczy ją z /stock-value-history,
+// które bierze ACTIVE + ACTIVE_NO_STOCK + DEAD_STOCK — bez INACTIVE. Modal dostaje listę
+// z /products?include=…,INACTIVE (macierz prognozy tego potrzebuje), więc INACTIVE trzeba
+// odsiać tutaj, inaczej kafelek pokazywał więcej niż pulpit. Sama kwota liczy się identycznie:
+// stock × purchase_price (backend: stock_value), gdzie cena idzie ręczna → Fakturownia → Subiekt.
+const IN_STOCK_VALUE = new Set(["ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"]);
+
 function needsOrder(p: Product): boolean {
   if (p.product_status !== "ACTIVE" && p.product_status !== "ACTIVE_NO_STOCK") return false;
   if (!p.is_favorite) return false;          // tylko obserwowane — jak favorites_only=1
@@ -39,6 +47,8 @@ export default function ManufacturerModal({
 }: {
   mfr: Manufacturer | null;
   products: Product[];
+  /** WSZYSTKIE kontenery, nie zawężone do producenta — zawężenie robi modal, bo w kontenerach
+   *  skonsolidowanych producent siedzi na locie, a nie na kontenerze (c.manufacturer_id = NULL). */
   containers: Container[];
   showFin: boolean;
   onClose: () => void;
@@ -67,10 +77,17 @@ export default function ManufacturerModal({
   if (!mfr) return null;
 
   const mfrExt = mfr as Manufacturer & { contact?: string | null };
-  const inFlight = containers.filter((c) => c.status !== "DELIVERED");
-  const delivered = containers.filter((c) => c.status === "DELIVERED").length;
-  const stockValue = products.reduce((s, p) => s + (p.stock_value || 0), 0);
-  const inTransitValue = inFlight.reduce((s, c) => s + (c.total_value || 0), 0);
+  // Kontenery tego producenta = własne + skonsolidowane, w których ma choć jeden lot.
+  const mine = containers.filter((c) => belongsToMfr(c, mfr.id));
+  // „Dostarczony" po statusie EFEKTYWNYM (auto-dostawa z ETA) — jak na pulpicie.
+  // Wcześniej szedł status ręczny, więc kontener po ETA wciąż liczył się jako w drodze.
+  const inFlight = mine.filter(isUndelivered);
+  const delivered = mine.length - inFlight.length;
+  const stockValue = products
+    .filter((p) => IN_STOCK_VALUE.has(p.product_status))
+    .reduce((s, p) => s + (p.stock_value || 0), 0);
+  // Kwoty w drodze: ten sam kod co KPI na pulpicie, tylko zakres = producent zamiast firmy.
+  const pipe = mfrPipeline(containers, mfr.id);
   const needOrder = products.filter(needsOrder)
     .sort((a, b) => a.days_until_empty - b.days_until_empty);  // najpilniejsze u góry — jak w Pożarach
 
@@ -100,9 +117,28 @@ export default function ManufacturerModal({
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
             <FcMetricBox label="Produktów (SKU)" value={products.length} sub={`${needOrder.length} do zamówienia`} tone={needOrder.length ? "warning" : "neutral"} />
             <FcMetricBox label="Wartość magazynu" value={showFin ? fmtPLNk(stockValue) : "•••"} sub="bieżący stan" />
-            <FcMetricBox label="W drodze" value={showFin ? fmtPLNk(inTransitValue) : "•••"} sub={`${inFlight.length} kontenerów`} tone="info" />
-            <FcMetricBox label="Kontenery łącznie" value={containers.length} sub={`${delivered} dostarczonych`} />
+            {/* Rozbite na dwa kafelki, tak jak pulpit. Wcześniej było jedno „W drodze" = suma
+                wartości TOWARU wszystkich niedostarczonych kontenerów — liczba, której na
+                pulpicie nie ma nigdzie, bo tam obie karty mówią o PŁATNOŚCIACH. */}
+            <FcMetricBox label="Magazyn w drodze" value={showFin ? fmtPLNk(pipe.green.paid) : "•••"}
+              sub={showFin ? `do zapłacenia ${fmtPLNk(pipe.green.remaining)}` : countLabel(pipe.green.containers, pipe.green.looseLots)} tone="info" />
+            <FcMetricBox label="W Prognozie" value={showFin ? fmtPLNk(pipe.kont.remaining) : "•••"}
+              sub={countLabel(pipe.kont.containers, pipe.kont.looseLots)} tone="info" />
+            <FcMetricBox label="Kontenery łącznie" value={mine.length} sub={`${delivered} dostarczonych`} />
           </div>
+          {showFin && pipe.missingRates > 0 && (
+            // Wpłaty bez notowania NBP nie weszły do sum — mówimy o tym wprost, zamiast po cichu
+            // zaniżać kwoty. Dociągnięcie kursów jest na pulpicie, tutaj sam sygnał.
+            <div style={{
+              display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 8,
+              background: "color-mix(in oklch, var(--warning) 10%, transparent)",
+              border: "1px solid color-mix(in oklch, var(--warning) 35%, transparent)",
+              color: "var(--warning)", fontSize: 11.5, fontWeight: 600, marginTop: -8,
+            }}>
+              <I.Alert size={13} />
+              {pipe.missingRates} {plPick(pipe.missingRates, "wpłata", "wpłaty", "wpłat")} bez kursu NBP — kwoty zaniżone.
+            </div>
+          )}
 
           {/* Sezon do sezonu */}
           <FcSection title="Sprzedaż wszystkich SKU — sezon do sezonu">

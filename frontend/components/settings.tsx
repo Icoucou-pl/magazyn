@@ -324,7 +324,7 @@ function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: num
           <ManufacturerModal
             mfr={items.find((m) => m.id === detailId) || null}
             products={detailProducts.filter((p) => p.manufacturer_id === detailId)}
-            containers={detailContainers.filter((c) => c.manufacturer_id === detailId)}
+            containers={detailContainers}
             showFin={can(user, "viewFinancials")}
             onClose={() => setDetailId(null)}
             onProductClick={onProductClick}
