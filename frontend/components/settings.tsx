@@ -1730,6 +1730,24 @@ type FreshInfo = {
   subiekt?: { last: string | null; count: number };
   fakturownia?: { last: string | null; count: number };
 };
+type BackupRow = {
+  id: number; started_at?: string | null; finished_at?: string | null;
+  ok?: boolean | null; message?: string | null; error?: string | null;
+  details?: BackupDetails;
+};
+type BackupDetails = {
+  artifact?: string; size_mb?: number; public_tables?: number; auth_users?: number;
+  attachments_with_data?: number; attachments_total?: number; storage_objects?: number;
+};
+type BackupStatus = {
+  status: "ok" | "error" | "stale" | "unknown";
+  stale_hours: number;
+  last_attempt?: BackupRow | null;
+  last_ok?: BackupRow | null;
+  details?: BackupDetails;
+  history?: BackupRow[];
+};
+
 type SyncRow = {
   id: number; source: string; started_at?: string | null; finished_at?: string | null;
   ok?: boolean | null; inserted?: number; updated?: number; items_added?: number;
@@ -1748,17 +1766,72 @@ function FreshCard({ title, info }: { title: string; info?: { last: string | nul
   );
 }
 
+// Kafelek nocnego backupu bazy. Stoi w rzędzie ze świeżością danych, ale mówi o czymś
+// innym: tamte kafelki pokazują KIEDY pobraliśmy dane, ten — czy mamy z czego odtworzyć
+// bazę. Dlatego jako jedyny ma kropkę statusu; brak backupu to problem, brak pobrania nie.
+const BACKUP_TONE = {
+  ok:      { color: "var(--ok)",       label: "OK" },
+  error:   { color: "var(--critical)", label: "BŁĄD" },
+  stale:   { color: "var(--warning)",  label: "UWAGA" },
+  unknown: { color: "var(--text-lo)",  label: "BRAK DANYCH" },
+} as const;
+
+function BackupCard({ data, onClick }: { data: BackupStatus | null; onClick?: () => void }) {
+  const tone = BACKUP_TONE[data?.status ?? "unknown"];
+  const d = data?.details ?? {};
+  const last = data?.last_ok?.finished_at || data?.last_ok?.started_at;
+  // Przy błędzie pokazujemy datę OSTATNIEJ UDANEJ kopii, nie nieudanej próby — to ta
+  // liczba mówi, jak stare dane realnie mamy.
+  const sub =
+    data?.status === "error" ? (data.last_attempt?.error || "Ostatnia próba nie powiodła się")
+    : data?.status === "stale" ? `Brak świeżej kopii od ponad ${data.stale_hours} h`
+    : data?.status === "unknown" ? "Brak wpisów w dzienniku"
+    : [d.size_mb != null ? `${d.size_mb} MB` : null,
+       d.public_tables != null ? `${d.public_tables} tabel` : null,
+       d.attachments_total ? `${d.attachments_with_data}/${d.attachments_total} zał.` : null,
+      ].filter(Boolean).join(" · ");
+
+  return (
+    <div onClick={onClick} style={{
+      border: "1px solid var(--border)", borderRadius: 10,
+      padding: "14px 16px", background: "var(--bg-elevated)",
+      cursor: onClick ? "pointer" : "default",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ fontSize: 11, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          Backup bazy
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 700, color: tone.color }}>
+          <span style={{ width: 7, height: 7, borderRadius: 99, background: tone.color }}/> {tone.label}
+        </span>
+      </div>
+      <div className="num" style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}>{fmtLocalDt(last)}</div>
+      <div style={{
+        fontSize: 11, marginTop: 4, color: data?.status === "ok" ? "var(--text-lo)" : tone.color,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }} title={sub}>{sub || "—"}</div>
+    </div>
+  );
+}
+
 function FreshnessPanel() {
   const [fresh, setFresh] = useState<FreshInfo | null>(null);
   const [rows, setRows] = useState<SyncRow[]>([]);
+  const [backup, setBackup] = useState<BackupStatus | null>(null);
+  const [showBackupHist, setShowBackupHist] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [f, l] = await Promise.all([api.get("/data-freshness"), api.get("/sync-log")]);
-      setFresh(f as FreshInfo);
-      setRows(Array.isArray(l) ? (l as SyncRow[]) : []);
+      // allSettled, nie all — gdyby backup-status padł (stary backend, brak tabeli),
+      // panel świeżości ma się załadować normalnie zamiast zniknąć w całości.
+      const [f, l, b] = await Promise.allSettled([
+        api.get("/data-freshness"), api.get("/sync-log"), api.get("/backup-status"),
+      ]);
+      if (f.status === "fulfilled") setFresh(f.value as FreshInfo);
+      if (l.status === "fulfilled") setRows(Array.isArray(l.value) ? (l.value as SyncRow[]) : []);
+      setBackup(b.status === "fulfilled" ? (b.value as BackupStatus) : null);
     } catch {
       /* cicho — panel informacyjny */
     } finally {
@@ -1779,11 +1852,40 @@ function FreshnessPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      {/* auto-fit zamiast sztywnych 3 kolumn — czwarty kafelek nie ściska pozostałych
+          na wąskim ekranie, tylko zjeżdża do drugiego rzędu. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
         <FreshCard title="Ostatnie pobranie Sellasist" info={fresh?.sellasist}/>
         <FreshCard title="Ostatnie pobranie Subiekt AMH" info={fresh?.subiekt}/>
         <FreshCard title="Ostatnie pobranie Fakturownia" info={fresh?.fakturownia}/>
+        <BackupCard data={backup} onClick={() => setShowBackupHist((v) => !v)}/>
       </div>
+
+      {showBackupHist && (
+        <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-hi)", borderBottom: "1px solid var(--border-soft)" }}>
+            Historia backupów
+          </div>
+          {(backup?.history ?? []).length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-lo)" }}>Brak wpisów.</div>
+          ) : (backup?.history ?? []).map((h) => {
+            const ok = h.ok === true && !h.error;
+            return (
+              <div key={h.id} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                fontSize: 12, borderTop: "1px solid var(--border-soft)",
+              }}>
+                <span style={{ color: ok ? "var(--ok)" : "var(--critical)", fontWeight: 700 }}>{ok ? "✓" : "✕"}</span>
+                <span className="num" style={{ color: "var(--text-mid)", minWidth: 110 }}>{fmtLocalDt(h.finished_at || h.started_at)}</span>
+                <span className="num" style={{ color: "var(--text-lo)", minWidth: 70 }}>{h.details?.size_mb != null ? `${h.details.size_mb} MB` : "—"}</span>
+                <span style={{ color: h.error ? "var(--critical)" : "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {h.error || h.details?.artifact || h.message || "—"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>Dziennik pobrań</span>
@@ -1829,6 +1931,7 @@ function FreshnessPanel() {
                         return sh ? `Fakturownia · ${sh.charAt(0).toUpperCase()}${sh.slice(1)}` : "Fakturownia";
                       }
                       if (s === "fakturownia") return "Fakturownia";
+                      if (s === "supabase_backup") return "Backup Supabase";
                       // Domyślnie: pokaż surowe źródło z kropką zamiast dwukropka, zamiast mylącego „Sellasist".
                       return s ? s.replace(":", " · ") : "—";
                     })()}
