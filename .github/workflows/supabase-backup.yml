@@ -1,0 +1,125 @@
+name: Daily Supabase Disaster Recovery Backup
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+      timezone: "Europe/Warsaw"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-daily-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Backup magazyn-prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Show tool versions
+        run: |
+          set -e
+          supabase --version
+          docker --version
+          python3 --version
+
+      - name: Create disaster-recovery backup
+        id: backup
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          bash scripts/backup_supabase.sh
+          rc=$?
+
+          if [ "$rc" -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload backup artifact
+        if: steps.backup.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.backup.outputs.artifact_name }}
+          path: ${{ steps.backup.outputs.zip_path }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Install PostgreSQL logging driver
+        if: always()
+        run: python3 -m pip install --disable-pip-version-check "psycopg[binary]>=3.2,<4"
+
+      - name: Write result to app_sync_log
+        if: always()
+        continue-on-error: true
+        env:
+          BACKUP_OK: ${{ steps.backup.outputs.ok }}
+          BACKUP_EXIT_CODE: ${{ steps.backup.outputs.exit_code }}
+          BACKUP_ARTIFACT: ${{ steps.backup.outputs.artifact_name }}
+          BACKUP_SIZE_MB: ${{ steps.backup.outputs.size_mb }}
+          BACKUP_PUBLIC_TABLES: ${{ steps.backup.outputs.public_tables }}
+          BACKUP_AUTH_USERS: ${{ steps.backup.outputs.auth_users }}
+          BACKUP_ATTACHMENTS: ${{ steps.backup.outputs.attachments }}
+          BACKUP_ATTACHMENTS_WITH_DATA: ${{ steps.backup.outputs.attachments_with_data }}
+          BACKUP_STORAGE_OBJECTS: ${{ steps.backup.outputs.storage_objects }}
+          BACKUP_ERROR: ${{ steps.backup.outputs.error_message }}
+        run: python3 scripts/log_backup_status.py
+
+      - name: GitHub Actions summary
+        if: always()
+        env:
+          BACKUP_OK: ${{ steps.backup.outputs.ok }}
+          BACKUP_ARTIFACT: ${{ steps.backup.outputs.artifact_name }}
+          BACKUP_SIZE_MB: ${{ steps.backup.outputs.size_mb }}
+          BACKUP_PUBLIC_TABLES: ${{ steps.backup.outputs.public_tables }}
+          BACKUP_AUTH_USERS: ${{ steps.backup.outputs.auth_users }}
+          BACKUP_ATTACHMENTS: ${{ steps.backup.outputs.attachments }}
+          BACKUP_ATTACHMENTS_WITH_DATA: ${{ steps.backup.outputs.attachments_with_data }}
+          BACKUP_STORAGE_OBJECTS: ${{ steps.backup.outputs.storage_objects }}
+          BACKUP_ERROR: ${{ steps.backup.outputs.error_message }}
+        run: |
+          {
+            echo "## Supabase backup"
+            echo
+            echo "- Status: **${BACKUP_OK:-false}**"
+            echo "- Artifact: \`${BACKUP_ARTIFACT:-brak}\`"
+            echo "- Rozmiar ZIP: **${BACKUP_SIZE_MB:-0} MB**"
+            echo "- Sekcje COPY public: **${BACKUP_PUBLIC_TABLES:-0}**"
+            echo "- Auth users: **${BACKUP_AUTH_USERS:-0}**"
+            echo "- Załączniki: **${BACKUP_ATTACHMENTS:-0}**"
+            echo "- Załączniki z file_data: **${BACKUP_ATTACHMENTS_WITH_DATA:-0}**"
+            echo "- Storage objects: **${BACKUP_STORAGE_OBJECTS:-0}**"
+            if [ -n "${BACKUP_ERROR:-}" ]; then
+              echo "- Błąd: \`${BACKUP_ERROR}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail workflow if backup failed
+        if: steps.backup.outputs.ok != 'true'
+        run: |
+          echo "Backup nie został poprawnie utworzony."
+          exit 1
