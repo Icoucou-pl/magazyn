@@ -11,13 +11,13 @@ def truthy(value: str | None) -> bool:
 
 
 def main() -> int:
-    token = (os.getenv("SUPABASE_ACCESS_TOKEN") or "").strip()
     project_ref = (os.getenv("SUPABASE_PROJECT_REF") or "").strip()
+    secret_key = (os.getenv("SUPABASE_SECRET_KEY") or "").strip()
 
-    if not token:
-        raise RuntimeError("Brak SUPABASE_ACCESS_TOKEN")
     if not project_ref:
         raise RuntimeError("Brak SUPABASE_PROJECT_REF")
+    if not secret_key:
+        raise RuntimeError("Brak SUPABASE_SECRET_KEY")
 
     ok = truthy(os.getenv("BACKUP_OK"))
     artifact = os.getenv("BACKUP_ARTIFACT") or ""
@@ -41,49 +41,51 @@ def main() -> int:
         message = "Backup Supabase nie powiodl sie"
         error_value = error or f"GitHub Actions exit code: {os.getenv('BACKUP_EXIT_CODE', '?')}"
 
-    # Korzystamy z Management API, więc nie potrzebujemy osobnego DB URL ani psycopg.
-    # Endpoint przyjmuje SQL i tablicę parametrów.
-    sql = """
-        INSERT INTO public.app_sync_log
-            (source, started_at, finished_at, ok, inserted, updated, items_added, message, error)
-        VALUES
-            ($1, NOW(), NOW(), $2, 0, 0, 0, $3, $4)
-    """
-
     payload = {
-        "query": sql,
-        "parameters": [
-            "supabase_backup",
-            ok,
-            message,
-            error_value,
-        ],
-        "read_only": False,
+        "source": "supabase_backup",
+        "started_at": "now()",
+        "finished_at": "now()",
+        "ok": ok,
+        "inserted": 0,
+        "updated": 0,
+        "items_added": 0,
+        "message": message,
+        "error": error_value,
     }
 
-    url = f"https://api.supabase.com/v1/projects/{project_ref}/database/query"
-    data = json.dumps(payload).encode("utf-8")
+    # Nie wysyłamy "now()" jako tekstu do timestampów.
+    # PostgREST nie interpretuje SQL w JSON, więc timestampy pomijamy,
+    # jeśli tabela ma default; jeśli nie ma, używamy czasu UTC z Pythona.
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    payload["started_at"] = now
+    payload["finished_at"] = now
+
+    url = f"https://{project_ref}.supabase.co/rest/v1/app_sync_log"
+
     req = urllib.request.Request(
         url,
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
         headers={
-            "Authorization": f"Bearer {token}",
+            "apikey": secret_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Prefer": "return=minimal",
+            "User-Agent": "magazyn-backup-github-action/1.0",
         },
     )
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            if resp.status not in (200, 201):
-                raise RuntimeError(f"Management API HTTP {resp.status}: {body}")
+            if resp.status not in (200, 201, 204):
+                raise RuntimeError(f"Data API HTTP {resp.status}: {body}")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Management API HTTP {exc.code}: {body}") from exc
+        raise RuntimeError(f"Data API HTTP {exc.code}: {body}") from exc
 
-    print(f"app_sync_log zapisany przez Management API: ok={ok}, artifact={artifact}")
+    print(f"app_sync_log zapisany przez Supabase Data API: ok={ok}, artifact={artifact}")
     return 0
 
 
