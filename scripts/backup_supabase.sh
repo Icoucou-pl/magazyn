@@ -9,7 +9,7 @@ require_env() {
   fi
 }
 
-for var in SUPABASE_DB_URL SUPABASE_DB_PASSWORD SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF; do
+for var in SUPABASE_DB_PASSWORD SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF; do
   require_env "$var"
 done
 
@@ -54,36 +54,44 @@ write_output "error_message" ""
   echo "Docker: $(docker --version)"
 } | tee "$BACKUP_DIR/RUN_INFO.txt"
 
-# 1. Core logical backup - taki sam zestaw, który został ręcznie przetestowany przy restore.
+# 1. Link do projektu. Używamy dokładnie tego samego trybu --linked,
+# który został ręcznie przetestowany przy restore. Dzięki temu backup nie
+# zależy od ręcznie zbudowanego / percent-encoded SUPABASE_DB_URL.
+echo "[0/8] link project"
+pushd "$LINK_DIR" >/dev/null
+supabase init >/dev/null
+supabase link --project-ref "$SUPABASE_PROJECT_REF" >/dev/null
+
+# 2. Core logical backup.
 echo "[1/8] roles.sql"
 supabase db dump \
-  --db-url "$SUPABASE_DB_URL" \
+  --linked \
   -f "$BACKUP_DIR/roles.sql" \
   --role-only
 
 echo "[2/8] schema.sql"
 supabase db dump \
-  --db-url "$SUPABASE_DB_URL" \
+  --linked \
   -f "$BACKUP_DIR/schema.sql"
 
 echo "[3/8] data.sql"
 supabase db dump \
-  --db-url "$SUPABASE_DB_URL" \
+  --linked \
   -f "$BACKUP_DIR/data.sql" \
   --data-only \
   --use-copy \
   -x "storage.buckets_vectors" \
   -x "storage.vector_indexes"
 
-# 2. Historia migracji - może być pusta, ale zachowujemy ją w paczce.
+# 3. Historia migracji - może być pusta, ale zachowujemy ją w paczce.
 echo "[4/8] supabase_migrations"
 supabase db dump \
-  --db-url "$SUPABASE_DB_URL" \
+  --linked \
   -f "$BACKUP_DIR/history_schema.sql" \
   --schema supabase_migrations || true
 
 supabase db dump \
-  --db-url "$SUPABASE_DB_URL" \
+  --linked \
   -f "$BACKUP_DIR/history_data.sql" \
   --schema supabase_migrations \
   --data-only \
@@ -106,11 +114,8 @@ write_output "attachments" "$ATTACHMENTS"
 write_output "attachments_with_data" "$ATTACHMENTS_WITH_DATA"
 write_output "storage_objects" "$STORAGE_OBJECTS"
 
-# 4. Link do projektu - potrzebny do auth/storage diff, Functions i Storage API.
+# 5. Platform extras - projekt jest już linked powyżej.
 echo "[6/8] platform extras"
-pushd "$LINK_DIR" >/dev/null
-supabase init >/dev/null
-supabase link --project-ref "$SUPABASE_PROJECT_REF" >/dev/null
 
 # Custom zmiany managed schemas. W obecnym projekcie wynik był pusty,
 # ale zapisujemy go codziennie, żeby przyszła zmiana nie zginęła.
