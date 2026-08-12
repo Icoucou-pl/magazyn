@@ -110,9 +110,9 @@ function projectProduct(p: Product, monthCols: MonthCol[], curve: number[] | nul
 
 // Filtry statusu (na realnych polach Product)
 const FC_STATUS_FILTERS: Record<string, { label: string; test: (p: Product) => boolean }> = {
+  fav:      { label: "Obserwowane", test: (p) => p.is_favorite },
   active:   { label: "Aktywne",     test: (p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK" },
   critical: { label: "Krytyczne",   test: (p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ" },
-  fav:      { label: "Obserwowane", test: (p) => p.is_favorite },
   all:      { label: "Wszystkie",   test: () => true },
 };
 
@@ -150,7 +150,7 @@ export default function ForecastView({
   const [loading, setLoading] = useState(true);
 
   const [mfrId, setMfrId] = useState<MfrId>("ALL");
-  const [horizon, setHorizon] = useState(14);
+  const [horizon, setHorizon] = useState(18);
   const [sortKey, setSortKey] = useState<"sales30" | "sales90" | "stock" | "sku">("sales30");
   const [seasonality, setSeasonality] = useState(false);
   // Krzywe sezonowe per SKU (z /forecast/seasonality) — pobierane leniwie po włączeniu toggle
@@ -159,7 +159,7 @@ export default function ForecastView({
   const [seasSources, setSeasSources] = useState<Record<string, string>>({});
   const [seasLoaded, setSeasLoaded] = useState(false);
   const [seasLoading, setSeasLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState("active");
+  const [statusFilter, setStatusFilter] = useState("fav");
   const [colVis, setColVis] = useState<{ sales60: boolean; sales90: boolean }>({ sales60: true, sales90: true });
   const [showColMenu, setShowColMenu] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
