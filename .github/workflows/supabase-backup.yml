@@ -20,7 +20,6 @@ jobs:
     timeout-minutes: 60
 
     env:
-      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
@@ -68,10 +67,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
-
-      - name: Install PostgreSQL logging driver
-        if: always()
-        run: python3 -m pip install --disable-pip-version-check "psycopg[binary]>=3.2,<4"
 
       - name: Write result to app_sync_log
         if: always()
