@@ -15,6 +15,9 @@ import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, isAdmin, canEdit, can, PERMISSIONS, ROLE_PERMS } from "@/lib/permissions";
 import UsagePanel from "./usage-panel";
+import ManufacturerModal from "./manufacturer-modal";
+import type { Product } from "./products-ui";
+import type { Container } from "./containers-ui";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Manufacturer = {
@@ -126,10 +129,11 @@ const parseDevice = (ua?: string | null) => {
 };
 
 // ── Widok główny ─────────────────────────────────────────────
-function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer }: {
+function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer, onProductClick }: {
   initialSection?: SectionId;
   openManufacturerId?: number | null;
   onOpenedManufacturer?: () => void;
+  onProductClick?: (sku: string) => void;
 } = {}) {
   const user = useUser() as CtxUser;
   const admin = isAdmin(user);
@@ -193,7 +197,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
               <p style={{ margin: "4px 0 0 28px", fontSize: 12, color: "var(--text-lo)" }}>{activeSection.desc}</p>
             </div>
           )}
-          {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer}/>}
+          {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer} onProductClick={onProductClick}/>}
           {section === "firmy"           && <FirmaePanel/>}
           {section === "container_types" && <ContainerTypesPanel/>}
           {section === "cn_sku"          && <CnSkuPanel/>}
@@ -240,13 +244,17 @@ function Toggle({ on, disabled, onClick }: { on: boolean; disabled?: boolean; on
 // ============================================================
 // PRODUCENCI
 // ============================================================
-function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOpened?: () => void } = {}) {
+function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: number | null; onOpened?: () => void; onProductClick?: (sku: string) => void } = {}) {
   const user = useUser() as CtxUser;
   const showEdit = canEdit(user);
   const [items, setItems] = useState<Manufacturer[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  // Modal „Szczegóły producenta" — ten sam komponent co w Prognozie.
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [detailProducts, setDetailProducts] = useState<Product[] | null>(null);
+  const [detailContainers, setDetailContainers] = useState<Container[] | null>(null);
 
   const load = async () => {
     try {
@@ -265,6 +273,21 @@ function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOp
       onOpened?.();
     }
   }, [openId, items]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Produkty i kontenery ciągniemy dopiero, gdy ktoś realnie otworzy szczegóły — to dwa
+  // ciężkie zapytania, a panel Producentów sam z siebie ich nie potrzebuje. Raz pobrane
+  // zostają w stanie, więc kolejne kliknięcia otwierają modal od razu.
+  useEffect(() => {
+    if (detailId == null || detailProducts) return;
+    Promise.allSettled([
+      api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
+      api.get("/containers"),
+    ]).then(([prod, cont]) => {
+      setDetailProducts(prod.status === "fulfilled" ? ((prod.value as Product[]) || []) : []);
+      setDetailContainers(cont.status === "fulfilled" ? ((cont.value as Container[]) || []) : []);
+      if (prod.status !== "fulfilled") toast("Nie udało się wczytać produktów producenta", "warning");
+    });
+  }, [detailId, detailProducts]);
 
   const totalSku = items.reduce((s, m) => s + (m.sku_count || 0), 0);
 
@@ -290,17 +313,37 @@ function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOp
           <ManufacturerRow key={m.id} item={m}
             editing={editingId === m.id} isLast={i === items.length - 1}
             onEdit={() => setEditingId(m.id)}
+            onDetails={() => setDetailId(m.id)}
             onSaved={() => { setEditingId(null); load(); }}
             onCancel={() => setEditingId(null)} showEdit={showEdit}/>
         ))}
       </div>
+
+      {detailId != null && (
+        detailProducts && detailContainers ? (
+          <ManufacturerModal
+            mfr={items.find((m) => m.id === detailId) || null}
+            products={detailProducts.filter((p) => p.manufacturer_id === detailId)}
+            containers={detailContainers.filter((c) => c.manufacturer_id === detailId)}
+            showFin={can(user, "viewFinancials")}
+            onClose={() => setDetailId(null)}
+            onProductClick={onProductClick}
+          />
+        ) : (
+          <div onClick={() => setDetailId(null)} style={{
+            position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.4)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "white", fontSize: 13,
+          }}>Ładowanie szczegółów…</div>
+        )
+      )}
     </div>
   );
 }
 
-function ManufacturerRow({ item, editing, isLast, onEdit, onSaved, onCancel, showEdit }: {
+function ManufacturerRow({ item, editing, isLast, onEdit, onDetails, onSaved, onCancel, showEdit }: {
   item: Manufacturer | null; editing: boolean; isLast: boolean;
-  onEdit?: () => void; onSaved: () => void; onCancel: () => void; showEdit?: boolean;
+  onEdit?: () => void; onDetails?: () => void; onSaved: () => void; onCancel: () => void; showEdit?: boolean;
 }) {
   const [name, setName] = useState(item?.name || "");
   const [color, setColor] = useState(item?.color || COLOR_OPTIONS[0]);
@@ -396,6 +439,12 @@ function ManufacturerRow({ item, editing, isLast, onEdit, onSaved, onCancel, sho
           {(item.open_orders || 0) > 0 && (
             <Pill bg="var(--info-soft)" fg="var(--info)" size="sm"><span className="num">{item.open_orders}</span> aktywnych</Pill>
           )}
+          {onDetails && (
+            <button onClick={onDetails} style={mfrDetailsBtn}
+              title="Szczegóły producenta — sezonowość, wymaga zamówienia, kontenery w drodze">
+              <I.Factory size={11}/> Szczegóły
+            </button>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--text-lo)", marginTop: 3, flexWrap: "wrap" }}>
           <span>{item.contact || "—"}</span>
@@ -409,6 +458,15 @@ function ManufacturerRow({ item, editing, isLast, onEdit, onSaved, onCancel, sho
     </div>
   );
 }
+
+// Przycisk „Szczegóły" w wierszu producenta. Celowo lżejszy niż „Edytuj" po prawej —
+// to podgląd, nie akcja edycyjna, i siedzi w linii nazwy zaraz za pigułką „aktywnych".
+const mfrDetailsBtn: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px",
+  background: "transparent", border: "1px solid var(--border-soft)", borderRadius: 99,
+  color: "var(--text-lo)", fontSize: 10, fontWeight: 600, cursor: "pointer",
+  fontFamily: "inherit", lineHeight: 1.6,
+};
 
 // ============================================================
 // TYPY KONTENERÓW
