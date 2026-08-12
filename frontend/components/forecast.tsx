@@ -116,6 +116,20 @@ const FC_STATUS_FILTERS: Record<string, { label: string; test: (p: Product) => b
   all:      { label: "Wszystkie",   test: () => true },
 };
 
+// „Wymaga zamówienia" w szczegółach producenta = ta sama reguła co Pożary na
+// Dashboardzie. Tam listę robi backend (/shopping-list?favorites_only=1), więc outlety,
+// dead stock i „nie dozamawiamy" nigdy tam nie docierają. Tutaj produkty przychodzą
+// z /products (pełen asortyment, bo macierz prognozy ma pokazywać wszystko),
+// dlatego ten sam filtr trzeba nałożyć klientowo — inaczej w modalu wyskakują
+// outletowe SKU, których nie zamawiamy.
+function needsOrder(p: Product): boolean {
+  if (p.product_status !== "ACTIVE" && p.product_status !== "ACTIVE_NO_STOCK") return false;
+  if (!p.is_favorite) return false;          // tylko obserwowane — jak favorites_only=1
+  if (p.no_reorder) return false;            // ręcznie wyłączone z zamawiania
+  if (p.avg_monthly_weighted < 1) return false;  // < 1 szt./mies. to nie pożar
+  return p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ";
+}
+
 type MfrId = number | "ALL";
 
 const fcSelect: React.CSSProperties = {
@@ -756,7 +770,8 @@ function ManufacturerModal({
   const delivered = containers.filter((c) => c.status === "DELIVERED").length;
   const stockValue = products.reduce((s, p) => s + (p.stock_value || 0), 0);
   const inTransitValue = inFlight.reduce((s, c) => s + (c.total_value || 0), 0);
-  const needOrder = products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
+  const needOrder = products.filter(needsOrder)
+    .sort((a, b) => a.days_until_empty - b.days_until_empty);  // najpilniejsze u góry — jak w Pożarach
 
   return (
     <Portal>
