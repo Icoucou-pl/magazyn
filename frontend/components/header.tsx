@@ -169,20 +169,24 @@ export function Topbar({
         WebkitBackdropFilter: "blur(14px)",
         borderBottom: "1px solid var(--border-soft)",
       }}>
-        <div style={{
+        <div className="topbar-inner" style={{
           padding: "10px 24px",
           display: "flex", flexDirection: "column", gap: 8,
         }}>
-          {/* Wiersz 1: hamburger/logo (mobile) + fragmentator z lewej + search na środku + akcje z prawej */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {/* Wiersz 1: hamburger/logo (mobile) + fragmentator z lewej + search na środku + akcje z prawej.
+              Na mobilce wiersz się zawija, a fragmentator (order:10, basis 100%) spada do własnej linii —
+              bez tego ikony akcji wypychały stronę w poziomie. */}
+          <div className="topbar-row1" style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {/* Hamburger + logo (MAGAZYN nad i-coucou) — tylko mobile (sidebar schowany) */}
-            <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile" style={iconBtn} title="Menu">
+            <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="show-mobile icon-btn" style={iconBtn} title="Menu">
               <I.Menu size={18}/>
             </button>
-            <div className="show-mobile"><Brand stacked/></div>
+            <div className="show-mobile topbar-brand"><Brand stacked/></div>
 
-            {/* Fragmentator firm — z LEWEJ, globalny dla wszystkich widoków (lib/shop) */}
-            <ShopSwitcher/>
+            {/* Fragmentator firm — globalny dla wszystkich widoków (lib/shop) */}
+            <div className="shop-slot" style={{ display: "flex", minWidth: 0 }}>
+              <ShopSwitcher/>
+            </div>
 
             {/* Spacer lewy — razem z prawym centruje wyszukiwarkę */}
             <div style={{ flex: 1 }}/>
@@ -208,20 +212,21 @@ export function Topbar({
             <div style={{ flex: 1 }}/>
 
             {/* Akcje */}
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            <div className="topbar-actions" style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               {/* Lupka — na mobile przyklejona do skanera EAN (na desktopie ukryta, jest pasek z lewej) */}
-              <button onClick={onOpenSearch} className="show-mobile" style={iconBtn} title="Szukaj wszędzie">
+              <button onClick={onOpenSearch} className="show-mobile icon-btn" style={iconBtn} title="Szukaj wszędzie">
                 <I.Search size={16}/>
               </button>
-              <button onClick={onOpenScan} style={iconBtn} title="Skanuj EAN/SKU">
+              <button onClick={onOpenScan} className="icon-btn" style={iconBtn} title="Skanuj EAN/SKU">
                 <I.Scan size={16}/>
               </button>
-              <button onClick={onToggleTheme} style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
+              <button onClick={onToggleTheme} className="icon-btn" style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
                 {theme === "light" ? <I.Moon size={16}/> : <I.Sun size={16}/>}
               </button>
               <button
                 onClick={onRefresh}
                 disabled={refreshing}
+                className="icon-btn"
                 style={{ ...iconBtn, cursor: refreshing ? "default" : "pointer", opacity: refreshing ? 0.7 : 1 }}
                 title={refreshing ? "Odświeżanie danych Sellasista…" : "Odśwież dane Sellasista"}
               >
@@ -231,6 +236,7 @@ export function Topbar({
               </button>
               <button
                 onClick={() => setView("settings")}
+                className="icon-btn"
                 style={{
                   ...iconBtn,
                   ...(view === "settings"
@@ -263,7 +269,7 @@ export function Topbar({
           </div>
 
           {/* Wiersz 2: świeżość danych (osobny wiersz — nie nachodzi na ikony przy wąskim ekranie) */}
-          <div className="freshness-row" style={{
+          <div className="freshness-row hide-mobile" style={{
             display: "flex", flexDirection: "column", alignItems: "flex-end",
             gap: 2, rowGap: 2,
             fontSize: 11, color: "var(--text-lo)",
@@ -314,6 +320,13 @@ export function Topbar({
         @media (max-width: 980px) {
           .hide-mobile { display: none !important; }
           .app-sidebar { display: none !important; }
+          /* Fragmentator firm ląduje w osobnym wierszu pod logo i ikonami. */
+          .topbar-inner { padding: 8px 12px !important; }
+          .topbar-row1 { flex-wrap: wrap; row-gap: 8px; }
+          .shop-slot { order: 10; flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+          .topbar-actions { gap: 4px !important; }
+          .icon-btn { width: 30px !important; height: 30px !important; }
+          .topbar-brand { min-width: 0; }
         }
         @media (min-width: 981px) {
           .show-mobile { display: none !important; }
