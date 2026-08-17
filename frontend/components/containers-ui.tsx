@@ -161,9 +161,12 @@ const CONTAINERS_CSS = `
   .cc-sub { display:flex; }
   .cc-facts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; margin-top:7px; padding-top:7px; border-top:1px solid var(--border-soft); }
   /* Na liście (rozwinięty miesiąc) mini-pasek CBM zabierał miejsce obok ETA — pełne
-     wypełnienie i tak jest w rozwinięciu karty. Blok ETA + daty siada w prawym dolnym rogu. */
+     wypełnienie i tak jest w rozwinięciu karty. ETA i data dostawy idą w jednej linii:
+     ETA do lewej, „Dostarczono / U nas" do prawej (inline style bloku daty nadpisujemy). */
   .cc-cbm { display:none !important; }
-  .cc-eta { order:6; flex:0 0 auto; text-align:right; margin-left:auto; }
+  .cc-eta { order:6; flex:1 1 100%; margin-left:0; text-align:left; display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 10px; }
+  .cc-eta-line { flex-direction:row; align-items:baseline; flex-wrap:wrap; gap:6px; }
+  .cc-arr { flex-direction:row; align-items:baseline; gap:6px; text-align:right; border-top:none !important; padding-top:0 !important; margin-top:0 !important; }
 
   .container-body-grid { grid-template-columns:1fr !important; }
   .cc-cells { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
