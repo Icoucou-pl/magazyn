@@ -114,6 +114,76 @@ export type Container = {
   total_value: number;
 };
 
+// ── Arkusz responsywny widoku kontenerów ─────────────────────
+// Renderowany raz przez <ContainersStyles /> w orkiestratorze. Desktop = układ jak dotąd,
+// cała warstwa mobilna siedzi w jednej media query (720 px) — nic nie zmienia się dla ≥720 px.
+const CONTAINERS_CSS = `
+/* Nagłówek grupy miesięcznej */
+.mg-head { display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:13px 16px; background:transparent; border:none; cursor:pointer; }
+.mg-chev { flex-shrink:0; }
+.mg-label { order:1; min-width:96px; flex-shrink:0; }
+.mg-bar { order:2; flex:1; min-width:40px; }
+.mg-meta { order:3; flex-shrink:0; display:flex; align-items:center; gap:8px; }
+.mg-value { order:4; flex-shrink:0; min-width:70px; text-align:right; }
+.mg-break { display:none; }
+
+/* Nagłówek karty kontenera */
+.cc-head { display:flex; align-items:center; gap:12px; }
+.cc-top { display:flex; align-items:center; gap:12px; flex:1; min-width:0; }
+.cc-meta { display:flex; }
+.cc-sub { display:none; }
+.cc-facts { display:none; }
+.cc-eta { flex-shrink:0; text-align:right; }
+.cc-eta-line { display:flex; flex-direction:column; align-items:flex-end; }
+.cc-arr { display:flex; flex-direction:column; align-items:flex-end; }
+.cc-cbm { width:80px; flex-shrink:0; }
+
+/* Oś statusu */
+.tl-mini { display:none; }
+
+/* Tabela pozycji */
+.it-row { display:grid; grid-template-columns:minmax(0,1fr) 70px 90px 100px; gap:10px; align-items:center; }
+.it-id { display:grid; grid-template-columns:140px minmax(0,1fr); gap:10px; align-items:center; min-width:0; }
+.it-qty, .it-cbm, .it-val { text-align:right; }
+
+@media (max-width: 720px) {
+  .mg-head { flex-wrap:wrap; gap:8px 10px; padding:12px 14px; }
+  .mg-label { order:1; min-width:0; flex:1 1 auto; }
+  .mg-value { order:2; min-width:0; margin-left:auto; }
+  .mg-break { display:block; flex-basis:100%; height:0; }
+  .mg-bar { order:4; flex:1 1 auto; min-width:60px; }
+  .mg-meta { order:5; }
+
+  .cc-head { flex-wrap:wrap; gap:10px; padding:12px 14px 12px 16px; }
+  .cc-top { flex:1 1 100%; }
+  .cc-meta { display:none; }
+  .cc-nr-inline { display:none; }
+  .cc-sub { display:flex; }
+  .cc-facts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft); }
+  .cc-eta { order:5; flex:1 1 auto; min-width:0; text-align:left; }
+  .cc-eta-line { flex-direction:row; align-items:baseline; flex-wrap:wrap; gap:6px; }
+  .cc-arr { flex-direction:row; align-items:baseline; gap:6px; border-top:none; padding-top:0; margin-top:4px; }
+  .cc-cbm { order:6; width:auto; flex:0 1 120px; }
+
+  .container-body-grid { grid-template-columns:1fr !important; }
+  .cc-cells { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
+  .cc-money { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
+  .tl-full { display:none !important; }
+  .tl-mini { display:block; }
+
+  .it-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 12px; }
+  .it-id { display:block; flex:1 1 100%; }
+  .it-id > span { display:block; }
+  .it-name { font-size:11.5px; }
+  .it-qty, .it-cbm, .it-val { text-align:left; }
+  .it-val { margin-left:auto; }
+}
+`;
+
+export function ContainersStyles() {
+  return <style>{CONTAINERS_CSS}</style>;
+}
+
 type StatusMetaFull = { label: string; icon: React.ComponentType<{ size?: number }>; fg: string; bg: string; accent: string };
 
 // STATUS_FLOW = ręczny tok statusów (do przycisku „Przenieś do…" i kroków ręcznych).
@@ -294,36 +364,34 @@ export function MonthGroup({
       border: `1px solid ${open ? "var(--border)" : "var(--border-soft)"}`,
       borderRadius: "var(--r-lg)", overflow: "hidden", transition: "border-color 0.14s",
     }}>
-      <button onClick={onToggle} style={{
-        display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
-        padding: "13px 16px", background: "transparent", border: "none", cursor: "pointer",
-      }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+      {/* Nagłówek: płaski flex z CSS `order` — na wąskim ekranie łamie się na dwa rzędy
+          (etykieta + kwota / pasek + liczby), dzięki czemu kwota nigdy nie jest ucinana. */}
+      <button onClick={onToggle} className="mg-head" onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
         onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-        <span style={{ color: "var(--text-lo)", transform: open ? "rotate(90deg)" : "none", transition: "transform 0.18s", flexShrink: 0, display: "inline-flex" }}>
+        <span className="mg-chev" style={{ color: "var(--text-lo)", transform: open ? "rotate(90deg)" : "none", transition: "transform 0.18s", display: "inline-flex" }}>
           <I.ChevronR size={15} />
         </span>
-        <span style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)", minWidth: 96, flexShrink: 0 }}>
+        <span className="mg-label" style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)" }}>
           {label}
           {isCurrent && (
             <span style={{ fontSize: 9, fontWeight: 700, marginLeft: 7, padding: "1px 6px", borderRadius: 5, background: "var(--accent-soft)", color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.04em", verticalAlign: "middle" }}>teraz</span>
           )}
         </span>
+        <span className="mg-value num" style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)", whiteSpace: "nowrap" }}>
+          {showFin ? fmtPLNk(value) : "•••••"}
+        </span>
+        <span className="mg-break" />
         {/* Pasek proporcji statusów w miesiącu (kolory jak w osi statusu kontenera) */}
-        <div style={{ flex: 1, minWidth: 40, height: 8, background: "var(--surface-2)", borderRadius: 99, overflow: "hidden", display: "flex", gap: 1 }}>
+        <div className="mg-bar" style={{ height: 8, background: "var(--surface-2)", borderRadius: 99, overflow: "hidden", display: "flex", gap: 1 }}>
           {segs.map(({ s, n, meta }) => (
             <div key={s} title={`${meta.label}: ${n}`} style={{ flex: n, background: meta.accent, opacity: 0.85 }} />
           ))}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
-          <span style={{ fontSize: 11.5, color: "var(--text-lo)", whiteSpace: "nowrap" }}>
-            <b className="num" style={{ color: "var(--text-mid)", fontWeight: 600 }}>{count}</b> {plKontener(count)}
-          </span>
-          <span className="num" style={{ fontSize: 11.5, color: "var(--text-lo)", whiteSpace: "nowrap" }}>{fmtNum(units)} szt</span>
-          <span className="num" style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)", minWidth: 70, textAlign: "right", whiteSpace: "nowrap" }}>
-            {showFin ? fmtPLNk(value) : "•••••"}
-          </span>
-        </div>
+        <span className="mg-meta" style={{ fontSize: 11.5, color: "var(--text-lo)", whiteSpace: "nowrap" }}>
+          <span><b className="num" style={{ color: "var(--text-mid)", fontWeight: 600 }}>{count}</b> {plKontener(count)}</span>
+          <span style={{ color: "var(--text-disabled)" }}>·</span>
+          <span className="num">{fmtNum(units)} szt</span>
+        </span>
       </button>
       {open && (
         <div className="fade-in" style={{ padding: "10px 12px 14px", background: "var(--bg-elevated)", borderTop: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -453,62 +521,88 @@ export function ContainerCard({
       }}
       onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.borderColor = "var(--border)"; }}
       onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.borderColor = "var(--border-soft)"; }}>
-      <div onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", cursor: "pointer", position: "relative", background: expanded ? "var(--surface-2)" : "transparent", transition: "background 0.12s", borderBottom: expanded ? "1px solid var(--border-soft)" : "none" }}>
+      <div onClick={onToggle} className="cc-head" style={{ padding: "14px 16px", cursor: "pointer", position: "relative", background: expanded ? "var(--surface-2)" : "transparent", transition: "background 0.12s", borderBottom: expanded ? "1px solid var(--border-soft)" : "none" }}>
         <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: meta.accent }} />
-        <span style={{ color: "var(--text-lo)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.18s" }}><I.ChevronR size={14} /></span>
-        <div style={{ width: 36, height: 36, borderRadius: 8, background: meta.bg, color: meta.fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={16} /></div>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            {/* Tytuł na pierwszym planie: producent jako kropka+nazwa. Skonsolidowany → po jednym na lot. Brak dostawcy → nr kontenera. */}
-            {consolidated
-              ? lots.map((l) => <MfrTitle key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
-              : (c.manufacturer_id && c.manufacturer_name
-                  ? <MfrTitle name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />
-                  : <ContainerNr c={c} size={14} color="var(--text-hi)" />)}
-            {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty, istnieje tytuł-producent i jest prawdziwy numer */}
-            {!expanded && hasMfrTitle && realNr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
-            {subiektSt && <SubiektDot state={subiektSt} erpLoc={erpLocOfContainer(c)} />}
-            {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
-            {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
-            {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
-            {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa celna" : "auto"}</Pill>}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 4, flexWrap: "wrap" }}>
-            {/* Po rozwinięciu nr kontenera spada tutaj (niżej) — tylko prawdziwy numer */}
-            {expanded && hasMfrTitle && realNr && <span className="mono">#{realNr}</span>}
-            {consolidated
-              ? <span className="mono">{lots.map((l) => l.order_number || "—").join(" · ")}</span>
-              : (c.order_number ? <span className="mono">FV: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez FV</span>)}
-            <span>·</span>
-            <span><span className="num" style={{ color: "var(--text-mid)" }}>{c.items.length}</span> pozycji · <span className="num" style={{ color: "var(--text-mid)" }}>{c.total_units}</span> szt</span>
-            <span>·</span>
-            <span className="num" style={{ color: "var(--text-mid)" }}>{showFin ? fmtPLNk(c.total_value) : "•••"}</span>
+        <div className="cc-top">
+          <span style={{ color: "var(--text-lo)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.18s", display: "inline-flex", flexShrink: 0 }}><I.ChevronR size={14} /></span>
+          <div style={{ width: 36, height: 36, borderRadius: 8, background: meta.bg, color: meta.fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={16} /></div>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {/* Tytuł na pierwszym planie: producent jako kropka+nazwa. Skonsolidowany → po jednym na lot. Brak dostawcy → nr kontenera. */}
+              {consolidated
+                ? lots.map((l) => <MfrTitle key={l.id} name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />)
+                : (c.manufacturer_id && c.manufacturer_name
+                    ? <MfrTitle name={c.manufacturer_name} color={c.manufacturer_color ?? "var(--text-lo)"} />
+                    : <ContainerNr c={c} size={14} color="var(--text-hi)" />)}
+              {/* Nr kontenera malutki obok (jak FV) — tylko gdy zwinięty, istnieje tytuł-producent i jest prawdziwy numer.
+                  Na wąskim ekranie chowany (klasa cc-nr-inline) — trafia do własnej linii `cc-sub`, żeby nie łamał chipów. */}
+              {!expanded && hasMfrTitle && realNr && <span className="mono cc-nr-inline" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
+              {subiektSt && <SubiektDot state={subiektSt} erpLoc={erpLocOfContainer(c)} />}
+              {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
+              {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
+              {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
+              {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa celna" : "auto"}</Pill>}
+            </div>
+
+            {/* DESKTOP: jedna linia meta (nr · FV · pozycje · szt · wartość) */}
+            <div className="cc-meta" style={{ alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-lo)", marginTop: 4, flexWrap: "wrap" }}>
+              {/* Po rozwinięciu nr kontenera spada tutaj (niżej) — tylko prawdziwy numer */}
+              {expanded && hasMfrTitle && realNr && <span className="mono">#{realNr}</span>}
+              {consolidated
+                ? <span className="mono">{lots.map((l) => l.order_number || "—").join(" · ")}</span>
+                : (c.order_number ? <span className="mono">FV: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez FV</span>)}
+              <span>·</span>
+              <span><span className="num" style={{ color: "var(--text-mid)" }}>{c.items.length}</span> pozycji · <span className="num" style={{ color: "var(--text-mid)" }}>{c.total_units}</span> szt</span>
+              <span>·</span>
+              <span className="num" style={{ color: "var(--text-mid)" }}>{showFin ? fmtPLNk(c.total_value) : "•••"}</span>
+            </div>
+
+            {/* MOBILE: identyfikatory w osobnej linii — bez sierocych separatorów „·" */}
+            <div className="cc-sub" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 5, gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              {hasMfrTitle && realNr && <span className="mono">#{realNr}</span>}
+              {consolidated
+                ? <span className="mono">{lots.map((l) => l.order_number || "—").join(" · ")}</span>
+                : (c.order_number ? <span className="mono">FV: {c.order_number}</span> : <span style={{ color: "var(--text-disabled)" }}>bez FV</span>)}
+            </div>
+
+            {/* MOBILE: liczby jako opisane mikro-kolumny (etykieta nad wartością).
+                Po rozwinięciu zbędne — te same liczby są w kafelkach ciała karty. */}
+            {!expanded && (
+              <div className="cc-facts">
+                <Fact label="Pozycji" value={fmtNum(c.items.length)} />
+                <Fact label="Sztuk" value={fmtNum(c.total_units)} />
+                <Fact label="Wartość" value={showFin ? fmtPLNk(c.total_value) : "•••"} />
+              </div>
+            )}
           </div>
         </div>
 
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>ETA</div>
-          <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>{new Date(c.eta_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "2-digit" })}</div>
-          <div className="num" style={{ fontSize: 11, color: isOverdue ? "var(--critical)" : isCustoms ? "var(--warning)" : "var(--text-lo)", fontWeight: (isOverdue || isCustoms) ? 600 : 400 }}>
-            {isDelivered
-              ? (c.is_auto ? "auto-dostawa" : "dostarczony")
-              : isCustoms
-                ? `odprawa · ${c.customs_days_left ?? 0}d do dostawy`
-                : days < 0 ? `${Math.abs(days)}d temu` : days === 0 ? "dziś" : `za ${days}d`}
+        <div className="cc-eta">
+          <div className="cc-eta-line">
+            <span className="cc-eta-lab" style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>ETA</span>
+            <span className="num cc-eta-date" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>{new Date(c.eta_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "2-digit" })}</span>
+            <span className="num cc-eta-sub" style={{ fontSize: 11, color: isOverdue ? "var(--critical)" : isCustoms ? "var(--warning)" : "var(--text-lo)", fontWeight: (isOverdue || isCustoms) ? 600 : 400 }}>
+              {isDelivered
+                ? (c.is_auto ? "auto-dostawa" : "dostarczony")
+                : isCustoms
+                  ? `odprawa · ${c.customs_days_left ?? 0}d do dostawy`
+                  : days < 0 ? `${Math.abs(days)}d temu` : days === 0 ? "dziś" : `za ${days}d`}
+            </span>
           </div>
           {arrival && (
-            <div style={{ marginTop: 3, paddingTop: 3, borderTop: "1px solid var(--border-soft)" }}>
-              <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>{arrival.label}</div>
-              <div className="num" style={{ fontSize: 12, fontWeight: 600, color: arrival.color }}>{fmtDatePL(arrival.date)}</div>
+            <div className="cc-arr" style={{ marginTop: 3, paddingTop: 3, borderTop: "1px solid var(--border-soft)" }}>
+              <span style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>{arrival.label}</span>
+              <span className="num" style={{ fontSize: 12, fontWeight: 600, color: arrival.color }}>{fmtDatePL(arrival.date)}</span>
             </div>
           )}
         </div>
 
         {!expanded && (c.container_capacity_cbm ?? 0) > 0 && (
-          <div style={{ width: 80, flexShrink: 0 }}>
+          <div className="cc-cbm">
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-lo)", marginBottom: 3 }}>
-              <span>CBM</span><span className="num">{fill}%</span>
+              <span>CBM</span><span className="num" style={{ color: fill > 100 ? "var(--critical)" : "var(--text-mid)", fontWeight: fill > 100 ? 700 : 400 }}>{fill}%</span>
             </div>
             <div style={{ height: 4, background: "var(--surface-3)", borderRadius: 99, overflow: "hidden" }}>
               <div style={{ height: "100%", width: `${Math.min(100, fill)}%`, background: fillColor, transition: "width 0.3s" }} />
@@ -556,7 +650,7 @@ function ContainerCardBody({
   return (
     <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }} className="fade-in">
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 18, alignItems: "flex-start" }} className="container-body-grid">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+        <div className="cc-cells" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
           <DataCell label="Zamówiony" value={new Date(c.order_date).toLocaleDateString("pl-PL")} />
           <DataCell label="Pozycji" value={c.items.length} />
           <DataCell label="Sztuk" value={fmtNum(c.total_units)} />
@@ -566,6 +660,7 @@ function ContainerCardBody({
         </div>
         <StatusTimeline current={eff(c)} />
       </div>
+      <StatusTimelineMini current={eff(c)} />
 
       {cap > 0 && (
         <div style={{ padding: "12px 14px", background: "var(--surface-2)", borderRadius: 8, border: "1px solid var(--border-soft)" }}>
@@ -609,7 +704,7 @@ function ContainerCardBody({
       {showDocs && (
         <div>
           <div style={sectionLabelStyle}>Spedycja i dokumenty</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+          <div className="cc-money" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
             {showFin && <MoneyCell label="Koszt transportu" value={fmtCur(c.koszt_transportu, "USD")} />}
             {showFin && <MoneyCell label="Koszt spedycji" value={fmtCur(c.koszt_spedycji, "USD")} />}
             {showFin && <MoneyCell label="Opłata spedycji" value={fmtCur(c.oplata_spedycji, "USD")} sub="rachunek − transport" muted />}
@@ -657,12 +752,16 @@ function ContainerCardBody({
             const itemCbm = (item.cbm_per_unit || 0) * item.quantity;
             const itemValue = (item.unit_cost || 0) * item.quantity;
             return (
-              <div key={item.id} style={{ display: "grid", gridTemplateColumns: "140px minmax(0, 1fr) 70px 90px 100px", gap: 10, alignItems: "center", padding: "8px 12px", borderBottom: i === c.items.length - 1 ? "none" : "1px solid var(--border-soft)", fontSize: 12 }}>
-                <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)" }}>{item.sku}</span>
-                <span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product_name}</span>
-                <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600, textAlign: "right" }}>×{item.quantity}</span>
-                <span className="num" style={{ color: "var(--text-lo)", textAlign: "right" }}>{itemCbm.toFixed(3)} m³</span>
-                <span className="num" style={{ color: "var(--text-mid)", textAlign: "right" }}>{showFin ? fmtPLN(itemValue) : "•••••"}</span>
+              // Identyfikacja (SKU + nazwa) w osobnym bloku `it-id`: na desktopie to nadal
+              // dwie pierwsze kolumny siatki, na telefonie łamie się na dwie linie nad liczbami.
+              <div key={item.id} className="it-row" style={{ padding: "8px 12px", borderBottom: i === c.items.length - 1 ? "none" : "1px solid var(--border-soft)", fontSize: 12 }}>
+                <div className="it-id">
+                  <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.sku}</span>
+                  <span className="it-name" style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product_name}</span>
+                </div>
+                <span className="num it-qty" style={{ color: "var(--text-hi)", fontWeight: 600 }}>×{item.quantity}</span>
+                <span className="num it-cbm" style={{ color: "var(--text-lo)" }}>{itemCbm.toFixed(3)} m³</span>
+                <span className="num it-val" style={{ color: "var(--text-mid)" }}>{showFin ? fmtPLN(itemValue) : "•••••"}</span>
               </div>
             );
           })}
@@ -713,8 +812,6 @@ function ContainerCardBody({
           <button onClick={onEdit} style={btnPrimary}><I.Settings size={12} /> {showEdit ? "Edytuj kontener" : "Pokaż szczegóły"}</button>
         </div>
       </div>
-
-      <style>{`@media (max-width: 720px) { .container-body-grid { grid-template-columns: 1fr !important; } }`}</style>
     </div>
   );
 }
@@ -795,6 +892,17 @@ function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean;
       </div>
       <style>{`.delivery-cell-edit:hover { background: color-mix(in oklch, var(--accent) 22%, var(--surface-2)); border-color: var(--accent); }`}</style>
     </>
+  );
+}
+
+// Mikro-kolumna nagłówka karty (mobile): etykieta nad wartością — zastępuje ciąg
+// wartości sklejanych separatorem „·", który na wąskim ekranie rozjeżdżał się na sieroty.
+function Fact({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 8.5, fontWeight: 700, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div className="num" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-hi)", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+    </div>
   );
 }
 
@@ -888,7 +996,7 @@ function PaymentBlock({ advances, bCur, balance, balanceTermin, zaplacono, showF
   balance?: number | null; balanceTermin?: string | null; zaplacono?: string | null; showFin: boolean;
 }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+    <div className="cc-money" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
       {advances.length === 0 && (
         <MoneyCell label="Zaliczka" value={showFin ? "—" : "•••••"} sub="brak" muted />
       )}
@@ -918,10 +1026,36 @@ function PaymentBlock({ advances, bCur, balance, balanceTermin, zaplacono, showF
   );
 }
 
+// Kompaktowa oś statusu (mobile): pasek postępu + nazwa bieżącego kroku i licznik „krok N z 5".
+// Pełna oś (5 ikon z podpisami) ma ~300 px sztywnej szerokości i na telefonie wychodziła poza kartę.
+function StatusTimelineMini({ current }: { current: string }) {
+  const idx = TIMELINE_FLOW.indexOf(current);
+  const meta = STATUS_FULL_META[current] || STATUS_FULL_META.ORDERED;
+  const Icon = meta.icon;
+  return (
+    <div className="tl-mini" style={{ padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ width: 24, height: 24, borderRadius: 99, background: meta.bg, color: meta.fg, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={12} /></span>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: meta.fg }}>{meta.label}</span>
+        <span className="num" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-lo)", whiteSpace: "nowrap" }}>krok {Math.max(1, idx + 1)} z {TIMELINE_FLOW.length}</span>
+      </div>
+      <div style={{ display: "flex", gap: 3 }}>
+        {TIMELINE_FLOW.map((s, i) => (
+          <div key={s} title={STATUS_FULL_META[s].label} style={{
+            flex: 1, height: 5, borderRadius: 99,
+            background: i <= idx ? STATUS_FULL_META[s].accent : "var(--surface-3)",
+            opacity: i <= idx ? 0.9 : 1,
+          }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function StatusTimeline({ current }: { current: string }) {
   const currentIdx = TIMELINE_FLOW.indexOf(current);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+    <div className="tl-full" style={{ display: "flex", alignItems: "center", gap: 0 }}>
       {TIMELINE_FLOW.map((s, i) => {
         const meta = STATUS_FULL_META[s];
         const Icon = meta.icon;

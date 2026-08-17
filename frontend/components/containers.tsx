@@ -14,7 +14,7 @@ import { useUser, can } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { I } from "./ui";
 import {
-  ContainersToolbar, ContainerCard, MiniStat, MonthGroup, monthLabelPL,
+  ContainersToolbar, ContainerCard, ContainersStyles, MiniStat, MonthGroup, monthLabelPL,
   STATUS_FLOW, FILTER_STATUSES, eff, type Container,
 } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
@@ -311,6 +311,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
 
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
+      <ContainersStyles />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
         <MiniStat label="Aktywne kontenery" value={summary.inFlight} sub="nie dostarczone" icon={<I.Ship size={14} />} />
         <MiniStat label="Wartość zamówiona" value={showFin ? fmtPLNk(summary.inFlightValue) : "•••••"} sub={`${summary.totalUnits} szt · przed dostawą`} icon={<I.Wallet size={14} />} />
