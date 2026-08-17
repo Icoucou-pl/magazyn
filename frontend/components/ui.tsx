@@ -215,11 +215,12 @@ export type HoverRowProps = {
   children?: React.ReactNode;
   onClick?: () => void;
   style?: React.CSSProperties;
+  className?: string;
 };
 
-export function HoverRow({ children, onClick, style }: HoverRowProps) {
+export function HoverRow({ children, onClick, style, className }: HoverRowProps) {
   return (
-    <div onClick={onClick} role="button" tabIndex={0}
+    <div onClick={onClick} role="button" tabIndex={0} className={className}
       onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       style={{

@@ -626,8 +626,8 @@ function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProd
       <CardHeader icon={<I.Flame size={16} />} title="Pożary" hint={`${fires.length} pozycji`} accent="var(--critical)" />
       <div style={{ flex: 1, ...listScroll(open) }}>
         {shown.map((p, i) => (
-          <HoverRow key={p.sku} onClick={() => onProductClick?.(p)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
-            <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
+          <HoverRow key={p.sku} className="fire-row" onClick={() => onProductClick?.(p)} style={i === shown.length - 1 ? { borderBottom: "none" } : undefined}>
+            <div className="fire-main" style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
               <StatusPill status={p.status} size="sm" />
               <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>
               {(p.transfer_source_qty ?? 0) > 0 && (
@@ -642,9 +642,9 @@ function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProd
                   +{p.stock_in_transit} w drodze
                 </span>
               )}
-              <span style={{ fontSize: 12, color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{p.name}</span>
+              <span className="fire-name" style={{ fontSize: 12, color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{p.name}</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
+            <div className="fire-stats" style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
               <div style={{ textAlign: "right" }}>
                 <div className="num" style={{ fontSize: 12, fontWeight: 600 }}>{p.stock} szt</div>
                 <div className="num" style={{ fontSize: 10, color: "var(--text-lo)" }}>{Math.round(p.avg_monthly)}/mies</div>
@@ -659,6 +659,7 @@ function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProd
                 <button
                   onClick={(e) => { e.stopPropagation(); onNoReorder(p.sku); }}
                   title="Nie dozamawiamy — ukryj z pożarów i zamawiania (odwracalne w karcie produktu)"
+                  className="fire-x"
                   style={{ flexShrink: 0, width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", border: "none", borderRadius: 6, background: "transparent", color: "var(--text-disabled)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-3)"; e.currentTarget.style.color = "var(--text-mid)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-disabled)"; }}
@@ -670,6 +671,19 @@ function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProd
         {fires.length === 0 && <EmptyRow text="Brak pilnych pozycji" />}
       </div>
       <ExpandFooter hidden={hidden} open={open} onToggle={toggle} />
+      {/* Wiersz pożaru na wąskim ekranie: identyfikacja w pierwszej linii, liczby w drugiej.
+          Wcześniej chipy („↔ z Veluxa", „+N w drodze") miały flex-shrink:0 i przy braku miejsca
+          wychodziły poza lewy blok, nachodząc na kolumnę „szt / do końca". */}
+      <style>{`
+        @media (max-width: 720px) {
+          .fire-row { flex-wrap: wrap; gap: 6px 8px; padding: 10px 14px; }
+          .fire-main { flex: 1 1 100% !important; flex-wrap: wrap; gap: 6px 8px !important; }
+          .fire-name { flex: 1 1 100% !important; }
+          .fire-stats { flex: 1 1 100%; justify-content: flex-start; gap: 20px !important; }
+          .fire-stats > div { text-align: left !important; min-width: 0 !important; }
+          .fire-x { margin-left: auto; }
+        }
+      `}</style>
     </Card>
   );
 }

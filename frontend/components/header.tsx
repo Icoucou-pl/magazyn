@@ -323,7 +323,7 @@ export function Topbar({
           /* Fragmentator firm ląduje w osobnym wierszu pod logo i ikonami. */
           .topbar-inner { padding: 8px 12px !important; }
           .topbar-row1 { flex-wrap: wrap; row-gap: 8px; }
-          .shop-slot { order: 10; flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+          .shop-slot { order: 10; flex: 1 1 100%; justify-content: center; overflow-x: auto; -webkit-overflow-scrolling: touch; }
           .topbar-actions { gap: 4px !important; }
           .icon-btn { width: 30px !important; height: 30px !important; }
           .topbar-brand { min-width: 0; }
