@@ -166,6 +166,7 @@ const CONTAINERS_CSS = `
   .cc-cbm { display:none !important; }
   .cc-eta { order:6; flex:1 1 100%; margin-left:0; text-align:left; display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 10px; }
   .cc-eta-line { flex-direction:row; align-items:baseline; flex-wrap:wrap; gap:6px; }
+  .cc-eta-past { display:none !important; }
   .cc-arr { flex-direction:row; align-items:baseline; gap:6px; text-align:right; border-top:none !important; padding-top:0 !important; margin-top:0 !important; }
 
   .container-body-grid { grid-template-columns:1fr !important; }
@@ -583,7 +584,9 @@ export function ContainerCard({
         </div>
 
         <div className="cc-eta">
-          <div className="cc-eta-line">
+          {/* Dostarczony kontener z potwierdzoną datą: na mobilce ETA jest już nadmiarowa
+              (liczy się data wejścia na magazyn) — chowamy, na desktopie zostaje bez zmian. */}
+          <div className={`cc-eta-line${isDelivered && arrival ? " cc-eta-past" : ""}`}>
             <span className="cc-eta-lab" style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>ETA</span>
             <span className="num cc-eta-date" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>{new Date(c.eta_date).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "2-digit" })}</span>
             <span className="num cc-eta-sub" style={{ fontSize: 11, color: isOverdue ? "var(--critical)" : isCustoms ? "var(--warning)" : "var(--text-lo)", fontWeight: (isOverdue || isCustoms) ? 600 : 400 }}>
