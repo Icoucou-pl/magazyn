@@ -160,15 +160,14 @@ const CONTAINERS_CSS = `
   .cc-nr-inline { display:none; }
   .cc-sub { display:flex; }
   .cc-facts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; margin-top:7px; padding-top:7px; border-top:1px solid var(--border-soft); }
-  /* CBM zajmuje resztę szerokości po lewej, blok ETA + daty ląduje w prawym dolnym rogu karty. */
-  .cc-cbm { order:5; width:auto; flex:1 1 auto; min-width:70px; }
+  /* Na liście (rozwinięty miesiąc) mini-pasek CBM zabierał miejsce obok ETA — pełne
+     wypełnienie i tak jest w rozwinięciu karty. Blok ETA + daty siada w prawym dolnym rogu. */
+  .cc-cbm { display:none !important; }
   .cc-eta { order:6; flex:0 0 auto; text-align:right; margin-left:auto; }
 
   .container-body-grid { grid-template-columns:1fr !important; }
   .cc-cells { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
   .cc-money { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
-  /* Wypełnienie jest już w kafelku „CBM" — osobny pasek tylko zabierałby ekran. */
-  .fill-block { display:none !important; }
   .tl-full { display:none !important; }
   .tl-mini { display:block; }
 
