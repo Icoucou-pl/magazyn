@@ -82,12 +82,12 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
             margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: "0.12em",
             color: "var(--text-mid)",
           }}>
-            MAGAZYN
+            MAGAZYN 2.0
           </h1>
           <p style={{
             margin: "4px 0 0", fontSize: 12,
             color: "var(--text-lo)", letterSpacing: "0.04em",
-          }}>System zarządzania magazynem · v5.2</p>
+          }}>System zarządzania magazynem</p>
         </div>
 
         {/* Karta logowania */}
