@@ -159,15 +159,16 @@ const CONTAINERS_CSS = `
   .cc-meta { display:none; }
   .cc-nr-inline { display:none; }
   .cc-sub { display:flex; }
-  .cc-facts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft); }
-  .cc-eta { order:5; flex:1 1 auto; min-width:0; text-align:left; }
-  .cc-eta-line { flex-direction:row; align-items:baseline; flex-wrap:wrap; gap:6px; }
-  .cc-arr { flex-direction:row; align-items:baseline; gap:6px; border-top:none; padding-top:0; margin-top:4px; }
-  .cc-cbm { order:6; width:auto; flex:0 1 120px; }
+  .cc-facts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; margin-top:7px; padding-top:7px; border-top:1px solid var(--border-soft); }
+  /* CBM zajmuje resztę szerokości po lewej, blok ETA + daty ląduje w prawym dolnym rogu karty. */
+  .cc-cbm { order:5; width:auto; flex:1 1 auto; min-width:70px; }
+  .cc-eta { order:6; flex:0 0 auto; text-align:right; margin-left:auto; }
 
   .container-body-grid { grid-template-columns:1fr !important; }
   .cc-cells { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
   .cc-money { grid-template-columns:repeat(2, minmax(0,1fr)) !important; }
+  /* Wypełnienie jest już w kafelku „CBM" — osobny pasek tylko zabierałby ekran. */
+  .fill-block { display:none !important; }
   .tl-full { display:none !important; }
   .tl-mini { display:block; }
 
@@ -663,7 +664,7 @@ function ContainerCardBody({
       <StatusTimelineMini current={eff(c)} />
 
       {cap > 0 && (
-        <div style={{ padding: "12px 14px", background: "var(--surface-2)", borderRadius: 8, border: "1px solid var(--border-soft)" }}>
+        <div className="fill-block" style={{ padding: "12px 14px", background: "var(--surface-2)", borderRadius: 8, border: "1px solid var(--border-soft)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Wypełnienie kontenera</span>
             <span className="num" style={{ fontSize: 16, fontWeight: 600, color: fillColor }}>{c.total_cbm} <span style={{ color: "var(--text-lo)", fontSize: 11 }}>/ {cap} m³ ·</span> <span style={{ color: "var(--text-hi)" }}>{fill}%</span></span>
@@ -900,8 +901,8 @@ function DeliveryCell({ c, editable, onSet }: { c: Container; editable: boolean;
 function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: 8.5, fontWeight: 700, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
-      <div className="num" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-hi)", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+      <div style={{ fontSize: 8, fontWeight: 700, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+      <div className="num" style={{ fontSize: 11, fontWeight: 600, color: "var(--text-hi)", marginTop: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
     </div>
   );
 }
