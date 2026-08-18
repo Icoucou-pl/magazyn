@@ -34,6 +34,8 @@ type UserRowT = {
   is_active: boolean; is_super_admin: boolean; created_at: string; last_login?: string | null;
   updated_at?: string | null; last_activity?: string | null;
   perms?: Record<string, boolean> | null; show_onboarding?: boolean;
+  // Zakres firmowy: lista slugów z backendu. null/[] = wszystkie firmy.
+  company_scope?: string[] | null;
 };
 type AuditRow = {
   id: number; user_id?: number | null; user_email?: string | null;
@@ -44,6 +46,14 @@ type SessionT = { id: number; device?: string | null; ip?: string | null; create
 
 type PermDef = { key: string; label: string; desc: string; group: string };
 const PERMS = PERMISSIONS as unknown as PermDef[];
+
+// Zakres firmowy (company_scope). Lista musi być zgodna z ALL_SHOPS w security.py
+// i z SHOP_OPTIONS w lib/shop.tsx — te trzy miejsca opisują ten sam zbiór firm.
+const SCOPE_FIRMY: { slug: string; label: string }[] = [
+  { slug: "amh", label: "AMH" },
+  { slug: "acti", label: "Acti" },
+  { slug: "veluxa", label: "Veluxa" },
+];
 const ROLE_DEF = ROLE_PERMS as unknown as Record<string, Record<string, boolean>>;
 
 type SectionId = "manufacturers" | "firmy" | "cn_sku" | "container_types" | "users" | "account" | "audit" | "freshness" | "usage";
@@ -1091,7 +1101,7 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
               {exp && (
                 <div style={{ padding: "0 14px 14px" }}>
                   {exp === "perms"
-                    ? <PermissionsEditor user={u} onCancel={() => setExpanded(null)} onSaved={() => { setExpanded(null); load(); }}/>
+                    ? <PermissionsEditor user={u} isSelf={isSelf} onCancel={() => setExpanded(null)} onSaved={() => { setExpanded(null); load(); }}/>
                     : <ResetPasswordForm user={u} onCancel={() => setExpanded(null)} onDone={() => setExpanded(null)}/>}
                 </div>
               )}
@@ -1152,6 +1162,11 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActi
           {isSelf && <Pill bg="var(--info-soft)" fg="var(--info)" size="sm">TY</Pill>}
           {!u.is_active && <Pill bg="var(--critical-soft)" fg="var(--critical)" size="sm">NIEAKTYWNE</Pill>}
           {overrideCount > 0 && <Pill bg="var(--anomaly-soft)" fg="var(--anomaly)" size="sm">{overrideCount} wyjątki</Pill>}
+          {(u.company_scope?.length ?? 0) > 0 && (
+            <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">
+              {SCOPE_FIRMY.filter(f => u.company_scope!.includes(f.slug)).map(f => f.label).join(" + ")}
+            </Pill>
+          )}
         </div>
         <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
         {viewerSuper && (() => {
@@ -1249,12 +1264,17 @@ function NewUserForm({ viewerSuper, onSaved, onCancel }: { viewerSuper: boolean;
 }
 
 // ── Edytor uprawnień ────────────────────────────────────────
-function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCancel: () => void; onSaved: () => void }) {
+function PermissionsEditor({ user, isSelf, onCancel, onSaved }: { user: UserRowT; isSelf?: boolean; onCancel: () => void; onSaved: () => void }) {
   const roleDefaults = ROLE_DEF[user.role] || {};
   const [draft, setDraft] = useState<Record<string, boolean>>(() => ({ ...(user.perms || {}) }));
   const [showOnb, setShowOnb] = useState<boolean>(!!user.show_onboarding);
+  // Zakres firmowy: pusta lista = brak ograniczenia (backend zapisze NULL).
+  const [scope, setScope] = useState<string[]>(() => (user.company_scope || []).filter(Boolean));
   const [busy, setBusy] = useState(false);
   const isSuper = user.is_super_admin;
+  const scopeAll = scope.length === 0;
+  const toggleFirma = (slug: string) =>
+    setScope(prev => prev.includes(slug) ? prev.filter(x => x !== slug) : [...prev, slug]);
 
   const eff = (key: string) => Object.prototype.hasOwnProperty.call(draft, key) ? draft[key] : !!roleDefaults[key];
   const isOverridden = (key: string) => Object.prototype.hasOwnProperty.call(draft, key) && draft[key] !== !!roleDefaults[key];
@@ -1267,7 +1287,7 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
       return next;
     });
   };
-  const resetAll = () => setDraft({});
+  const resetAll = () => { setDraft({}); setScope([]); };
 
   const groups = useMemo(() => {
     const g: Record<string, PermDef[]> = {};
@@ -1279,7 +1299,7 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
   const save = async () => {
     setBusy(true);
     try {
-      await api.patch(`/users/${user.id}`, { perms: draft, show_onboarding: showOnb });
+      await api.patch(`/users/${user.id}`, { perms: draft, show_onboarding: showOnb, company_scope: scope });
       toast("Zapisano uprawnienia", "ok"); onSaved();
     } catch { toast("Nie udało się zapisać uprawnień", "error"); }
     finally { setBusy(false); }
@@ -1292,11 +1312,55 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
         <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-hi)" }}>Uprawnienia: {user.full_name || user.email}</span>
         <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm">{ROLE_META[user.role]?.label || user.role}</Pill>
         {overrideCount > 0 && <Pill bg="var(--anomaly-soft)" fg="var(--anomaly)" size="sm">{overrideCount} wyjątki</Pill>}
+        {!scopeAll && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">{SCOPE_FIRMY.filter(f => scope.includes(f.slug)).map(f => f.label).join(" + ")}</Pill>}
       </div>
       <p style={{ fontSize: 11, color: "var(--text-mid)", margin: "0 0 12px" }}>
+        Najpierw wybierz firmy, potem uprawnienia — działają one w ramach wybranego zakresu (np. „Dane finansowe” = finanse wszystkich zaznaczonych firm).
         Domyślne uprawnienia wynikają z roli. Możesz je nadpisać indywidualnie dla tej osoby — np. dać Viewerowi edycję produktów albo ukryć komuś dane finansowe.
         {isSuper && " To konto super-administratora — widzisz stan rzeczywisty i możesz go zmieniać. Uwaga: backend nie robi wyjątku dla super-admina, więc odebranie sobie uprawnienia naprawdę je odbiera (konta i tak nie da się usunąć)."}
       </p>
+
+      <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8, overflow: "hidden", marginBottom: 12 }}>
+        <div style={{ padding: "7px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", borderBottom: "1px solid var(--border-soft)", background: "var(--bg-elevated)" }}>
+          Dostęp do firm
+        </div>
+        <div style={{ padding: "11px 12px" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
+            {SCOPE_FIRMY.map(f => {
+              const on = scope.includes(f.slug);
+              return (
+                <button key={f.slug} onClick={() => { if (!isSelf) toggleFirma(f.slug); }}
+                  disabled={isSelf}
+                  title={isSelf ? "Nie możesz ograniczyć własnego konta do wybranych firm" : undefined}
+                  style={{
+                  opacity: isSelf ? 0.5 : 1, cursor: isSelf ? "not-allowed" : "pointer",
+                  display: "inline-flex", alignItems: "center", gap: 7,
+                  padding: "6px 13px", fontSize: 12, fontWeight: 600, borderRadius: 7,
+                  background: on ? "var(--accent-soft)" : "var(--surface-2)",
+                  color: on ? "var(--accent)" : "var(--text-mid)",
+                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                }}>
+                  <span style={{
+                    width: 13, height: 13, borderRadius: 4, flexShrink: 0,
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    background: on ? "var(--accent)" : "transparent",
+                    border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                    color: "var(--surface-1)", fontSize: 10, fontWeight: 700, lineHeight: 1,
+                  }}>{on ? "✓" : ""}</span>
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10, color: scopeAll ? "var(--text-lo)" : "var(--accent)", lineHeight: 1.5 }}>
+            {isSelf
+              ? "To Twoje konto — zakresu firm nie można ograniczyć samemu sobie (stracił(a)byś dostęp do panelu bez możliwości cofnięcia)."
+              : scopeAll
+              ? "Nic nie zaznaczone = dostęp do wszystkich firm (obecne zachowanie). Zaznacz firmy, żeby ograniczyć."
+              : `Widzi dane wyłącznie tych firm: ${SCOPE_FIRMY.filter(f => scope.includes(f.slug)).map(f => f.label).join(", ")}. Przełącznik firm w pasku pokaże tylko te zakładki, bez opcji „Wszyscy”.`}
+          </div>
+        </div>
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         {Object.entries(groups).map(([group, perms]) => (
@@ -1333,7 +1397,7 @@ function PermissionsEditor({ user, onCancel, onSaved }: { user: UserRowT; onCanc
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
-        <button onClick={resetAll} style={btnGhostMini}><I.Refresh size={11}/> Przywróć domyślne roli</button>
+        <button onClick={resetAll} style={btnGhostMini}><I.Refresh size={11}/> Przywróć domyślne roli i pełny dostęp</button>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onCancel} disabled={busy} style={btnSecondary}>Anuluj</button>
           <button onClick={save} disabled={busy} style={btnPrimary}>{busy ? "Zapisywanie…" : "Zapisz uprawnienia"}</button>
