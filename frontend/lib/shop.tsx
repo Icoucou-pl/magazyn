@@ -8,9 +8,8 @@
 //
 // PERSYSTENCJA: localStorage — wybór przeżywa odświeżenie strony.
 //
-// KLAMRA POD company_scope (przyszłe uprawnienia firmowe):
-//   `allowed` to jedyne miejsce, które trzeba będzie zmienić, gdy backend
-//   zacznie zwracać `company_scope` na userze. Wszystko poniżej (setShop,
+// ZAKRES FIRMOWY (company_scope) — AKTYWNY:
+//   `allowed` zawęża się wg `company_scope` z backendu. Wszystko poniżej (setShop,
 //   odczyt localStorage, przełącznik w Topbarze) już dziś przez tę klamrę
 //   przechodzi, więc scoped user NIE MOŻE:
 //     · ustawić firmy spoza swojego zakresu (setShop odrzuca),
@@ -45,11 +44,28 @@ type ShopContextValue = {
 
 const ShopContext = createContext<ShopContextValue | null>(null);
 
-// Zakres firm dla usera. Dziś company_scope nie przychodzi z backendu (undefined),
-// więc allowed = wszystko = obecne zachowanie. Gdy zacznie przychodzić — zawęża się samo.
-function computeAllowed(companyScope?: string | null): string[] {
-  const scope = (companyScope || "").trim().toLowerCase();
-  if (scope) return [scope];
+// Zakres firm dla usera. Brak zakresu (null/[]/undefined) = wszystkie firmy = obecne zachowanie.
+//
+// Backend zwraca LISTĘ slugów (["acti","veluxa"]), ale przyjmujemy też pojedynczy string
+// i CSV — user zalogowany przed wdrożeniem ma w localStorage starą postać, a stary
+// `magazyn_user` bywa odczytany zanim /auth/me odświeży dane. Bez tej tolerancji
+// aplikacja wywala się na starcie z „.trim is not a function".
+//
+// Zauważ, że "" (Wszyscy) NIE wchodzi do allowed dla scoped usera — to jest właśnie
+// mechanizm, który odbiera mu widok sumy wszystkich firm.
+function computeAllowed(companyScope?: string | string[] | null): string[] {
+  const raw = Array.isArray(companyScope)
+    ? companyScope
+    : String(companyScope ?? "").split(",");
+  const valid = SHOP_OPTIONS.map((o) => o.v).filter(Boolean);
+  const scope = raw
+    .map((s) => String(s ?? "").trim().toLowerCase())
+    .filter((s) => valid.includes(s));
+  if (scope.length) {
+    // Kolejność z SHOP_OPTIONS, nie z odpowiedzi backendu — „pierwsza dozwolona firma"
+    // (fallback przy starcie i przy setShop) ma być przewidywalna.
+    return valid.filter((v) => scope.includes(v));
+  }
   return SHOP_OPTIONS.map((o) => o.v);
 }
 
@@ -57,10 +73,13 @@ export function ShopProvider({
   companyScope,
   children,
 }: {
-  companyScope?: string | null;
+  companyScope?: string | string[] | null;
   children: React.ReactNode;
 }) {
-  const allowed = useMemo(() => computeAllowed(companyScope), [companyScope]);
+  // Tablica z propsa to za każdym razem nowa referencja, więc useMemo po niej
+  // przeliczałby się w kółko — kluczujemy po znormalizowanej treści.
+  const scopeKey = Array.isArray(companyScope) ? companyScope.join(",") : (companyScope ?? "");
+  const allowed = useMemo(() => computeAllowed(companyScope), [scopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const allowedKey = allowed.join("|");
 
   // Start: zapamiętany wybór, o ile mieści się w zakresie. Inaczej AMH, a jak
