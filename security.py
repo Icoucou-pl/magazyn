@@ -7,7 +7,7 @@ Domyślne zestawy ról są 1:1 z frontend/lib/permissions.js.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
@@ -80,7 +80,7 @@ async def get_current_user(
 
     # Sprawdź czy user nadal istnieje i jest aktywny
     r = await db.execute(
-        text(f"SELECT id, email, role, full_name, is_active, permissions FROM {settings.TABLE_USERS} WHERE id = :id"),
+        text(f"SELECT id, email, role, full_name, is_active, permissions, company_scope FROM {settings.TABLE_USERS} WHERE id = :id"),
         {"id": user_id},
     )
     u = r.first()
@@ -100,7 +100,10 @@ async def get_current_user(
             except Exception:
                 perms = None
 
-    return CurrentUser(id=u.id, email=u.email, role=u.role, full_name=u.full_name, perms=perms)
+    return CurrentUser(
+        id=u.id, email=u.email, role=u.role, full_name=u.full_name, perms=perms,
+        company_scope=parse_company_scope(getattr(u, "company_scope", None)),
+    )
 
 
 def require_role(*allowed_roles):
@@ -159,3 +162,75 @@ require_occupancy = require_perm("viewOccupancy")
 # Załączniki kontenerów to faktury, proformy i BL — pilnujemy ich osobnym uprawnieniem,
 # niezależnym od viewFinancials (viewer widzi wartości w PLN, ale nie ma wglądu w dokumenty).
 require_attachments = require_perm("viewAttachments")
+
+
+# ===== ZAKRES FIRMOWY (company_scope) =====
+# Ortogonalny do uprawnień: `perms` mówią CO wolno, `company_scope` — CZYJE dane.
+#
+# Przechowywanie: kolumna TEXT na userze, slugi po przecinku ("acti,veluxa").
+# NULL/puste = brak ograniczenia = wszystkie firmy = dzisiejsze zachowanie (zero regresji).
+#
+# DLACZEGO SERWEROWO: `shop` to parametr z frontu. Bez tego klamrowania każdy zalogowany
+# user może wpisać ?shop=amh albo ?shop= (puste = suma wszystkich firm) i zobaczyć cudze dane.
+# Przełącznik firm w UI jest tylko lustrem tej reguły, nie zabezpieczeniem.
+
+ALL_SHOPS = ("amh", "acti", "veluxa")
+
+
+def parse_company_scope(raw) -> Optional[List[str]]:
+    """Kolumna → lista slugów albo None (= wszystkie firmy).
+
+    Przyjmuje TEXT po przecinku, listę albo None. Nieznane slugi wypadają po cichu,
+    a gdy nic sensownego nie zostanie — zwracamy None, czyli brak ograniczenia.
+    Kolejność z ALL_SHOPS, żeby "pierwsza dozwolona firma" była deterministyczna
+    niezależnie od tego, w jakiej kolejności admin zaznaczył checkboxy.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, (list, tuple, set)):
+        items = [str(x) for x in raw]
+    else:
+        items = str(raw).split(",")
+    picked = {i.strip().lower() for i in items if i and i.strip()}
+    out = [s for s in ALL_SHOPS if s in picked]
+    return out or None
+
+
+def serialize_company_scope(scope: Optional[List[str]]) -> Optional[str]:
+    """Lista slugów → wartość do kolumny. Pusta lista/None → NULL (wszystkie firmy)."""
+    parsed = parse_company_scope(scope)
+    return ",".join(parsed) if parsed else None
+
+
+def allowed_shops(user: Optional[CurrentUser]) -> Optional[List[str]]:
+    """Dozwolone firmy usera albo None = bez ograniczeń."""
+    return getattr(user, "company_scope", None) or None
+
+
+def resolve_shop(requested: Optional[str], user: Optional[CurrentUser]) -> str:
+    """Klamruje parametr `shop` do zakresu usera. Konwencja: "" = wszystkie firmy.
+
+    User bez zakresu → zwracamy `requested` bez zmian (zero regresji).
+    User z zakresem  → firma spoza zakresu ORAZ "" (wszystkie) lecą po cichu
+    na pierwszą dozwoloną firmę. Cichy override zamiast 403: UI i tak nie pokaże
+    zakazanej zakładki, a stary wpis w localStorage nie ma prawa wywalić widoku.
+    """
+    scope = allowed_shops(user)
+    if not scope:
+        return requested or ""
+    req = (requested or "").strip().lower()
+    return req if req in scope else scope[0]
+
+
+def resolve_scope(requested: Optional[str], user: Optional[CurrentUser]) -> str:
+    """To samo dla raportów, które jadą na własnej konwencji: "all" zamiast "".
+
+    Scoped user nigdy nie dostanie "all" — nawet przy dostępie do dwóch firm
+    dostaje pierwszą z nich (raporty filtrują po jednym slugu: firma_slug == scope,
+    a przełącznik w UI i tak podaje konkretną firmę).
+    """
+    scope = allowed_shops(user)
+    req = (requested or "all").strip().lower()
+    if not scope:
+        return req
+    return req if req in scope else scope[0]

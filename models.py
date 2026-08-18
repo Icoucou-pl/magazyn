@@ -24,6 +24,9 @@ class CurrentUser(BaseModel):
     role: str
     full_name: Optional[str] = None
     perms: Optional[dict] = None            # override uprawnień per-user (None = domyślne z roli)
+    # Zakres firmowy: lista slugów ('amh'/'acti'/'veluxa') albo None = wszystkie firmy.
+    # To INNY wymiar niż `perms`: scope mówi CZYJE dane wolno oglądać, perms — CO wolno z nimi zrobić.
+    company_scope: Optional[List[str]] = None
 
 
 class UserCreate(BaseModel):
@@ -39,6 +42,9 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     perms: Optional[dict] = None            # override uprawnień per-user (None = nie zmieniaj)
     show_onboarding: Optional[bool] = None
+    # None = nie zmieniaj; [] = wyczyść zakres (dostęp do wszystkich firm);
+    # ['acti','veluxa'] = tylko te firmy.
+    company_scope: Optional[List[str]] = None
 
 
 class PasswordChange(BaseModel):
@@ -62,6 +68,7 @@ class UserOut(BaseModel):
     is_active: bool
     is_super_admin: bool = False  # tylko ten email widzi audit log
     perms: Optional[dict] = None  # override uprawnień (None = domyślne z roli)
+    company_scope: Optional[List[str]] = None  # None = wszystkie firmy
     show_onboarding: bool = False
     created_at: datetime
     last_login: Optional[datetime]
