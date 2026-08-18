@@ -19,6 +19,7 @@ import { useShop, shopToScope } from "@/lib/shop";
 import { I, Card } from "@/components/ui";
 import { toast } from "@/components/toast";
 import OccupancyReport from "@/components/occupancy";
+import { WarehouseCostReport, SkuExclusionReport } from "@/components/sku-economics";
 
 type KpiRow = { label: string; snap_date: string; snap_slot: string; [k: string]: string | number };
 type KpiSummary = { key: string; label: string; start: number | null; end: number | null; delta: number | null; delta_pct: number | null };
@@ -457,8 +458,12 @@ function SkuReport({ from, to, setFrom, setTo, scope, minDate }: { from: string;
 export default function ReportsView() {
   // Zajętość magazynu jest za osobnym uprawnieniem `viewOccupancy`, którego CELOWO
   // nie ma w ROLE_PERMS — bez jawnego ptaszka nie widzi jej nikt, łącznie z ADMIN.
-  const showOccupancy = can(useUser(), "viewOccupancy");
-  const [mode, setMode] = useState<null | "kpi" | "sku" | "occupancy">(null);
+  const u = useUser();
+  const showOccupancy = can(u, "viewOccupancy");
+  // Raporty ekonomiczne pokazują marże per SKU — poza `viewReports` wymagają
+  // jeszcze `viewFinancials` (bramka po stronie backendu w routers/sku_economics.py).
+  const showEconomics = can(u, "viewFinancials");
+  const [mode, setMode] = useState<null | "kpi" | "sku" | "occupancy" | "wcost" | "excl">(null);
   // Firma z globalnego fragmentatora w Topbarze (lib/shop).
   // Raporty jadą na własnej konwencji: "all" zamiast "" dla wszystkich firm.
   const { shop } = useShop();
@@ -478,7 +483,7 @@ export default function ReportsView() {
       .catch(() => setMinDate(today()));
   }, []);
 
-  const box = (id: "kpi" | "sku" | "occupancy", title: string, desc: string, icon: React.ReactNode, formats: string) => (
+  const box = (id: "kpi" | "sku" | "occupancy" | "wcost" | "excl", title: string, desc: string, icon: React.ReactNode, formats: string) => (
     <Card style={{ padding: "22px 24px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }}>
       <div onClick={() => setMode(id)} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -512,6 +517,8 @@ export default function ReportsView() {
           {box("kpi", "Raport zbiorczy magazynu", "Wartości magazynu w czasie — wybierz dzień lub zakres, zdecyduj ptaszkami, które pozycje mają się pokazać.", <I.TrendUp size={18} />, "Podgląd · PDF · Excel")}
           {box("sku", "Raport magazynu per SKU", "Stany i wartość per produkt. Przy zakresie dat pokaże początek, koniec i zmianę. Filtr obserwowanych i ręczny wybór SKU.", <I.Box size={18} />, "Podgląd · Excel")}
           {showOccupancy && box("occupancy", "Zajętość magazynu", "Ile miejsca (m³) zajmuje towar dziś i ile zajmie po dostawach — suwak przesuwa datę. Alarm, gdy jeden SKU zjada za dużo hali.", <I.Container size={18} />, "Podgląd")}
+          {showEconomics && box("wcost", "Koszt magazynowania", "Czynsz rozłożony na produkty proporcjonalnie do zajmowanej objętości. Widać, ile miesięcznie kosztuje miejsce każdego SKU i ile płacisz za pustą halę.", <I.Wallet size={18} />, "Podgląd")}
+          {showEconomics && box("excl", "SKU do wykluczenia", "Marża minus koszt miejsca, w skali roku. Produkty poniżej progu trafiają pod rozwagę — z osobnym oznaczeniem nowości i pozycji wyprzedanych.", <I.TrendUp size={18} />, "Podgląd")}
         </div>
       ) : (
         <>
@@ -521,6 +528,8 @@ export default function ReportsView() {
           {mode === "kpi" && <KpiReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />}
           {mode === "sku" && <SkuReport from={from} to={to} setFrom={setFrom} setTo={setTo} scope={scope} minDate={minDate} />}
           {mode === "occupancy" && showOccupancy && <OccupancyReport scope={scope} />}
+          {mode === "wcost" && showEconomics && <WarehouseCostReport scope={scope} />}
+          {mode === "excl" && showEconomics && <SkuExclusionReport scope={scope} />}
         </>
       )}
     </div>
