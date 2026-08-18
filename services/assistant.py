@@ -12,6 +12,7 @@ a mimo to nie pytać o finanse asystenta.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import urllib.error
@@ -26,7 +27,7 @@ from config import settings
 from config import included_status_clause
 from config import sales_channel_case
 from models import CurrentUser
-from security import has_perm
+from security import allowed_shops, has_perm, resolve_shop
 from services.products import fetch_products
 from services.containers import fetch_containers
 from services.usage import log_usage
@@ -1827,10 +1828,37 @@ _DISPATCH = {
 }
 
 
+# Narzędzia z definicji cross-firmowe — dla usera z company_scope to wyciek wprost
+# („rozbij stan X per firma” zwróciłoby stany firm spoza zakresu).
+_CROSS_FIRMA_TOOL_NAMES = frozenset({"stan_per_firma"})
+
+
+def _clamp_tool_args(user: CurrentUser, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Przycina argument `sklep` do zakresu firmowego usera.
+
+    Model dostaje nazwę sklepu z języka naturalnego, więc scoped user mógłby po prostu
+    poprosić „pokaż stany AMH”. Klamrujemy centralnie — w dyspozytorze — zamiast w 20
+    implementacjach narzędzi, żeby nowe narzędzie z parametrem `sklep` było bezpieczne
+    domyślnie, a nie dopiero po pamiętaniu o dopisaniu klamry.
+    """
+    scope = allowed_shops(user)
+    if not scope:
+        return args or {}
+    out = dict(args or {})
+    # _norm_shop tłumaczy aliasy ("i-coucou" → "amh"); klamrujemy PO normalizacji,
+    # inaczej alias spoza zakresu przeszedłby jako nierozpoznany → "" → wszystkie firmy.
+    out["sklep"] = resolve_shop(_norm_shop(out.get("sklep")), user)
+    return out
+
+
 async def _dispatch_tool(db: AsyncSession, user: CurrentUser, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     fn = _DISPATCH.get(name)
     if not fn:
         return {"blad": f"nieznane narzędzie: {name}"}
+    if name in _CROSS_FIRMA_TOOL_NAMES and allowed_shops(user):
+        return {"blad": "to narzędzie jest niedostępne — konto ma dostęp do danych jednej firmy"}
+    if "sklep" in inspect.signature(fn).parameters:
+        args = _clamp_tool_args(user, args)
     try:
         return await fn(db, user, **(args or {}))
     except TypeError:
@@ -1865,10 +1893,17 @@ _FINANCE_TOOL_NAMES = frozenset({
 
 
 def _tools_for(user: CurrentUser) -> List[Dict[str, Any]]:
-    """Zestaw narzędzi wysyłany do modelu zależnie od uprawnień."""
-    if has_perm(user, "assistantFinancials"):
+    """Zestaw narzędzi wysyłany do modelu zależnie od uprawnień i zakresu firmowego."""
+    drop = set()
+    if not has_perm(user, "assistantFinancials"):
+        drop |= set(_FINANCE_TOOL_NAMES)
+    # Scoped user nie dostaje narzędzi cross-firmowych — model ich nawet nie widzi,
+    # więc nie próbuje ich wołać i nie marnuje tury na odpowiedź „niedostępne”.
+    if allowed_shops(user):
+        drop |= set(_CROSS_FIRMA_TOOL_NAMES)
+    if not drop:
         return TOOLS
-    return [t for t in TOOLS if (t.get("function") or {}).get("name") not in _FINANCE_TOOL_NAMES]
+    return [t for t in TOOLS if (t.get("function") or {}).get("name") not in drop]
 
 
 def _system_prompt_for(user: CurrentUser) -> str:
