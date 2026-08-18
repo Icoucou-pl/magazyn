@@ -343,6 +343,9 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
 
         # Koszt miejsca. Bez kubatury → None (nie zero — zero kłamie na korzyść SKU).
         monthly_cost = None if no_cbm else round(cbm * c["stock_qty"] * rate.get(firma, 0.0), 2)
+        # Koszt jednej sztuki — nie zależy od stanu, więc porównywalny między pozycjami
+        # i przydatny przy liczeniu, ile kosztuje trzymanie towaru do sprzedaży.
+        unit_monthly = None if no_cbm else round(cbm * rate.get(firma, 0.0), 2)
         if mode == "runrate":
             warehouse_cost = None if monthly_cost is None else round(monthly_cost * 12, 2)
             # Marża zannualizowana, żeby porównywać jabłka z jabłkami:
@@ -397,6 +400,7 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             "gross_margin_pln": gross,
             "gross_margin_pct": round(100.0 * gross / revenue, 1) if revenue > 0 else None,
             "profit_base_pln": profit_base,
+            "warehouse_cost_unit_monthly_pln": unit_monthly,
             "warehouse_cost_monthly_pln": monthly_cost,
             "warehouse_cost_pln": warehouse_cost,
             "warehouse_cost_share_pct": (round(100.0 * warehouse_cost / profit_base, 1)
