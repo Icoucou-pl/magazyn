@@ -2,10 +2,11 @@
 /**
  * Dwa raporty ekonomiczne per SKU, oba na jednym endpointcie backendu:
  *
- *  [Koszt magazynowania] — czynsz firmy rozłożony po ZAJĘTEJ objętości.
- *                          Stawka = czynsz / suma m³ towaru w hali, więc cały
- *                          czynsz ląduje na produktach i suma zgadza się z fakturą.
- *                          Pusta przestrzeń pokazana osobno, nie rozmyta po SKU.
+ *  [Koszt magazynowania] — udział produktu w POJEMNOŚCI hali. Stawka = czynsz /
+ *                          capacity_m3; SKU zajmujące 10 m³ w hali o 100 m³ płaci
+ *                          10% czynszu, niezależnie od tego, co stoi obok.
+ *                          Suma kosztów w tabeli NIE równa się fakturze — reszta
+ *                          to niewykorzystana hala, pokazana w kafelku „Puste".
  *
  *  [SKU do wykluczenia]  — wynik = marża (przychód − koszt zakupu) minus koszt
  *                          miejsca. Poniżej progu produkt trafia pod rozwagę.
@@ -42,7 +43,7 @@ type EconRow = {
 type FirmSummary = {
   firma_slug: string; label: string; monthly_cost_pln: number; capacity_m3: number;
   occupied_m3: number; empty_m3: number; empty_cost_pln: number | null;
-  rate_pln_per_m3: number; cost_configured: boolean;
+  rate_pln_per_m3: number; cost_configured: boolean; capacity_configured: boolean;
 };
 type EconData = {
   mode: string;
@@ -51,7 +52,7 @@ type EconData = {
   config: { profit_threshold_pln: number; min_history_months: number; stockout_tolerance_pct: number; excluded_skus: string[] };
   summary: FirmSummary[];
   rows: EconRow[];
-  meta: { no_cbm_count: number; no_cbm_units: number; excluded_skus: string[]; missing_cost_firms: string[] };
+  meta: { no_cbm_count: number; no_cbm_units: number; excluded_skus: string[]; missing_cost_firms: string[]; missing_capacity_firms: string[]; watched_only: boolean; hidden_count: number };
 };
 type CostCfg = { firma_slug: string; label: string; monthly_cost_pln: number; note: string | null };
 
@@ -88,17 +89,17 @@ const td: React.CSSProperties = { padding: "9px 10px", borderBottom: "1px solid 
 const tdR: React.CSSProperties = { ...td, textAlign: "right" };
 
 // ── wspólne pobranie danych ──────────────────────────────────
-function useEconomics(endpoint: string, scope: string) {
+function useEconomics(endpoint: string, scope: string, watched: boolean) {
   const [data, setData] = useState<EconData | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(() => {
     setLoading(true);
-    api.get(`${endpoint}?scope=${encodeURIComponent(scope)}&mode=runrate`)
+    api.get(`${endpoint}?scope=${encodeURIComponent(scope)}&mode=runrate&watched=${watched}`)
       .then((d: EconData) => setData(d))
       .catch((e: unknown) => toast(e instanceof Error ? e.message : "Nie udało się wczytać raportu", "error"))
       .finally(() => setLoading(false));
-  }, [endpoint, scope]);
+  }, [endpoint, scope, watched]);
 
   useEffect(() => { load(); }, [load]);
   return { data, loading, reload: load };
@@ -163,8 +164,9 @@ function ConfigPanel({ onSaved, showThreshold }: { onSaved: () => void; showThre
         )}
       </div>
       <div style={{ fontSize: 11.5, color: "var(--text-lo)", lineHeight: 1.6 }}>
-        Kwota netto za całą halę. Rozkłada się na produkty proporcjonalnie do zajmowanej objętości —
-        cały czynsz ląduje na towarze, więc suma kosztów w tabeli zgadza się z fakturą.
+        Kwota netto za całą halę. Każdy produkt płaci za swój udział w pojemności magazynu:
+        10 m³ ze 100 m³ to 10% czynszu. Niewykorzystana część hali nie obciąża produktów —
+        widać ją osobno jako „Puste".
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={save} disabled={saving} style={{ ...btnDark, opacity: saving ? 0.6 : 1 }}>
@@ -173,6 +175,37 @@ function ConfigPanel({ onSaved, showThreshold }: { onSaved: () => void; showThre
         <button onClick={() => setOpen(false)} style={btnGhost}>Anuluj</button>
       </div>
     </Card>
+  );
+}
+
+/** Zakres tabeli: domyślnie tylko obserwowane i SAMPLE, opcjonalnie cały asortyment. */
+function ScopeToggle({ watched, setWatched, hidden }: { watched: boolean; setWatched: (v: boolean) => void; hidden: number }) {
+  return (
+    <div style={{ display: "inline-flex", background: "var(--surface-3)", borderRadius: 9, padding: 3 }}>
+      <button
+        onClick={() => setWatched(true)}
+        style={{
+          border: "none", background: watched ? "var(--surface-1)" : "transparent",
+          boxShadow: watched ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+          color: watched ? "var(--text-hi)" : "var(--text-mid)",
+          padding: "6px 12px", borderRadius: 6, fontSize: 12.5, fontWeight: 550, cursor: "pointer",
+        }}
+      >
+        Obserwowane i SAMPLE
+      </button>
+      <button
+        onClick={() => setWatched(false)}
+        style={{
+          border: "none", background: !watched ? "var(--surface-1)" : "transparent",
+          boxShadow: !watched ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+          color: !watched ? "var(--text-hi)" : "var(--text-mid)",
+          padding: "6px 12px", borderRadius: 6, fontSize: 12.5, fontWeight: 550, cursor: "pointer",
+        }}
+        title={hidden > 0 ? `${hidden} pozycji poza obserwowanymi` : undefined}
+      >
+        Wszystkie{hidden > 0 && watched ? ` (+${hidden})` : ""}
+      </button>
+    </div>
   );
 }
 
@@ -187,6 +220,16 @@ function Notices({ data }: { data: EconData }) {
           <div style={{ fontSize: 12.5, color: "var(--text-lo)", lineHeight: 1.6 }}>
             Nie ustawiono kosztu magazynu dla: {missing.join(", ").toUpperCase()}. Do czasu uzupełnienia
             koszt miejsca dla tych firm wychodzi zero, a wynik produktów jest zawyżony. Wpisz kwotę w Ustawieniach.
+          </div>
+        </Card>
+      )}
+      {(data.meta.missing_capacity_firms || []).length > 0 && (
+        <Card style={{ padding: "14px 18px", borderLeft: "3px solid var(--warning)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Brak pojemności hali</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-lo)", lineHeight: 1.6 }}>
+            Nie ustawiono pojemności dla: {data.meta.missing_capacity_firms.join(", ").toUpperCase()}.
+            Bez niej nie ma od czego liczyć udziału produktu, więc koszt miejsca wychodzi zero.
+            Pojemność ustawia się w raporcie Zajętość magazynu.
           </div>
         </Card>
       )}
@@ -218,7 +261,8 @@ function FirmTiles({ summary }: { summary: FirmSummary[] }) {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 12, color: "var(--text-lo)" }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>Zajęte</span><span className="num">{m3(f.occupied_m3)}</span>
+              <span>Zajęte / pojemność</span>
+              <span className="num">{m3(f.occupied_m3)} / {m3(f.capacity_m3)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span>Stawka</span><span className="num">{pln(f.rate_pln_per_m3)} / m³ / mies.</span>
@@ -238,7 +282,8 @@ function FirmTiles({ summary }: { summary: FirmSummary[] }) {
 
 // ══ RAPORT 1: koszt magazynowania ════════════════════════════
 export function WarehouseCostReport({ scope }: { scope: string }) {
-  const { data, loading, reload } = useEconomics("/reports/warehouse-cost", scope);
+  const [watched, setWatched] = useState(true);
+  const { data, loading, reload } = useEconomics("/reports/warehouse-cost", scope, watched);
   const [onlyNoCbm, setOnlyNoCbm] = useState(false);
 
   const rows = useMemo(() => {
@@ -258,7 +303,8 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
             Czynsz rozłożony po zajmowanej objętości. Stan na dziś, koszt w skali roku.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <ScopeToggle watched={watched} setWatched={setWatched} hidden={data?.meta.hidden_count || 0} />
           <button onClick={() => setOnlyNoCbm((v) => !v)} style={{ ...btnGhost, ...(onlyNoCbm ? { borderColor: "var(--info)", color: "var(--info)" } : {}) }}>
             Tylko bez kubatury
           </button>
@@ -279,7 +325,7 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
                 <th style={thR}>Stan</th>
                 <th style={thR}>CBM/szt.</th>
                 <th style={thR}>Zajmuje</th>
-                <th style={thR}>Udział</th>
+                <th style={thR}>Udział hali</th>
                 <th style={thR}>Koszt / mies.</th>
                 <th style={thR}>Koszt / rok</th>
                 <th style={thR}>% marży</th>
@@ -317,7 +363,8 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
 
 // ══ RAPORT 2: SKU do wykluczenia ═════════════════════════════
 export function SkuExclusionReport({ scope }: { scope: string }) {
-  const { data, loading, reload } = useEconomics("/reports/sku-exclusion", scope);
+  const [watched, setWatched] = useState(true);
+  const { data, loading, reload } = useEconomics("/reports/sku-exclusion", scope, watched);
   const [filter, setFilter] = useState<string>("all");
 
   const counts = useMemo(() => {
@@ -345,7 +392,10 @@ export function SkuExclusionReport({ scope }: { scope: string }) {
             Marża minus koszt miejsca, w skali roku. Poniżej {fmtPLN(thr)} produkt trafia pod rozwagę.
           </p>
         </div>
-        <ConfigPanel onSaved={reload} showThreshold />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <ScopeToggle watched={watched} setWatched={setWatched} hidden={data.meta.hidden_count || 0} />
+          <ConfigPanel onSaved={reload} showThreshold />
+        </div>
       </div>
 
       <Notices data={data} />
