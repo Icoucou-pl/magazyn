@@ -25,9 +25,9 @@ export type User = {
   isSuper?: boolean;
   perms?: Record<string, boolean>;
   show_onboarding?: boolean;
-  // Zakres firmowy (przyszłe uprawnienia). Dziś backend tego nie zwraca →
-  // undefined = dostęp do wszystkich firm = obecne zachowanie.
-  company_scope?: string | null;
+  // Zakres firmowy: lista slugów z backendu (["acti","veluxa"]).
+  // null/undefined/[] = dostęp do wszystkich firm.
+  company_scope?: string | string[] | null;
 };
 
 type IconCmp = (props: IconProps) => React.ReactElement;
