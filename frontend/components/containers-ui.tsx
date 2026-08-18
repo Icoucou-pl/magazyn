@@ -13,6 +13,7 @@ import { exportCsv, toast, type CsvColumn } from "./toast";
 import { download } from "@/lib/api";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
+import { trackingUrl } from "@/lib/tracking";
 
 // ── Formatery walut/dat kontenerów (płatności per lot: USD/CNY) ──
 const CUR_SYM: Record<string, string> = { USD: "$", CNY: "¥", EUR: "€", PLN: "zł" };
@@ -812,6 +813,23 @@ function ContainerCardBody({
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {/* Śledzenie kontenera u armatora (na razie na sztywno MSC).
+              Link generowany z numeru — ukryty dla draftów i numerów spoza ISO 6346. */}
+          {(() => {
+            const tUrl = trackingUrl(c.container_number);
+            if (!tUrl) return null;
+            return (
+              <a
+                href={tUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Śledź ${c.container_number} na msc.com`}
+                style={{ ...btnSecondary, color: "var(--info)", borderColor: "color-mix(in oklch, var(--info) 40%, var(--border))", textDecoration: "none" }}
+              >
+                <I.Ship size={12} /> Śledź kontener
+              </a>
+            );
+          })()}
           {onGeneratePO && (
             <button onClick={onGeneratePO} style={{ ...btnSecondary, color: "var(--accent)", borderColor: "color-mix(in oklch, var(--accent) 40%, var(--border))" }}><I.External size={12} /> Generuj PO</button>
           )}
