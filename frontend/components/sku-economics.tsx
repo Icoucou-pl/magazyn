@@ -35,7 +35,7 @@ type EconRow = {
   gross_margin_pln: number; gross_margin_pct: number | null; profit_base_pln: number;
   warehouse_cost_unit_monthly_pln: number | null;
   warehouse_cost_monthly_pln: number | null; warehouse_cost_pln: number | null;
-  warehouse_cost_share_pct: number | null; result_pln: number | null;
+  warehouse_cost_share_pct: number | null; result_pln: number | null; cost_included: boolean;
   stock_value_pln: number; months_of_stock: number | null;
   first_sale: string | null; last_sale: string | null;
   history_months: number | null; stockout_pct: number | null;
@@ -61,6 +61,10 @@ type CostCfg = { firma_slug: string; label: string; monthly_cost_pln: number; no
 const m3 = (n: number | null) => (n == null ? "—" : (n || 0).toFixed(2).replace(".", ",") + " m³");
 const pc = (n: number | null, d = 1) => (n == null ? "—" : (n || 0).toFixed(d).replace(".", ",") + "%");
 const pln = (n: number | null) => (n == null ? "—" : fmtPLN(n));
+// Koszt jednej sztuki bywa groszowy — zaokrąglenie do złotówki zrobiłoby z 0,28 zł
+// i 0,94 zł to samo „1 zł", przez co kolumna nic by nie mówiła.
+const pln2 = (n: number | null) =>
+  n == null ? "—" : new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " zł";
 
 const VERDICT: Record<string, { label: string; tone: string }> = {
   exclude: { label: "Do wykluczenia", tone: "critical" },
@@ -84,10 +88,58 @@ const btnGhost: React.CSSProperties = {
   display: "inline-flex", alignItems: "center", gap: 7, background: "var(--surface-1)", color: "var(--text-mid)",
   border: "1px solid var(--border)", padding: "7px 12px", borderRadius: 9, fontSize: 12.5, fontWeight: 550, cursor: "pointer",
 };
+type SortState = { key: keyof EconRow; dir: "asc" | "desc" };
+
+/** Sortowanie po kolumnie. Nulle zawsze na końcu — niezależnie od kierunku,
+ *  bo „brak danych" to nie jest wartość najmniejsza ani największa. */
+function sortRows(rows: EconRow[], sort: SortState | null): EconRow[] {
+  if (!sort) return rows;
+  const mul = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = a[sort.key] as unknown;
+    const vb = b[sort.key] as unknown;
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === "number" && typeof vb === "number") return (va - vb) * mul;
+    return String(va).localeCompare(String(vb), "pl") * mul;
+  });
+}
+
 const th: React.CSSProperties = { textAlign: "left", fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--text-lo)", fontWeight: 650, padding: "0 10px 8px", borderBottom: "1px solid var(--border-soft)", whiteSpace: "nowrap" };
 const thR: React.CSSProperties = { ...th, textAlign: "right" };
 const td: React.CSSProperties = { padding: "9px 10px", borderBottom: "1px solid var(--surface-3)", fontSize: 12.5, whiteSpace: "nowrap" };
 const tdR: React.CSSProperties = { ...td, textAlign: "right" };
+
+/** Nagłówek klikalny. Klik przełącza kierunek; liczby startują malejąco,
+ *  tekst rosnąco. Kliknięcie obok nagłówka nic nie robi — cursor jest tylko tutaj. */
+function SortTh({ label, k, sort, setSort, numeric }: {
+  label: string; k: keyof EconRow; sort: SortState | null;
+  setSort: (s: SortState) => void; numeric?: boolean;
+}) {
+  const active = sort?.key === k;
+  const toggle = () => setSort(
+    active ? { key: k, dir: sort!.dir === "asc" ? "desc" : "asc" } : { key: k, dir: numeric ? "desc" : "asc" }
+  );
+  return (
+    <th style={{ ...(numeric ? thR : th), padding: 0 }}>
+      <button
+        onClick={toggle}
+        style={{
+          border: "none", background: "none", cursor: "pointer", font: "inherit",
+          color: active ? "var(--text-hi)" : "var(--text-lo)",
+          fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 650,
+          padding: "0 10px 8px", width: "100%", textAlign: numeric ? "right" : "left",
+          display: "inline-flex", justifyContent: numeric ? "flex-end" : "flex-start",
+          alignItems: "center", gap: 4, whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+        <span style={{ opacity: active ? 1 : 0.25, fontSize: 9 }}>{active && sort!.dir === "asc" ? "▲" : "▼"}</span>
+      </button>
+    </th>
+  );
+}
 
 // ── wspólne pobranie danych ──────────────────────────────────
 function useEconomics(endpoint: string, scope: string, watched: boolean) {
@@ -286,11 +338,13 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
   const [watched, setWatched] = useState(true);
   const { data, loading, reload } = useEconomics("/reports/warehouse-cost", scope, watched);
   const [onlyNoCbm, setOnlyNoCbm] = useState(false);
+  const [sort, setSort] = useState<SortState | null>(null);
 
   const rows = useMemo(() => {
     if (!data) return [];
-    return onlyNoCbm ? data.rows.filter((r) => r.no_cbm) : data.rows.filter((r) => r.stock_qty > 0);
-  }, [data, onlyNoCbm]);
+    const base = onlyNoCbm ? data.rows.filter((r) => r.no_cbm) : data.rows.filter((r) => r.stock_qty > 0);
+    return sortRows(base, sort);
+  }, [data, onlyNoCbm, sort]);
 
   if (loading) return <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Liczenie…</Card>;
   if (!data) return null;
@@ -321,16 +375,16 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={th}>SKU</th>
-                <th style={th}>Nazwa</th>
-                <th style={thR}>Stan</th>
-                <th style={thR}>CBM/szt.</th>
-                <th style={thR}>Zajmuje</th>
-                <th style={thR}>Udział hali</th>
-                <th style={thR}>Koszt szt./mies.</th>
-                <th style={thR}>Koszt / mies.</th>
-                <th style={thR}>Koszt / rok</th>
-                <th style={thR}>% marży</th>
+                <SortTh label="SKU" k="sku" sort={sort} setSort={setSort} />
+                <SortTh label="Nazwa" k="nazwa" sort={sort} setSort={setSort} />
+                <SortTh label="Stan" k="stock_qty" sort={sort} setSort={setSort} numeric />
+                <SortTh label="CBM/szt." k="cbm_per_unit" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Zajmuje" k="stock_m3" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Udział hali" k="share_pct" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Koszt szt./mies." k="warehouse_cost_unit_monthly_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Koszt / mies." k="warehouse_cost_monthly_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Koszt / rok" k="warehouse_cost_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="% marży" k="warehouse_cost_share_pct" sort={sort} setSort={setSort} numeric />
               </tr>
             </thead>
             <tbody>
@@ -345,7 +399,7 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
                   <td style={tdR} className="num">{r.cbm_per_unit == null ? "—" : r.cbm_per_unit.toFixed(3).replace(".", ",")}</td>
                   <td style={tdR} className="num">{m3(r.stock_m3)}</td>
                   <td style={tdR} className="num">{pc(r.share_pct)}</td>
-                  <td style={{ ...tdR, color: "var(--text-mid)" }} className="num">{pln(r.warehouse_cost_unit_monthly_pln)}</td>
+                  <td style={{ ...tdR, color: "var(--text-mid)" }} className="num">{pln2(r.warehouse_cost_unit_monthly_pln)}</td>
                   <td style={tdR} className="num">{pln(r.warehouse_cost_monthly_pln)}</td>
                   <td style={{ ...tdR, fontWeight: 650 }} className="num">{pln(r.warehouse_cost_pln)}</td>
                   <td style={{ ...tdR, color: (r.warehouse_cost_share_pct ?? 0) > 50 ? "var(--critical)" : "var(--text-lo)" }} className="num">
@@ -369,6 +423,7 @@ export function SkuExclusionReport({ scope }: { scope: string }) {
   const [watched, setWatched] = useState(true);
   const { data, loading, reload } = useEconomics("/reports/sku-exclusion", scope, watched);
   const [filter, setFilter] = useState<string>("all");
+  const [sort, setSort] = useState<SortState | null>(null);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -378,8 +433,9 @@ export function SkuExclusionReport({ scope }: { scope: string }) {
 
   const rows = useMemo(() => {
     if (!data) return [];
-    return filter === "all" ? data.rows : data.rows.filter((r) => r.verdict === filter);
-  }, [data, filter]);
+    const base = filter === "all" ? data.rows : data.rows.filter((r) => r.verdict === filter);
+    return sortRows(base, sort);
+  }, [data, filter, sort]);
 
   if (loading) return <Card style={{ padding: 40, textAlign: "center", color: "var(--text-lo)" }}>Liczenie…</Card>;
   if (!data) return null;
@@ -422,16 +478,16 @@ export function SkuExclusionReport({ scope }: { scope: string }) {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={th}>SKU</th>
-                <th style={th}>Nazwa</th>
-                <th style={thR}>Sprzedane</th>
-                <th style={thR}>Przychód</th>
-                <th style={thR}>Marża</th>
-                <th style={thR}>Koszt miejsca</th>
-                <th style={thR}>Wynik / rok</th>
-                <th style={thR}>Stan</th>
-                <th style={thR}>Zapas</th>
-                <th style={th}>Werdykt</th>
+                <SortTh label="SKU" k="sku" sort={sort} setSort={setSort} />
+                <SortTh label="Nazwa" k="nazwa" sort={sort} setSort={setSort} />
+                <SortTh label="Sprzedane" k="qty_sold" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Przychód" k="revenue_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Marża" k="gross_margin_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Koszt miejsca" k="warehouse_cost_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Wynik / rok" k="result_pln" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Stan" k="stock_qty" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Zapas" k="months_of_stock" sort={sort} setSort={setSort} numeric />
+                <SortTh label="Werdykt" k="verdict" sort={sort} setSort={setSort} />
               </tr>
             </thead>
             <tbody>
@@ -450,8 +506,13 @@ export function SkuExclusionReport({ scope }: { scope: string }) {
                       )}
                     </td>
                     <td style={tdR} className="num">{pln(r.warehouse_cost_pln)}</td>
-                    <td style={{ ...tdR, fontWeight: 650, color: r.result_pln == null ? "var(--text-lo)" : r.result_pln < 0 ? "var(--critical)" : r.result_pln < thr ? "var(--warning)" : "var(--ok)" }} className="num">
+                    <td
+                      style={{ ...tdR, fontWeight: 650, color: r.result_pln == null ? "var(--text-lo)" : r.result_pln < 0 ? "var(--critical)" : r.result_pln < thr ? "var(--warning)" : "var(--ok)" }}
+                      className="num"
+                      title={r.cost_included ? undefined : "Bez kosztu magazynu — brak CBM, wynik zawyżony"}
+                    >
                       {pln(r.result_pln)}
+                      {!r.cost_included && <span style={{ color: "var(--text-lo)", fontWeight: 400 }}> *</span>}
                     </td>
                     <td style={tdR} className="num">{fmtNum(r.stock_qty)}</td>
                     <td style={tdR} className="num">
@@ -472,7 +533,10 @@ export function SkuExclusionReport({ scope }: { scope: string }) {
       </Card>
 
       <div style={{ fontSize: 11.5, color: "var(--text-lo)", lineHeight: 1.7, padding: "0 4px" }}>
-        Werdykt „za wcześnie" dostają produkty ze zbyt krótką historią sprzedaży — nowość z ostatniego kontenera
+        Gwiazdka przy wyniku oznacza pozycję bez wypełnionego CBM: koszt magazynu nie został odjęty,
+        więc wynik jest zawyżony. Jeśli mimo to wypada poniżej progu, ocena jest pewna — doliczenie
+        miejsca mogłoby go tylko pogorszyć.
+        {" "}Werdykt „za wcześnie" dostają produkty ze zbyt krótką historią sprzedaży — nowość z ostatniego kontenera
         zawsze wypadłaby źle. „Brak towaru" oznacza, że SKU stało puste przez większość dni: to brak dostaw,
         nie brak popytu. Obie etykiety mają pierwszeństwo przed oceną liczbową.
       </div>
