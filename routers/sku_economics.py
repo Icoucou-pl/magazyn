@@ -24,10 +24,13 @@ akcentem: ile dany towar zarabia i ile kosztuje jego miejsce w hali.
    właścicielem SKU. Firma bierze się z `app_product_attrs.firma_id`, tak samo
    jak w zajętości i Prognozie. Filtrowanie po sklepie zaniżałoby popyt.
 
-4. Koszt magazynu — czynsz firmy rozłożony po ZAJĘTEJ objętości:
-   stawka = czynsz / suma m³ towaru stojącego w hali. Cały czynsz ląduje więc na
-   towarze i suma zgadza się z fakturą; pusta przestrzeń raportowana jest osobno
-   (`empty_cost_pln`), a nie rozmywana po produktach.
+4. Koszt magazynu — udział produktu w POJEMNOŚCI hali:
+   stawka = czynsz / capacity_m3, koszt SKU = jego m³ × stawka. Produkt zajmujący
+   10 m³ w hali o 100 m³ płaci 10% czynszu — niezależnie od tego, ile stoi obok.
+   UWAGA: suma kosztów w tabeli NIE zejdzie się z fakturą, bo pusta część hali nie
+   obciąża żadnego produktu. Ta reszta jest raportowana jako `empty_cost_pln`.
+   Bez ustawionej pojemności nie ma mianownika — firma trafia wtedy do
+   `missing_capacity_firms` i koszty dla niej są zerowe.
    SKU bez `cbm_per_unit` dostaje koszt None, NIE zero — zero robiłoby z niego
    najbardziej rentowną pozycję w zestawieniu.
 
@@ -111,14 +114,19 @@ async def _load_costs(db: AsyncSession) -> Dict[str, dict]:
     return out
 
 
+# Te same domyślne pojemności, co w module zajętości (routers/reports.py) — żeby
+# oba raporty mówiły o tej samej hali, gdy w bazie nic nie ustawiono.
+DEFAULT_CAPS = {"amh": 800.0, "acti": 600.0, "veluxa": 200.0}
+
+
 async def _load_caps(db: AsyncSession) -> Dict[str, float]:
-    """Pojemność hal — potrzebna wyłącznie do wyliczenia kosztu pustej przestrzeni."""
-    out: Dict[str, float] = {}
+    """Pojemność hal — MIANOWNIK alokacji kosztu. Bez niej nie ma jak liczyć."""
+    out: Dict[str, float] = dict(DEFAULT_CAPS)
     try:
         r = await db.execute(text("SELECT LOWER(firma_slug) AS slug, capacity_m3 FROM app_warehouse_capacity"))
-        for m in r.mappings():
-            if m["slug"]:
-                out[m["slug"]] = float(m["capacity_m3"] or 0)
+        found = {m["slug"]: float(m["capacity_m3"] or 0) for m in r.mappings() if m["slug"]}
+        if found:
+            out.update(found)
     except Exception:
         pass
     return out
@@ -146,7 +154,8 @@ async def _load_econ_config(db: AsyncSession) -> dict:
 
 # ── silnik ───────────────────────────────────────────────────
 
-async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int] = None) -> dict:
+async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int] = None,
+                     watched_only: bool = True) -> dict:
     scope = (scope or "all").strip().lower()
     mode = mode if mode in ("runrate", "ytd") else "runrate"
     today = date.today()
@@ -167,13 +176,16 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
     cfg = await _load_econ_config(db)
     excluded = set(cfg["excluded_skus"])
 
-    # ── kubatura + właściciel SKU ────────────────────────────
+    # ── kubatura, właściciel SKU i etykiety (obserwowane / sample) ──
     cbm_by_sku: Dict[str, float] = {}
     firma_of: Dict[str, str] = {}
+    watched: set = set()
     r = await db.execute(text(f"""
         SELECT UPPER(TRIM(a.sku)) AS sku,
                COALESCE(a.cbm_per_unit, 0) AS cbm,
-               LOWER(COALESCE(f.slug, 'amh')) AS slug
+               LOWER(COALESCE(f.slug, 'amh')) AS slug,
+               COALESCE(a.is_favorite, FALSE) AS fav,
+               COALESCE(a.is_sample, FALSE) AS smp
         FROM {settings.TABLE_PRODUCT_ATTRS} a
         LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = a.firma_id
         WHERE a.sku IS NOT NULL AND TRIM(a.sku) <> ''
@@ -181,6 +193,8 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
     for m in r.mappings():
         cbm_by_sku[m["sku"]] = float(m["cbm"] or 0)
         firma_of[m["sku"]] = m["slug"] or "amh"
+        if m["fav"] or m["smp"]:
+            watched.add(m["sku"])
 
     # ── nazwy i ceny zakupu — wspólne źródła dla całego systemu ──
     names: Dict[str, str] = {}
@@ -289,6 +303,8 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
         })
 
     # ── stawka za m³ per firma ───────────────────────────────
+    # Mianownikiem jest POJEMNOŚĆ hali, nie zajęta objętość: produkt płaci za swój
+    # udział w całym magazynie. Pusta przestrzeń nie podnosi kosztu pozostałym SKU.
     occupied: Dict[str, float] = {}
     for (key, firma), c in acc.items():
         cbm = cbm_by_sku.get(key, 0.0)
@@ -296,14 +312,22 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             occupied[firma] = occupied.get(firma, 0.0) + cbm * c["stock_qty"]
 
     rate: Dict[str, float] = {}
-    for firma, occ in occupied.items():
+    for firma in set(list(occupied.keys()) + list(costs.keys()) + list(caps.keys())):
         monthly = costs.get(firma, {}).get("monthly_cost_pln", 0.0)
-        rate[firma] = (monthly / occ) if occ > 0 else 0.0
+        cap = caps.get(firma, 0.0)
+        rate[firma] = (monthly / cap) if cap > 0 else 0.0
 
     # ── wiersze ──────────────────────────────────────────────
+    # Filtr obserwowanych/sample działa DOPIERO tutaj — stawka za m³ wyżej została
+    # policzona z całej hali. Dzielenie czynszu wyłącznie przez objętość wybranych
+    # pozycji zawyżyłoby koszt miejsca kilkukrotnie.
     rows: List[dict] = []
+    hidden = 0
     for (key, firma), c in acc.items():
         if scope != "all" and firma != scope:
+            continue
+        if watched_only and key not in watched:
+            hidden += 1
             continue
 
         s = sales.get(key, {"qty": 0, "net_pln": 0.0, "first_sale": None, "last_sale": None})
@@ -364,8 +388,8 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             "stock_qty": c["stock_qty"],
             "cbm_per_unit": round(cbm, 4) if not no_cbm else None,
             "stock_m3": stock_m3,
-            "share_pct": (round(100.0 * stock_m3 / occupied[firma], 2)
-                          if stock_m3 and occupied.get(firma) else None),
+            "share_pct": (round(100.0 * stock_m3 / caps[firma], 2)
+                          if stock_m3 and caps.get(firma) else None),
             "qty_sold": qty_sold,
             "revenue_pln": revenue,
             "unit_cost_pln": round(unit_cost, 2),
@@ -397,10 +421,10 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
         occ = occupied.get(firma, 0.0)
         cap = caps.get(firma, 0.0)
         monthly = costs.get(firma, {}).get("monthly_cost_pln", 0.0)
-        # Koszt pustej przestrzeni liczony inną stawką (czynsz/pojemność) — pokazuje,
-        # ile płacisz za powietrze. Nie miesza się z alokacją na produkty.
+        # Reszta czynszu, której nie pokrył żaden produkt — dokładnie ta sama stawka
+        # co w alokacji, więc suma kosztów SKU + puste = pełny czynsz.
         empty_m3 = max(0.0, cap - occ)
-        empty_cost = round(empty_m3 * (monthly / cap), 2) if cap > 0 else None
+        empty_cost = round(empty_m3 * rate.get(firma, 0.0), 2) if cap > 0 else None
         summary.append({
             "firma_slug": firma, "label": FIRMA_LABELS.get(firma, firma.upper()),
             "monthly_cost_pln": round(monthly, 2),
@@ -410,6 +434,7 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             "empty_cost_pln": empty_cost,
             "rate_pln_per_m3": round(rate.get(firma, 0.0), 2),
             "cost_configured": monthly > 0,
+            "capacity_configured": cap > 0,
         })
 
     no_cbm_rows = [r for r in rows if r["no_cbm"]]
@@ -426,6 +451,9 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             "no_cbm_units": sum(r["stock_qty"] for r in no_cbm_rows),
             "excluded_skus": sorted(excluded),
             "missing_cost_firms": [s["firma_slug"] for s in summary if not s["cost_configured"]],
+            "missing_capacity_firms": [s["firma_slug"] for s in summary if not s["capacity_configured"]],
+            "watched_only": watched_only,
+            "hidden_count": hidden,
         },
     }
 
@@ -435,10 +463,15 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
 @router.get("/reports/warehouse-cost")
 async def warehouse_cost(
     scope: str = Query("all"), mode: str = Query("runrate"), year: Optional[int] = Query(None),
+    watched: bool = Query(True),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_economics),
 ):
-    """Koszt magazynowania per SKU — czynsz rozłożony po zajętej objętości."""
-    data = await _economics(db, resolve_scope(scope, user), mode, year)
+    """Koszt magazynowania per SKU — czynsz rozłożony po zajętej objętości.
+
+    `watched=true` (domyślnie) ogranicza tabelę do SKU obserwowanych i oznaczonych
+    jako SAMPLE. Stawka za m³ nie zależy od tego filtra — wynika z pojemności hali.
+    """
+    data = await _economics(db, resolve_scope(scope, user), mode, year, watched)
     data["rows"].sort(key=lambda r: (r["warehouse_cost_pln"] is None, -(r["warehouse_cost_pln"] or 0)))
     return data
 
@@ -446,10 +479,11 @@ async def warehouse_cost(
 @router.get("/reports/sku-exclusion")
 async def sku_exclusion(
     scope: str = Query("all"), mode: str = Query("runrate"), year: Optional[int] = Query(None),
+    watched: bool = Query(True),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_economics),
 ):
     """SKU do wykluczenia — wynik po koszcie zakupu i koszcie miejsca."""
-    data = await _economics(db, resolve_scope(scope, user), mode, year)
+    data = await _economics(db, resolve_scope(scope, user), mode, year, watched)
     # Najgorsze na górze; pozycje bez werdyktu na koniec, żeby nie zaśmiecały czoła listy.
     order = {"exclude": 0, "watch": 1, "stockout": 2, "new": 3, "keep": 4, "unknown": 5}
     data["rows"].sort(key=lambda r: (order.get(r["verdict"], 9), r["result_pln"] if r["result_pln"] is not None else 0))
