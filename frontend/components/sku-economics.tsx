@@ -96,7 +96,7 @@ function useEconomics(endpoint: string, scope: string) {
     setLoading(true);
     api.get(`${endpoint}?scope=${encodeURIComponent(scope)}&mode=runrate`)
       .then((d: EconData) => setData(d))
-      .catch((e: unknown) => toast.error(e instanceof Error ? e.message : "Nie udało się wczytać raportu"))
+      .catch((e: unknown) => toast(e instanceof Error ? e.message : "Nie udało się wczytać raportu", "error"))
       .finally(() => setLoading(false));
   }, [endpoint, scope]);
 
@@ -118,7 +118,7 @@ function ConfigPanel({ onSaved, showThreshold }: { onSaved: () => void; showThre
         setCosts(d.costs || []);
         setThreshold(String(d.profit_threshold_pln ?? ""));
       })
-      .catch(() => toast.error("Nie udało się wczytać ustawień"));
+      .catch(() => toast("Nie udało się wczytać ustawień", "error"));
   }, [open]);
 
   const save = () => {
@@ -128,8 +128,8 @@ function ConfigPanel({ onSaved, showThreshold }: { onSaved: () => void; showThre
     };
     if (showThreshold && threshold !== "") body.profit_threshold_pln = Number(threshold) || 0;
     api.put("/reports/economics/config", body)
-      .then(() => { toast.success("Zapisano"); setOpen(false); onSaved(); })
-      .catch((e: unknown) => toast.error(e instanceof Error ? e.message : "Nie udało się zapisać"))
+      .then(() => { toast("Zapisano", "ok"); setOpen(false); onSaved(); })
+      .catch((e: unknown) => toast(e instanceof Error ? e.message : "Nie udało się zapisać", "error"))
       .finally(() => setSaving(false));
   };
 
