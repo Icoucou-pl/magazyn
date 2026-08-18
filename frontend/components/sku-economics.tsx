@@ -33,6 +33,7 @@ type EconRow = {
   stock_qty: number; cbm_per_unit: number | null; stock_m3: number | null; share_pct: number | null;
   qty_sold: number; revenue_pln: number; unit_cost_pln: number; cogs_pln: number;
   gross_margin_pln: number; gross_margin_pct: number | null; profit_base_pln: number;
+  warehouse_cost_unit_monthly_pln: number | null;
   warehouse_cost_monthly_pln: number | null; warehouse_cost_pln: number | null;
   warehouse_cost_share_pct: number | null; result_pln: number | null;
   stock_value_pln: number; months_of_stock: number | null;
@@ -326,6 +327,7 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
                 <th style={thR}>CBM/szt.</th>
                 <th style={thR}>Zajmuje</th>
                 <th style={thR}>Udział hali</th>
+                <th style={thR}>Koszt szt./mies.</th>
                 <th style={thR}>Koszt / mies.</th>
                 <th style={thR}>Koszt / rok</th>
                 <th style={thR}>% marży</th>
@@ -343,6 +345,7 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
                   <td style={tdR} className="num">{r.cbm_per_unit == null ? "—" : r.cbm_per_unit.toFixed(3).replace(".", ",")}</td>
                   <td style={tdR} className="num">{m3(r.stock_m3)}</td>
                   <td style={tdR} className="num">{pc(r.share_pct)}</td>
+                  <td style={{ ...tdR, color: "var(--text-mid)" }} className="num">{pln(r.warehouse_cost_unit_monthly_pln)}</td>
                   <td style={tdR} className="num">{pln(r.warehouse_cost_monthly_pln)}</td>
                   <td style={{ ...tdR, fontWeight: 650 }} className="num">{pln(r.warehouse_cost_pln)}</td>
                   <td style={{ ...tdR, color: (r.warehouse_cost_share_pct ?? 0) > 50 ? "var(--critical)" : "var(--text-lo)" }} className="num">
@@ -351,7 +354,7 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={9} style={{ ...td, textAlign: "center", color: "var(--text-lo)", padding: 30 }}>Brak pozycji</td></tr>
+                <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: "var(--text-lo)", padding: 30 }}>Brak pozycji</td></tr>
               )}
             </tbody>
           </table>
