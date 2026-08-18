@@ -355,7 +355,12 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             warehouse_cost = None if monthly_cost is None else round(monthly_cost * months_elapsed, 2)
             profit_base = gross
 
-        result = None if warehouse_cost is None else round(profit_base - warehouse_cost, 2)
+        # Bez kubatury nie znamy kosztu miejsca, ale wynik i tak liczymy — po prostu
+        # nic nie odejmujemy. Taka liczba jest ZAWYŻONA (górna granica): jeśli mimo to
+        # wypada poniżej progu, werdykt „wyklucz" jest pewny, bo koszt magazynu mógłby
+        # go już tylko pogorszyć. Jeśli wypada powyżej — nie wiadomo, stąd `cost_included`.
+        cost_included = warehouse_cost is not None
+        result = round(profit_base - (warehouse_cost or 0.0), 2)
 
         # historia sprzedaży w miesiącach
         first = s["first_sale"]
@@ -368,22 +373,21 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
 
         # ── werdykt ──
         # Kolejność ma znaczenie: powody „nie oceniam" biją werdykt liczbowy.
-        if no_cbm:
-            verdict, reason = "unknown", "Brak kubatury — koszt miejsca nieznany"
-        elif history_months is not None and history_months < cfg["min_history_months"]:
+        if history_months is not None and history_months < cfg["min_history_months"]:
             verdict, reason = "new", f"Za krótka historia ({history_months} mies.)"
         elif qty_sold == 0 and c["stock_qty"] > 0 and not first:
             verdict, reason = "new", "Brak sprzedaży w historii"
         elif stockout_pct is not None and stockout_pct > cfg["stockout_tolerance_pct"]:
             verdict, reason = "stockout", f"Brak towaru przez {stockout_pct}% dni"
-        elif result is None:
-            verdict, reason = "unknown", "Niepełne dane"
         elif result < cfg["profit_threshold_pln"]:
             verdict, reason = "exclude", "Poniżej progu rentowności"
         elif result < cfg["profit_threshold_pln"] * WATCH_MULTIPLIER:
             verdict, reason = "watch", "Blisko progu"
         else:
             verdict, reason = "keep", "Zarabia"
+
+        if not cost_included and verdict in ("exclude", "watch", "keep"):
+            reason += " — bez kosztu magazynu (brak CBM), wynik zawyżony"
 
         rows.append({
             "sku": c["sku"], "nazwa": names.get(key) or c["nazwa"] or "",
@@ -406,6 +410,7 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             "warehouse_cost_share_pct": (round(100.0 * warehouse_cost / profit_base, 1)
                                          if warehouse_cost and profit_base > 0 else None),
             "result_pln": result,
+            "cost_included": cost_included,
             "stock_value_pln": round(c["stock_qty"] * unit_cost, 2),
             "months_of_stock": (round(c["stock_qty"] / (qty_sold / months_elapsed), 1)
                                 if qty_sold > 0 else None),
@@ -470,7 +475,7 @@ async def warehouse_cost(
     watched: bool = Query(True),
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_economics),
 ):
-    """Koszt magazynowania per SKU — czynsz rozłożony po zajętej objętości.
+    """Koszt magazynowania per SKU — udział w pojemności hali × czynsz.
 
     `watched=true` (domyślnie) ogranicza tabelę do SKU obserwowanych i oznaczonych
     jako SAMPLE. Stawka za m³ nie zależy od tego filtra — wynika z pojemności hali.
