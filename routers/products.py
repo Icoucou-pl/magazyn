@@ -16,7 +16,7 @@ from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
     StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate,
 )
-from security import get_current_user, has_perm, require_perm
+from security import get_current_user, has_perm, require_perm, resolve_shop
 from services.products import fetch_products, get_product
 
 router = APIRouter(prefix="/api", tags=["products"])
@@ -38,6 +38,8 @@ def _mask_financials(products, user):
 @router.get("/products", response_model=List[ProductSummary])
 async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     # shop="" = wszystkie sklepy (suma); "amh"/"acti"/"veluxa" = sprzedaż i stan tylko danego sklepu (Faza 3).
+    # resolve_shop: dla usera z company_scope "" NIE znaczy „wszystkie" — klamruje do jego firmy.
+    shop = resolve_shop(shop, user)
     allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
     return _mask_financials(await fetch_products(db, allowed, shop), user)
 
@@ -234,14 +236,14 @@ async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_
 
 
 @router.get("/products/export/csv")
-async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_only: bool = Query(False), shop: str = Query(""), db: AsyncSession = Depends(get_db)):
+async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_only: bool = Query(False), shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Eksport produktów do Excela (XLSX) - polskie znaki zawsze działają.
     shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = liczby danego sklepu (zgodnie z wybraną zakładką)."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
     allowed = set(s.strip().upper() for s in include.split(",") if s.strip())
-    products = await fetch_products(db, allowed, shop)
+    products = await fetch_products(db, allowed, resolve_shop(shop, user))
 
     if favorites_only:
         products = [p for p in products if p.is_favorite]
@@ -342,6 +344,7 @@ async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db), user: 
 
 @router.get("/favorites", response_model=List[ProductSummary])
 async def list_favorites(shop: str = "", db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    shop = resolve_shop(shop, user)
     """Zwraca tylko ulubione produkty."""
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
     return _mask_financials([p for p in products if p.is_favorite], user)
@@ -362,7 +365,7 @@ async def top_sellers(
     Model wyjsciowy nie zawiera zadnych pol finansowych, wiec endpoint jest dostepny
     dla kazdego zalogowanego uzytkownika (bez viewFinancials) i nie wymaga maskowania.
     """
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, shop)
+    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"}, resolve_shop(shop, user))
     if favorites_only:
         products = [p for p in products if p.is_favorite]
     ranked = sorted(

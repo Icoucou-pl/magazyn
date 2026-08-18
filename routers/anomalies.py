@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
-from models import Anomaly, ShoppingListGroup
+from models import Anomaly, CurrentUser, ShoppingListGroup
+from security import get_current_user, resolve_shop
 from services.products import fetch_products
 
 router = APIRouter(prefix="/api", tags=["anomalies"])
@@ -230,7 +231,8 @@ async def _detect_wbite_shortfall(db: AsyncSession, shop: str = "") -> List[Anom
 
 
 @router.get("/anomalies", response_model=List[Anomaly])
-async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
+async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db),
+                           user: CurrentUser = Depends(get_current_user)):
     """
     Wykrywanie anomalii - rozsądna czułość:
     - sales_spike: 1m > 1.5x średniej z poprzednich 3m, ALE 1m >= 5 (żeby nie spam dla małych)
@@ -240,6 +242,7 @@ async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: Asy
     favorites_only=True → tylko obserwowane SKU (is_favorite). Dashboard woła z True,
     żeby anomalie nie krzyczały o produktach, których już nie sprzedajemy.
     """
+    shop = resolve_shop(shop, user)
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     if favorites_only:
         products = [p for p in products if p.is_favorite]
@@ -290,12 +293,14 @@ async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: Asy
 
 
 @router.get("/shopping-list", response_model=List[ShoppingListGroup])
-async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
+async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db),
+                        user: CurrentUser = Depends(get_current_user)):
     """Grupy produktów do zamówienia per producent.
 
     favorites_only=True → tylko obserwowane SKU (is_favorite). Zasila boxy „Pożary"
     i „Lista zakupów" na Dashboardzie, gdzie chcemy widzieć wyłącznie to, co sprzedajemy.
     """
+    shop = resolve_shop(shop, user)
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     if favorites_only:
         products = [p for p in products if p.is_favorite]

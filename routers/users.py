@@ -15,14 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
-from security import hash_password, validate_password_strength, require_admin
+from security import (hash_password, validate_password_strength, require_admin,
+                      parse_company_scope, serialize_company_scope)
 from models import CurrentUser, UserCreate, UserUpdate, UserOut, AdminPasswordReset
 from audit import log_audit
 
 router = APIRouter(prefix="/api", tags=["users"])
 
 # Kolumny wspólne dla odczytu użytkownika
-USER_COLS = "id, email, full_name, role, is_active, created_at, last_login, updated_at, permissions, show_onboarding"
+USER_COLS = "id, email, full_name, role, is_active, created_at, last_login, updated_at, permissions, company_scope, show_onboarding"
 
 
 def _super_email() -> str:
@@ -51,7 +52,8 @@ def _row_to_user_out(m: dict, reveal_super: bool = False) -> UserOut:
         last_login=m.get("last_login") if reveal_super else None,
         updated_at=m.get("updated_at") if reveal_super else None,
         last_activity=m.get("last_activity") if reveal_super else None,
-        perms=perms, show_onboarding=bool(m.get("show_onboarding")),
+        perms=perms, company_scope=parse_company_scope(m.get("company_scope")),
+        show_onboarding=bool(m.get("show_onboarding")),
         is_super_admin=bool(reveal_super and _is_super(m["email"])),
     )
 
@@ -136,6 +138,10 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
         raise HTTPException(400, "Nie możesz odebrać sobie roli admina!")
     if uid == admin.id and payload.is_active is False:
         raise HTTPException(400, "Nie możesz deaktywować własnego konta!")
+    # Zakres firmowy obcina też panel admina — admin, który zawęzi sam siebie, straciłby
+    # widok pozostałych firm i nie miałby jak tego cofnąć z UI.
+    if uid == admin.id and payload.company_scope:
+        raise HTTPException(400, "Nie możesz ograniczyć własnego konta do jednej firmy!")
 
     # Reguły dostępu (super-admin / konta ADMIN)
     await _guard_target(db, uid, admin)
@@ -160,6 +166,10 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     if payload.show_onboarding is not None:
         updates.append("show_onboarding = :onb")
         params["onb"] = payload.show_onboarding
+    if payload.company_scope is not None:
+        # pusta lista = wyczyść zakres → NULL = dostęp do wszystkich firm
+        updates.append("company_scope = :cscope")
+        params["cscope"] = serialize_company_scope(payload.company_scope)
 
     if updates:
         updates.append("updated_at = CURRENT_TIMESTAMP")

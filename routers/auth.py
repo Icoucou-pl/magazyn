@@ -12,7 +12,7 @@ from config import settings
 from database import get_db
 from security import (
     verify_password, hash_password, validate_password_strength,
-    create_jwt_token, get_current_user,
+    create_jwt_token, get_current_user, parse_company_scope,
 )
 from models import CurrentUser, LoginRequest, LoginResponse, UserOut, PasswordChange, SessionOut, OnboardingSet
 from audit import log_audit
@@ -41,7 +41,7 @@ def _client_ip(request: Request) -> str:
 async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Logowanie - zwraca JWT token + dane użytkownika."""
     r = await db.execute(
-        text(f"SELECT id, email, password_hash, full_name, role, is_active, created_at, last_login, permissions, show_onboarding FROM {settings.TABLE_USERS} WHERE LOWER(email) = LOWER(:email)"),
+        text(f"SELECT id, email, password_hash, full_name, role, is_active, created_at, last_login, permissions, company_scope, show_onboarding FROM {settings.TABLE_USERS} WHERE LOWER(email) = LOWER(:email)"),
         {"email": payload.email.strip()}
     )
     u = r.first()
@@ -73,7 +73,8 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     user_out = UserOut(
         id=u.id, email=u.email, full_name=u.full_name, role=u.role,
         is_active=u.is_active, created_at=u.created_at, last_login=datetime.now(),
-        perms=_parse_perms(u.permissions), show_onboarding=bool(u.show_onboarding),
+        perms=_parse_perms(u.permissions), company_scope=parse_company_scope(u.company_scope),
+        show_onboarding=bool(u.show_onboarding),
         is_super_admin=bool(settings.SUPER_ADMIN_EMAIL and u.email.lower() == settings.SUPER_ADMIN_EMAIL.strip().lower())
     )
 
@@ -87,7 +88,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
 async def get_me(user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Zwraca dane zalogowanego użytkownika."""
     r = await db.execute(
-        text(f"SELECT id, email, full_name, role, is_active, created_at, last_login, permissions, show_onboarding FROM {settings.TABLE_USERS} WHERE id = :id"),
+        text(f"SELECT id, email, full_name, role, is_active, created_at, last_login, permissions, company_scope, show_onboarding FROM {settings.TABLE_USERS} WHERE id = :id"),
         {"id": user.id}
     )
     u = r.first()
@@ -99,7 +100,9 @@ async def get_me(user: CurrentUser = Depends(get_current_user), db: AsyncSession
     return UserOut(
         id=data["id"], email=data["email"], full_name=data.get("full_name"), role=data["role"],
         is_active=data["is_active"], created_at=data["created_at"], last_login=data.get("last_login"),
-        perms=_parse_perms(data.get("permissions")), show_onboarding=bool(data.get("show_onboarding")),
+        perms=_parse_perms(data.get("permissions")),
+        company_scope=parse_company_scope(data.get("company_scope")),
+        show_onboarding=bool(data.get("show_onboarding")),
         is_super_admin=bool(super_email and data["email"].lower() == super_email),
     )
 

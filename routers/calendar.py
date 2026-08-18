@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from models import CurrentUser
-from security import get_current_user, require_view_financials, has_perm
+from security import get_current_user, require_view_financials, has_perm, resolve_shop
 from services.products import fetch_products
 from services.containers import fetch_containers
 
@@ -64,7 +64,8 @@ async def calendar_events(
     a gdy go brak — ETA + odprawa celna (CONTAINER_CUSTOMS_DAYS). Kontenery auto-domknięte
     po ETA+N (bez ręcznej daty) już fizycznie weszły do magazynu, więc nie zaśmiecają kalendarza.
     """
-    shop = (shop or "").strip().lower()
+    # Klamrowanie do zakresu firmowego usera — dla scoped usera "" nie znaczy „wszystkie".
+    shop = resolve_shop((shop or "").strip().lower(), user)
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, shop)
     containers = await fetch_containers(db)
 
@@ -336,6 +337,7 @@ async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bo
     Dashboard woła z True: KPI „Wartość magazynu" i wykres pokazują żywy, sprzedawany asortyment,
     a nie cały magazyn (price_map/stock_map budowane są z przefiltrowanej listy, więc reszta odpada sama).
     """
+    shop = resolve_shop(shop, user)
     # DEAD_STOCK też ma stan (i wartość!), więc wchodzi do wykresu — inaczej świeży import bez sprzedaży
     # (klasyfikowany jako DEAD_STOCK) byłby niewidoczny, a jego dostawa nigdy by się nie doliczyła.
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"}, shop)

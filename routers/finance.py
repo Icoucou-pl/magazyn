@@ -29,7 +29,7 @@ from models import (
     FinanceProduct, FinanceProductInfo, FinanceProductKpi, FinanceProductRotation,
     FinanceProductChannelRow, FinanceProductMonthly,
 )
-from security import require_view_financials
+from security import require_view_financials, resolve_shop
 
 router = APIRouter(prefix="/api", tags=["finance"])
 
@@ -328,6 +328,8 @@ async def finance_overview(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_view_financials),
 ):
+    # Zakres firmowy usera wygrywa nad parametrem z frontu (patrz security.resolve_shop).
+    shop = resolve_shop(shop, user)
     custom = _custom_period(from_date, to_date) if period == "custom" else None
     if custom is not None:
         period = "custom"
@@ -475,10 +477,12 @@ async def finance_product(
             period = "ytd"
         label, period_clause, date_from, date_to = _period(period)
 
-    # Normalizacja sklepu do zamkniętej whitelisty; nieznane → "" (wszystkie).
+    # Normalizacja sklepu do zamkniętej whitelisty; nieznane → "" (wszystkie),
+    # a następnie klamrowanie do zakresu firmowego usera (scoped user nie dostanie "").
     sklep = (shop or "").strip().lower()
     if sklep not in ALLOWED_SHOPS:
         sklep = ""
+    sklep = resolve_shop(sklep, user)
 
     # --- Info o produkcie: stan per-sklep (Subiekt AMH + Sellasist danego sklepu),
     #     LEFT JOIN po :symbol zamiast kotwicy na Subiekcie → działa dla produktów tylko-Sellasist ---

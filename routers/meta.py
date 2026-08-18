@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
+from models import CurrentUser
+from security import get_current_user, resolve_shop
 from sql import SALES_QUERY
 from services.products import classify_product
 
@@ -43,12 +45,14 @@ async def transit_warehouse(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/classification")
-async def classification(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db)):
+async def classification(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db),
+                         user: CurrentUser = Depends(get_current_user)):
     """Zliczenie SKU wg statusu + wartość dead stocku.
 
     favorites_only=True → liczymy tylko obserwowane SKU (is_favorite). Dashboard woła z True,
     więc KPI „Aktywne SKU" i „Dead stock" dotyczą wyłącznie sprzedawanego asortymentu.
     """
+    shop = resolve_shop(shop, user)
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0, "SAMPLE": 0}
     dead_stock_value = 0.0

@@ -20,7 +20,7 @@ from config import settings, INCLUDED_STATUS_FILTER
 from sql import PRODUCT_NAMES_QUERY
 from database import get_db
 from models import CurrentUser
-from security import get_current_user, has_perm
+from security import get_current_user, has_perm, resolve_scope
 from services.containers import fetch_containers
 from services.snapshots import store_snapshot, build_kpi_rows, build_stock_rows, SLOTS
 from audit import log_audit
@@ -102,6 +102,8 @@ async def kpi_range(
     group="month" → jeden wiersz na miesiąc (ostatni snapshot miesiąca)
     slot="rano"/"wieczor" → wymusza konkretną porę zamiast „ostatniej z dnia".
     """
+    # Zakres firmowy usera wygrywa nad parametrem z frontu — scoped user nie dostanie "all".
+    scope = resolve_scope(scope, user)
     a, b = _range(date_from, date_to)
     params = {"f": scope, "a": a, "b": b}
     slot_where = ""
@@ -238,6 +240,7 @@ async def sku_report(
     Zakres dat   → początek vs koniec + zmiana (tryb „b”), jeden wiersz na SKU.
     Filtry: tylko ulubione oraz ręczna lista SKU (przecinkami).
     """
+    scope = resolve_scope(scope, user)
     a, b = _range(date_from, date_to)
     is_range = b > a
 
@@ -364,14 +367,14 @@ async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str, scope: st
 @router.get("/reports/live/kpi")
 async def live_kpi(scope: str = Query("all"), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports)):
     """Zbiorczy stan NA TERAZ — liczony na żywo, nic nie zapisuje."""
-    return await _live_kpi(db, scope)
+    return await _live_kpi(db, resolve_scope(scope, user))
 
 
 @router.get("/reports/live/sku")
 async def live_sku(favorites_only: bool = Query(False), skus: str = Query(""), scope: str = Query("all"),
                    db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(_require_reports)):
     """Stany per SKU NA TERAZ — liczone na żywo, nic nie zapisuje."""
-    return await _live_sku(db, favorites_only, skus, scope)
+    return await _live_sku(db, favorites_only, skus, resolve_scope(scope, user))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -727,7 +730,7 @@ async def occupancy(
 
     `sales=false` wyłącza odejmowanie przewidywanego rozchodu (scenariusz „nic się nie sprzeda").
     """
-    return await _occ_compute(db, scope, horizon, include_sales=sales)
+    return await _occ_compute(db, resolve_scope(scope, user), horizon, include_sales=sales)
 
 
 @router.get("/reports/occupancy/config")
@@ -816,6 +819,7 @@ async def kpi_range_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
+    scope = resolve_scope(scope, user)
     data = (await _live_kpi(db, scope)) if live else (
         await kpi_range(date_from=date_from, date_to=date_to, scope=scope, group=group, slot=slot, db=db, user=user))
     chosen = [k.strip() for k in fields.split(",") if k.strip()] or [k for k, _ in KPI_FIELDS]
@@ -851,6 +855,7 @@ async def sku_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
+    scope = resolve_scope(scope, user)
     data = (await _live_sku(db, favorites_only, skus, scope)) if live else (await sku_report(date_from=date_from, date_to=date_to, favorites_only=favorites_only,
                             skus=skus, slot=slot, scope=scope, db=db, user=user))
     rng = data["is_range"]
