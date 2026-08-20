@@ -322,6 +322,7 @@ class ContainerLotIn(BaseModel):
 
 class ContainerCreate(BaseModel):
     container_number: Optional[str] = None   # puste = backend nada Draft-<Producent> (nr znamy po produkcji)
+    carrier: Optional[str] = None            # armator (MSC/CMA/…) — źródło linku do śledzenia
     order_number: Optional[str] = None
     container_type_id: Optional[int] = None
     manufacturer_id: Optional[int] = None
@@ -355,6 +356,7 @@ class ContainerCreate(BaseModel):
 
 class ContainerUpdate(BaseModel):
     container_number: Optional[str] = None
+    carrier: Optional[str] = None
     order_number: Optional[str] = None
     container_type_id: Optional[int] = None
     manufacturer_id: Optional[int] = None
@@ -456,6 +458,7 @@ class ContainerFirmaShare(BaseModel):
 class ContainerOut(BaseModel):
     id: int
     container_number: str
+    carrier: Optional[str] = None
     order_number: Optional[str] = None
     container_type_id: Optional[int]
     container_type_name: Optional[str]
