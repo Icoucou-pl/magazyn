@@ -38,6 +38,19 @@ const warehouseDate = (c: Container): Date | null => {
 };
 const ymKey = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
+// Udział firmy w kontenerze. Kontener nie ma własnej firmy — wynika ona z właścicieli SKU
+// (firma_breakdown liczone przez backend), więc przy zawężeniu do sklepu KPI i sumy miesięczne
+// mają brać TYLKO jego część, a nie całą wartość/ilość kontenera skonsolidowanego.
+// shop = "" (Wszyscy) → całość kontenera. Fallback na sumę lotów, gdyby breakdown kontenera
+// nie dojechał (stary backend / kontener bez pozycji w katalogu).
+const shareOf = (c: Container, shop: string, key: "units" | "value"): number => {
+  const whole = (key === "units" ? c.total_units : c.total_value) || 0;
+  if (!shop) return whole;
+  const direct = c.firma_breakdown?.[shop]?.[key];
+  if (direct != null) return direct;
+  return (c.lots ?? []).reduce((s, l) => s + (l.firma_breakdown?.[shop]?.[key] ?? 0), 0);
+};
+
 type MonthBucket = {
   key: string; label: string; sort: number; isCurrent: boolean;
   containers: Container[]; totalValue: number; totalUnits: number; statusCounts: Record<string, number>;
@@ -117,35 +130,39 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
 
   // Kontener nie ma własnej firmy — wynika ona z właścicieli SKU (firma_breakdown),
   // a przy skonsolidowanym siedzi na lotach. Producent analogicznie: na kontenerze
-  // albo na locie. Zawężamy PRZED liczeniem statusów, żeby liczby na chipach
-  // odpowiadały temu, co faktycznie widać na liście.
+  // albo na locie. Zawężamy PRZED liczeniem statusów i KPI, żeby liczby na kaflach
+  // i chipach odpowiadały temu, co faktycznie widać na liście.
+  //
+  // Krok 1 — zawężenie po firmie. Wydzielone osobno, bo to jest podstawa dla KPI,
+  // listy producentów i licznika „X z Y": producent to filtr wewnątrz firmy, nie odwrotnie.
+  const shopScoped = useMemo(() => {
+    if (!shop) return containers;
+    return containers.filter((c) =>
+      (c.firma_breakdown?.[shop]?.units ?? 0) > 0 ||
+      (c.lots ?? []).some((l) => (l.firma_breakdown?.[shop]?.units ?? 0) > 0));
+  }, [containers, shop]);
+
+  // Krok 2 — dokładamy producenta.
   const scoped = useMemo(() => {
-    let arr = containers;
-    if (shop) {
-      arr = arr.filter((c) =>
-        (c.firma_breakdown?.[shop]?.units ?? 0) > 0 ||
-        (c.lots ?? []).some((l) => (l.firma_breakdown?.[shop]?.units ?? 0) > 0));
-    }
-    if (mfr) {
-      const id = Number(mfr);
-      arr = arr.filter((c) =>
-        c.manufacturer_id === id || (c.lots ?? []).some((l) => l.manufacturer_id === id));
-    }
-    return arr;
-  }, [containers, shop, mfr]);
+    if (!mfr) return shopScoped;
+    const id = Number(mfr);
+    return shopScoped.filter((c) =>
+      c.manufacturer_id === id || (c.lots ?? []).some((l) => l.manufacturer_id === id));
+  }, [shopScoped, mfr]);
 
   // Producenci obecni w bieżącym zakresie firmy — lista nie puchnie o nieużywanych.
+  // Baza to shopScoped, a NIE scoped: inaczej po wybraniu producenta lista opcji
+  // zwijała się do tego jednego i nie dało się przełączyć na innego.
   const mfrOptions = useMemo(() => {
     const seen = new Map<number, string>();
-    const base = shop ? scoped : containers;
-    for (const c of base) {
+    for (const c of shopScoped) {
       if (c.manufacturer_id && c.manufacturer_name) seen.set(c.manufacturer_id, c.manufacturer_name);
       for (const l of c.lots ?? []) {
         if (l.manufacturer_id && l.manufacturer_name) seen.set(l.manufacturer_id, l.manufacturer_name);
       }
     }
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-  }, [containers, scoped, shop]);
+  }, [shopScoped]);
 
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: scoped.length };
@@ -190,8 +207,10 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
         map.set(key, g);
       }
       g.containers.push(c);
-      g.totalValue += c.total_value || 0;
-      g.totalUnits += c.total_units || 0;
+      // Te same zasady co w KPI — inaczej suma miesiąca nie zgadzałaby się z kaflem
+      // „Wartość zamówiona" przy zawężeniu do Acti/Veluxa.
+      g.totalValue += shareOf(c, shop, "value");
+      g.totalUnits += shareOf(c, shop, "units");
       const s = eff(c);
       g.statusCounts[s] = (g.statusCounts[s] || 0) + 1;
     }
@@ -200,7 +219,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
       ((warehouseDate(a)?.getTime() ?? 0) - (warehouseDate(b)?.getTime() ?? 0)) ||
       (new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime())));
     return arr;
-  }, [filtered]);
+  }, [filtered, shop]);
   const monthKeys = useMemo(() => grouped.map((g) => g.key), [grouped]);
 
   // Podczas szukania auto-rozwijamy miesiące z trafieniami (inaczej wynik chowałby się
@@ -215,8 +234,13 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     if (monthKeys.includes(nowKey)) setOpenMonths(new Set([nowKey]));
   }, [grouped, monthKeys]);
 
+  // KPI liczone na `scoped`, czyli dokładnie na tym, co widać na liście (firma + producent).
+  // Wcześniej szły z `containers` — surowej odpowiedzi backendu — więc na zakładce Acti/Veluxa
+  // pokazywały sumy wszystkich firm (40 aktywnych przy 49 widocznych kontenerach z 79).
+  // Filtr statusu i szukajka celowo NIE wchodzą: KPI to obraz całego zakresu firmy,
+  // a nie tego, co akurat zostało po kliknięciu chipa.
   const summary = useMemo(() => {
-    const inFlight = containers.filter((c) => eff(c) !== "DELIVERED");
+    const inFlight = scoped.filter((c) => eff(c) !== "DELIVERED");
 
     // Granice tygodnia (pn–nd) i miesiąca — w czasie lokalnym.
     const now = new Date();
@@ -239,14 +263,15 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
 
     return {
       inFlight: inFlight.length,
-      inFlightValue: inFlight.reduce((s, c) => s + c.total_value, 0),
-      totalUnits: inFlight.reduce((s, c) => s + c.total_units, 0),
-      thisWeek: containers.filter((c) => inRange(c.eta_date, weekStart, weekEnd)).length,
-      thisMonth: containers.filter((c) => inRange(c.eta_date, monthStart, monthEnd)).length,
+      // Kontener skonsolidowany wiezie towar kilku firm — przy zawężeniu bierzemy sam udział sklepu.
+      inFlightValue: inFlight.reduce((s, c) => s + shareOf(c, shop, "value"), 0),
+      totalUnits: inFlight.reduce((s, c) => s + shareOf(c, shop, "units"), 0),
+      thisWeek: scoped.filter((c) => inRange(c.eta_date, weekStart, weekEnd)).length,
+      thisMonth: scoped.filter((c) => inRange(c.eta_date, monthStart, monthEnd)).length,
       nextDays: next ? next.days : null,
       nextNumber: next ? next.c.container_number : null,
     };
-  }, [containers]);
+  }, [scoped, shop]);
 
   const toggleExpand = (id: number) => setExpandedIds((prev) => {
     const n = new Set(prev);
@@ -343,7 +368,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
           }}>Wyczyść</button>
         )}
         <span style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
-          {filtered.length} z {containers.length} kontenerów
+          {filtered.length} z {shopScoped.length} kontenerów
         </span>
       </div>
 
@@ -352,7 +377,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
         filter={filter} setFilter={setFilter} counts={counts}
         onAutoSuggest={() => openAutoSuggest(null)}
         onNew={openNew}
-        rows={containers}
+        rows={scoped}
       />
 
       {grouped.length === 0 ? (
