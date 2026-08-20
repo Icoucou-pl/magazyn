@@ -1,25 +1,29 @@
 // frontend/lib/tracking.ts
-// Generowanie linków do śledzenia kontenerów + walidacja numeru ISO 6346.
-// Etap 1 — bez API, bez zależności zewnętrznych.
+// Armatorzy + linki do śledzenia kontenerów, walidacja numeru ISO 6346.
+//
+// UWAGA: link generujemy wyłącznie dla armatorów o POTWIERDZONYM formacie URL
+// (MSC, CMA CGM). Reszta jest na liście do wyboru — służy jako informacja
+// w kartotece kontenera — ale przycisku „Śledź" nie dostaje, bo zgadnięty
+// adres prowadziłby do pustego wyniku. Kolejnych dokładamy dopiero po
+// zweryfikowaniu prawdziwego URL-a na żywym kontenerze.
 
-export type Carrier = "MSC" | "MAERSK" | "COSCO" | "CMA" | "HAPAG" | "ONE" | "EVERGREEN" | "OTHER";
+export type Carrier =
+  | "MSC" | "CMA" | "MAERSK" | "COSCO" | "HAPAG" | "ONE" | "EVERGREEN" | "OTHER";
 
-export const CARRIERS: { value: Carrier; label: string }[] = [
-  { value: "MSC", label: "MSC" },
-  { value: "MAERSK", label: "Maersk" },
-  { value: "COSCO", label: "COSCO" },
-  { value: "CMA", label: "CMA CGM" },
-  { value: "HAPAG", label: "Hapag-Lloyd" },
-  { value: "ONE", label: "ONE" },
-  { value: "EVERGREEN", label: "Evergreen" },
-  { value: "OTHER", label: "Inny / nieznany" },
+export const CARRIERS: { value: Carrier; label: string; tracked: boolean }[] = [
+  { value: "MSC",       label: "MSC",             tracked: true  },
+  { value: "CMA",       label: "CMA CGM",         tracked: true  },
+  { value: "MAERSK",    label: "Maersk",          tracked: false },
+  { value: "COSCO",     label: "COSCO",           tracked: false },
+  { value: "HAPAG",     label: "Hapag-Lloyd",     tracked: false },
+  { value: "ONE",       label: "ONE",             tracked: false },
+  { value: "EVERGREEN", label: "Evergreen",       tracked: false },
+  { value: "OTHER",     label: "Inny",            tracked: false },
 ];
-
-export const DEFAULT_CARRIER: Carrier = "MSC";
 
 /* ---------- walidacja ISO 6346 ---------- */
 
-// Wartości liter wg ISO 6346: A=10, pomijane są wielokrotności 11.
+// Wartości liter wg ISO 6346: A=10, wielokrotności 11 są pomijane.
 const LETTER_VALUES: Record<string, number> = (() => {
   const map: Record<string, number> = {};
   let v = 10;
@@ -31,87 +35,66 @@ const LETTER_VALUES: Record<string, number> = (() => {
   return map;
 })();
 
-export function normalizeContainerNo(raw: string): string {
+export function normalizeContainerNo(raw: string | null | undefined): string {
   return (raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 export function isDraftContainer(raw: string | null | undefined): boolean {
-  return /^draft-/i.test(raw || "");
+  return /^draft-/i.test((raw || "").trim());
 }
 
-/**
- * Waliduje numer kontenera w formacie ISO 6346 (4 litery + 6 cyfr + cyfra kontrolna).
- * Zwraca null gdy numer poprawny, albo komunikat o błędzie.
- */
-export function validateContainerNo(raw: string): string | null {
+/** Zwraca null gdy numer poprawny, albo komunikat o błędzie. Puste = brak błędu. */
+export function validateContainerNo(raw: string | null | undefined): string | null {
   const no = normalizeContainerNo(raw);
-  if (!no) return null; // puste pole nie jest błędem — walidujemy tylko wypełnione
-  if (!/^[A-Z]{4}\d{7}$/.test(no)) {
-    return "Numer powinien mieć 4 litery i 7 cyfr (np. UETU8695821).";
-  }
+  if (!no || isDraftContainer(raw)) return null;
+  if (!/^[A-Z]{4}\d{7}$/.test(no)) return "Format ISO: 4 litery + 7 cyfr (np. TCLU3204372).";
   let sum = 0;
   for (let i = 0; i < 10; i++) {
-    const ch = no[i];
-    const val = i < 4 ? LETTER_VALUES[ch] : Number(ch);
-    sum += val * Math.pow(2, i);
+    sum += (i < 4 ? LETTER_VALUES[no[i]] : Number(no[i])) * Math.pow(2, i);
   }
   const expected = sum % 11 === 10 ? 0 : sum % 11;
-  if (expected !== Number(no[10])) {
-    return `Błędna cyfra kontrolna — sprawdź numer (oczekiwano ${expected}).`;
-  }
+  if (expected !== Number(no[10])) return `Błędna cyfra kontrolna (oczekiwano ${expected}).`;
   return null;
 }
 
-export function isValidContainerNo(raw: string): boolean {
+export function isValidContainerNo(raw: string | null | undefined): boolean {
   const no = normalizeContainerNo(raw);
-  return !!no && validateContainerNo(no) === null;
+  return !!no && !isDraftContainer(raw) && validateContainerNo(no) === null;
 }
 
-/* ---------- generowanie linków ---------- */
+/* ---------- linki ---------- */
 
 function b64(input: string): string {
-  if (typeof window !== "undefined" && typeof window.btoa === "function") {
-    return window.btoa(input);
-  }
-  // fallback dla SSR / Node
+  if (typeof window !== "undefined" && typeof window.btoa === "function") return window.btoa(input);
   return Buffer.from(input, "utf-8").toString("base64");
 }
 
-/**
- * MSC koduje parametry wyszukiwania jako base64 w query paramie `params`.
- * trackingMode=0 → wyszukiwanie po numerze kontenera.
- */
-function mscUrl(containerNo: string): string {
-  const params = b64(`trackingNumber=${containerNo}&trackingMode=0`);
-  return `https://www.msc.com/en/track-a-shipment?params=${encodeURIComponent(params)}`;
-}
-
-const CARRIER_URLS: Record<Carrier, (no: string) => string> = {
-  MSC: mscUrl,
-  MAERSK: (no) => `https://www.maersk.com/tracking/${no}`,
-  COSCO: (no) => `https://elines.coscoshipping.com/ebusiness/cargoTracking?trackingType=CONTAINER&number=${no}`,
-  CMA: (no) => `https://www.cma-cgm.com/ebusiness/tracking/search?SearchBy=Container&Reference=${no}`,
-  HAPAG: (no) => `https://www.hapag-lloyd.com/en/online-business/track/track-by-container-solution.html?container=${no}`,
-  ONE: (no) => `https://ecomm.one-line.com/one-ecom/manage-shipment/cargo-tracking?trakNoParam=${no}`,
-  EVERGREEN: (no) => `https://www.shipmentlink.com/servlet/TDB1_CargoTracking.do?ctnr=${no}`,
-  OTHER: (no) => `https://www.track-trace.com/container?number=${no}`,
+// MSC koduje parametry wyszukiwania jako base64 w query paramie `params`;
+// trackingMode=0 → szukanie po numerze kontenera.
+const CARRIER_URLS: Partial<Record<Carrier, (no: string) => string>> = {
+  MSC: (no) => `https://www.msc.com/en/track-a-shipment?params=${encodeURIComponent(b64(`trackingNumber=${no}&trackingMode=0`))}`,
+  CMA: (no) => `https://www.cma-cgm.com/eBusiness/tracking/detail/${no}`,
 };
 
+/** true, gdy dla danego armatora umiemy zbudować działający link. */
+export function isTracked(carrier: string | null | undefined): boolean {
+  return !!carrier && !!CARRIER_URLS[carrier.toUpperCase() as Carrier];
+}
+
 /**
- * Zwraca link do śledzenia albo null, gdy numeru nie da się użyć
- * (pusty, draftowy lub niepoprawny formalnie).
+ * Link do śledzenia albo null, gdy: brak numeru / numer draftowy / numer
+ * niepoprawny / brak armatora / armator bez potwierdzonego formatu URL.
  */
 export function trackingUrl(
   containerNo: string | null | undefined,
-  carrier: Carrier | null | undefined = DEFAULT_CARRIER
+  carrier: string | null | undefined
 ): string | null {
-  if (!containerNo || isDraftContainer(containerNo)) return null;
-  const no = normalizeContainerNo(containerNo);
-  if (!/^[A-Z]{4}\d{7}$/.test(no)) return null;
-  const builder = CARRIER_URLS[(carrier || DEFAULT_CARRIER) as Carrier] || CARRIER_URLS.OTHER;
-  return builder(no);
+  if (!isValidContainerNo(containerNo)) return null;
+  const builder = CARRIER_URLS[(carrier || "").toUpperCase() as Carrier];
+  return builder ? builder(normalizeContainerNo(containerNo)) : null;
 }
 
-export function carrierLabel(carrier: Carrier | null | undefined): string {
-  return CARRIERS.find((c) => c.value === (carrier || DEFAULT_CARRIER))?.label || "—";
+export function carrierLabel(carrier: string | null | undefined): string {
+  if (!carrier) return "—";
+  return CARRIERS.find((c) => c.value === carrier.toUpperCase())?.label || carrier;
 }
