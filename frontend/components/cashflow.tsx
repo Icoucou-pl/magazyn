@@ -170,15 +170,36 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const missingCount = events.filter(e => e.brak_kursu).length;
   const showRefill = isAdmin(user) && missingCount > 0;
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
-  const yearOpts = useMemo<[string, string][]>(() => {
+
+  // Zakładka „Do zapłaty” — lata z ETA/terminu/daty + opcja „Wszystkie”.
+  const dueYearOpts = useMemo<[string, string][]>(() => {
     const ys = new Set<string>();
     events.forEach(e => { if (e.eta) ys.add(e.eta.slice(0, 4)); if (e.data) ys.add(e.data.slice(0, 4)); if (e.termin) ys.add(e.termin.slice(0, 4)); });
     return [["all", "Wszystkie"], ...[...ys].sort().map(y => [y, y] as [string, string])];
   }, [events]);
+
+  // Zakładka „Zapłacono” — tylko lata faktycznych płatności (bez „Wszystkie”,
+  // bez lat przyszłych, które pochodzą z ETA/terminów nieopłaconych kontenerów).
+  const paidYearOpts = useMemo<[string, string][]>(() => {
+    const ys = new Set<string>();
+    events.forEach(e => { if (e.status === "paid" && e.data) ys.add(e.data.slice(0, 4)); });
+    return [...ys].sort().map(y => [y, y] as [string, string]);
+  }, [events]);
+
+  const yearOpts = tab === "paid" ? paidYearOpts : dueYearOpts;
+
   useEffect(() => {
     if (loading) return;                     // dane jeszcze się ładują — nie kasuj domyślnego roku (2026)
-    if (year !== "all" && !yearOpts.some(([v]) => v === year)) setYear("all");
-  }, [loading, yearOpts, year]);
+    if (yearOpts.length === 0) return;
+    if (yearOpts.some(([v]) => v === year)) return;
+    if (tab === "paid") {
+      // Domyślnie bieżący rok, a jeśli brak płatności — ostatni dostępny.
+      const now = String(new Date().getFullYear());
+      setYear(yearOpts.some(([v]) => v === now) ? now : yearOpts[yearOpts.length - 1][0]);
+    } else {
+      setYear("all");
+    }
+  }, [loading, tab, yearOpts, year]);
 
   if (loading) {
     return <div className="fade-in" style={{ padding: 48, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>Ładowanie…</div>;
