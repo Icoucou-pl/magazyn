@@ -368,7 +368,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         WITH {PRODUCT_NAMES_CTE},
              {PRODUCT_PRICES_CTE}
         SELECT
-            c.id, c.container_number, c.order_number, c.container_type_id, c.manufacturer_id,
+            c.id, c.container_number, c.carrier, c.order_number, c.container_type_id, c.manufacturer_id,
             c.order_date, c.eta_date, c.status, c.notes, c.is_consolidated,
             c.koszt_transportu, c.koszt_spedycji, c.koszt_transportu_magazyn, c.folder, c.subiekt_nr,
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
@@ -409,6 +409,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             cap = float(row["container_capacity_cbm"]) if row["container_capacity_cbm"] else None
             containers_dict[cid] = {
                 "id": cid, "container_number": row["container_number"],
+                "carrier": row["carrier"],
                 "order_number": row["order_number"],
                 "container_type_id": row["container_type_id"],
                 "container_type_name": row["container_type_name"],
