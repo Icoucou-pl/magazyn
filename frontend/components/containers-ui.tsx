@@ -13,7 +13,7 @@ import { exportCsv, toast, type CsvColumn } from "./toast";
 import { download } from "@/lib/api";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
-import { trackingUrl } from "@/lib/tracking";
+import { trackingUrl, carrierLabel } from "@/lib/tracking";
 
 // ── Formatery walut/dat kontenerów (płatności per lot: USD/CNY) ──
 const CUR_SYM: Record<string, string> = { USD: "$", CNY: "¥", EUR: "€", PLN: "zł" };
@@ -70,6 +70,7 @@ export type Container = {
   id: number;
   firma_breakdown?: Record<string, FirmaShare>;
   container_number: string;
+  carrier?: string | null;
   order_number: string | null;
   container_type_id: number | null;
   container_type_name: string | null;
@@ -813,17 +814,19 @@ function ContainerCardBody({
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {/* Śledzenie kontenera u armatora (na razie na sztywno MSC).
-              Link generowany z numeru — ukryty dla draftów i numerów spoza ISO 6346. */}
+          {/* Śledzenie u armatora zapisanego na kontenerze. Przycisk pojawia się tylko,
+              gdy numer jest poprawny (ISO 6346) i znamy format URL danego armatora
+              — dziś MSC i CMA CGM. Reszta bez linku, żeby nie prowadzić w pustkę. */}
           {(() => {
-            const tUrl = trackingUrl(c.container_number);
+            const tUrl = trackingUrl(c.container_number, c.carrier);
             if (!tUrl) return null;
             return (
               <a
                 href={tUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                title={`Śledź ${c.container_number} na msc.com`}
+                data-carrier-link
+                title={`Śledź ${c.container_number} — ${carrierLabel(c.carrier)}`}
                 style={{ ...btnSecondary, color: "var(--info)", borderColor: "color-mix(in oklch, var(--info) 40%, var(--border))", textDecoration: "none" }}
               >
                 <I.Ship size={12} /> Śledź kontener

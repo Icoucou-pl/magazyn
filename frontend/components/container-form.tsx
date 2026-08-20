@@ -16,6 +16,7 @@ import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { computeContainerFill } from "./auto-suggest";
+import { CARRIERS, validateContainerNo, isValidContainerNo, isTracked, trackingUrl } from "@/lib/tracking";
 
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
@@ -101,6 +102,7 @@ export default function ContainerFormModal({
   (initial?.lots || []).forEach((l, i) => lotIdToIdx.set(l.id, i));
 
   const [containerNumber, setContainerNumber] = useState(/^draft-/i.test(initial?.container_number || "") ? "" : (initial?.container_number || ""));
+  const [carrier, setCarrier] = useState<string>(initial?.carrier || "");
   const [orderNumber, setOrderNumber] = useState(initial?.order_number || "");
   const [containerTypeId, setContainerTypeId] = useState<string>(initial?.container_type_id ? String(initial.container_type_id) : "");
   const [manufacturerId, setManufacturerId] = useState<string>(initial?.manufacturer_id ? String(initial.manufacturer_id) : "");
@@ -181,6 +183,13 @@ export default function ContainerFormModal({
   const [subiektNr, setSubiektNr] = useState(initial?.subiekt_nr || "");
   // Numer roboczy nadaje backend wewnętrznie, gdy pole zostanie puste — nie pokazujemy go użytkownikowi.
   const wasDraft = /^draft-/i.test(initial?.container_number || "");
+
+  // Walidacja numeru + stan ostrzeżenia o przewoźniku.
+  // Ostrzeżenie tylko informuje — nie blokuje zapisu (świadoma decyzja: kontener
+  // bywa zakładany zanim spedytor poda numer i armatora).
+  const nrError = validateContainerNo(containerNumber);
+  const carrierMissing = isValidContainerNo(containerNumber) && !carrier;
+  const trackUrl = trackingUrl(containerNumber, carrier);
 
   // Płatność kontenera nieskonsolidowanego (jeden dostawca).
   // walutaTowaru: waluta domyślna/pierwotna (seed) — nie edytowana w UI, wysyłana z powrotem bez zmian.
@@ -421,6 +430,7 @@ export default function ContainerFormModal({
 
     const payload = {
       container_number: containerNumber.trim() || null,
+      carrier: carrier || null,
       order_number: isConsolidated ? null : (orderNumber.trim() || null),
       container_type_id: containerTypeId ? Number(containerTypeId) : null,
       manufacturer_id: isConsolidated ? null : (manufacturerId ? Number(manufacturerId) : null),
@@ -557,15 +567,21 @@ export default function ContainerFormModal({
                 </span>
               </button>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                <Field label="Nr kontenera">
-                  <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder="np. MSKU1234567 — opcjonalne" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
-                  <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
-                    {containerNumber.trim()
-                      ? (wasDraft ? "Wpisanie numeru przestawi status na „W drodze”." : "Numer musi być unikalny.")
-                      : "Nie znasz jeszcze numeru? Możesz zostawić puste."}
-                  </span>
-                </Field>
+              {/* Układ 3 x 3 (kolejność ustalona z użytkownikiem):
+                    1. Producent | Nr zamówienia | Typ kontenera
+                    2. Nr kontenera | Przewoźnik | Data zamówienia
+                    3. ETA | Spodziewana dostawa | Dostarczono na magazyn
+                  Przy kontenerze skonsolidowanym producent i PO znikają (są per lot),
+                  więc siatka domyka się sama — to celowe. */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "start" }}>
+                {!isConsolidated && (
+                  <Field label="Producent (dostawca)" required>
+                    <select value={manufacturerId} onChange={(e) => handleManufacturerChange(e.target.value)} disabled={!showEdit} style={inputStyle}>
+                      <option value="">— wybierz —</option>
+                      {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </Field>
+                )}
                 {!isConsolidated && (
                   <Field label="Nr zamówienia (PO)" required>
                     <input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} placeholder="np. PO-2026-001" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
@@ -577,17 +593,47 @@ export default function ContainerFormModal({
                     {containerTypes.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.capacity_cbm} m³)</option>)}
                   </select>
                 </Field>
-                {!isConsolidated && (
-                  <Field label="Producent (dostawca)" required>
-                    <select value={manufacturerId} onChange={(e) => handleManufacturerChange(e.target.value)} disabled={!showEdit} style={inputStyle}>
-                      <option value="">— wybierz —</option>
-                      {manufacturers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                    </select>
-                  </Field>
-                )}
+
+                <Field label="Nr kontenera">
+                  <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder="np. MSKU1234567 — opcjonalne" disabled={!showEdit}
+                    style={{ ...inputStyle, fontFamily: "var(--font-mono)", ...(nrError ? { border: "1px solid color-mix(in oklch, var(--critical) 45%, var(--border))" } : {}) }} />
+                  <span style={{ display: "block", fontSize: 10.5, color: nrError ? "var(--critical)" : "var(--text-lo)", marginTop: 4 }}>
+                    {nrError
+                      ? nrError
+                      : (containerNumber.trim()
+                        ? (wasDraft ? "Wpisanie numeru przestawi status na „W drodze”." : "Numer musi być unikalny.")
+                        : "Nie znasz jeszcze numeru? Możesz zostawić puste.")}
+                  </span>
+                </Field>
+
+                {/* Przewoźnik — bez domyślnej wartości. Ostrzeżenie pojawia się dopiero
+                    po wpisaniu numeru kontenera; przy pustym numerze pole milczy. */}
+                <Field label="Przewoźnik">
+                  <select value={carrier} onChange={(e) => setCarrier(e.target.value)} disabled={!showEdit}
+                    style={{ ...inputStyle, ...(carrierMissing ? { border: "1px solid color-mix(in oklch, var(--warning) 55%, var(--border))" } : {}) }}>
+                    <option value="">— wybierz —</option>
+                    {CARRIERS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                  {carrierMissing ? (
+                    <span style={{ display: "block", fontSize: 10.5, color: "var(--warning)", marginTop: 4, fontWeight: 600 }}>
+                      Wybierz przewoźnika — bez tego nie będzie linku do śledzenia.
+                    </span>
+                  ) : trackUrl ? (
+                    <a href={trackUrl} target="_blank" rel="noopener noreferrer"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, color: "var(--info)", marginTop: 4, textDecoration: "none" }}>
+                      <I.Ship size={11} /> Śledź kontener <I.External size={10} />
+                    </a>
+                  ) : carrier && !isTracked(carrier) ? (
+                    <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
+                      Śledzenie online dostępne na razie tylko dla MSC i CMA CGM.
+                    </span>
+                  ) : null}
+                </Field>
+
                 <Field label="Data zamówienia" required>
                   <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} disabled={!showEdit} style={inputStyle} />
                 </Field>
+
                 <Field label="ETA (planowana dostawa)" required>
                   <input type="date" value={etaDate} onChange={(e) => setEtaDate(e.target.value)} disabled={!showEdit} style={inputStyle} />
                   {etaDate && !expectedDelivery && (
