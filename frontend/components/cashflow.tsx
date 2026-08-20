@@ -320,20 +320,27 @@ function PaidTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onCon
   const paid = useMemo(() => events.filter(e =>
     e.status === "paid" && (year === "all" || (!!e.data && e.data.slice(0, 4) === year))), [events, year]);
   const agg = useMemo(() => aggregate(paid, cur, rt, "data"), [paid, cur, rt]);
-  const last30 = useMemo(() => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const dm30 = new Date(today); dm30.setDate(dm30.getDate() - 30);
-    return paid.reduce((s, e) => {
-      const v = dispVal(e, cur, rt); if (v == null || !e.data) return s;
-      const d = parseLocal(e.data); return (d >= dm30 && d <= today) ? s + v : s;
-    }, 0);
+  // Ostatnia zaksięgowana płatność w bieżącym wyborze — działa w każdym roku,
+  // inaczej niż okno „ostatnie 30 dni”, które w latach minionych zawsze dawało 0.
+  const lastPaid = useMemo(() => {
+    const dated = paid
+      .filter(e => !!e.data && dispVal(e, cur, rt) != null)
+      .sort((a, b) => (a.data! < b.data! ? 1 : -1));
+    const pick = dated[0];
+    if (!pick) return null;
+    return { date: pick.data!, value: dispVal(pick, cur, rt) ?? 0, mfr: pick.mfr_name };
   }, [paid, cur, rt]);
 
   return (
     <>
       <KpiRow
         a={{ label: "Suma zapłacona", value: fmtCur(agg.total, cur), sub: cur === "PLN" ? "kurs historyczny NBP" : "kwoty oryginalne faktur", icon: <I.Wallet size={14} /> }}
-        b={{ label: "Ostatnie 30 dni", value: fmtCur(last30, cur), sub: "wg daty płatności", icon: <I.Activity size={14} /> }}
+        b={{
+          label: "Ostatnia płatność",
+          value: lastPaid ? fmtDay(lastPaid.date) : "—",
+          sub: lastPaid ? `${fmtCur(lastPaid.value, cur)} · ${lastPaid.mfr}` : "brak płatności",
+          icon: <I.Calendar size={14} />,
+        }}
         c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
         d={{ label: "Liczba płatności", value: String(agg.count), sub: `${agg.mfrs.length} producentów`, icon: <I.Factory size={14} /> }}
       />
