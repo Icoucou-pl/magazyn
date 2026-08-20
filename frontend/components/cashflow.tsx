@@ -63,6 +63,14 @@ const fmtCurK = (n: number, cur: string) => {
 const parseLocal = (s: string) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 const fmtDay = (s: string) => parseLocal(s).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" });
 
+// Polska odmiana liczebników: 1 → poj., 2–4 → mnoga, reszta → dopełniacz (12–14 wyjątkiem).
+const plural = (n: number, one: string, few: string, many: string) => {
+  const d = n % 10, h = n % 100;
+  if (n === 1) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
+};
+
 // PLN zdarzenia: paid ma kurs historyczny (kwota_pln); reszta = szacunek po kursie „dziś".
 const plnOf = (e: LedgerEvent, rt: Record<string, number>) =>
   e.kwota_pln != null ? e.kwota_pln : e.kwota * (rt[e.waluta] ?? 0);
@@ -292,20 +300,28 @@ function DueTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onCont
     };
   }, [open, cur, rt]);
 
+  // Podpis kafelka „Otwarte pozycje”: w ilu miesiącach rozkładają się terminy.
+  // Koszyk „bez terminu” liczymy osobno — to nie jest miesiąc.
+  const monthCount = agg.months.filter(m => !m.noDate).length;
+  const hasNoTerm = agg.months.some(m => m.noDate);
+  const spreadSub = monthCount === 0
+    ? "bez ustalonych terminów"
+    : `w ${monthCount} ${plural(monthCount, "miesiącu", "miesiącach", "miesiącach")}${hasNoTerm ? " + bez terminu" : ""}`;
+
   return (
     <>
       <KpiRow
-        a={{ label: "Suma do zapłaty", value: fmtCur(agg.total, cur), sub: `${agg.count} płatności otwartych`, icon: <I.Wallet size={14} /> }}
+        a={{ label: "Suma do zapłaty", value: fmtCur(agg.total, cur), sub: `${agg.count} ${plural(agg.count, "płatność otwarta", "płatności otwarte", "płatności otwartych")}`, icon: <I.Wallet size={14} /> }}
         b={{
           label: "Najbliższy termin",
           value: nextDue ? fmtDay(nextDue.date) : "—",
           sub: nextDue
-            ? `${fmtCur(nextDue.value, cur)} · ${nextDue.overdue ? "po terminie" : nextDue.days === 0 ? "dziś" : `za ${nextDue.days} dni`}`
+            ? `${fmtCur(nextDue.value, cur)} · ${nextDue.overdue ? "po terminie" : nextDue.days === 0 ? "dziś" : `za ${nextDue.days} ${plural(nextDue.days, "dzień", "dni", "dni")}`}`
             : "brak ustalonych terminów",
           icon: <I.Calendar size={14} />,
         }}
         c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
-        d={{ label: "Otwarte pozycje", value: String(agg.count), sub: `${agg.months.length} okresów`, icon: <I.Activity size={14} /> }}
+        d={{ label: "Otwarte pozycje", value: String(agg.count), sub: spreadSub, icon: <I.Activity size={14} /> }}
       />
       <BucketBody agg={agg} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick}
         titles={{
@@ -345,7 +361,7 @@ function PaidTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onCon
           icon: <I.Calendar size={14} />,
         }}
         c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
-        d={{ label: "Liczba płatności", value: String(agg.count), sub: `${agg.mfrs.length} producentów`, icon: <I.Factory size={14} /> }}
+        d={{ label: "Liczba płatności", value: String(agg.count), sub: `${agg.mfrs.length} ${plural(agg.mfrs.length, "producent", "producenci", "producentów")}`, icon: <I.Factory size={14} /> }}
       />
       <BucketBody agg={agg} cur={cur} rt={rt} shop={shop} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick}
         titles={{
