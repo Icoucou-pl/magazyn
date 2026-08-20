@@ -71,7 +71,7 @@ function Brand({ stacked }: { stacked?: boolean }) {
   if (stacked) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 3, flexShrink: 0, lineHeight: 1 }}>
-        <span className="mono" style={{ fontSize: 8, color: "var(--text-lo)", letterSpacing: "0.14em" }}>MAG 2.0</span>
+        <span className="mono" style={{ fontSize: 8, color: "var(--text-lo)", letterSpacing: "0.14em" }}>MAG2.0</span>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/assets/logo-white.png" alt="i-coucou" className="brand-logo brand-logo-dark" style={{ height: 20, width: "auto", display: "block" }}/>
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -86,7 +86,7 @@ function Brand({ stacked }: { stacked?: boolean }) {
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src="/assets/logo-black.png" alt="i-coucou" className="brand-logo brand-logo-light" style={{ height: 26, width: "auto", display: "none" }}/>
       <span className="mono" style={{ fontSize: 9, color: "var(--text-lo)", letterSpacing: "0.1em", paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
-        MAG 2.0
+        MAG2.0
       </span>
     </div>
   );
