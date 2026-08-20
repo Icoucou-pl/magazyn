@@ -171,26 +171,29 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const showRefill = isAdmin(user) && missingCount > 0;
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
 
+  // Lata liczymy z eventów już zawężonych do wybranej firmy — inaczej np. 2027
+  // świeciłby pustką na Acti/Veluxa tylko dlatego, że AMH ma tam płatność.
+
   // Zakładka „Do zapłaty” — lata nieopłaconych zobowiązań (termin → ETA → data),
   // bez „Wszystkie” i bez lat minionych: liczy się to, co dopiero przed nami.
   const dueYearOpts = useMemo<[string, string][]>(() => {
     const now = new Date().getFullYear();
     const ys = new Set<string>();
-    events.forEach(e => {
+    scoped.forEach(e => {
       if (e.status === "paid") return;
       const y = (e.termin || e.eta || e.data || "").slice(0, 4);
       if (y && Number(y) >= now) ys.add(y);
     });
     return [...ys].sort().map(y => [y, y] as [string, string]);
-  }, [events]);
+  }, [scoped]);
 
   // Zakładka „Zapłacono” — tylko lata faktycznych płatności (bez „Wszystkie”,
   // bez lat przyszłych, które pochodzą z ETA/terminów nieopłaconych kontenerów).
   const paidYearOpts = useMemo<[string, string][]>(() => {
     const ys = new Set<string>();
-    events.forEach(e => { if (e.status === "paid" && e.data) ys.add(e.data.slice(0, 4)); });
+    scoped.forEach(e => { if (e.status === "paid" && e.data) ys.add(e.data.slice(0, 4)); });
     return [...ys].sort().map(y => [y, y] as [string, string]);
-  }, [events]);
+  }, [scoped]);
 
   const yearOpts = tab === "paid" ? paidYearOpts : dueYearOpts;
 
