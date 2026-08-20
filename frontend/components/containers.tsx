@@ -12,7 +12,7 @@ import { toast } from "./toast";
 import { fmtPLNk } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
-import { I } from "./ui";
+import { I, containerLabel } from "./ui";
 import {
   ContainersToolbar, ContainerCard, ContainersStyles, MiniStat, MonthGroup, monthLabelPL,
   STATUS_FLOW, FILTER_STATUSES, eff, type Container,
@@ -49,6 +49,17 @@ const shareOf = (c: Container, shop: string, key: "units" | "value"): number => 
   const direct = c.firma_breakdown?.[shop]?.[key];
   if (direct != null) return direct;
   return (c.lots ?? []).reduce((s, l) => s + (l.firma_breakdown?.[shop]?.[key] ?? 0), 0);
+};
+
+// Producent kontenera. Skonsolidowany nie ma go na sobie — siedzi na lotach, i bywa
+// ich kilku, więc dwóch pokazujemy wprost, przy większej liczbie skracamy do „X +n".
+const mfrLabel = (c: Container): string => {
+  const names = new Set<string>();
+  if (c.manufacturer_name) names.add(c.manufacturer_name);
+  for (const l of c.lots ?? []) if (l.manufacturer_name) names.add(l.manufacturer_name);
+  const arr = [...names];
+  if (!arr.length) return "";
+  return arr.length <= 2 ? arr.join(" + ") : `${arr[0]} +${arr.length - 1}`;
 };
 
 type MonthBucket = {
@@ -261,15 +272,30 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
       .map((c) => ({ c, days: Math.ceil((startOfDay(new Date(c.eta_date)).getTime() - today0.getTime()) / 86400000) }))
       .sort((a, b) => a.days - b.days)[0] ?? null;
 
+    // Etykieta najbliższej dostawy: producent + numer. Numer przez containerLabel,
+    // żeby nie wyciekło wewnętrzne „Draft-…" (wtedy podkłada PO, a w ostateczności
+    // samą nazwę producenta — której już nie dublujemy).
+    const nextLab = next ? containerLabel(next.c) : null;
+    const nextMfr = next ? mfrLabel(next.c) : "";
+    const nextLabel = nextLab
+      ? (nextLab.isFallback
+        ? (nextMfr || nextLab.nr)
+        : [nextMfr, `#${nextLab.nr}`].filter(Boolean).join(" · "))
+      : null;
+
     return {
+      total: scoped.length,
+      delivered: scoped.length - inFlight.length,
       inFlight: inFlight.length,
       // Kontener skonsolidowany wiezie towar kilku firm — przy zawężeniu bierzemy sam udział sklepu.
       inFlightValue: inFlight.reduce((s, c) => s + shareOf(c, shop, "value"), 0),
       totalUnits: inFlight.reduce((s, c) => s + shareOf(c, shop, "units"), 0),
-      thisWeek: scoped.filter((c) => inRange(c.eta_date, weekStart, weekEnd)).length,
-      thisMonth: scoped.filter((c) => inRange(c.eta_date, monthStart, monthEnd)).length,
+      // Tylko to, co jeszcze przed nami: kontener z ETA w tym tygodniu/miesiącu, ale już
+      // odebrany, nie jest „dostawą do ogarnięcia" — liczymy z inFlight, nie ze scoped.
+      thisWeek: inFlight.filter((c) => inRange(c.eta_date, weekStart, weekEnd)).length,
+      thisMonth: inFlight.filter((c) => inRange(c.eta_date, monthStart, monthEnd)).length,
       nextDays: next ? next.days : null,
-      nextNumber: next ? next.c.container_number : null,
+      nextLabel,
     };
   }, [scoped, shop]);
 
@@ -326,7 +352,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     return (
       <div className="pulse-soft" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
-          {[0, 1, 2, 3, 4].map((i) => <div key={i} style={{ height: 78, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />)}
+          {[0, 1, 2, 3, 4, 5].map((i) => <div key={i} style={{ height: 78, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />)}
         </div>
         <div style={{ height: 56, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />
         {[0, 1, 2].map((i) => <div key={i} style={{ height: 72, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />)}
@@ -338,12 +364,13 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
       <ContainersStyles />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+        <MiniStat label="Wszystkie kontenery" value={summary.total} sub={`${summary.delivered} dostarczonych`} icon={<I.Container size={14} />} />
         <MiniStat label="Aktywne kontenery" value={summary.inFlight} sub="nie dostarczone" icon={<I.Ship size={14} />} />
         <MiniStat label="Wartość zamówiona" value={showFin ? fmtPLNk(summary.inFlightValue) : "•••••"} sub={`${summary.totalUnits} szt · przed dostawą`} icon={<I.Wallet size={14} />} />
         <MiniStat
           label="Najbliższa dostawa"
           value={summary.nextDays === null ? "—" : summary.nextDays === 0 ? "dziś" : summary.nextDays < 0 ? `${Math.abs(summary.nextDays)}d po ETA` : `za ${summary.nextDays}d`}
-          sub={summary.nextNumber ? `#${summary.nextNumber}` : "brak w drodze"}
+          sub={summary.nextLabel ?? "brak w drodze"}
           icon={<I.ArrowDown size={14} />}
         />
         <MiniStat label="Dostawy w tym tygodniu" value={summary.thisWeek} sub="wg ETA (pn–nd)" icon={<I.Calendar size={14} />} />
