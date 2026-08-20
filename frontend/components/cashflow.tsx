@@ -269,20 +269,38 @@ function DueTab({ events, cur, rt, shop, year, hoveredMfr, setHoveredMfr, onCont
   const open = useMemo(() => events.filter(e =>
     e.status !== "paid" && (year === "all" || !e.termin || e.termin.slice(0, 4) === year)), [events, year]);
   const agg = useMemo(() => aggregate(open, cur, rt, "termin", true), [open, cur, rt]);
-  const next30 = useMemo(() => {
+  // Najbliższy termin płatności w bieżącym wyborze. Preferujemy termin dzisiejszy
+  // lub przyszły; jeśli takiego nie ma, pokazujemy najstarszy zaległy (po terminie).
+  const nextDue = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const d30 = new Date(today); d30.setDate(d30.getDate() + 30);
-    return open.reduce((s, e) => {
-      const v = dispVal(e, cur, rt); if (v == null || !e.termin) return s;
-      const d = parseLocal(e.termin); return (d >= today && d <= d30) ? s + v : s;
-    }, 0);
+    const dated = open
+      .filter(e => !!e.termin && dispVal(e, cur, rt) != null)
+      .sort((a, b) => (a.termin! < b.termin! ? -1 : 1));
+    const upcoming = dated.find(e => parseLocal(e.termin!) >= today);
+    const pick = upcoming ?? dated[0];
+    if (!pick) return null;
+    const d = parseLocal(pick.termin!);
+    return {
+      date: pick.termin!,
+      value: dispVal(pick, cur, rt) ?? 0,
+      mfr: pick.mfr_name,
+      overdue: d < today,
+      days: Math.round((d.getTime() - today.getTime()) / 86400000),
+    };
   }, [open, cur, rt]);
 
   return (
     <>
       <KpiRow
         a={{ label: "Suma do zapłaty", value: fmtCur(agg.total, cur), sub: `${agg.count} płatności otwartych`, icon: <I.Wallet size={14} /> }}
-        b={{ label: "Najbliższe 30 dni", value: fmtCur(next30, cur), sub: "wg terminu płatności", icon: <I.Alert size={14} /> }}
+        b={{
+          label: "Najbliższy termin",
+          value: nextDue ? fmtDay(nextDue.date) : "—",
+          sub: nextDue
+            ? `${fmtCur(nextDue.value, cur)} · ${nextDue.overdue ? "po terminie" : nextDue.days === 0 ? "dziś" : `za ${nextDue.days} dni`}`
+            : "brak ustalonych terminów",
+          icon: <I.Calendar size={14} />,
+        }}
         c={{ label: "Największy miesiąc", value: agg.peak ? fmtCur(agg.peak.total, cur) : "—", sub: agg.peak?.label || "—", icon: <I.TrendUp size={14} /> }}
         d={{ label: "Otwarte pozycje", value: String(agg.count), sub: `${agg.months.length} okresów`, icon: <I.Activity size={14} /> }}
       />
