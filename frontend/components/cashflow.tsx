@@ -171,11 +171,17 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const showRefill = isAdmin(user) && missingCount > 0;
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
 
-  // Zakładka „Do zapłaty” — lata z ETA/terminu/daty + opcja „Wszystkie”.
+  // Zakładka „Do zapłaty” — lata nieopłaconych zobowiązań (termin → ETA → data),
+  // bez „Wszystkie” i bez lat minionych: liczy się to, co dopiero przed nami.
   const dueYearOpts = useMemo<[string, string][]>(() => {
+    const now = new Date().getFullYear();
     const ys = new Set<string>();
-    events.forEach(e => { if (e.eta) ys.add(e.eta.slice(0, 4)); if (e.data) ys.add(e.data.slice(0, 4)); if (e.termin) ys.add(e.termin.slice(0, 4)); });
-    return [["all", "Wszystkie"], ...[...ys].sort().map(y => [y, y] as [string, string])];
+    events.forEach(e => {
+      if (e.status === "paid") return;
+      const y = (e.termin || e.eta || e.data || "").slice(0, 4);
+      if (y && Number(y) >= now) ys.add(y);
+    });
+    return [...ys].sort().map(y => [y, y] as [string, string]);
   }, [events]);
 
   // Zakładka „Zapłacono” — tylko lata faktycznych płatności (bez „Wszystkie”,
@@ -192,13 +198,11 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
     if (loading) return;                     // dane jeszcze się ładują — nie kasuj domyślnego roku (2026)
     if (yearOpts.length === 0) return;
     if (yearOpts.some(([v]) => v === year)) return;
-    if (tab === "paid") {
-      // Domyślnie bieżący rok, a jeśli brak płatności — ostatni dostępny.
-      const now = String(new Date().getFullYear());
-      setYear(yearOpts.some(([v]) => v === now) ? now : yearOpts[yearOpts.length - 1][0]);
-    } else {
-      setYear("all");
-    }
+    // Domyślnie bieżący rok; jeśli brak dla niego danych — pierwszy dostępny
+    // (dla „Zapłacono” najnowszy, dla „Do zapłaty” najbliższy nadchodzący).
+    const now = String(new Date().getFullYear());
+    if (yearOpts.some(([v]) => v === now)) setYear(now);
+    else setYear(tab === "paid" ? yearOpts[yearOpts.length - 1][0] : yearOpts[0][0]);
   }, [loading, tab, yearOpts, year]);
 
   if (loading) {
