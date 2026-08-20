@@ -351,16 +351,17 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
     r = await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_CONTAINERS}
-            (container_number, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
+            (container_number, carrier, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
              koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr,
              waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
              balance_kwota, balance_waluta, balance_termin, zaplacono_data, expected_delivery_date, delivered_date)
-            VALUES (:n, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
+            VALUES (:n, :car, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
                     :kt, :ks, :ktm, :fol, :sub,
                     :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd, :edd, :dd)
             RETURNING id
         """),
         {"n": nr,
+         "car": ((payload.carrier or "").strip().upper() or None),
          "on": (None if cons else payload.order_number),
          "tid": payload.container_type_id,
          "mid": (None if cons else payload.manufacturer_id),
@@ -464,6 +465,11 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
     # Koszty spedycji + dokumenty — zawsze na kontenerze; ruszamy tylko pola faktycznie
     # przysłane (model_fields_set), żeby null z formularza mógł je wyczyścić.
     fset = payload.model_fields_set
+    # Armator — pole opcjonalne; pusty string czyści wartość (dlatego przez fset, nie przez
+    # pętlę `is not None` wyżej, która nie potrafi zapisać NULL-a).
+    if "carrier" in fset:
+        updates.append("carrier = :carrier")
+        params["carrier"] = ((payload.carrier or "").strip().upper() or None)
     if "koszt_transportu" in fset:
         updates.append("koszt_transportu = :kt"); params["kt"] = payload.koszt_transportu
     if "koszt_spedycji" in fset:
