@@ -78,6 +78,7 @@ type ShoppingProduct = {
   sku: string; name: string; stock: number; stock_in_transit: number;
   avg_monthly: number; recommended_quantity: number; status: string; days_until_empty: number;
   transfer_source_shop?: string | null; transfer_source_qty?: number;
+  transfer_source_transit?: number; transfer_state?: string | null;
 };
 type ShoppingGroup = {
   manufacturer_id: number | null;
@@ -617,6 +618,48 @@ function ExpandFooter({ hidden, open, onToggle }: { hidden: number; open: boolea
 const listScroll = (open: boolean): React.CSSProperties =>
   open ? { maxHeight: 420, overflowY: "auto" } : {};
 
+// Sytuacja siostry (Acti/Veluxa) dla pożaru na AMH — cztery stany z backendu.
+// PULL gasi pożar przesunięciem, PULL_PARTIAL zmniejsza zamówienie, WAIT mówi „już jedzie
+// do siostry, nie dubluj", ORDER to sygnał, że siostra jest pusta i to ona musi zaimportować.
+function TransferBadge({ p }: { p: ShoppingProduct }) {
+  const shopName = p.transfer_source_shop;
+  if (!p.transfer_state || !shopName) return null;
+  const qty = p.transfer_source_qty ?? 0;
+  const transit = p.transfer_source_transit ?? 0;
+
+  const variants: Record<string, { text: string; title: string; bg: string; fg: string }> = {
+    PULL: {
+      text: `↔ z ${shopName}: ${qty}`,
+      title: `${qty} szt na stanie w ${shopName} — nie zamawiaj z Chin, zaciągnij z magazynu grupy`,
+      bg: "var(--info-soft)", fg: "var(--info)",
+    },
+    PULL_PARTIAL: {
+      text: `↔ z ${shopName}: ${qty} · za mało`,
+      title: `${shopName} ma tylko ${qty} szt — zaciągnij ile jest i dozamów resztę`
+        + (transit > 0 ? `. Dodatkowo +${transit} szt jest w drodze do ${shopName}.` : ""),
+      bg: "var(--warning-soft)", fg: "var(--warning)",
+    },
+    WAIT: {
+      text: `${shopName}: +${transit} w drodze`,
+      title: `${shopName} nie ma na stanie, ale +${transit} szt już do niej jedzie — nie zamawiaj równolegle`,
+      bg: "var(--info-soft)", fg: "var(--info)",
+    },
+    ORDER: {
+      text: `${shopName} nie ma — niech zamówi`,
+      title: `${shopName} nie ma tego towaru ani na stanie, ani w drodze. To ona go importuje — przesunięcie nie pomoże, musi zamówić.`,
+      bg: "var(--critical-soft)", fg: "var(--critical)",
+    },
+  };
+  const v = variants[p.transfer_state];
+  if (!v) return null;
+  return (
+    <span title={v.title}
+      style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: v.bg, color: v.fg, whiteSpace: "nowrap" }}>
+      {v.text}
+    </span>
+  );
+}
+
 // ── Pożary ───────────────────────────────────────────────────
 function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProduct[]; onProductClick?: (p: ClickTarget) => void; onNoReorder?: (sku: string) => void }) {
   // Pożary mają niższe wiersze niż sąsiadujący box dostaw — mieści się 6 (footer i tak jest przypięty na dole).
@@ -630,12 +673,7 @@ function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProd
             <div className="fire-main" style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
               <StatusPill status={p.status} size="sm" />
               <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>
-              {(p.transfer_source_qty ?? 0) > 0 && (
-                <span title={`${p.transfer_source_qty} szt na stanie w ${p.transfer_source_shop} — nie zamawiaj z Chin, zaciągnij z magazynu grupy`}
-                  style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: "var(--info-soft)", color: "var(--info)", whiteSpace: "nowrap" }}>
-                  ↔ z {p.transfer_source_shop}: {p.transfer_source_qty}
-                </span>
-              )}
+              <TransferBadge p={p} />
               {p.stock_in_transit > 0 && (
                 <span title={`${p.stock_in_transit} szt już w drodze — ale za mało na miesiąc; zamów tylko brakującą różnicę`}
                   style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: "var(--info-soft)", color: "var(--info)", whiteSpace: "nowrap" }}>
