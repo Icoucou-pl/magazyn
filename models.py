@@ -167,7 +167,9 @@ class ProductSummary(BaseModel):
     status: str
     no_reorder: bool = False                      # „nie dozamawiamy" — chowa z pożarów i całego flow zamawiania
     transfer_source_shop: Optional[str] = None   # magazyn siostry mogący pokryć pożar (Acti/Veluxa)
-    transfer_source_qty: int = 0                  # ile tam leży (0 = brak sensownego transferu)
+    transfer_source_qty: int = 0                  # ile tam leży na stanie (0 = siostra pusta)
+    transfer_source_transit: int = 0              # ile siostrze jedzie (jej „magazyn w drodze")
+    transfer_state: Optional[str] = None          # PULL | PULL_PARTIAL | WAIT | ORDER (None = brak siostry)
     incoming_deliveries: List[IncomingDelivery] = []
 
 
