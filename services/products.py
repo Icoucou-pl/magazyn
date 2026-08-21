@@ -65,10 +65,16 @@ def classify_product(row: dict) -> str:
 # Kod sklepu (magazynu) → etykieta wyświetlana w znaczniku „↔ z [magazyn]".
 _SHOP_LABEL = {"amh": "AMH", "acti": "Acti", "veluxa": "Veluxa"}
 
+# Transfer między firmami jest JEDNOSTRONNY: to AMH sprzedaje towar Acti i Veluxy,
+# nigdy odwrotnie. Dlatego znacznik siostry liczymy wyłącznie na zakładce AMH —
+# na Acti/Veluxie byłby szumem (one żyją własnym życiem i zamawiają same).
+TRANSFER_TARGET_SHOP = "amh"
+
 
 def calculate_forecast(row: dict, incoming: List[dict],
                        transfer_stock: List[dict] = None, shop: str = "",
-                       erp_transit: int = 0, skip_wbite: bool = True) -> ProductSummary:
+                       erp_transit: int = 0, skip_wbite: bool = True,
+                       transfer_transit: Dict[str, int] = None) -> ProductSummary:
     """Liczy prognozę: średnia ważona sprzedaż, dzień wyczerpania, data zamówienia, status."""
     sales_1m = row["sales_1m_total"]
     sales_2m_avg = row["sales_2m_total"] / 2
@@ -164,26 +170,48 @@ def calculate_forecast(row: dict, incoming: List[dict],
             and (row["stock"] + stock_in_transit) >= avg_monthly:
         status = "W_DRODZE"
 
-    # „Zaciągnij z [magazynu]" — gdy produkt jest lokalnie krótki, ale magazyn siostry
-    # (Acti/Veluxa z Sellasista) ma jego stan, to NIE jest zamówienie z Chin, tylko przesunięcie.
-    # Pokazujemy tylko gdy realnie gasi pożar: dociągnięcie z największej siostry daje lokalnie
-    # ≥ 1 miesiąc popytu (row.stock + qty_siostry ≥ avg_monthly). Wykluczamy aktualnie wybrany
-    # magazyn (na zakładce Veluxy nie proponujemy „z Veluxy"). Surowy stan, nie nadwyżka — v1.
-    # Uwaga: liczymy TYLKO dla konkretnej zakładki sklepu. Na „Wszystkich" (shop="") row.stock
-    # jest już pulą grupy (zawiera stany sióstr), więc transfer nie ma sensu — pożar tam = cała
-    # grupa krótka. Ograniczenie do shop != "" zapobiega podwójnemu liczeniu i fałszywym znacznikom.
+    # Sytuacja siostry — cztery stany zamiast dawnego „pokaż tylko gdy gasi pożar".
+    # Pożar na AMH z towaru Acti/Veluxy nie zawsze da się ugasić przesunięciem, ale ZAWSZE
+    # warto wiedzieć, czemu się nie da: siostra ma za mało, siostrze dopiero jedzie, czy
+    # siostra też jest pusta i to ONA musi zaimportować.
+    #   PULL         — stan siostry pokrywa miesiąc popytu → przesuń, nie zamawiaj z Chin
+    #   PULL_PARTIAL — coś ma, ale za mało → zaciągnij ile jest i dozamów resztę
+    #   WAIT         — pusta, ale ma w drodze → nie zamawiaj równolegle, poczekaj
+    #   ORDER        — pusta i nic nie jedzie → sygnał: niech siostra zamówi
+    # Kandydat na siostrę to firma-właściciel produktu (to ona go importuje). Gdy produkt
+    # jest AMH-owy, bierzemy siostrę z największym stanem (np. Fosoto zaopatruje AMH i Veluxę)
+    # — ale wtedy bez stanu i bez tranzytu nie ma o czym informować, więc ORDER nie powstaje.
+    # Liczymy WYŁĄCZNIE na zakładce AMH (patrz TRANSFER_TARGET_SHOP). Na „Wszystkich"
+    # (shop="") row.stock jest już pulą grupy, więc transfer nie miałby sensu.
     transfer_source_shop = None
     transfer_source_qty = 0
-    if transfer_stock and avg_monthly > 0 and shop:
-        siblings = sorted(
-            ((t["shop"], int(t["qty"])) for t in transfer_stock
-             if t.get("qty") and t.get("shop") and (not shop or t["shop"] != shop)),
-            key=lambda s: s[1], reverse=True)
-        if siblings:
-            top_shop, top_qty = siblings[0]
-            if (row["stock"] + top_qty) >= avg_monthly:
-                transfer_source_shop = _SHOP_LABEL.get(top_shop, top_shop)
-                transfer_source_qty = top_qty
+    transfer_source_transit = 0
+    transfer_state = None
+    if shop == TRANSFER_TARGET_SHOP and avg_monthly > 0 \
+            and status in ("KRYTYCZNY", "ZAMOW_TERAZ", "ZAMOW_WKROTCE"):
+        owner = (row.get("firma_slug") or "amh").strip().lower()
+        stocks = {t["shop"]: int(t["qty"] or 0) for t in (transfer_stock or [])
+                  if t.get("shop") and t["shop"] != shop}
+        transits = {k: int(v or 0) for k, v in (transfer_transit or {}).items() if k != shop}
+        candidate = owner if owner != shop else None
+        if candidate is None:
+            ranked = sorted(stocks.items(), key=lambda s: s[1], reverse=True)
+            candidate = ranked[0][0] if ranked and ranked[0][1] > 0 else None
+        if candidate:
+            qty = stocks.get(candidate, 0)
+            transit = transits.get(candidate, 0)
+            if qty > 0 and (row["stock"] + qty) >= avg_monthly:
+                transfer_state = "PULL"
+            elif qty > 0:
+                transfer_state = "PULL_PARTIAL"
+            elif transit > 0:
+                transfer_state = "WAIT"
+            elif owner != shop:
+                transfer_state = "ORDER"
+            if transfer_state:
+                transfer_source_shop = _SHOP_LABEL.get(candidate, candidate)
+                transfer_source_qty = qty
+                transfer_source_transit = transit
 
     total_available = row["stock"] + stock_in_transit
     months_of_stock = (total_available / avg_monthly) if avg_monthly > 0 else 999.0
@@ -234,6 +262,8 @@ def calculate_forecast(row: dict, incoming: List[dict],
         no_reorder=bool(row.get("no_reorder", False)),
         transfer_source_shop=transfer_source_shop,
         transfer_source_qty=transfer_source_qty,
+        transfer_source_transit=transfer_source_transit,
+        transfer_state=transfer_state,
         incoming_deliveries=sorted(incoming_deliveries, key=lambda d: d.warehouse_delivery_date),
     )
 
@@ -327,10 +357,19 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             # Wbite wykluczamy dla firm z wpiętym ERP „w drodze" (AMH→Subiekt,
             # Acti/Veluxa→Fakturownia) — zielone loty są już w erp_transit, inaczej dubel.
             skip_wbite = cf in ("amh", "acti", "veluxa")
+        # Tranzyt sióstr (ich „magazyn w drodze" z Fakturowni) — potrzebny tylko na zakładce
+        # AMH, do stanu WAIT znacznika transferu. Poza AMH nie liczymy, żeby nie mielić na darmo.
+        sibling_transit: Dict[str, int] = {}
+        if shop == TRANSFER_TARGET_SHOP:
+            for slug, per_sku in fakturownia_transit_by_firma.items():
+                q = per_sku.get(sku_key, 0)
+                if q:
+                    sibling_transit[slug] = q
         results.append(calculate_forecast(
             p, inc_lines,
             transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop,
-            erp_transit=erp, skip_wbite=skip_wbite))
+            erp_transit=erp, skip_wbite=skip_wbite,
+            transfer_transit=sibling_transit))
     return results
 
 
