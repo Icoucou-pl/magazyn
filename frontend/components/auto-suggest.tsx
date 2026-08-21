@@ -8,7 +8,7 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
-import { I, MfrChip } from "./ui";
+import { I, MfrChip, containerLabel } from "./ui";
 import { modalBackdrop, modalCard, Portal, type Product, type Manufacturer } from "./products-ui";
 import type { ContainerType } from "./container-form";
 import { api } from "@/lib/api";
@@ -189,12 +189,14 @@ export default function AutoSuggestModal({
 
   const createContainer = async () => {
     if (busy) return;
-    if (!containerNumber.trim()) { toast("Podaj numer kontenera", "warning"); return; }
+    // Nr zamówienia (PO) znamy od razu przy zamówieniu → wymagany. Numer kontenera
+    // dostajemy dopiero po produkcji → opcjonalny, backend nadaje roboczy Draft-<Producent>.
+    if (!orderNumber.trim()) { toast("Podaj nr zamówienia (PO)", "warning"); return; }
     const items = (suggestion?.items || []).filter((i) => i.quantity > 0);
     if (items.length === 0) { toast("Brak pozycji do zamówienia", "warning"); return; }
     const payload = {
-      container_number: containerNumber.trim().toUpperCase(),
-      order_number: orderNumber.trim() || null,
+      container_number: containerNumber.trim().toUpperCase() || null,
+      order_number: orderNumber.trim(),
       container_type_id: Number(containerTypeId),
       manufacturer_id: Number(manufacturerId),
       order_date: orderDate,
@@ -207,13 +209,27 @@ export default function AutoSuggestModal({
     };
     setBusy(true);
     try {
-      await api.post("/containers", payload);
-      toast(`Utworzono kontener #${payload.container_number}`, "ok");
+      const saved = (await api.post("/containers", payload)) as {
+        container_number?: string | null; order_number?: string | null; manufacturer_name?: string | null;
+      };
+      // Numer roboczy „Draft-…" nie idzie do UI — containerLabel podstawia PO / nazwę producenta.
+      const lab = containerLabel({
+        container_number: saved?.container_number ?? payload.container_number,
+        order_number: saved?.order_number ?? payload.order_number,
+        manufacturer_name: saved?.manufacturer_name ?? manufacturers.find((m) => String(m.id) === manufacturerId)?.name ?? null,
+      });
+      toast(`Utworzono kontener ${lab.isFallback ? lab.nr : `#${lab.nr}`}`, "ok");
       onCreated();
       onClose();
     } catch (e) {
       const st = (e as { status?: number })?.status;
-      toast(st === 400 ? "ETA nie może być przed datą zamówienia" : "Nie udało się utworzyć kontenera", "warning");
+      const msg = (e as { message?: string })?.message;
+      toast(
+        st === 400 ? "ETA nie może być przed datą zamówienia"
+          : st === 409 ? (msg || "Numer zamówienia lub kontenera już istnieje")
+          : "Nie udało się utworzyć kontenera",
+        "warning",
+      );
     } finally {
       setBusy(false);
     }
@@ -487,11 +503,11 @@ function Step3({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-        <Field label="Nr kontenera" required>
-          <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} autoFocus placeholder="np. MSCU-7821934" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+        <Field label="Nr zamówienia (PO)" required>
+          <input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} autoFocus placeholder="np. PO-2026-001" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
         </Field>
-        <Field label="Nr zamówienia (PO)">
-          <input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} placeholder="np. PO-2026-001" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+        <Field label="Nr kontenera">
+          <input value={containerNumber} onChange={(e) => setContainerNumber(e.target.value.toUpperCase())} placeholder="uzupełnisz po produkcji" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
         </Field>
         <Field label="Data zamówienia" required>
           <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} style={inputStyle} />
@@ -515,7 +531,7 @@ function Step3({
 
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => setStep(2)} disabled={busy} style={btnSecondaryFull}><I.ArrowRight size={12} style={{ transform: "rotate(180deg)" }} /> Wstecz</button>
-        <button onClick={createContainer} disabled={!containerNumber.trim() || busy} style={{ ...btnPrimaryFull, opacity: (!containerNumber.trim() || busy) ? 0.5 : 1, cursor: (!containerNumber.trim() || busy) ? "not-allowed" : "pointer" }}>
+        <button onClick={createContainer} disabled={!orderNumber.trim() || busy} style={{ ...btnPrimaryFull, opacity: (!orderNumber.trim() || busy) ? 0.5 : 1, cursor: (!orderNumber.trim() || busy) ? "not-allowed" : "pointer" }}>
           <I.Plus size={12} /> {busy ? "Tworzę…" : "Utwórz kontener"}
         </button>
       </div>
