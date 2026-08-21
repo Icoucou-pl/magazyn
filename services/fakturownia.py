@@ -3,21 +3,48 @@ Fakturownia → PostgreSQL (Supabase) — ingesta stanów „w drodze" + ceny za
 
 KAŻDY sklep ma OSOBNĄ Fakturownię (Acti, Veluxa). Z każdej ciągniemy:
 
-1) /products.json (stronicowane) → mapa product_id → {code, purchase_price_net,
-   stock_level_global}. `stock_level` na karcie jest GLOBALNY (suma wszystkich
-   magazynów), więc sam w sobie nie mówi ile jest „w drodze".
-2) /warehouse_actions.json?warehouse_id=<W_DRODZE> (stronicowane) → ruchy z
-   magazynu „Towary w drodze". in_transit_qty = Σ (quantity × sign) po
-   niewykasowanych akcjach. Potwierdzone reconem: net == Σ left_quantity.
+0) /warehouses.json → lista magazynów konta. Waliduje WH_DRODZE z ENV i wykrywa
+   magazyn główny po `kind == "main"` (ENV WH_MAIN traktujemy jako podpowiedź,
+   nie jako prawdę — patrz niżej).
+1) /products.json (stronicowane, BEZ warehouse_id) → mapa product_id →
+   {code, nazwa, purchase_price_net, stock_level}. `stock_level` jest GLOBALNY
+   (suma magazynów) i służy wyłącznie jako suma kontrolna.
+2) /products.json?warehouse_id=<WH_DRODZE> (stronicowane) → stan magazynu
+   „Towary w drodze" w polu `warehouse_quantity`. To jest in_transit_qty.
+3) /products.json?warehouse_id=<WH_MAIN> (stronicowane) → stan magazynu
+   głównego, też w `warehouse_quantity`. To jest stan_podstawowy.
 
-Wyliczenia zapisywane do `fakturownia_stock` (upsert po firma_id + sku_canon):
+UWAGA na pole, nie na endpoint: przy zapytaniu z `warehouse_id` Fakturownia NIE
+nadpisuje `stock_level` (ten zostaje globalny) — stan wybranego magazynu wraca w
+OSOBNYM polu `warehouse_quantity`. Czytanie `stock_level` z takiego zapytania daje
+liczbę globalną i wygląda, jakby parametr był ignorowany. To był powód, dla którego
+wcześniej uznano, że stanu per magazyn nie da się pobrać i liczono go z dziennika.
+
+DLACZEGO NIE DZIENNIK RUCHÓW (warehouse_actions.json): poprzednia wersja liczyła
+in_transit_qty = Σ (quantity × sign) po akcjach magazynowych. Parser znaku miał
+cichy fallback `except → return 1`, więc każdy rozchód, którego nie umiał odczytać,
+był DODAWANY zamiast odejmowany. Błąd nie ujawniał się dopóki towar tylko wjeżdżał
+na magazyn „w drodze"; wyszedł dopiero przy pierwszych wydaniach (SZP3 u Acti:
+504 zamiast 336, czyli +2×84). Stan per magazyn pobierany wprost nie ma tej klasy
+błędów — nie ma znaków, nie ma sumowania historii, nie ma dryfu.
+
+Wyliczenia zapisywane do `fakturownia_stock` (pełna podmiana per firma):
   - purchase_price_net  → cena zakupu z karty (najnowszy PZ; jedna na SKU),
-  - in_transit_qty      → ilość na magazynie „w drodze",
-  - stan_podstawowy     → stock_level_global − in_transit (magazyn główny;
-                          PODGLĄD — stan Acti/Veluxa i tak leci z Sellasista).
+  - in_transit_qty      → stan magazynu „w drodze",
+  - stan_podstawowy     → stan magazynu głównego (PODGLĄD — stan Acti/Veluxa
+                          i tak leci z Sellasista).
+
+Stany zapisujemy TAKIE, JAKIE SĄ — bez przycinania ujemnych do zera. Ujemny stan
+magazynu głównego jest w Fakturowni normalny (sprzedaż zeszła, dokument magazynowy
+jeszcze nie) i jest informacją, nie błędem do zamiecenia. Poprzednia wersja
+przycinała, przez co zawyżony transit maskował się jako „stan główny 0".
+
+KONTROLA SUMY: drodze + główny == stock_level (konto ma dokładnie 2 magazyny).
+Rozjazd nie psuje biegu, ale ląduje w app_sync_log — to sygnał, że doszedł trzeci
+magazyn albo że któryś sklep ma w ENV ID magazynu z innej firmy.
 
 Konfiguracja per sklep w ENV (Railway), ID magazynów to NIE sekrety — jawne,
-bo przy Veluxie będą inne (osobna Fakturownia, własna numeracja):
+bo przy Veluxie są inne (osobna Fakturownia, własna numeracja):
   FAKTUROWNIA_ACTI_URL, FAKTUROWNIA_ACTI_TOKEN,
   FAKTUROWNIA_ACTI_WH_MAIN, FAKTUROWNIA_ACTI_WH_DRODZE   (analogicznie _VELUXA_)
 
@@ -42,7 +69,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +80,8 @@ from database import SessionLocal
 _PAGE_SIZE = 100
 _PAGE_SAFETY_LIMIT = 500          # twardy limit stron (ochrona przed pętlą)
 _TIMEOUT = 60                     # sekundy na pojedynczy request
+_SUM_TOLERANCE = 0.001            # tolerancja kontroli drodze + główny == globalny
+_MISMATCH_SAMPLE = 5              # ile SKU wypisać w dzienniku przy rozjeździe
 
 
 @dataclass
@@ -163,13 +192,6 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def _to_int_sign(v: Any) -> int:
-    try:
-        return int(v)
-    except (ValueError, TypeError):
-        return 1
-
-
 # ============================================================
 # HTTP
 # ============================================================
@@ -215,6 +237,63 @@ async def _fetch_all(firma: "Firma", path: str, params: Optional[dict] = None) -
             break
         await asyncio.sleep(0.15)
     return out
+
+
+# ============================================================
+# MAGAZYNY
+# ============================================================
+async def _resolve_warehouses(firma: "Firma") -> Tuple[str, str, List[str]]:
+    """Waliduje WH_DRODZE i ustala magazyn główny. Zwraca (wh_drodze, wh_main, ostrzeżenia).
+
+    Magazyn główny bierzemy z `kind == "main"` na liście z API, a ENV WH_MAIN traktujemy
+    tylko jako podpowiedź. Powód: WH_MAIN nie był dotąd przez kod używany, więc nikt nie
+    zauważyłby, gdyby wpisano tam ID z innej firmy — a właśnie zaczynamy go używać.
+    Gdy API nie oznacza żadnego magazynu jako main, spadamy na ENV.
+
+    WH_DRODZE musi istnieć na liście — brak = twardy błąd, bo cichy zerowy transit
+    wygląda dokładnie jak „nic nie płynie" i nie rzuca się w oczy."""
+    warnings: List[str] = []
+    data = await _http_get(firma, "warehouses.json", {})
+    houses = [w for w in (data or []) if isinstance(w, dict)] if isinstance(data, list) else []
+    if not houses:
+        raise RuntimeError("warehouses.json nie zwróciło listy magazynów")
+
+    by_id = {str(w.get("id")): w for w in houses}
+    drodze = str(firma.wh_drodze).strip()
+    if drodze not in by_id:
+        dostepne = ", ".join(f"{w.get('id')}={w.get('name')}" for w in houses)
+        raise RuntimeError(
+            f"WH_DRODZE={drodze} nie istnieje w Fakturowni „{firma.slug}\" (dostępne: {dostepne})"
+        )
+
+    env_main = str(firma.wh_main or "").strip()
+    auto_main = next((str(w.get("id")) for w in houses
+                      if (w.get("kind") or "").strip().lower() == "main"), "")
+
+    if auto_main:
+        main = auto_main
+        if env_main and env_main != auto_main:
+            warnings.append(
+                f"WH_MAIN w ENV ({env_main}) ≠ magazyn oznaczony jako main w API ({auto_main}); użyto {auto_main}"
+            )
+    elif env_main and env_main in by_id:
+        main = env_main
+        warnings.append(f"żaden magazyn nie ma kind=main; użyto WH_MAIN z ENV ({env_main})")
+    else:
+        raise RuntimeError(
+            "nie udało się ustalić magazynu głównego (brak kind=main w API i brak poprawnego WH_MAIN w ENV)"
+        )
+
+    if main == drodze:
+        raise RuntimeError(f"magazyn główny i „w drodze\" to ten sam ID ({main})")
+
+    if len(houses) > 2:
+        nazwy = ", ".join(f"{w.get('id')}={w.get('name')}" for w in houses)
+        warnings.append(
+            f"konto ma {len(houses)} magazynów, a model zakłada 2 (główny + w drodze): {nazwy}"
+        )
+
+    return drodze, main, warnings
 
 
 # ============================================================
@@ -275,9 +354,29 @@ async def _upsert(session: AsyncSession, firma: "Firma", rows: List[dict], sync_
 # ============================================================
 # WYLICZENIE
 # ============================================================
-def _build_rows(products: List[dict], drodze_actions: List[dict]) -> List[dict]:
-    """products → mapa id→(code, ppn, global_stock); akcje „w drodze" → Σ qty*sign per id.
-    stan_podstawowy = global − in_transit (są dokładnie 2 magazyny: główny + w drodze)."""
+def _qty_by_product(rows: List[dict]) -> Dict[Any, float]:
+    """product_id → warehouse_quantity z listy pobranej dla konkretnego magazynu.
+
+    Klucz to `id` produktu, nie `code` — odporne na literówki i wielkość liter w SKU.
+    Uwaga: Fakturownia przy zapytaniu z warehouse_id zwraca stan w `warehouse_quantity`,
+    a `stock_level` zostawia globalny; czytanie `stock_level` dałoby tu liczbę globalną."""
+    out: Dict[Any, float] = {}
+    for p in rows:
+        pid = p.get("id")
+        if pid is None:
+            continue
+        out[pid] = out.get(pid, 0.0) + _to_float(p.get("warehouse_quantity"))
+    return out
+
+
+def _build_rows(products: List[dict],
+                drodze_rows: List[dict],
+                main_rows: List[dict]) -> Tuple[List[dict], List[str]]:
+    """Skleja katalog globalny ze stanami obu magazynów. Zwraca (wiersze, ostrzeżenia).
+
+    Katalog (code, nazwa, cena zakupu) i suma kontrolna `stock_level` pochodzą z zapytania
+    globalnego; ilości z zapytań per magazyn. Listy per magazyn zawierają TYLKO produkty
+    obecne na danym magazynie, więc brak wpisu = zero."""
     pmap: Dict[Any, dict] = {}
     for p in products:
         pid = p.get("id")
@@ -290,23 +389,30 @@ def _build_rows(products: List[dict], drodze_actions: List[dict]) -> List[dict]:
             "global": _to_float(p.get("stock_level")),
         }
 
-    transit: Dict[Any, float] = {}
-    for a in drodze_actions:
-        if a.get("deleted"):
-            continue
-        pid = a.get("product_id")
-        transit[pid] = transit.get(pid, 0.0) + _to_float(a.get("quantity")) * _to_int_sign(a.get("sign"))
+    q_drodze = _qty_by_product(drodze_rows)
+    q_main = _qty_by_product(main_rows)
 
-    # Zbiór SKU = wszystko z Fakturowni (produkty). Ilość w drodze doklejamy po product_id.
+    warnings: List[str] = []
+    obcy = [pid for pid in q_drodze if pid not in pmap]
+    if obcy:
+        warnings.append(f"{len(obcy)} pozycji z magazynu „w drodze\" bez odpowiednika w katalogu")
+
     rows: List[dict] = []
+    rozjazdy: List[str] = []
     for pid, info in pmap.items():
         sku = info["code"]
         if not sku:
             continue
-        in_transit = transit.get(pid, 0.0)
-        stan_main = info["global"] - in_transit
-        if stan_main < 0:
-            stan_main = 0.0
+        in_transit = q_drodze.get(pid, 0.0)
+        stan_main = q_main.get(pid, 0.0)
+
+        # Suma kontrolna. Ujemnych stanów NIE poprawiamy — w Fakturowni są normalne
+        # (sprzedaż zeszła, dokument magazynowy jeszcze nie) i mają trafić do bazy jak są.
+        if abs((in_transit + stan_main) - info["global"]) > _SUM_TOLERANCE:
+            rozjazdy.append(
+                f"{sku} ({in_transit:g}+{stan_main:g}≠{info['global']:g})"
+            )
+
         rows.append({
             "sku": sku,
             "sku_canon": sku.lower(),
@@ -315,17 +421,30 @@ def _build_rows(products: List[dict], drodze_actions: List[dict]) -> List[dict]:
             "in_transit_qty": round(in_transit, 3),
             "purchase_price_net": round(info["ppn"], 2),
         })
-    return rows
+
+    if rozjazdy:
+        proba = ", ".join(rozjazdy[:_MISMATCH_SAMPLE])
+        wiecej = f" (+{len(rozjazdy) - _MISMATCH_SAMPLE})" if len(rozjazdy) > _MISMATCH_SAMPLE else ""
+        warnings.append(f"suma magazynów ≠ stan globalny dla {len(rozjazdy)} SKU: {proba}{wiecej}")
+
+    return rows, warnings
 
 
 async def _refresh_one(firma: "Firma", sync_time: datetime) -> dict:
     """Jeden sklep. Łapie własne błędy — awaria jednej Fakturowni nie ubija pozostałych."""
     err: Optional[str] = None
     rows_n = 0
+    warnings: List[str] = []
     try:
+        wh_drodze, wh_main, warnings = await _resolve_warehouses(firma)
+
         products = await _fetch_all(firma, "products.json")
-        drodze = await _fetch_all(firma, "warehouse_actions.json", {"warehouse_id": firma.wh_drodze})
-        rows = _build_rows(products, drodze)
+        drodze_rows = await _fetch_all(firma, "products.json", {"warehouse_id": wh_drodze})
+        main_rows = await _fetch_all(firma, "products.json", {"warehouse_id": wh_main})
+
+        rows, w2 = _build_rows(products, drodze_rows, main_rows)
+        warnings.extend(w2)
+
         async with SessionLocal() as session:
             rows_n = await _upsert(session, firma, rows, sync_time)
         _status["rows_upserted"] += rows_n
@@ -335,11 +454,17 @@ async def _refresh_one(firma: "Firma", sync_time: datetime) -> dict:
         err = f"brak połączenia ({e.reason})"
     except Exception as e:
         err = str(e)
-    return {"slug": firma.slug, "ok": err is None, "error": err, "rows": rows_n}
+    return {"slug": firma.slug, "ok": err is None, "error": err,
+            "rows": rows_n, "warnings": warnings}
 
 
 def _result_desc(r: dict) -> str:
-    return f"błąd {r['error']}" if not r["ok"] else f"{r['rows']} SKU"
+    if not r["ok"]:
+        return f"błąd {r['error']}"
+    desc = f"{r['rows']} SKU"
+    if r.get("warnings"):
+        desc += " · uwagi: " + " | ".join(r["warnings"])
+    return desc
 
 
 async def run_refresh() -> None:
