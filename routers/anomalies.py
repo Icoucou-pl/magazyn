@@ -333,6 +333,8 @@ async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncS
             "days_until_empty": p.days_until_empty,
             "transfer_source_shop": p.transfer_source_shop,
             "transfer_source_qty": p.transfer_source_qty,
+            "transfer_source_transit": p.transfer_source_transit,
+            "transfer_state": p.transfer_state,
         })
         groups[key]["total_skus"] += 1
 
