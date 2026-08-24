@@ -322,7 +322,6 @@ export default function Page() {
             initialSection={pendingManufacturerId != null ? "manufacturers" : undefined}
             openManufacturerId={pendingManufacturerId}
             onOpenedManufacturer={() => setPendingManufacturerId(null)}
-            onProductClick={goProduct}
           />
         ) : (
           <ComingSoon view={view} />
