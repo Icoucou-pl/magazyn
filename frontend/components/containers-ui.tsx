@@ -479,12 +479,14 @@ export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggl
 
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
-  container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt,
+  container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
 }: {
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
   onSetDelivered?: (d: string | null) => Promise<void>;
   onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
+  /** Otwiera szczegóły producenta. Bez tego propa przycisk się nie pojawia. */
+  onManufacturerClick?: (id: number) => void;
 }) {
   const eStatus = eff(c);
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
@@ -619,18 +621,19 @@ export function ContainerCard({
         )}
       </div>
 
-      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} />}
+      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} onManufacturerClick={onManufacturerClick} />}
     </div>
   );
 }
 
 function ContainerCardBody({
-  container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt,
+  container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
 }: {
   container: Container; fillColor: string; nextStatus?: string;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
   onSetDelivered?: (d: string | null) => Promise<void>;
   onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
+  onManufacturerClick?: (id: number) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -642,6 +645,19 @@ function ContainerCardBody({
   const fill = c.fill_percentage ?? 0;
   const lots = c.lots ?? [];
   const consolidated = !!c.is_consolidated && lots.length > 0;
+  // Producenci kontenera: w skonsolidowanym siedzą na LOTACH (c.manufacturer_id = NULL),
+  // w zwykłym na samym kontenerze. Ten sam producent może mieć kilka lotów — deduplikacja po id.
+  const cardMfrs: { id: number; name: string; color: string }[] = (() => {
+    const src = consolidated
+      ? lots.map((l) => ({ id: l.manufacturer_id, name: l.manufacturer_name, color: l.manufacturer_color }))
+      : [{ id: c.manufacturer_id, name: c.manufacturer_name, color: c.manufacturer_color }];
+    const seen = new Map<number, { id: number; name: string; color: string }>();
+    for (const m of src) {
+      if (m.id == null || !m.name) continue;
+      if (!seen.has(m.id)) seen.set(m.id, { id: m.id, name: m.name, color: m.color ?? "var(--text-lo)" });
+    }
+    return [...seen.values()];
+  })();
   // Etykieta ERP dla „wbite": AMH → Subiekt, Acti/Veluxa → Fakturownia (firma z firma_breakdown).
   const _fb = (c.firma_breakdown || {}) as Record<string, { units?: number }>;
   let _bestSlug = "amh", _bestU = -1;
@@ -817,6 +833,15 @@ function ContainerCardBody({
           {/* Śledzenie u armatora zapisanego na kontenerze. Przycisk pojawia się tylko,
               gdy numer jest poprawny (ISO 6346) i znamy format URL danego armatora
               — dziś MSC i CMA CGM. Reszta bez linku, żeby nie prowadzić w pustkę. */}
+          {/* Jeden przycisk = jeden producent. Przy skonsolidowanym kontenerze zbiorczy
+              przycisk musiałby i tak zapytać „którego?", więc od razu pokazujemy nazwy. */}
+          {onManufacturerClick && cardMfrs.map((m) => (
+            <button key={m.id} onClick={() => onManufacturerClick(m.id)}
+              title={`Szczegóły producenta: ${m.name}`}
+              style={{ ...btnSecondary, color: m.color, borderColor: `color-mix(in oklch, ${m.color} 40%, var(--border))` }}>
+              <I.Factory size={12} /> {cardMfrs.length > 1 ? m.name : "Szczegóły producenta"}
+            </button>
+          ))}
           {(() => {
             const tUrl = trackingUrl(c.container_number, c.carrier);
             if (!tUrl) return null;

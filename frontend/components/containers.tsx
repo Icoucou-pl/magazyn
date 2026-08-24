@@ -20,6 +20,7 @@ import {
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import AutoSuggestModal from "./auto-suggest";
 import OrderPdfModal from "./order-pdf";
+import ManufacturerModal from "./manufacturer-modal";
 import type { Product, Manufacturer } from "./products-ui";
 
 // Fallback okna odprawy — używany TYLKO gdy backend nie policzył warehouse_delivery_date
@@ -90,6 +91,9 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Container | null>(null);
   const [poContainer, setPoContainer] = useState<Container | null>(null);
+  // Producent otwarty z karty kontenera. `containers` podajemy PEŁNE (nie zawężone
+  // zakładką firmy), bo modal liczy z nich KPI producenta — a producent nie zna firm.
+  const [mfrModalId, setMfrModalId] = useState<number | null>(null);
   const [autoSuggestOpen, setAutoSuggestOpen] = useState(false);
   const [autoSuggestMfr, setAutoSuggestMfr] = useState<number | null>(null);
 
@@ -440,12 +444,24 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
                     onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
                     onSetDelivered={(d) => setDelivered(c, d)}
                     onToggleSubiekt={(lotId, value) => toggleSubiekt(c, lotId, value)}
+                    onManufacturerClick={(id) => setMfrModalId(id)}
                   />
                 ))}
               </MonthGroup>
             );
           })}
         </div>
+      )}
+      {mfrModalId != null && (
+        <ManufacturerModal
+          mfr={manufacturers.find((m) => m.id === mfrModalId) || null}
+          containers={containers}
+          manufacturers={manufacturers}
+          allProducts={products}
+          showFin={showFin}
+          onClose={() => setMfrModalId(null)}
+          onContainersChanged={reload}
+        />
       )}
       {showForm && (
         <ContainerFormModal

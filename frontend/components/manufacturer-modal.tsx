@@ -136,6 +136,7 @@ export default function ManufacturerModal({
   const [lazyCatalog, setLazyCatalog] = useState<Product[] | null>(null);
   const [lazyContainers, setLazyContainers] = useState<Container[] | null>(null);
   const [lazyMfrs, setLazyMfrs] = useState<Manufacturer[] | null>(null);
+  const [lazyFirmy, setLazyFirmy] = useState<Firma[] | null>(null);
   const [booting, setBooting] = useState(false);
 
   const mfrId = mfr?.id;
@@ -144,6 +145,7 @@ export default function ManufacturerModal({
   const catalog = allProducts ?? lazyCatalog;
   const allContainers = containers ?? lazyContainers ?? [];
   const mfrList = manufacturers && manufacturers.length ? manufacturers : (lazyMfrs ?? []);
+  const firmaList = firmy && firmy.length ? firmy : (lazyFirmy ?? undefined);
   // Lista producenta: podana wprost albo odsiana z katalogu.
   const listProducts = useMemo(
     () => products ?? (catalog ? catalog.filter((p) => p.manufacturer_id === mfrId) : []),
@@ -155,17 +157,19 @@ export default function ManufacturerModal({
   const needCatalog = !allProducts && !lazyCatalog;
   const needContainers = !containers && !lazyContainers;
   const needMfrs = !(manufacturers && manufacturers.length) && !lazyMfrs;
+  const needFirmy = !(firmy && firmy.length) && !lazyFirmy;
   useEffect(() => {
     if (mfrId == null) return;
-    if (!needCatalog && !needContainers && !needMfrs) return;
+    if (!needCatalog && !needContainers && !needMfrs && !needFirmy) return;
     let alive = true;
     setBooting(true);
     const reqs: Promise<unknown>[] = [
       needCatalog ? api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE") : Promise.resolve(null),
       needContainers ? api.get("/containers") : Promise.resolve(null),
       needMfrs ? api.get("/manufacturers") : Promise.resolve(null),
+      needFirmy ? api.get("/firmy") : Promise.resolve(null),
     ];
-    Promise.allSettled(reqs).then(([prod, cont, mfrs]) => {
+    Promise.allSettled(reqs).then(([prod, cont, mfrs, fir]) => {
       if (!alive) return;
       setBooting(false);
       if (needCatalog) {
@@ -174,10 +178,11 @@ export default function ManufacturerModal({
       }
       if (needContainers) setLazyContainers(cont.status === "fulfilled" ? ((cont.value as Container[]) || []) : []);
       if (needMfrs) setLazyMfrs(mfrs.status === "fulfilled" ? ((mfrs.value as Manufacturer[]) || []) : []);
+      if (needFirmy) setLazyFirmy(fir.status === "fulfilled" ? ((fir.value as Firma[]) || []) : []);
     });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mfrId, needCatalog, needContainers, needMfrs]);
+  }, [mfrId, needCatalog, needContainers, needMfrs, needFirmy]);
 
   useEffect(() => {
     // Gdy na wierzchu jest karta produktu, Esc ma zamknąć tylko ją. Bez tego obie
@@ -506,7 +511,7 @@ export default function ManufacturerModal({
       <ProductModal
         product={openProduct}
         manufacturers={mfrList.length ? mfrList : [mfr]}
-        firmy={firmy}
+        firmy={firmaList}
         onClose={() => setOpenSku(null)}
         onUpdated={(p) => setPatches((prev) => ({ ...prev, [p.sku]: p }))}
         onContainerClick={(id) => { setOpenSku(null); void openContainer(id); }}
@@ -537,7 +542,7 @@ export default function ManufacturerModal({
         products={catalog ? catalog.filter((p) => p.manufacturer_id === nestedMfr.id) : undefined}
         containers={allContainers}
         manufacturers={mfrList}
-        firmy={firmy}
+        firmy={firmaList}
         allProducts={catalog ?? undefined}
         showFin={showFin}
         onClose={() => setNestedMfrId(null)}
