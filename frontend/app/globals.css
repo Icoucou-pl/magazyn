@@ -174,6 +174,15 @@ html[data-theme="light"] .brand-logo-light { display: block !important; }
 @media (max-width: 980px) {
   :root { --app-header-h: 56px; }
 }
+/* Pola w modalach nie mogą rozpychać swojego kontenera.
+   <input type="date"> i <select> mają na iOS sporą szerokość wewnętrzną (min-content),
+   a element siatki domyślnie nie kurczy się poniżej min-content swojej zawartości —
+   przez to kolumna „1fr" puchła ponad szerokość karty i modal scrollował się w poziomie.
+   min-width:0 zeruje ten wkład; szerokość i tak ustala width:100% z inputStyle. */
+[data-modal-card] input,
+[data-modal-card] select,
+[data-modal-card] textarea { min-width: 0; max-width: 100%; }
+
 @media (max-width: 640px) {
   body { font-size: 13px; }
   :root { --app-header-h: 54px; }
