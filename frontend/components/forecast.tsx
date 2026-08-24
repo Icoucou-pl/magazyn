@@ -172,7 +172,9 @@ export default function ForecastView({
     let alive = true;
     setLoading(true);
     Promise.allSettled([
-      api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
+      // SAMPLE ciągniemy wyłącznie pod zakładkę „Sample" w szczegółach producenta.
+      // Do samej macierzy sample nie wchodzą — odsiewa je `matrixProducts` niżej.
+      api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE"),
       api.get("/manufacturers"),
       api.get("/containers"),
       // Mapa firm — potrzebna, bo produkt niesie firma_id, a fragmentator operuje slugiem.
@@ -220,13 +222,21 @@ export default function ForecastView({
     return allProducts.filter((p) => p.firma_id === wanted);
   }, [allProducts, firmy, shop]);
 
+  // Widok prognozy operuje na asortymencie BEZ sampli. Sample siedzą w `products`
+  // tylko dlatego, że modal producenta ma dla nich osobną zakładkę — do macierzy,
+  // wyprzedaży, pickera „Dodaj produkt" ani chipów producentów nie wchodzą.
+  const matrixProducts = useMemo(
+    () => products.filter((p) => p.product_status !== "SAMPLE"),
+    [products],
+  );
+
   // Chipy producentów z produktów w zakresie — inaczej na zakładce Acti wisieliby
   // producenci bez ani jednego SKU tej firmy (stąd Medik-Medical świecił na AMH).
   const scopedManufacturers = useMemo(() => {
     if (!shop) return manufacturers;
-    const present = new Set(products.map((p) => p.manufacturer_id).filter((id) => id != null));
+    const present = new Set(matrixProducts.map((p) => p.manufacturer_id).filter((id) => id != null));
     return manufacturers.filter((m) => present.has(m.id));
-  }, [manufacturers, products, shop]);
+  }, [manufacturers, matrixProducts, shop]);
 
   const monthCols = useMemo(() => buildMonthCols(horizon), [horizon]);
   const mfr = useMemo(() => manufacturers.find((m) => m.id === mfrId), [manufacturers, mfrId]);
@@ -253,7 +263,7 @@ export default function ForecastView({
   const rows = useMemo<FcRow[]>(() => {
     const inMfr = (p: Product) => mfrId === "ALL" || p.manufacturer_id === mfrId;
     const passFilter = FC_STATUS_FILTERS[statusFilter].test;
-    let arr = products.filter((p) => {
+    let arr = matrixProducts.filter((p) => {
       if (!inMfr(p)) return false;
       if (hiddenSkus.has(p.sku)) return false;
       return passFilter(p) || extraSkus.has(p.sku);
@@ -270,15 +280,15 @@ export default function ForecastView({
       return a.p.sku.localeCompare(b.p.sku);
     });
     return mapped;
-  }, [products, mfrId, monthCols, sortKey, seasonality, seasCurves, seasGlobal, statusFilter, hiddenSkus, extraSkus]);
+  }, [matrixProducts, mfrId, monthCols, sortKey, seasonality, seasCurves, seasGlobal, statusFilter, hiddenSkus, extraSkus]);
 
   // Produkty, które można dodać (ten sam producent, jeszcze nie na liście)
   const addable = useMemo(() => {
     const shownSkus = new Set(rows.map((r) => r.p.sku));
-    return products.filter((p) =>
+    return matrixProducts.filter((p) =>
       (mfrId === "ALL" || p.manufacturer_id === mfrId) && !shownSkus.has(p.sku)
     );
-  }, [rows, products, mfrId]);
+  }, [rows, matrixProducts, mfrId]);
 
   // Produkty w bieżącym zakresie (producent + filtr statusu + ręczne zmiany).
   // To dokładnie ta lista, którą dostaje modal wyprzedaży — dzięki temu liczba

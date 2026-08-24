@@ -8,7 +8,7 @@
 //   Dane podaje wywołujący: produkty i kontenery już zawężone do producenta.
 // ============================================================
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtPLNk } from "@/lib/format";
 import { I, Pill, ContainerNr } from "./ui";
@@ -41,6 +41,31 @@ function needsOrder(p: Product): boolean {
   return p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ";
 }
 
+// ── Lista produktów: zakładki ────────────────────────────────
+// SAMPLE nie jest flagą obok statusu — backend (services/products.py) daje takiemu SKU
+// product_status = "SAMPLE" ZAMIAST właściwego. Dlatego „Wszystkie" musi jawnie odsiać
+// sample, inaczej licznik zakładki rozjeżdża się z kafelkiem „Produktów (SKU)".
+type MpTab = "order" | "all" | "fav" | "sample";
+
+const MP_TABS: { key: MpTab; label: string; alarm?: boolean; test: (p: Product) => boolean }[] = [
+  { key: "order",  label: "Do zamówienia", alarm: true, test: needsOrder },
+  { key: "all",    label: "Wszystkie",  test: (p) => p.product_status !== "SAMPLE" },
+  { key: "fav",    label: "Obserwowane", test: (p) => p.product_status !== "SAMPLE" && p.is_favorite },
+  { key: "sample", label: "Sample",     test: (p) => p.product_status === "SAMPLE" },
+];
+
+type MpSort = "rot" | "urg" | "stock" | "sku";
+const MP_SORTS: { key: MpSort; label: string; cmp: (a: Product, b: Product) => number }[] = [
+  { key: "rot",   label: "Rotacja ↓",     cmp: (a, b) => b.avg_monthly_weighted - a.avg_monthly_weighted },
+  { key: "urg",   label: "Dni do zera ↑", cmp: (a, b) => a.days_until_empty - b.days_until_empty },
+  { key: "stock", label: "Stan ↓",        cmp: (a, b) => b.stock - a.stock },
+  { key: "sku",   label: "SKU A–Z",       cmp: (a, b) => a.sku.localeCompare(b.sku) },
+];
+
+// Ile kontenerów pokazujemy bez rozwijania. Producent z 12 pozycjami w drodze
+// (Anji) zjadał cały modal i spychał listę produktów pod ekran.
+const CONT_PREVIEW = 6;
+
 // ── Szczegóły producenta (port ManufacturerModal) ────────────
 export default function ManufacturerModal({
   mfr, products, containers, showFin, onClose, onProductClick,
@@ -56,6 +81,10 @@ export default function ManufacturerModal({
 }) {
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
   const [seasonErr, setSeasonErr] = useState(false);
+  const [tab, setTab] = useState<MpTab>("fav");
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<MpSort>("rot");
+  const [contAll, setContAll] = useState(false);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -74,6 +103,36 @@ export default function ManufacturerModal({
     return () => { alive = false; };
   }, [mfrId]);
 
+  // Liczniki zakładek — jeden przelot po produktach zamiast czterech filtrów.
+  const counts = useMemo(() => {
+    const c: Record<MpTab, number> = { order: 0, all: 0, fav: 0, sample: 0 };
+    for (const p of products) for (const t of MP_TABS) if (t.test(p)) c[t.key] += 1;
+    return c;
+  }, [products]);
+
+  // Domyślnie „Obserwowane"; producent bez ani jednego obserwowanego SKU pokazałby
+  // pustą listę na wejściu, więc wtedy spadamy na „Wszystkie".
+  useEffect(() => {
+    if (mfrId == null) return;
+    setTab(counts.fav > 0 ? "fav" : "all");
+    setQ(""); setSort("rot"); setContAll(false);
+  }, [mfrId, counts.fav]);
+
+  const visible = useMemo(() => {
+    const t = MP_TABS.find((x) => x.key === tab) || MP_TABS[1];
+    const ql = q.trim().toLowerCase();
+    const arr = products.filter((p) => {
+      if (!t.test(p)) return false;
+      if (!ql) return true;
+      return p.sku.toLowerCase().includes(ql) || (p.name || "").toLowerCase().includes(ql);
+    });
+    // Zakładka alarmowa ma stałą kolejność (najpilniejsze u góry) — jak w Pożarach.
+    const cmp = tab === "order"
+      ? MP_SORTS[1].cmp
+      : (MP_SORTS.find((s) => s.key === sort) || MP_SORTS[0]).cmp;
+    return [...arr].sort(cmp);
+  }, [products, tab, q, sort]);
+
   if (!mfr) return null;
 
   const mfrExt = mfr as Manufacturer & { contact?: string | null };
@@ -83,13 +142,12 @@ export default function ManufacturerModal({
   // Wcześniej szedł status ręczny, więc kontener po ETA wciąż liczył się jako w drodze.
   const inFlight = mine.filter(isUndelivered);
   const delivered = mine.length - inFlight.length;
+  const shownFlight = contAll ? inFlight : inFlight.slice(0, CONT_PREVIEW);
   const stockValue = products
     .filter((p) => IN_STOCK_VALUE.has(p.product_status))
     .reduce((s, p) => s + (p.stock_value || 0), 0);
   // Kwoty w drodze: ten sam kod co KPI na pulpicie, tylko zakres = producent zamiast firmy.
   const pipe = mfrPipeline(containers, mfr.id);
-  const needOrder = products.filter(needsOrder)
-    .sort((a, b) => a.days_until_empty - b.days_until_empty);  // najpilniejsze u góry — jak w Pożarach
 
   return (
     <Portal>
@@ -115,7 +173,8 @@ export default function ManufacturerModal({
         <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
           {/* KPI */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
-            <FcMetricBox label="Produktów (SKU)" value={products.length} sub={`${needOrder.length} do zamówienia`} tone={needOrder.length ? "warning" : "neutral"} />
+            {/* Bez sampli — inaczej kafelek kłamie względem zakładki „Wszystkie". */}
+            <FcMetricBox label="Produktów (SKU)" value={counts.all} sub={`${counts.order} do zamówienia`} tone={counts.order ? "warning" : "neutral"} />
             <FcMetricBox label="Wartość magazynu" value={showFin ? fmtPLNk(stockValue) : "•••"} sub="bieżący stan" />
             {/* Rozbite na dwa kafelki, tak jak pulpit. Wcześniej było jedno „W drodze" = suma
                 wartości TOWARU wszystkich niedostarczonych kontenerów — liczba, której na
@@ -153,32 +212,109 @@ export default function ManufacturerModal({
             )}
           </FcSection>
 
-          {/* Wymaga zamówienia */}
-          {needOrder.length > 0 && (
-            <FcSection title={`Wymaga zamówienia (${needOrder.length})`}>
-              <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
-                {needOrder.map((p, i) => (
+          {/* Produkty — jedna lista z zakładkami. Zastąpiła osobną sekcję „Wymaga zamówienia":
+              przy kilkudziesięciu SKU były to dwie listy pod sobą z tymi samymi wierszami.
+              Alarm nie zniknął — siedzi jako pierwsza zakładka z pomarańczowym licznikiem. */}
+          <FcSection title={`Produkty (${visible.length}${q.trim() ? ` z ${counts[tab]}` : ""})`}>
+            <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                padding: "9px 10px", borderBottom: "1px solid var(--border-soft)",
+              }}>
+                <div style={{ display: "inline-flex", gap: 2, padding: 2, background: "var(--surface-2)", borderRadius: 8 }}>
+                  {MP_TABS.map((t) => {
+                    const n = counts[t.key];
+                    const on = t.key === tab;
+                    return (
+                      <button key={t.key} onClick={() => setTab(t.key)} style={{
+                        display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px",
+                        border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
+                        fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap",
+                        background: on ? "var(--bg-elevated)" : "transparent",
+                        color: on ? "var(--text-hi)" : "var(--text-lo)",
+                      }}>
+                        {t.alarm && n > 0 && <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--warning)", flexShrink: 0 }} />}
+                        {t.label}
+                        <span className="num" style={{
+                          fontSize: 10.5, fontWeight: t.alarm && n > 0 ? 700 : 600,
+                          color: t.alarm && n > 0 ? "var(--warning)" : on ? "var(--text-mid)" : "var(--text-lo)",
+                        }}>{n}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ position: "relative", flex: 1, minWidth: 130 }}>
+                  <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", color: "var(--text-lo)", display: "flex" }}>
+                    <I.Search size={12} />
+                  </span>
+                  <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Szukaj po SKU lub nazwie…" style={{
+                    width: "100%", padding: "6px 10px 6px 27px", fontFamily: "inherit", fontSize: 11.5,
+                    background: "var(--bg)", border: "1px solid var(--border-soft)", borderRadius: 7,
+                    color: "var(--text-hi)", outline: "none",
+                  }} />
+                </div>
+
+                {/* Na zakładce alarmowej sortowanie jest zablokowane na „dni do zera" — wybór
+                    byłby martwy, więc go chowamy zamiast pokazywać nieaktywny select. */}
+                {tab !== "order" && (
+                  <select value={sort} onChange={(e) => setSort(e.target.value as MpSort)} style={{
+                    padding: "6px 8px", fontFamily: "inherit", fontSize: 11.5, background: "var(--bg)",
+                    border: "1px solid var(--border-soft)", borderRadius: 7, color: "var(--text-mid)",
+                    outline: "none", cursor: "pointer",
+                  }}>
+                    {MP_SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                  </select>
+                )}
+              </div>
+
+              <div style={{ maxHeight: 328, overflowY: "auto" }}>
+                {visible.length === 0 ? (
+                  <div style={{ padding: 26, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
+                    {q.trim() ? `Brak wyników dla „${q.trim()}"`
+                      : tab === "order" ? "Nic nie wymaga zamówienia — czysto."
+                        : tab === "sample" ? "Brak sampli u tego producenta."
+                          : tab === "fav" ? "Żadne SKU tego producenta nie jest obserwowane."
+                            : "Brak produktów przypiętych do tego producenta."}
+                  </div>
+                ) : visible.map((p, i) => (
                   <div key={p.sku} onClick={() => onProductClick?.(p.sku)} style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", cursor: onProductClick ? "pointer" : "default",
-                    borderBottom: i === needOrder.length - 1 ? "none" : "1px solid var(--border-soft)",
+                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                    cursor: onProductClick ? "pointer" : "default",
+                    borderBottom: i === visible.length - 1 ? "none" : "1px solid var(--border-soft)",
                   }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                    <StatusPillExt status={displayStatus(p)} size="sm" />
-                    <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{p.sku}</span>
-                    <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-                    <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>stan {p.stock} · {Math.round(p.avg_monthly_weighted)}/mies</span>
+                    {/* Gwiazdka zamiast osobnej kolumny „obserwowane" — na zakładce Wszystkie
+                        od razu widać, które SKU w ogóle wchodzi do Pożarów. */}
+                    <span style={{ width: 12, display: "flex", flexShrink: 0, color: "var(--accent)", visibility: p.is_favorite ? "visible" : "hidden" }}>
+                      <I.StarFill size={12} />
+                    </span>
+                    <span style={{ width: 118, flexShrink: 0 }}>
+                      <StatusPillExt status={displayStatus(p)} size="sm" />
+                    </span>
+                    <span className="mono" style={{ fontSize: 12, fontWeight: 600, width: 84, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{p.sku}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                    <span className="num" style={{ fontSize: 11, color: "var(--text-lo)", flexShrink: 0, whiteSpace: "nowrap", textAlign: "right" }}>
+                      stan {p.stock}
+                      {p.stock_in_transit > 0 && <> · <span style={{ color: "var(--info)" }}>+{p.stock_in_transit} w drodze</span></>}
+                      {p.avg_monthly_weighted >= 1 && <> · {Math.round(p.avg_monthly_weighted)}/mies</>}
+                      {(p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ") && p.avg_monthly_weighted >= 1 && isFinite(p.days_until_empty) && (
+                        <> · <span style={{ color: "var(--critical)" }}>{Math.max(0, Math.round(p.days_until_empty))}d do zera</span></>
+                      )}
+                      {showFin && p.stock_value > 0 && <> · <span style={{ color: "var(--text-mid)" }}>{fmtPLNk(p.stock_value)}</span></>}
+                    </span>
                   </div>
                 ))}
               </div>
-            </FcSection>
-          )}
+            </div>
+          </FcSection>
 
           {/* Kontenery w drodze */}
           {inFlight.length > 0 && (
             <FcSection title={`Kontenery w drodze (${inFlight.length})`}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {inFlight.map((c) => {
+                {shownFlight.map((c) => {
                   const m = STATUS_FULL_META[c.status] || STATUS_FULL_META.ORDERED;
                   const Icon = m.icon;
                   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
@@ -192,6 +328,15 @@ export default function ManufacturerModal({
                     </div>
                   );
                 })}
+                {!contAll && inFlight.length > CONT_PREVIEW && (
+                  <button onClick={() => setContAll(true)} style={{
+                    width: "100%", padding: 8, background: "var(--surface-1)", border: "1px dashed var(--border)",
+                    borderRadius: 8, color: "var(--text-lo)", fontFamily: "inherit", fontSize: 11.5,
+                    fontWeight: 600, cursor: "pointer",
+                  }}>
+                    Pokaż {plPick(inFlight.length - CONT_PREVIEW, "pozostały", "pozostałe", "pozostałych")} {inFlight.length - CONT_PREVIEW} {plPick(inFlight.length - CONT_PREVIEW, "kontener", "kontenery", "kontenerów")}
+                  </button>
+                )}
               </div>
             </FcSection>
           )}

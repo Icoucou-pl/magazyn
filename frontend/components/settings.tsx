@@ -290,7 +290,8 @@ function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: num
   useEffect(() => {
     if (detailId == null || detailProducts) return;
     Promise.allSettled([
-      api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE"),
+      // SAMPLE — pod zakładkę „Sample" w modalu szczegółów producenta.
+      api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE"),
       api.get("/containers"),
     ]).then(([prod, cont]) => {
       setDetailProducts(prod.status === "fulfilled" ? ((prod.value as Product[]) || []) : []);
