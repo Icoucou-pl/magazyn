@@ -42,8 +42,9 @@ function needsOrder(p: Product): boolean {
 
 // ── Lista produktów: zakładki ────────────────────────────────
 // Lista jest CELOWO uboga — odpowiada na jedno pytanie: „co ten producent u nas ma".
-// Statusy, rotacja, dni do zera i wartości siedzą w Prognozie i w zakładce Produkty;
-// dublowanie ich tutaj robiło z modala trzecią tabelę tego samego.
+// Wiersz to SKU, nazwa i stan; statusy, rotacja, ilości w drodze/w kontenerach, dni do
+// zera i wartości siedzą w Prognozie, w zakładce Produkty i w samej karcie produktu
+// (jeden klik stąd) — dublowanie ich tutaj robiło z modala trzecią tabelę tego samego.
 //
 // SAMPLE nie jest flagą obok statusu — backend (services/products.py) daje takiemu SKU
 // product_status = "SAMPLE" ZAMIAST właściwego. Dlatego „Wszystkie" musi jawnie odsiać
@@ -289,8 +290,6 @@ export default function ManufacturerModal({
                     <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                     <span className="num" style={{ fontSize: 11, color: "var(--text-lo)", flexShrink: 0, whiteSpace: "nowrap", textAlign: "right" }}>
                       stan {p.stock}
-                      {p.stock_in_transit_wbite > 0 && <> · <span style={{ color: "var(--ok)" }}>+{p.stock_in_transit_wbite} w drodze</span></>}
-                      {p.stock_in_transit_containers > 0 && <> · <span style={{ color: "var(--info)" }}>+{p.stock_in_transit_containers} w kontenerach</span></>}
                     </span>
                   </div>
                 ))}
