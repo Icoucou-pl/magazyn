@@ -308,8 +308,12 @@ export default function ManufacturerModal({
 
   return (
     <Portal>
-    <div onClick={onClose} style={modalBackdrop}>
-      <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 820, maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+    {/* data-modal-* włącza mobilne reguły z globals.css (padding tła, wysokość karty).
+        maxHeight w dvh, nie vh: na iOS `vh` mierzy się do NAJWIĘKSZEGO widoku (pasek URL
+        schowany), więc przy widocznym pasku karta była wyższa niż ekran i nagłówek
+        uciekał nad krawędź. */}
+    <div onClick={onClose} data-modal-backdrop style={modalBackdrop}>
+      <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in" style={{ ...modalCard, maxWidth: 820, maxHeight: "88dvh", display: "flex", flexDirection: "column" }}>
         {/* Nagłówek */}
         <div style={{ padding: "16px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative", flexShrink: 0 }}>
           <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: mfr.color }} />
@@ -564,6 +568,12 @@ const MM_CSS = `
   .mm-ct-gap { display: none; }
   .mm-ct-pill { order: 2; }
   .mm-ct-meta { order: 3; margin-left: auto; }
+}
+@media (max-width: 640px) {
+  /* Wysoka karta na telefonie zaczyna się od góry ekranu zamiast być centrowana —
+     przy centrowaniu i tak nie ma czego wyśrodkować, a nagłówek jest tym, co ma być
+     widoczne od razu. */
+  [data-modal-backdrop] { align-items: flex-start !important; }
 }
 `;
 

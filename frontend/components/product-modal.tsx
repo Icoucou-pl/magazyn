@@ -152,8 +152,10 @@ export default function ProductModal({
 
   return (
     <Portal>
-      <div onClick={onClose} style={modalBackdrop}>
-        <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
+      {/* data-modal-* — bez tych atrybutów mobilne reguły modali z globals.css nie miały
+          się do czego przyczepić i nie działały. */}
+      <div onClick={onClose} data-modal-backdrop style={modalBackdrop}>
+        <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
         {/* Header */}
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
