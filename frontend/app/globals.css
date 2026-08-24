@@ -195,7 +195,9 @@ html[data-theme="light"] .brand-logo-light { display: block !important; }
 }
 @media (max-width: 480px) {
   [data-kpi-value] { font-size: 19px !important; }
-  [data-carrier-link] { display: none !important; }
+  /* „Śledź kontener" był tu chowany, bo stopka karty nie mieściła się w jednej linii.
+     Stopka jest teraz siatką (patrz .cc-actions w containers-ui) i mieści komplet,
+     więc chowanie akcji na telefonie nie ma już uzasadnienia. */
   .pill-sm { padding: 1px 5px !important; font-size: 9px !important; }
 }
 @media (max-width: 400px) {
