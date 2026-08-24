@@ -175,13 +175,29 @@ html[data-theme="light"] .brand-logo-light { display: block !important; }
   :root { --app-header-h: 56px; }
 }
 /* Pola w modalach nie mogą rozpychać swojego kontenera.
-   <input type="date"> i <select> mają na iOS sporą szerokość wewnętrzną (min-content),
-   a element siatki domyślnie nie kurczy się poniżej min-content swojej zawartości —
-   przez to kolumna „1fr" puchła ponad szerokość karty i modal scrollował się w poziomie.
-   min-width:0 zeruje ten wkład; szerokość i tak ustala width:100% z inputStyle. */
+   Element siatki nie kurczy się poniżej min-content swojej zawartości, więc kolumna
+   „1fr" puchła do rozmiaru pola i modal scrollował się w poziomie. */
 [data-modal-card] input,
 [data-modal-card] select,
 [data-modal-card] textarea { min-width: 0; max-width: 100%; }
+
+/* iOS Safari: <input type="date"> IGNORUJE width i trzyma swoją natywną szerokość,
+   dopóki nie zdejmie mu się wyglądu systemowego. Samo min-width:0 nie wystarcza —
+   dopiero appearance:none sprawia, że pole słucha width:100%. Picker działa dalej,
+   znika tylko systemowe tło kontrolki (i tak nadpisane przez inputStyle). */
+[data-modal-card] input[type="date"],
+[data-modal-card] input[type="datetime-local"],
+[data-modal-card] input[type="time"],
+[data-modal-card] input[type="month"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Ostatnia linia obrony: cokolwiek jeszcze spróbuje rozepchnąć treść modala w bok,
+   nie rozjedzie całej karty. Pion scrolluje się normalnie. */
+[data-modal-card] [data-modal-section] { overflow-x: hidden; }
 
 @media (max-width: 640px) {
   body { font-size: 13px; }
