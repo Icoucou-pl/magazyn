@@ -305,6 +305,14 @@ function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOp
     });
   }, [detailId, detailProducts]);
 
+  // Karta kontenera otwarta w szczegółach producenta może go zapisać albo skasować —
+  // lokalna lista jest ciągnięta raz i sama się o tym nie dowie.
+  const reloadDetailContainers = () => {
+    api.get("/containers")
+      .then((d) => setDetailContainers((d as Container[]) || []))
+      .catch(() => toast("Nie udało się odświeżyć kontenerów", "warning"));
+  };
+
   const totalSku = items.reduce((s, m) => s + (m.sku_count || 0), 0);
 
   return (
@@ -343,8 +351,10 @@ function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOp
             containers={detailContainers}
             manufacturers={items}
             firmy={detailFirmy || undefined}
+            allProducts={detailProducts}
             showFin={can(user, "viewFinancials")}
             onClose={() => setDetailId(null)}
+            onContainersChanged={reloadDetailContainers}
           />
         ) : (
           <div onClick={() => setDetailId(null)} style={{

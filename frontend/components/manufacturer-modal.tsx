@@ -18,6 +18,8 @@ import {
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import ProductModal from "./product-modal";
+import ContainerFormModal, { type ContainerType } from "./container-form";
+import { toast } from "./toast";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { mfrPipeline, belongsToMfr, isUndelivered, countLabel, plPick } from "@/lib/pipeline";
 
@@ -79,7 +81,7 @@ const arrivalOf = (c: Container): string =>
 
 // ── Szczegóły producenta (port ManufacturerModal) ────────────
 export default function ManufacturerModal({
-  mfr, products, containers, manufacturers, firmy, showFin, onClose, onContainerClick,
+  mfr, products, containers, manufacturers, firmy, allProducts, showFin, onClose, onContainersChanged,
 }: {
   mfr: Manufacturer | null;
   products: Product[];
@@ -90,9 +92,14 @@ export default function ManufacturerModal({
    *  przepiąć SKU do innego producenta. Bez tego select miałby jedną pozycję. */
   manufacturers?: Manufacturer[];
   firmy?: Firma[];
+  /** PEŁEN katalog SKU — karta kontenera potrzebuje go do pickera pozycji. `products`
+   *  jest zawężone do producenta, więc bez tego w formularzu dałoby się dodać tylko
+   *  jego własne towary. Brak propa = klik w kontener sam sobie listę dociągnie. */
+  allProducts?: Product[];
   showFin: boolean;
   onClose: () => void;
-  onContainerClick?: (id: number) => void;
+  /** Zapis/usunięcie kontenera w karcie otwartej stąd — rodzic ma przeładować swoją listę. */
+  onContainersChanged?: () => void;
 }) {
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
   const [seasonErr, setSeasonErr] = useState(false);
@@ -107,16 +114,25 @@ export default function ManufacturerModal({
   // Edycje z karty produktu (gwiazdka, producent, klasyfikacja) nakładamy lokalnie —
   // lista producenta dostaje dane od rodzica i sama ich nie przeładowuje.
   const [patches, setPatches] = useState<Record<string, Product>>({});
+  // Karta kontenera — ta sama, którą otwiera lista Kontenerów. Jej zależności
+  // (typy kontenerów, pełen katalog SKU) ciągniemy leniwie, dopiero przy pierwszym
+  // kliknięciu: modal producenta sam z siebie ich nie potrzebuje.
+  const [openContainerId, setOpenContainerId] = useState<number | null>(null);
+  const [ctTypes, setCtTypes] = useState<ContainerType[] | null>(null);
+  const [ctProducts, setCtProducts] = useState<Product[] | null>(null);
+  const [ctLoading, setCtLoading] = useState(false);
 
   const mfrId = mfr?.id;
 
   useEffect(() => {
     // Gdy na wierzchu jest karta produktu, Esc ma zamknąć tylko ją. Bez tego obie
     // obsługi łapią to samo zdarzenie i modal producenta znika razem z kartą.
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !openSku) onClose(); };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !openSku && openContainerId == null) onClose();
+    };
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
-  }, [onClose, openSku]);
+  }, [onClose, openSku, openContainerId]);
 
   useEffect(() => {
     if (mfrId == null) return;
@@ -133,6 +149,7 @@ export default function ManufacturerModal({
   useEffect(() => {
     if (mfrId == null) return;
     setTab("fav"); setQ(""); setContAll(false); setContTab("flight"); setPatches({}); setOpenSku(null);
+    setOpenContainerId(null);
   }, [mfrId]);
 
   // Produkty po nałożeniu lokalnych edycji. SKU przepięte w karcie do innego
@@ -167,6 +184,33 @@ export default function ManufacturerModal({
       })
       .sort((a, b) => a.sku.localeCompare(b.sku));
   }, [effProducts, effTab, q]);
+
+  // Klik w kontener: najpierw upewniamy się, że karta ma z czego się zbudować.
+  // Typy i katalog trzymamy potem w stanie, więc kolejne kliknięcia są natychmiastowe.
+  const openContainer = async (id: number) => {
+    const needTypes = ctTypes == null;
+    const needProducts = ctProducts == null && !allProducts;
+    if (!needTypes && !needProducts) { setOpenContainerId(id); return; }
+    setCtLoading(true);
+    const typesReq: Promise<unknown> = needTypes ? api.get("/container-types") : Promise.resolve(null);
+    const prodsReq: Promise<unknown> = needProducts
+      ? api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE")
+      : Promise.resolve(null);
+    const [types, prods] = await Promise.allSettled([typesReq, prodsReq]);
+    setCtLoading(false);
+    if (needTypes && types.status !== "fulfilled") {
+      toast("Nie udało się wczytać typów kontenerów", "warning");
+      return;
+    }
+    if (needTypes) setCtTypes((types.status === "fulfilled" ? (types.value as ContainerType[]) : []) || []);
+    if (needProducts) setCtProducts((prods.status === "fulfilled" ? (prods.value as Product[]) : []) || []);
+    setOpenContainerId(id);
+  };
+
+  const openContainerCont = useMemo(
+    () => (openContainerId == null ? null : containers.find((c) => c.id === openContainerId) || null),
+    [openContainerId, containers],
+  );
 
   const openProduct = useMemo(
     () => (openSku ? effProducts.find((p) => p.sku === openSku) || null : null),
@@ -364,7 +408,13 @@ export default function ManufacturerModal({
                     ? new Date(arrivalOf(c)).toLocaleDateString("pl-PL")
                     : days >= 0 ? `za ${days}d` : `${-days}d po ETA`;
                   return (
-                    <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                    <div key={c.id} onClick={() => { void openContainer(c.id); }} style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer",
+                      background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8,
+                      opacity: ctLoading ? 0.6 : 1,
+                    }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--surface-1)"; }}>
                       <span style={{ color: m.fg, display: "flex" }}><Icon size={14} /></span>
                       <ContainerNr c={c} size={12} />
                       <Pill bg={m.bg} fg={m.fg} size="sm">{m.label}</Pill>
@@ -401,7 +451,22 @@ export default function ManufacturerModal({
         firmy={firmy}
         onClose={() => setOpenSku(null)}
         onUpdated={(p) => setPatches((prev) => ({ ...prev, [p.sku]: p }))}
-        onContainerClick={onContainerClick}
+        onContainerClick={(id) => { setOpenSku(null); void openContainer(id); }}
+      />
+    )}
+
+    {/* Karta kontenera — też rodzeństwo tła, z tego samego powodu co karta produktu.
+        Zapis/usunięcie tylko zamyka kartę i prosi rodzica o przeładowanie listy;
+        modal producenta zostaje otwarty. */}
+    {openContainerCont && (
+      <ContainerFormModal
+        initial={openContainerCont}
+        manufacturers={manufacturers && manufacturers.length ? manufacturers : [mfr]}
+        containerTypes={ctTypes || []}
+        products={allProducts || ctProducts || products}
+        onClose={() => setOpenContainerId(null)}
+        onSaved={() => { setOpenContainerId(null); onContainersChanged?.(); }}
+        onDeleted={() => { setOpenContainerId(null); onContainersChanged?.(); }}
       />
     )}
     </Portal>

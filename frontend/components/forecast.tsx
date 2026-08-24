@@ -191,6 +191,14 @@ export default function ForecastView({
     return () => { alive = false; };
   }, []);
 
+  // Zapis kontenera z karty otwartej w szczegółach producenta — lista jest ciągnięta
+  // raz przy montowaniu widoku, więc po edycji trzeba ją odświeżyć ręcznie.
+  const reloadContainers = () => {
+    api.get("/containers")
+      .then((d) => setContainers((d as Container[]) || []))
+      .catch(() => toast("Nie udało się odświeżyć kontenerów", "warning"));
+  };
+
   // Krzywe sezonowe ciągniemy dopiero, gdy ktoś realnie włączy sezonowość (jedno zapytanie, cache w stanie)
   useEffect(() => {
     if (!seasonality || seasLoaded || seasLoading) return;
@@ -646,8 +654,10 @@ export default function ForecastView({
           containers={containers}
           manufacturers={manufacturers}
           firmy={firmy}
+          allProducts={allProducts}
           showFin={showFin}
           onClose={() => setDetailMfrId(null)}
+          onContainersChanged={reloadContainers}
         />
       )}
 
