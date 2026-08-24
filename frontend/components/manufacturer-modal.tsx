@@ -14,18 +14,13 @@ import { fmtPLNk } from "@/lib/format";
 import { I, Pill, ContainerNr } from "./ui";
 import { STATUS_FULL_META, type Container } from "./containers-ui";
 import {
-  modalBackdrop, modalCard, Portal, StatusPillExt, displayStatus,
-  type Product, type Manufacturer,
+  modalBackdrop, modalCard, Portal,
+  type Product, type Manufacturer, type Firma,
 } from "./products-ui";
+import ProductModal from "./product-modal";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { mfrPipeline, belongsToMfr, isUndelivered, countLabel, plPick } from "@/lib/pipeline";
 
-// „Wymaga zamówienia" w szczegółach producenta = ta sama reguła co Pożary na
-// Dashboardzie. Tam listę robi backend (/shopping-list?favorites_only=1), więc outlety,
-// dead stock i „nie dozamawiamy" nigdy tam nie docierają. Tutaj produkty przychodzą
-// z /products (pełen asortyment, bo macierz prognozy ma pokazywać wszystko),
-// dlatego ten sam filtr trzeba nałożyć klientowo — inaczej w modalu wyskakują
-// outletowe SKU, których nie zamawiamy.
 // Wartość magazynu = te same statusy co na pulpicie. Pulpit liczy ją z /stock-value-history,
 // które bierze ACTIVE + ACTIVE_NO_STOCK + DEAD_STOCK — bez INACTIVE. Modal dostaje listę
 // z /products?include=…,INACTIVE (macierz prognozy tego potrzebuje), więc INACTIVE trzeba
@@ -33,6 +28,10 @@ import { mfrPipeline, belongsToMfr, isUndelivered, countLabel, plPick } from "@/
 // stock × purchase_price (backend: stock_value), gdzie cena idzie ręczna → Fakturownia → Subiekt.
 const IN_STOCK_VALUE = new Set(["ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"]);
 
+// Podpis „N do zamówienia" pod kafelkiem SKU = ta sama reguła co Pożary na Dashboardzie.
+// Tam listę robi backend (/shopping-list?favorites_only=1), więc outlety, dead stock
+// i „nie dozamawiamy" nigdy tam nie docierają. Tutaj produkty przychodzą z /products
+// (pełen asortyment), dlatego ten sam filtr trzeba nałożyć klientowo.
 function needsOrder(p: Product): boolean {
   if (p.product_status !== "ACTIVE" && p.product_status !== "ACTIVE_NO_STOCK") return false;
   if (!p.is_favorite) return false;          // tylko obserwowane — jak favorites_only=1
@@ -42,24 +41,19 @@ function needsOrder(p: Product): boolean {
 }
 
 // ── Lista produktów: zakładki ────────────────────────────────
+// Lista jest CELOWO uboga — odpowiada na jedno pytanie: „co ten producent u nas ma".
+// Statusy, rotacja, dni do zera i wartości siedzą w Prognozie i w zakładce Produkty;
+// dublowanie ich tutaj robiło z modala trzecią tabelę tego samego.
+//
 // SAMPLE nie jest flagą obok statusu — backend (services/products.py) daje takiemu SKU
 // product_status = "SAMPLE" ZAMIAST właściwego. Dlatego „Wszystkie" musi jawnie odsiać
 // sample, inaczej licznik zakładki rozjeżdża się z kafelkiem „Produktów (SKU)".
-type MpTab = "order" | "all" | "fav" | "sample";
+type MpTab = "fav" | "all" | "sample";
 
-const MP_TABS: { key: MpTab; label: string; alarm?: boolean; test: (p: Product) => boolean }[] = [
-  { key: "order",  label: "Do zamówienia", alarm: true, test: needsOrder },
-  { key: "all",    label: "Wszystkie",  test: (p) => p.product_status !== "SAMPLE" },
+const MP_TABS: { key: MpTab; label: string; test: (p: Product) => boolean }[] = [
   { key: "fav",    label: "Obserwowane", test: (p) => p.product_status !== "SAMPLE" && p.is_favorite },
-  { key: "sample", label: "Sample",     test: (p) => p.product_status === "SAMPLE" },
-];
-
-type MpSort = "rot" | "urg" | "stock" | "sku";
-const MP_SORTS: { key: MpSort; label: string; cmp: (a: Product, b: Product) => number }[] = [
-  { key: "rot",   label: "Rotacja ↓",     cmp: (a, b) => b.avg_monthly_weighted - a.avg_monthly_weighted },
-  { key: "urg",   label: "Dni do zera ↑", cmp: (a, b) => a.days_until_empty - b.days_until_empty },
-  { key: "stock", label: "Stan ↓",        cmp: (a, b) => b.stock - a.stock },
-  { key: "sku",   label: "SKU A–Z",       cmp: (a, b) => a.sku.localeCompare(b.sku) },
+  { key: "all",    label: "Wszystkie",   test: (p) => p.product_status !== "SAMPLE" },
+  { key: "sample", label: "Sample",      test: (p) => p.product_status === "SAMPLE" },
 ];
 
 // Ile kontenerów pokazujemy bez rozwijania. Producent z 12 pozycjami w drodze
@@ -68,31 +62,44 @@ const CONT_PREVIEW = 6;
 
 // ── Szczegóły producenta (port ManufacturerModal) ────────────
 export default function ManufacturerModal({
-  mfr, products, containers, showFin, onClose, onProductClick,
+  mfr, products, containers, manufacturers, firmy, showFin, onClose, onContainerClick,
 }: {
   mfr: Manufacturer | null;
   products: Product[];
   /** WSZYSTKIE kontenery, nie zawężone do producenta — zawężenie robi modal, bo w kontenerach
    *  skonsolidowanych producent siedzi na locie, a nie na kontenerze (c.manufacturer_id = NULL). */
   containers: Container[];
+  /** Pełna lista producentów — leci do zagnieżdżonej karty produktu, żeby dało się tam
+   *  przepiąć SKU do innego producenta. Bez tego select miałby jedną pozycję. */
+  manufacturers?: Manufacturer[];
+  firmy?: Firma[];
   showFin: boolean;
   onClose: () => void;
-  onProductClick?: (sku: string) => void;
+  onContainerClick?: (id: number) => void;
 }) {
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
   const [seasonErr, setSeasonErr] = useState(false);
   const [tab, setTab] = useState<MpTab>("fav");
   const [q, setQ] = useState("");
-  const [sort, setSort] = useState<MpSort>("rot");
   const [contAll, setContAll] = useState(false);
-
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
+  // Karta produktu otwierana NA modalu producenta, nie zamiast niego — zamknięcie
+  // wraca do listy producenta. Wcześniej klik przerzucał widok na Produkty i po
+  // zamknięciu karty człowiek zostawał tam, z rozwalonym kontekstem.
+  const [openSku, setOpenSku] = useState<string | null>(null);
+  // Edycje z karty produktu (gwiazdka, producent, klasyfikacja) nakładamy lokalnie —
+  // lista producenta dostaje dane od rodzica i sama ich nie przeładowuje.
+  const [patches, setPatches] = useState<Record<string, Product>>({});
 
   const mfrId = mfr?.id;
+
+  useEffect(() => {
+    // Gdy na wierzchu jest karta produktu, Esc ma zamknąć tylko ją. Bez tego obie
+    // obsługi łapią to samo zdarzenie i modal producenta znika razem z kartą.
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !openSku) onClose(); };
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [onClose, openSku]);
+
   useEffect(() => {
     if (mfrId == null) return;
     let alive = true;
@@ -103,35 +110,50 @@ export default function ManufacturerModal({
     return () => { alive = false; };
   }, [mfrId]);
 
-  // Liczniki zakładek — jeden przelot po produktach zamiast czterech filtrów.
-  const counts = useMemo(() => {
-    const c: Record<MpTab, number> = { order: 0, all: 0, fav: 0, sample: 0 };
-    for (const p of products) for (const t of MP_TABS) if (t.test(p)) c[t.key] += 1;
-    return c;
-  }, [products]);
-
-  // Domyślnie „Obserwowane"; producent bez ani jednego obserwowanego SKU pokazałby
-  // pustą listę na wejściu, więc wtedy spadamy na „Wszystkie".
+  // Reset przy zmianie producenta. `counts` czytamy w środku, ale go nie śledzimy —
+  // odznaczenie ostatniej gwiazdki nie ma przerzucać zakładki pod palcami.
   useEffect(() => {
     if (mfrId == null) return;
-    setTab(counts.fav > 0 ? "fav" : "all");
-    setQ(""); setSort("rot"); setContAll(false);
-  }, [mfrId, counts.fav]);
+    setTab("fav"); setQ(""); setContAll(false); setPatches({}); setOpenSku(null);
+  }, [mfrId]);
+
+  // Produkty po nałożeniu lokalnych edycji. SKU przepięte w karcie do innego
+  // producenta wypada z listy od razu, zamiast wisieć do przeładowania widoku.
+  const effProducts = useMemo(() => {
+    if (Object.keys(patches).length === 0) return products;
+    return products
+      .map((p) => patches[p.sku] ?? p)
+      .filter((p) => patches[p.sku] == null || p.manufacturer_id === mfrId);
+  }, [products, patches, mfrId]);
+
+  const counts = useMemo(() => {
+    const c: Record<MpTab, number> = { fav: 0, all: 0, sample: 0 };
+    for (const p of effProducts) for (const t of MP_TABS) if (t.test(p)) c[t.key] += 1;
+    return c;
+  }, [effProducts]);
+
+  const needOrderCount = useMemo(() => effProducts.filter(needsOrder).length, [effProducts]);
+
+  // Producent bez ani jednego obserwowanego SKU pokazałby pustą listę na wejściu —
+  // wtedy (i tylko wtedy) spadamy na „Wszystkie".
+  const effTab: MpTab = tab === "fav" && counts.fav === 0 ? "all" : tab;
 
   const visible = useMemo(() => {
-    const t = MP_TABS.find((x) => x.key === tab) || MP_TABS[1];
+    const t = MP_TABS.find((x) => x.key === effTab) || MP_TABS[1];
     const ql = q.trim().toLowerCase();
-    const arr = products.filter((p) => {
-      if (!t.test(p)) return false;
-      if (!ql) return true;
-      return p.sku.toLowerCase().includes(ql) || (p.name || "").toLowerCase().includes(ql);
-    });
-    // Zakładka alarmowa ma stałą kolejność (najpilniejsze u góry) — jak w Pożarach.
-    const cmp = tab === "order"
-      ? MP_SORTS[1].cmp
-      : (MP_SORTS.find((s) => s.key === sort) || MP_SORTS[0]).cmp;
-    return [...arr].sort(cmp);
-  }, [products, tab, q, sort]);
+    return effProducts
+      .filter((p) => {
+        if (!t.test(p)) return false;
+        if (!ql) return true;
+        return p.sku.toLowerCase().includes(ql) || (p.name || "").toLowerCase().includes(ql);
+      })
+      .sort((a, b) => a.sku.localeCompare(b.sku));
+  }, [effProducts, effTab, q]);
+
+  const openProduct = useMemo(
+    () => (openSku ? effProducts.find((p) => p.sku === openSku) || null : null),
+    [openSku, effProducts],
+  );
 
   if (!mfr) return null;
 
@@ -143,7 +165,7 @@ export default function ManufacturerModal({
   const inFlight = mine.filter(isUndelivered);
   const delivered = mine.length - inFlight.length;
   const shownFlight = contAll ? inFlight : inFlight.slice(0, CONT_PREVIEW);
-  const stockValue = products
+  const stockValue = effProducts
     .filter((p) => IN_STOCK_VALUE.has(p.product_status))
     .reduce((s, p) => s + (p.stock_value || 0), 0);
   // Kwoty w drodze: ten sam kod co KPI na pulpicie, tylko zakres = producent zamiast firmy.
@@ -174,7 +196,7 @@ export default function ManufacturerModal({
           {/* KPI */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
             {/* Bez sampli — inaczej kafelek kłamie względem zakładki „Wszystkie". */}
-            <FcMetricBox label="Produktów (SKU)" value={counts.all} sub={`${counts.order} do zamówienia`} tone={counts.order ? "warning" : "neutral"} />
+            <FcMetricBox label="Produktów (SKU)" value={counts.all} sub={`${needOrderCount} do zamówienia`} tone={needOrderCount ? "warning" : "neutral"} />
             <FcMetricBox label="Wartość magazynu" value={showFin ? fmtPLNk(stockValue) : "•••"} sub="bieżący stan" />
             {/* Rozbite na dwa kafelki, tak jak pulpit. Wcześniej było jedno „W drodze" = suma
                 wartości TOWARU wszystkich niedostarczonych kontenerów — liczba, której na
@@ -212,10 +234,8 @@ export default function ManufacturerModal({
             )}
           </FcSection>
 
-          {/* Produkty — jedna lista z zakładkami. Zastąpiła osobną sekcję „Wymaga zamówienia":
-              przy kilkudziesięciu SKU były to dwie listy pod sobą z tymi samymi wierszami.
-              Alarm nie zniknął — siedzi jako pierwsza zakładka z pomarańczowym licznikiem. */}
-          <FcSection title={`Produkty (${visible.length}${q.trim() ? ` z ${counts[tab]}` : ""})`}>
+          {/* Produkty */}
+          <FcSection title={`Produkty (${visible.length}${q.trim() ? ` z ${counts[effTab]}` : ""})`}>
             <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
               <div style={{
                 display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
@@ -223,8 +243,7 @@ export default function ManufacturerModal({
               }}>
                 <div style={{ display: "inline-flex", gap: 2, padding: 2, background: "var(--surface-2)", borderRadius: 8 }}>
                   {MP_TABS.map((t) => {
-                    const n = counts[t.key];
-                    const on = t.key === tab;
+                    const on = t.key === effTab;
                     return (
                       <button key={t.key} onClick={() => setTab(t.key)} style={{
                         display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px",
@@ -233,12 +252,8 @@ export default function ManufacturerModal({
                         background: on ? "var(--bg-elevated)" : "transparent",
                         color: on ? "var(--text-hi)" : "var(--text-lo)",
                       }}>
-                        {t.alarm && n > 0 && <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--warning)", flexShrink: 0 }} />}
                         {t.label}
-                        <span className="num" style={{
-                          fontSize: 10.5, fontWeight: t.alarm && n > 0 ? 700 : 600,
-                          color: t.alarm && n > 0 ? "var(--warning)" : on ? "var(--text-mid)" : "var(--text-lo)",
-                        }}>{n}</span>
+                        <span className="num" style={{ fontSize: 10.5, color: on ? "var(--text-mid)" : "var(--text-lo)" }}>{counts[t.key]}</span>
                       </button>
                     );
                   })}
@@ -254,55 +269,28 @@ export default function ManufacturerModal({
                     color: "var(--text-hi)", outline: "none",
                   }} />
                 </div>
-
-                {/* Na zakładce alarmowej sortowanie jest zablokowane na „dni do zera" — wybór
-                    byłby martwy, więc go chowamy zamiast pokazywać nieaktywny select. */}
-                {tab !== "order" && (
-                  <select value={sort} onChange={(e) => setSort(e.target.value as MpSort)} style={{
-                    padding: "6px 8px", fontFamily: "inherit", fontSize: 11.5, background: "var(--bg)",
-                    border: "1px solid var(--border-soft)", borderRadius: 7, color: "var(--text-mid)",
-                    outline: "none", cursor: "pointer",
-                  }}>
-                    {MP_SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                  </select>
-                )}
               </div>
 
               <div style={{ maxHeight: 328, overflowY: "auto" }}>
                 {visible.length === 0 ? (
                   <div style={{ padding: 26, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
                     {q.trim() ? `Brak wyników dla „${q.trim()}"`
-                      : tab === "order" ? "Nic nie wymaga zamówienia — czysto."
-                        : tab === "sample" ? "Brak sampli u tego producenta."
-                          : tab === "fav" ? "Żadne SKU tego producenta nie jest obserwowane."
-                            : "Brak produktów przypiętych do tego producenta."}
+                      : effTab === "sample" ? "Brak sampli u tego producenta."
+                        : "Brak produktów przypiętych do tego producenta."}
                   </div>
                 ) : visible.map((p, i) => (
-                  <div key={p.sku} onClick={() => onProductClick?.(p.sku)} style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
-                    cursor: onProductClick ? "pointer" : "default",
+                  <div key={p.sku} onClick={() => setOpenSku(p.sku)} style={{
+                    display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", cursor: "pointer",
                     borderBottom: i === visible.length - 1 ? "none" : "1px solid var(--border-soft)",
                   }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                    {/* Gwiazdka zamiast osobnej kolumny „obserwowane" — na zakładce Wszystkie
-                        od razu widać, które SKU w ogóle wchodzi do Pożarów. */}
-                    <span style={{ width: 12, display: "flex", flexShrink: 0, color: "var(--accent)", visibility: p.is_favorite ? "visible" : "hidden" }}>
-                      <I.StarFill size={12} />
-                    </span>
-                    <span style={{ width: 118, flexShrink: 0 }}>
-                      <StatusPillExt status={displayStatus(p)} size="sm" />
-                    </span>
-                    <span className="mono" style={{ fontSize: 12, fontWeight: 600, width: 84, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{p.sku}</span>
+                    <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", width: 96, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.sku}</span>
                     <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                     <span className="num" style={{ fontSize: 11, color: "var(--text-lo)", flexShrink: 0, whiteSpace: "nowrap", textAlign: "right" }}>
                       stan {p.stock}
-                      {p.stock_in_transit > 0 && <> · <span style={{ color: "var(--info)" }}>+{p.stock_in_transit} w drodze</span></>}
-                      {p.avg_monthly_weighted >= 1 && <> · {Math.round(p.avg_monthly_weighted)}/mies</>}
-                      {(p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ") && p.avg_monthly_weighted >= 1 && isFinite(p.days_until_empty) && (
-                        <> · <span style={{ color: "var(--critical)" }}>{Math.max(0, Math.round(p.days_until_empty))}d do zera</span></>
-                      )}
-                      {showFin && p.stock_value > 0 && <> · <span style={{ color: "var(--text-mid)" }}>{fmtPLNk(p.stock_value)}</span></>}
+                      {p.stock_in_transit_wbite > 0 && <> · <span style={{ color: "var(--ok)" }}>+{p.stock_in_transit_wbite} w drodze</span></>}
+                      {p.stock_in_transit_containers > 0 && <> · <span style={{ color: "var(--info)" }}>+{p.stock_in_transit_containers} w kontenerach</span></>}
                     </span>
                   </div>
                 ))}
@@ -334,7 +322,7 @@ export default function ManufacturerModal({
                     borderRadius: 8, color: "var(--text-lo)", fontFamily: "inherit", fontSize: 11.5,
                     fontWeight: 600, cursor: "pointer",
                   }}>
-                    Pokaż {plPick(inFlight.length - CONT_PREVIEW, "pozostały", "pozostałe", "pozostałych")} {inFlight.length - CONT_PREVIEW} {plPick(inFlight.length - CONT_PREVIEW, "kontener", "kontenery", "kontenerów")}
+                    Pokaż pozostałe {inFlight.length - CONT_PREVIEW} {plPick(inFlight.length - CONT_PREVIEW, "kontener", "kontenery", "kontenerów")}
                   </button>
                 )}
               </div>
@@ -342,7 +330,23 @@ export default function ManufacturerModal({
           )}
         </div>
       </div>
+
     </div>
+
+    {/* Karta produktu NA modalu producenta — RODZEŃSTWO tła, nie dziecko.
+        React przepuszcza zdarzenia przez drzewo Reacta, nie DOM-u, więc portal
+        zagnieżdżony w tle z onClick={onClose} zamykałby modal producenta przy
+        każdym kliknięciu w karcie produktu. */}
+    {openProduct && (
+      <ProductModal
+        product={openProduct}
+        manufacturers={manufacturers && manufacturers.length ? manufacturers : [mfr]}
+        firmy={firmy}
+        onClose={() => setOpenSku(null)}
+        onUpdated={(p) => setPatches((prev) => ({ ...prev, [p.sku]: p }))}
+        onContainerClick={onContainerClick}
+      />
+    )}
     </Portal>
   );
 }

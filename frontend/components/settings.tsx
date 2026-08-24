@@ -16,7 +16,8 @@ import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, isAdmin, canEdit, can, PERMISSIONS, ROLE_PERMS } from "@/lib/permissions";
 import UsagePanel from "./usage-panel";
 import ManufacturerModal from "./manufacturer-modal";
-import type { Product } from "./products-ui";
+// Firma aliasowana — w tym pliku niżej żyje własny, bogatszy typ Firma (panel Firmy).
+import type { Product, Firma as PuFirma } from "./products-ui";
 import type { Container } from "./containers-ui";
 
 // ── Typy ─────────────────────────────────────────────────────
@@ -139,7 +140,7 @@ const parseDevice = (ua?: string | null) => {
 };
 
 // ── Widok główny ─────────────────────────────────────────────
-function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer, onProductClick }: {
+function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer }: {
   initialSection?: SectionId;
   openManufacturerId?: number | null;
   onOpenedManufacturer?: () => void;
@@ -207,7 +208,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
               <p style={{ margin: "4px 0 0 28px", fontSize: 12, color: "var(--text-lo)" }}>{activeSection.desc}</p>
             </div>
           )}
-          {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer} onProductClick={onProductClick}/>}
+          {section === "manufacturers"   && <ManufacturersPanel openId={openManufacturerId} onOpened={onOpenedManufacturer}/>}
           {section === "firmy"           && <FirmaePanel/>}
           {section === "container_types" && <ContainerTypesPanel/>}
           {section === "cn_sku"          && <CnSkuPanel/>}
@@ -254,7 +255,7 @@ function Toggle({ on, disabled, onClick }: { on: boolean; disabled?: boolean; on
 // ============================================================
 // PRODUCENCI
 // ============================================================
-function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: number | null; onOpened?: () => void; onProductClick?: (sku: string) => void } = {}) {
+function ManufacturersPanel({ openId, onOpened }: { openId?: number | null; onOpened?: () => void } = {}) {
   const user = useUser() as CtxUser;
   const showEdit = canEdit(user);
   const [items, setItems] = useState<Manufacturer[]>([]);
@@ -265,6 +266,7 @@ function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: num
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailProducts, setDetailProducts] = useState<Product[] | null>(null);
   const [detailContainers, setDetailContainers] = useState<Container[] | null>(null);
+  const [detailFirmy, setDetailFirmy] = useState<PuFirma[] | null>(null);
 
   const load = async () => {
     try {
@@ -293,9 +295,12 @@ function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: num
       // SAMPLE — pod zakładkę „Sample" w modalu szczegółów producenta.
       api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE"),
       api.get("/containers"),
-    ]).then(([prod, cont]) => {
+      // Firmy — pod select w karcie produktu, którą modal producenta otwiera u siebie.
+      api.get("/firmy"),
+    ]).then(([prod, cont, fir]) => {
       setDetailProducts(prod.status === "fulfilled" ? ((prod.value as Product[]) || []) : []);
       setDetailContainers(cont.status === "fulfilled" ? ((cont.value as Container[]) || []) : []);
+      setDetailFirmy(fir.status === "fulfilled" ? ((fir.value as PuFirma[]) || []) : []);
       if (prod.status !== "fulfilled") toast("Nie udało się wczytać produktów producenta", "warning");
     });
   }, [detailId, detailProducts]);
@@ -336,9 +341,10 @@ function ManufacturersPanel({ openId, onOpened, onProductClick }: { openId?: num
             mfr={items.find((m) => m.id === detailId) || null}
             products={detailProducts.filter((p) => p.manufacturer_id === detailId)}
             containers={detailContainers}
+            manufacturers={items}
+            firmy={detailFirmy || undefined}
             showFin={can(user, "viewFinancials")}
             onClose={() => setDetailId(null)}
-            onProductClick={onProductClick}
           />
         ) : (
           <div onClick={() => setDetailId(null)} style={{
