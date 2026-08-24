@@ -556,7 +556,9 @@ export default function ContainerFormModal({
           </div>
 
           {/* Body */}
-          <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* data-modal-section — na telefonie globals.css zwęża padding z 22 na 14 px,
+              co daje polom kilkanaście pikseli więcej szerokości. */}
+          <div data-modal-section style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
             <Section title="Identyfikacja">
               {/* Przełącznik konsolidacji */}
               <button type="button" onClick={() => showEdit && toggleConsolidated(!isConsolidated)} disabled={!showEdit}
@@ -1004,7 +1006,9 @@ function Section({ title, action, children, required }: { title: string; action?
 // je na dwie kolumny; numer raty i kosz na śmieci dostają własne pełne wiersze.
 const CF_CSS = `
 @media (min-width: 641px) {
-  .cf-lbl-rep { display: none !important; }
+  /* Na desktopie kolumny są wyrównane — powtórzone etykiety i podpis przy koszu
+     tylko by je zaśmiecały. */
+  .cf-lbl-rep, .cf-pay-del-lbl { display: none !important; }
 }
 @media (max-width: 640px) {
   .cf-pay-row {
@@ -1015,8 +1019,29 @@ const CF_CSS = `
     border: 1px solid var(--border-soft);
     border-radius: 8px;
   }
-  .cf-pay-idx { grid-column: 1 / -1; text-align: left !important; padding-bottom: 0 !important; }
-  .cf-pay-del { grid-column: 1 / -1; }
+  /* Samo „1" nad polami nic nie mówi — dopisujemy słowo bez ruszania JS-a. */
+  .cf-pay-idx {
+    grid-column: 1 / -1;
+    text-align: left !important;
+    padding-bottom: 0 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px !important;
+  }
+  .cf-pay-idx::before { content: "Rata "; }
+  /* Kosz rozciągnięty na całą szerokość wyglądał jak pusty pasek z krzyżykiem.
+     Zwężamy do treści, dosuwamy do prawej i podpisujemy. Gdy rata jest jedna,
+     przycisk i tak jest wyłączony — na telefonie chowamy go zamiast szarzyć. */
+  .cf-pay-del {
+    grid-column: 1 / -1;
+    justify-self: end;
+    width: auto !important;
+    gap: 6px;
+    padding: 0 12px !important;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .cf-pay-del:disabled { display: none !important; }
   .cf-pay-spacer { display: none !important; }
 }
 `;
@@ -1111,6 +1136,7 @@ function PaymentInputs({
           <button type="button" className="cf-pay-del" onClick={() => removeAdv(i)} disabled={disabled || advances.length <= 1} title="Usuń zaliczkę"
             style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: (disabled || advances.length <= 1) ? "default" : "pointer", padding: 0, height: 32, opacity: advances.length <= 1 ? 0.4 : 1 }}>
             <I.Close size={12} />
+            <span className="cf-pay-del-lbl">Usuń ratę</span>
           </button>
         </div>
       ))}
