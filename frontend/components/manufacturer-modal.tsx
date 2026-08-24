@@ -471,18 +471,18 @@ export default function ManufacturerModal({
                     ? new Date(arrivalOf(c)).toLocaleDateString("pl-PL")
                     : days >= 0 ? `za ${days}d` : `${-days}d po ETA`;
                   return (
-                    <div key={c.id} onClick={() => { void openContainer(c.id); }} style={{
+                    <div key={c.id} className="mm-ct-row" onClick={() => { void openContainer(c.id); }} style={{
                       display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer",
                       background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8,
                       opacity: ctLoading ? 0.6 : 1,
                     }}
                       onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-2)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.background = "var(--surface-1)"; }}>
-                      <span style={{ color: m.fg, display: "flex" }}><Icon size={14} /></span>
-                      <ContainerNr c={c} size={12} />
-                      <Pill bg={m.bg} fg={m.fg} size="sm">{m.label}</Pill>
-                      <span style={{ flex: 1 }} />
-                      <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{c.total_units} szt · {showFin ? fmtPLNk(c.total_value) : "•••"} · {when}</span>
+                      <span className="mm-ct-icon" style={{ color: m.fg, display: "flex", flexShrink: 0 }}><Icon size={14} /></span>
+                      <span className="mm-ct-nr" style={{ minWidth: 0, overflow: "hidden" }}><ContainerNr c={c} size={12} /></span>
+                      <span className="mm-ct-pill" style={{ flexShrink: 0 }}><Pill bg={m.bg} fg={m.fg} size="sm">{m.label}</Pill></span>
+                      <span className="mm-ct-gap" style={{ flex: 1 }} />
+                      <span className="num mm-ct-meta" style={{ fontSize: 11, color: "var(--text-lo)", flexShrink: 0, whiteSpace: "nowrap" }}>{c.total_units} szt · {showFin ? fmtPLNk(c.total_value) : "•••"} · {when}</span>
                     </div>
                   );
                 })}
@@ -501,6 +501,7 @@ export default function ManufacturerModal({
         </div>
       </div>
 
+      <style>{MM_CSS}</style>
     </div>
 
     {/* Karta produktu NA modalu producenta — RODZEŃSTWO tła, nie dziecko.
@@ -552,6 +553,19 @@ export default function ManufacturerModal({
     </Portal>
   );
 }
+
+// Wiersz kontenera na wąskim ekranie: numer i status nie mieszczą się w jednej linii
+// z podsumowaniem (szt · wartość · termin) i zachodziły na siebie. Poniżej 560 px
+// wiersz łamie się na dwa piętra: numer u góry, status + liczby pod spodem.
+const MM_CSS = `
+@media (max-width: 560px) {
+  .mm-ct-row { flex-wrap: wrap; row-gap: 6px; }
+  .mm-ct-nr { flex: 1 1 auto; }
+  .mm-ct-gap { display: none; }
+  .mm-ct-pill { order: 2; }
+  .mm-ct-meta { order: 3; margin-left: auto; }
+}
+`;
 
 // ── Pomocnicze (lokalne odpowiedniki Section/MetricBox z mocka) ──
 function FcSection({ title, children }: { title: string; children: React.ReactNode }) {
