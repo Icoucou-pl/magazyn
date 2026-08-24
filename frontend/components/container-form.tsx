@@ -538,8 +538,11 @@ export default function ContainerFormModal({
 
   return (
     <Portal>
-      <div style={modalBackdrop}>
-        <div className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
+      {/* data-modal-* włącza mobilne reguły modali z globals.css — bez tych atrybutów
+          reguły nie miały się do czego przyczepić. */}
+      <div data-modal-backdrop style={modalBackdrop}>
+        <style>{CF_CSS}</style>
+        <div data-modal-card className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
           {/* Header */}
           <div style={{ padding: "14px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -996,10 +999,32 @@ function Section({ title, action, children, required }: { title: string; action?
   );
 }
 
-function Field({ label, required, children, labelStyle }: { label: string; required?: boolean; children: React.ReactNode; labelStyle?: React.CSSProperties }) {
+// Wiersze płatności mają siedem sztywnych kolumn (~490 px minimum). Na telefonie
+// rozpychały całą kartę i modal scrollował się w poziomie. Poniżej 640 px rozkładamy
+// je na dwie kolumny; numer raty i kosz na śmieci dostają własne pełne wiersze.
+const CF_CSS = `
+@media (min-width: 641px) {
+  .cf-lbl-rep { display: none !important; }
+}
+@media (max-width: 640px) {
+  .cf-pay-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 10px 8px !important;
+    padding: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+  }
+  .cf-pay-idx { grid-column: 1 / -1; text-align: left !important; padding-bottom: 0 !important; }
+  .cf-pay-del { grid-column: 1 / -1; }
+  .cf-pay-spacer { display: none !important; }
+}
+`;
+
+function Field({ label, required, children, labelStyle, labelClass }: { label: string; required?: boolean; children: React.ReactNode; labelStyle?: React.CSSProperties; labelClass?: string }) {
   return (
     <div>
-      <label style={{ display: "block", fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5, ...labelStyle }}>
+      <label className={labelClass} style={{ display: "block", fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5, ...labelStyle }}>
         {label}{required && <span style={{ color: "var(--critical)", marginLeft: 3 }}>*</span>}
       </label>
       {children}
@@ -1060,26 +1085,30 @@ function PaymentInputs({
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {/* Lista zaliczek (rat) */}
       {advances.map((a, i) => (
-        <div key={i} style={{ display: "grid", gridTemplateColumns: "16px 64px 132px 82px 132px minmax(0, 1fr) 28px", gap: 6, alignItems: "end" }}>
-          <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "var(--text-lo)", paddingBottom: 8, textAlign: "center" }}>{i + 1}</span>
-          <Field label={i === 0 ? "Zal. %" : ""}>
+        // Etykiety renderujemy w KAŻDYM wierszu — na desktopie powtórki chowa CSS
+        // (.cf-lbl-rep), bo tam kolumny są wyrównane i nagłówek z pierwszego wiersza
+        // wystarcza. Na telefonie wiersz rozpada się na dwie kolumny i bez etykiet
+        // nie sposób odróżnić terminu płatności od daty zapłaty.
+        <div key={i} className="cf-pay-row" style={{ display: "grid", gridTemplateColumns: "16px 64px 132px 82px 132px minmax(0, 1fr) 28px", gap: 6, alignItems: "end" }}>
+          <span className="mono cf-pay-idx" style={{ fontSize: 11, fontWeight: 700, color: "var(--text-lo)", paddingBottom: 8, textAlign: "center" }}>{i + 1}</span>
+          <Field label="Zal. %" labelClass={i === 0 ? undefined : "cf-lbl-rep"}>
             <input type="number" step="1" min="0" value={a.procent} onChange={(e) => updateAdv(i, "procent", e.target.value)} placeholder="30" disabled={disabled} style={monoMini} />
           </Field>
-          <Field label={i === 0 ? "Kwota" : ""}>
+          <Field label="Kwota" labelClass={i === 0 ? undefined : "cf-lbl-rep"}>
             <input type="number" step="0.01" min="0" value={a.kwota} onChange={(e) => updateAdv(i, "kwota", e.target.value)} placeholder="np. 4200" disabled={disabled} style={monoMini} />
           </Field>
-          <Field label={i === 0 ? "Waluta" : ""}>
+          <Field label="Waluta" labelClass={i === 0 ? undefined : "cf-lbl-rep"}>
             <select value={a.waluta} onChange={(e) => updateAdv(i, "waluta", e.target.value)} disabled={disabled} style={curSel}>
               {CUR_OPTS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
             </select>
           </Field>
-          <Field label={i === 0 ? "Termin płatności" : ""}>
+          <Field label="Termin płatności" labelClass={i === 0 ? undefined : "cf-lbl-rep"}>
             <input type="date" value={a.termin} onChange={(e) => updateAdv(i, "termin", e.target.value)} disabled={disabled} style={mini} />
           </Field>
-          <Field label={i === 0 ? "Data (zapłacono)" : ""}>
+          <Field label="Data (zapłacono)" labelClass={i === 0 ? undefined : "cf-lbl-rep"}>
             <input type="date" value={a.data} onChange={(e) => updateAdv(i, "data", e.target.value)} disabled={disabled} style={mini} />
           </Field>
-          <button type="button" onClick={() => removeAdv(i)} disabled={disabled || advances.length <= 1} title="Usuń zaliczkę"
+          <button type="button" className="cf-pay-del" onClick={() => removeAdv(i)} disabled={disabled || advances.length <= 1} title="Usuń zaliczkę"
             style={{ background: "transparent", border: "1px solid var(--border-soft)", color: "var(--critical)", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: (disabled || advances.length <= 1) ? "default" : "pointer", padding: 0, height: 32, opacity: advances.length <= 1 ? 0.4 : 1 }}>
             <I.Close size={12} />
           </button>
@@ -1092,9 +1121,9 @@ function PaymentInputs({
       )}
 
       {/* Balance: kwota · waluta · data */}
-      <div style={{ display: "grid", gridTemplateColumns: "16px 64px 132px 82px 132px minmax(0, 1fr) 28px", gap: 6, alignItems: "end", marginTop: 2 }}>
-        <div />
-        <div />
+      <div className="cf-pay-row" style={{ display: "grid", gridTemplateColumns: "16px 64px 132px 82px 132px minmax(0, 1fr) 28px", gap: 6, alignItems: "end", marginTop: 2 }}>
+        <div className="cf-pay-spacer" />
+        <div className="cf-pay-spacer" />
         <Field label="Balance">
           <input type="number" step="0.01" min="0" value={balance.balance_kwota} onChange={(e) => onBalanceChange("balance_kwota", e.target.value)} placeholder="np. 32000" disabled={disabled} style={monoMini} />
         </Field>
@@ -1109,7 +1138,7 @@ function PaymentInputs({
         <Field label="Zapłacono — data">
           <input type="date" value={balance.zaplacono_data} onChange={(e) => onBalanceChange("zaplacono_data", e.target.value)} disabled={disabled} style={mini} />
         </Field>
-        <div />
+        <div className="cf-pay-spacer" />
       </div>
 
       {currencyMismatch && (
