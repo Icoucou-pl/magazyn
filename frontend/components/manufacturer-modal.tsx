@@ -80,14 +80,23 @@ const arrivalOf = (c: Container): string =>
   c.delivered_date || c.expected_delivery_date || c.warehouse_delivery_date || c.eta_date;
 
 // ── Szczegóły producenta (port ManufacturerModal) ────────────
+// Modal renderuje SAM SIEBIE: karta produktu otwarta stąd ma klikalny chip producenta,
+// a ten dokłada kolejne piętro. Rekurencja jest celowa i nie tworzy cyklu importów —
+// product-modal nie wie nic o tym pliku, tylko emituje callback. Każde zamknięcie
+// zdejmuje dokładnie jedno piętro, bo Esc obsługuje wyłącznie najgłębszy modal bez dzieci.
 export default function ManufacturerModal({
   mfr, products, containers, manufacturers, firmy, allProducts, showFin, onClose, onContainersChanged,
 }: {
   mfr: Manufacturer | null;
-  products: Product[];
+  /** Produkty producenta. Pominięte = modal odfiltruje je sobie z katalogu (patrz `allProducts`).
+   *  Widoki, które mają listę zawężoną filtrami użytkownika (zakładka firmy, „pokaż nieaktywne"),
+   *  powinny propa NIE podawać — inaczej kafelek „Produktów (SKU)" mówiłby co innego
+   *  zależnie od tego, którędy się weszło. */
+  products?: Product[];
   /** WSZYSTKIE kontenery, nie zawężone do producenta — zawężenie robi modal, bo w kontenerach
-   *  skonsolidowanych producent siedzi na locie, a nie na kontenerze (c.manufacturer_id = NULL). */
-  containers: Container[];
+   *  skonsolidowanych producent siedzi na locie, a nie na kontenerze (c.manufacturer_id = NULL).
+   *  Pominięte = modal dociągnie je sam. */
+  containers?: Container[];
   /** Pełna lista producentów — leci do zagnieżdżonej karty produktu, żeby dało się tam
    *  przepiąć SKU do innego producenta. Bez tego select miałby jedną pozycję. */
   manufacturers?: Manufacturer[];
@@ -119,20 +128,66 @@ export default function ManufacturerModal({
   // kliknięciu: modal producenta sam z siebie ich nie potrzebuje.
   const [openContainerId, setOpenContainerId] = useState<number | null>(null);
   const [ctTypes, setCtTypes] = useState<ContainerType[] | null>(null);
-  const [ctProducts, setCtProducts] = useState<Product[] | null>(null);
   const [ctLoading, setCtLoading] = useState(false);
+  // Kolejne piętro: producent otwarty z chipa w karcie produktu.
+  const [nestedMfrId, setNestedMfrId] = useState<number | null>(null);
+  // Braki uzupełniane samodzielnie — modal otwierany z widoku Produkty dostaje
+  // tylko producentów i firmy, reszty tam po prostu nie ma.
+  const [lazyCatalog, setLazyCatalog] = useState<Product[] | null>(null);
+  const [lazyContainers, setLazyContainers] = useState<Container[] | null>(null);
+  const [lazyMfrs, setLazyMfrs] = useState<Manufacturer[] | null>(null);
+  const [booting, setBooting] = useState(false);
 
   const mfrId = mfr?.id;
+
+  // Jedno źródło prawdy dla każdej porcji danych: prop → to, co sami dociągnęliśmy.
+  const catalog = allProducts ?? lazyCatalog;
+  const allContainers = containers ?? lazyContainers ?? [];
+  const mfrList = manufacturers && manufacturers.length ? manufacturers : (lazyMfrs ?? []);
+  // Lista producenta: podana wprost albo odsiana z katalogu.
+  const listProducts = useMemo(
+    () => products ?? (catalog ? catalog.filter((p) => p.manufacturer_id === mfrId) : []),
+    [products, catalog, mfrId],
+  );
+
+  // Dociągamy WYŁĄCZNIE to, czego rodzic nie podał. Wejście z Prognozy i Ustawień
+  // ma komplet, więc tam ten efekt nie wysyła ani jednego zapytania.
+  const needCatalog = !allProducts && !lazyCatalog;
+  const needContainers = !containers && !lazyContainers;
+  const needMfrs = !(manufacturers && manufacturers.length) && !lazyMfrs;
+  useEffect(() => {
+    if (mfrId == null) return;
+    if (!needCatalog && !needContainers && !needMfrs) return;
+    let alive = true;
+    setBooting(true);
+    const reqs: Promise<unknown>[] = [
+      needCatalog ? api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE") : Promise.resolve(null),
+      needContainers ? api.get("/containers") : Promise.resolve(null),
+      needMfrs ? api.get("/manufacturers") : Promise.resolve(null),
+    ];
+    Promise.allSettled(reqs).then(([prod, cont, mfrs]) => {
+      if (!alive) return;
+      setBooting(false);
+      if (needCatalog) {
+        if (prod.status === "fulfilled") setLazyCatalog((prod.value as Product[]) || []);
+        else { setLazyCatalog([]); toast("Nie udało się wczytać produktów producenta", "warning"); }
+      }
+      if (needContainers) setLazyContainers(cont.status === "fulfilled" ? ((cont.value as Container[]) || []) : []);
+      if (needMfrs) setLazyMfrs(mfrs.status === "fulfilled" ? ((mfrs.value as Manufacturer[]) || []) : []);
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mfrId, needCatalog, needContainers, needMfrs]);
 
   useEffect(() => {
     // Gdy na wierzchu jest karta produktu, Esc ma zamknąć tylko ją. Bez tego obie
     // obsługi łapią to samo zdarzenie i modal producenta znika razem z kartą.
     const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !openSku && openContainerId == null) onClose();
+      if (e.key === "Escape" && !openSku && openContainerId == null && nestedMfrId == null) onClose();
     };
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
-  }, [onClose, openSku, openContainerId]);
+  }, [onClose, openSku, openContainerId, nestedMfrId]);
 
   useEffect(() => {
     if (mfrId == null) return;
@@ -149,17 +204,17 @@ export default function ManufacturerModal({
   useEffect(() => {
     if (mfrId == null) return;
     setTab("fav"); setQ(""); setContAll(false); setContTab("flight"); setPatches({}); setOpenSku(null);
-    setOpenContainerId(null);
+    setOpenContainerId(null); setNestedMfrId(null);
   }, [mfrId]);
 
   // Produkty po nałożeniu lokalnych edycji. SKU przepięte w karcie do innego
   // producenta wypada z listy od razu, zamiast wisieć do przeładowania widoku.
   const effProducts = useMemo(() => {
-    if (Object.keys(patches).length === 0) return products;
-    return products
+    if (Object.keys(patches).length === 0) return listProducts;
+    return listProducts
       .map((p) => patches[p.sku] ?? p)
       .filter((p) => patches[p.sku] == null || p.manufacturer_id === mfrId);
-  }, [products, patches, mfrId]);
+  }, [listProducts, patches, mfrId]);
 
   const counts = useMemo(() => {
     const c: Record<MpTab, number> = { fav: 0, all: 0, sample: 0 };
@@ -187,29 +242,30 @@ export default function ManufacturerModal({
 
   // Klik w kontener: najpierw upewniamy się, że karta ma z czego się zbudować.
   // Typy i katalog trzymamy potem w stanie, więc kolejne kliknięcia są natychmiastowe.
+  // Typy kontenerów są potrzebne WYŁĄCZNIE karcie kontenera, więc idą leniwie —
+  // dopiero przy pierwszym kliknięciu, a potem zostają w stanie.
   const openContainer = async (id: number) => {
-    const needTypes = ctTypes == null;
-    const needProducts = ctProducts == null && !allProducts;
-    if (!needTypes && !needProducts) { setOpenContainerId(id); return; }
+    if (ctTypes != null) { setOpenContainerId(id); return; }
     setCtLoading(true);
-    const typesReq: Promise<unknown> = needTypes ? api.get("/container-types") : Promise.resolve(null);
-    const prodsReq: Promise<unknown> = needProducts
-      ? api.get("/products?include=ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE")
-      : Promise.resolve(null);
-    const [types, prods] = await Promise.allSettled([typesReq, prodsReq]);
-    setCtLoading(false);
-    if (needTypes && types.status !== "fulfilled") {
+    try {
+      const types = (await api.get("/container-types")) as ContainerType[];
+      setCtTypes(types || []);
+      setOpenContainerId(id);
+    } catch {
       toast("Nie udało się wczytać typów kontenerów", "warning");
-      return;
+    } finally {
+      setCtLoading(false);
     }
-    if (needTypes) setCtTypes((types.status === "fulfilled" ? (types.value as ContainerType[]) : []) || []);
-    if (needProducts) setCtProducts((prods.status === "fulfilled" ? (prods.value as Product[]) : []) || []);
-    setOpenContainerId(id);
   };
 
   const openContainerCont = useMemo(
-    () => (openContainerId == null ? null : containers.find((c) => c.id === openContainerId) || null),
-    [openContainerId, containers],
+    () => (openContainerId == null ? null : allContainers.find((c) => c.id === openContainerId) || null),
+    [openContainerId, allContainers],
+  );
+
+  const nestedMfr = useMemo(
+    () => (nestedMfrId == null ? null : mfrList.find((m) => m.id === nestedMfrId) || null),
+    [nestedMfrId, mfrList],
   );
 
   const openProduct = useMemo(
@@ -221,7 +277,7 @@ export default function ManufacturerModal({
 
   const mfrExt = mfr as Manufacturer & { contact?: string | null };
   // Kontenery tego producenta = własne + skonsolidowane, w których ma choć jeden lot.
-  const mine = containers.filter((c) => belongsToMfr(c, mfr.id));
+  const mine = allContainers.filter((c) => belongsToMfr(c, mfr.id));
   // „Dostarczony" po statusie EFEKTYWNYM (auto-dostawa z ETA) — jak na pulpicie.
   // Wcześniej szedł status ręczny, więc kontener po ETA wciąż liczył się jako w drodze.
   const inFlight = mine.filter(isUndelivered);
@@ -243,7 +299,7 @@ export default function ManufacturerModal({
     .filter((p) => IN_STOCK_VALUE.has(p.product_status))
     .reduce((s, p) => s + (p.stock_value || 0), 0);
   // Kwoty w drodze: ten sam kod co KPI na pulpicie, tylko zakres = producent zamiast firmy.
-  const pipe = mfrPipeline(containers, mfr.id);
+  const pipe = mfrPipeline(allContainers, mfr.id);
 
   return (
     <Portal>
@@ -346,7 +402,9 @@ export default function ManufacturerModal({
               </div>
 
               <div style={{ maxHeight: 328, overflowY: "auto" }}>
-                {visible.length === 0 ? (
+                {booting && visible.length === 0 ? (
+                  <div className="pulse-soft" style={{ height: 120, background: "var(--surface-2)" }} />
+                ) : visible.length === 0 ? (
                   <div style={{ padding: 26, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
                     {q.trim() ? `Brak wyników dla „${q.trim()}"`
                       : effTab === "sample" ? "Brak sampli u tego producenta."
@@ -447,11 +505,12 @@ export default function ManufacturerModal({
     {openProduct && (
       <ProductModal
         product={openProduct}
-        manufacturers={manufacturers && manufacturers.length ? manufacturers : [mfr]}
+        manufacturers={mfrList.length ? mfrList : [mfr]}
         firmy={firmy}
         onClose={() => setOpenSku(null)}
         onUpdated={(p) => setPatches((prev) => ({ ...prev, [p.sku]: p }))}
         onContainerClick={(id) => { setOpenSku(null); void openContainer(id); }}
+        onManufacturerClick={mfrList.length ? (id) => setNestedMfrId(id) : undefined}
       />
     )}
 
@@ -461,12 +520,28 @@ export default function ManufacturerModal({
     {openContainerCont && (
       <ContainerFormModal
         initial={openContainerCont}
-        manufacturers={manufacturers && manufacturers.length ? manufacturers : [mfr]}
+        manufacturers={mfrList.length ? mfrList : [mfr]}
         containerTypes={ctTypes || []}
-        products={allProducts || ctProducts || products}
+        products={catalog || listProducts}
         onClose={() => setOpenContainerId(null)}
         onSaved={() => { setOpenContainerId(null); onContainersChanged?.(); }}
         onDeleted={() => { setOpenContainerId(null); onContainersChanged?.(); }}
+      />
+    )}
+
+    {/* Kolejne piętro producenta. Dzieci dostają już dociągnięte dane, więc głębsze
+        poziomy nie odpytują API po raz drugi — poza własnym /sales-season. */}
+    {nestedMfr && (
+      <ManufacturerModal
+        mfr={nestedMfr}
+        products={catalog ? catalog.filter((p) => p.manufacturer_id === nestedMfr.id) : undefined}
+        containers={allContainers}
+        manufacturers={mfrList}
+        firmy={firmy}
+        allProducts={catalog ?? undefined}
+        showFin={showFin}
+        onClose={() => setNestedMfrId(null)}
+        onContainersChanged={onContainersChanged}
       />
     )}
     </Portal>

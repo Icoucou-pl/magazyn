@@ -19,6 +19,7 @@ import {
 } from "./products-ui";
 import ImportModal from "./import-modal";
 import ProductModal from "./product-modal";
+import ManufacturerModal from "./manufacturer-modal";
 
 type SortState = { key: keyof Product | null; dir: "asc" | "desc" | null };
 
@@ -47,6 +48,11 @@ export default function ProductsView({
   const [firmy, setFirmy] = useState<Firma[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  // Producent otwarty z chipa w karcie produktu. Katalogu ani kontenerów mu tu NIE
+  // podajemy: lista w tym widoku jest zawężona zakładką firmy i „pokaż nieaktywne",
+  // więc kafelek „Produktów (SKU)" pokazywałby co innego niż ten sam modal z Prognozy.
+  // Modal dociąga sobie pełne dane sam.
+  const [mfrModalId, setMfrModalId] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
   // Domyślny widok po wejściu w Produkty = Obserwowane (is_favorite), nie Aktywne.
@@ -289,6 +295,16 @@ export default function ProductsView({
           onClose={() => setSelectedProduct(null)}
           onUpdated={onProductUpdated}
           onContainerClick={onContainerClick}
+          onManufacturerClick={(id) => setMfrModalId(id)}
+        />
+      )}
+      {mfrModalId != null && (
+        <ManufacturerModal
+          mfr={manufacturers.find((m) => m.id === mfrModalId) || null}
+          manufacturers={manufacturers}
+          firmy={firmy}
+          showFin={showFin}
+          onClose={() => setMfrModalId(null)}
         />
       )}
     </div>

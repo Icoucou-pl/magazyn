@@ -66,7 +66,7 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
 }
 
 export default function ProductModal({
-  product: initialProduct, manufacturers, firmy, onClose, onUpdated, onContainerClick,
+  product: initialProduct, manufacturers, firmy, onClose, onUpdated, onContainerClick, onManufacturerClick,
 }: {
   product: Product;
   manufacturers: Manufacturer[];
@@ -74,6 +74,9 @@ export default function ProductModal({
   onClose: () => void;
   onUpdated?: (p: Product) => void;
   onContainerClick?: (id: number) => void;
+  /** Klik w chip producenta w nagłówku. Bez tego propa chip zostaje zwykłą etykietą —
+   *  żaden istniejący ekran nie zmienia zachowania, dopóki go nie poda. */
+  onManufacturerClick?: (id: number) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -160,7 +163,23 @@ export default function ProductModal({
                 <StatusPillExt status={statusKey} size="md" />
                 {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
                 {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
-                {product.manufacturer_id && product.manufacturer_name && <MfrChip name={product.manufacturer_name} color={product.manufacturer_color ?? "var(--text-lo)"} size="md" />}
+                {product.manufacturer_id && product.manufacturer_name && (
+                  onManufacturerClick ? (
+                    // Chip jest jedynym miejscem w nagłówku, które MÓWI „producent" —
+                    // dorabianie osobnego przycisku obok byłoby drugą drogą do tego samego.
+                    <button
+                      onClick={() => onManufacturerClick(product.manufacturer_id as number)}
+                      title={`Szczegóły producenta: ${product.manufacturer_name}`}
+                      style={{ background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, borderRadius: 999 }}
+                      onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.75"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}>
+                      <MfrChip name={product.manufacturer_name} color={product.manufacturer_color ?? "var(--text-lo)"} size="md" />
+                      <span style={{ color: product.manufacturer_color ?? "var(--text-lo)", display: "flex" }}><I.ChevronR size={12} /></span>
+                    </button>
+                  ) : (
+                    <MfrChip name={product.manufacturer_name} color={product.manufacturer_color ?? "var(--text-lo)"} size="md" />
+                  )
+                )}
               </div>
               <div className="mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 10, color: "var(--text-hi)", letterSpacing: "-0.01em" }}>{product.sku}</div>
               <div style={{ fontSize: 14, color: "var(--text-mid)", marginTop: 2 }}>{product.name}</div>
