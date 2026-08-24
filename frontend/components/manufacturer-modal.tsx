@@ -57,9 +57,25 @@ const MP_TABS: { key: MpTab; label: string; test: (p: Product) => boolean }[] = 
   { key: "sample", label: "Sample",      test: (p) => p.product_status === "SAMPLE" },
 ];
 
+// ── Kontenery: zakładki ──────────────────────────────────────
+// „W drodze" to domyślny widok (to on jest pilny), ale historia dostaw producenta
+// też bywa potrzebna — stąd trzeci kubełek. Podział idzie po statusie EFEKTYWNYM,
+// czyli tym samym, co decyduje o KPI „Kontenery łącznie / N dostarczonych".
+type CtTab = "flight" | "delivered" | "all";
+
+const CT_TABS: { key: CtTab; label: string }[] = [
+  { key: "flight",    label: "W drodze" },
+  { key: "delivered", label: "Dostarczone" },
+  { key: "all",       label: "Wszystkie" },
+];
+
 // Ile kontenerów pokazujemy bez rozwijania. Producent z 12 pozycjami w drodze
 // (Anji) zjadał cały modal i spychał listę produktów pod ekran.
 const CONT_PREVIEW = 6;
+
+// Data wejścia na magazyn: ręczna → umówiona → ETA. Ten sam łańcuch, co w KPI dostaw.
+const arrivalOf = (c: Container): string =>
+  c.delivered_date || c.expected_delivery_date || c.warehouse_delivery_date || c.eta_date;
 
 // ── Szczegóły producenta (port ManufacturerModal) ────────────
 export default function ManufacturerModal({
@@ -83,6 +99,7 @@ export default function ManufacturerModal({
   const [tab, setTab] = useState<MpTab>("fav");
   const [q, setQ] = useState("");
   const [contAll, setContAll] = useState(false);
+  const [contTab, setContTab] = useState<CtTab>("flight");
   // Karta produktu otwierana NA modalu producenta, nie zamiast niego — zamknięcie
   // wraca do listy producenta. Wcześniej klik przerzucał widok na Produkty i po
   // zamknięciu karty człowiek zostawał tam, z rozwalonym kontekstem.
@@ -115,7 +132,7 @@ export default function ManufacturerModal({
   // odznaczenie ostatniej gwiazdki nie ma przerzucać zakładki pod palcami.
   useEffect(() => {
     if (mfrId == null) return;
-    setTab("fav"); setQ(""); setContAll(false); setPatches({}); setOpenSku(null);
+    setTab("fav"); setQ(""); setContAll(false); setContTab("flight"); setPatches({}); setOpenSku(null);
   }, [mfrId]);
 
   // Produkty po nałożeniu lokalnych edycji. SKU przepięte w karcie do innego
@@ -164,8 +181,20 @@ export default function ManufacturerModal({
   // „Dostarczony" po statusie EFEKTYWNYM (auto-dostawa z ETA) — jak na pulpicie.
   // Wcześniej szedł status ręczny, więc kontener po ETA wciąż liczył się jako w drodze.
   const inFlight = mine.filter(isUndelivered);
-  const delivered = mine.length - inFlight.length;
-  const shownFlight = contAll ? inFlight : inFlight.slice(0, CONT_PREVIEW);
+  const deliveredList = mine.filter((c) => !isUndelivered(c));
+  const delivered = deliveredList.length;
+  // W drodze: najbliższa ETA u góry. Dostarczone: najświeższa dostawa u góry.
+  // „Wszystkie" = jedno pod drugim, bo mieszanie ich po jednej dacie dawałoby
+  // listę, w której pilny kontener ląduje między archiwaliami.
+  const sortedFlight = [...inFlight].sort((a, b) => +new Date(a.eta_date) - +new Date(b.eta_date));
+  const sortedDelivered = [...deliveredList].sort((a, b) => +new Date(arrivalOf(b)) - +new Date(arrivalOf(a)));
+  const ctCounts: Record<CtTab, number> = { flight: inFlight.length, delivered, all: mine.length };
+  // Producent bez ani jednego kontenera w drodze otwierałby się na pustej zakładce.
+  const effCtTab: CtTab = contTab === "flight" && inFlight.length === 0 && mine.length > 0 ? "all" : contTab;
+  const ctList = effCtTab === "flight" ? sortedFlight
+    : effCtTab === "delivered" ? sortedDelivered
+      : [...sortedFlight, ...sortedDelivered];
+  const shownCt = contAll ? ctList : ctList.slice(0, CONT_PREVIEW);
   const stockValue = effProducts
     .filter((p) => IN_STOCK_VALUE.has(p.product_status))
     .reduce((s, p) => s + (p.stock_value || 0), 0);
@@ -297,31 +326,60 @@ export default function ManufacturerModal({
             </div>
           </FcSection>
 
-          {/* Kontenery w drodze */}
-          {inFlight.length > 0 && (
-            <FcSection title={`Kontenery w drodze (${inFlight.length})`}>
+          {/* Kontenery */}
+          {mine.length > 0 && (
+            <FcSection title={`Kontenery (${ctList.length})`}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {shownFlight.map((c) => {
-                  const m = STATUS_FULL_META[c.status] || STATUS_FULL_META.ORDERED;
+                <div style={{ display: "inline-flex", gap: 2, padding: 2, background: "var(--surface-2)", borderRadius: 8, alignSelf: "flex-start" }}>
+                  {CT_TABS.map((t) => {
+                    const on = t.key === effCtTab;
+                    return (
+                      <button key={t.key} onClick={() => { setContTab(t.key); setContAll(false); }} style={{
+                        display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px",
+                        border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
+                        fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap",
+                        background: on ? "var(--bg-elevated)" : "transparent",
+                        color: on ? "var(--text-hi)" : "var(--text-lo)",
+                      }}>
+                        {t.label}
+                        <span className="num" style={{ fontSize: 10.5, color: on ? "var(--text-mid)" : "var(--text-lo)" }}>{ctCounts[t.key]}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {ctList.length === 0 ? (
+                  <div style={{ padding: 20, textAlign: "center", color: "var(--text-lo)", fontSize: 12, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                    {effCtTab === "flight" ? "Nic w drodze od tego producenta." : "Żaden kontener tego producenta nie jest jeszcze dostarczony."}
+                  </div>
+                ) : shownCt.map((c) => {
+                  // Status EFEKTYWNY — ten sam, po którym dzielimy zakładki. Na `c.status`
+                  // (ręcznym) kontener po ETA świeciłby dalej „W drodze" w kubełku Dostarczone.
+                  const st = c.effective_status ?? c.status;
+                  const m = STATUS_FULL_META[st] || STATUS_FULL_META.ORDERED;
                   const Icon = m.icon;
+                  const done = !isUndelivered(c);
                   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
+                  const when = done
+                    ? new Date(arrivalOf(c)).toLocaleDateString("pl-PL")
+                    : days >= 0 ? `za ${days}d` : `${-days}d po ETA`;
                   return (
                     <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
                       <span style={{ color: m.fg, display: "flex" }}><Icon size={14} /></span>
                       <ContainerNr c={c} size={12} />
                       <Pill bg={m.bg} fg={m.fg} size="sm">{m.label}</Pill>
                       <span style={{ flex: 1 }} />
-                      <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{c.total_units} szt · {showFin ? fmtPLNk(c.total_value) : "•••"} · za {days}d</span>
+                      <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{c.total_units} szt · {showFin ? fmtPLNk(c.total_value) : "•••"} · {when}</span>
                     </div>
                   );
                 })}
-                {!contAll && inFlight.length > CONT_PREVIEW && (
+                {!contAll && ctList.length > CONT_PREVIEW && (
                   <button onClick={() => setContAll(true)} style={{
                     width: "100%", padding: 8, background: "var(--surface-1)", border: "1px dashed var(--border)",
                     borderRadius: 8, color: "var(--text-lo)", fontFamily: "inherit", fontSize: 11.5,
                     fontWeight: 600, cursor: "pointer",
                   }}>
-                    Pokaż pozostałe {inFlight.length - CONT_PREVIEW} {plPick(inFlight.length - CONT_PREVIEW, "kontener", "kontenery", "kontenerów")}
+                    Pokaż pozostałe {ctList.length - CONT_PREVIEW} {plPick(ctList.length - CONT_PREVIEW, "kontener", "kontenery", "kontenerów")}
                   </button>
                 )}
               </div>
