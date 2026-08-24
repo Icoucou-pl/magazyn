@@ -183,6 +183,18 @@ const CONTAINERS_CSS = `
   .it-name { font-size:11.5px; }
   .it-qty, .it-cbm, .it-val { text-align:left; }
   .it-val { margin-left:auto; }
+
+  /* Stopka karty: na telefonie akcje idą w siatkę 2×N zamiast ciasnego rzędu.
+     Wcześniej nie mieściły się w linii i „Śledź kontener" był chowany globalną
+     regułą [data-carrier-link] — teraz mieści się komplet. */
+  .cc-foot { flex-direction:column; align-items:stretch; gap:10px; }
+  .cc-foot-note { order:2; }
+  .cc-actions { order:1; display:grid !important; grid-template-columns:repeat(2, minmax(0,1fr)); gap:6px; }
+  .cc-actions > a, .cc-actions > button {
+    justify-content:center; width:100%; padding:9px 10px; text-align:center; min-width:0;
+  }
+  /* Nieparzysta liczba akcji: ostatnia bierze całą szerokość, żeby nie zostawała dziura. */
+  .cc-actions > :last-child:nth-child(odd) { grid-column:1 / -1; }
 }
 `;
 
@@ -814,8 +826,8 @@ function ContainerCardBody({
         <div style={{ padding: "10px 12px", background: "var(--surface-2)", border: "1px dashed var(--border-soft)", borderRadius: 8, fontSize: 12, color: "var(--text-mid)", fontStyle: "italic" }}>{c.notes}</div>
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 12, borderTop: "1px solid var(--border-soft)" }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+      <div className="cc-foot" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 12, borderTop: "1px solid var(--border-soft)" }}>
+        <div className="cc-foot-note" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           {c.is_auto ? (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-lo)" }}>
               <I.Customs size={12} style={{ color: "var(--warning)" }} />
@@ -829,7 +841,7 @@ function ContainerCardBody({
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div className="cc-actions" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {/* Śledzenie u armatora zapisanego na kontenerze. Przycisk pojawia się tylko,
               gdy numer jest poprawny (ISO 6346) i znamy format URL danego armatora
               — dziś MSC i CMA CGM. Reszta bez linku, żeby nie prowadzić w pustkę. */}
