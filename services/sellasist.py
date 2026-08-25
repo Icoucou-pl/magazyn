@@ -550,7 +550,13 @@ async def find_reconcile_candidates(session: AsyncSession, shop: str, since: str
     """Lista zamówień do naprawy. NIE dotyka API — czysty odczyt z bazy."""
     if mode not in _RECONCILE_MODES:
         raise ValueError(f"Nieznany tryb: {mode} (dozwolone: {', '.join(_RECONCILE_MODES)})")
-    params = {"shop": shop, "since": since, "limit": int(limit)}
+    # asyncpg jest rygorystyczny typowo: string w porównaniu z kolumną timestamp rzuca
+    # błędem (a ten, przechodząc obok CORS middleware, objawia się w przeglądarce jako
+    # rzekomy problem z CORS). Parsujemy datę tutaj i dodatkowo rzutujemy ją w SQL.
+    since_dt = _parse_dt(since)
+    if since_dt is None:
+        raise ValueError(f"Nieprawidłowa data 'since': {since} (oczekiwany format YYYY-MM-DD)")
+    params = {"shop": shop, "since": since_dt, "limit": int(limit)}
 
     if mode == "log":
         sql = f"""
@@ -570,7 +576,7 @@ async def find_reconcile_candidates(session: AsyncSession, shop: str, since: str
                 AND l.change_type = 'UPDATE'
                 AND l.column_name = 'total'
                 AND l.sync_time > p.pierwsze
-            WHERE o.shop = :shop AND o.order_date >= :since
+            WHERE o.shop = :shop AND o.order_date >= CAST(:since AS timestamp)
             ORDER BY o.order_date DESC
             LIMIT :limit
         """
@@ -587,7 +593,7 @@ async def find_reconcile_candidates(session: AsyncSession, shop: str, since: str
                    o.creator, o.total
             FROM {settings.TABLE_ORDERS} o
             JOIN poz p ON p.oid = o.order_id::varchar
-            WHERE o.shop = :shop AND o.order_date >= :since
+            WHERE o.shop = :shop AND o.order_date >= CAST(:since AS timestamp)
               AND COALESCE(o.total, 0)::numeric - p.wartosc::numeric > 1
             ORDER BY (COALESCE(o.total, 0)::numeric - p.wartosc::numeric) DESC
             LIMIT :limit
@@ -597,7 +603,7 @@ async def find_reconcile_candidates(session: AsyncSession, shop: str, since: str
             SELECT o.order_id::varchar AS oid, o.order_date, o.status_name,
                    o.creator, o.total
             FROM {settings.TABLE_ORDERS} o
-            WHERE o.shop = :shop AND o.order_date >= :since
+            WHERE o.shop = :shop AND o.order_date >= CAST(:since AS timestamp)
             ORDER BY o.order_date DESC
             LIMIT :limit
         """
