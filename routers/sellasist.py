@@ -83,7 +83,7 @@ async def sellasist_reconcile_one(
 @router.post("/reconcile/scan")
 async def sellasist_reconcile_scan(
     shop: str = Query(..., description="Slug sklepu, np. amh"),
-    mode: str = Query("log", description="log | mismatch | all"),
+    mode: str = Query("log", description="log | mismatch | zestawy | all"),
     since: Optional[str] = Query(None, description="Data od (YYYY-MM-DD); domyślnie z configu"),
     limit: int = Query(50, ge=1, le=500, description="Maks. liczba zamówień"),
     dry_run: bool = Query(True, description="True = sama lista kandydatów, bez odpytywania API"),
@@ -93,6 +93,9 @@ async def sellasist_reconcile_scan(
 
     · mode=log      — zmiana `total` po pobraniu koszyka (pewniak, wąskie sito)
     · mode=mismatch — total nagłówka > suma pozycji (łapie edycje sprzed okna nagłówków)
+    · mode=zestawy  — koszyk złożony wyłącznie z linii-zestawów; Sellasist rozbija je na
+                      składowe PO złożeniu zamówienia, a `total` się nie zmienia, więc
+                      tryb "log" tego nie widzi
     · mode=all      — wszystko od `since` (młot; używać świadomie)
 
     dry_run=True nie dotyka API — służy do zmierzenia skali przed zapisem."""
