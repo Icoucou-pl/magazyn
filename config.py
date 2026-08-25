@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     SELLASIST_RECONCILE_ENABLED: bool = False
     SELLASIST_RECONCILE_MAX: int = 50        # ile zamówień na jeden bieg (ochrona API)
     SELLASIST_RECONCILE_SINCE: str = "2026-01-01"   # starszej historii nie ruszamy
+    # API potrafi zwrócić koszyk z samymi zerowymi cenami (zamówienia ręczne, rekompensaty),
+    # gdy w bazie mamy poprawne kwoty. True = takie zamówienie pomijamy, żeby rekoncyliacja
+    # nigdy nie skasowała istniejącej wartości sprzedaży. Wyłączaj tylko świadomie.
+    SELLASIST_RECONCILE_SKIP_ZEROING: bool = True
 
     # Automat: co godzinę o pełnej godzinie w oknie [START..END] czasu warszawskiego.
     # Domyślnie 7–20. Wyłącznik: SELLASIST_AUTO_ENABLED=false. Bieg i tak rusza tylko
