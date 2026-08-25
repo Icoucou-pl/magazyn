@@ -100,6 +100,10 @@ async def sellasist_reconcile_scan(
         res = await reconcile_scan(shop, since=since, mode=mode, limit=limit, dry_run=dry_run)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Bez tego wyjątek leci poza CORS middleware i w przeglądarce udaje błąd CORS,
+        # skutecznie chowając prawdziwą przyczynę. Zwracamy ją jako czytelny 500.
+        raise HTTPException(status_code=500, detail=f"Skan nieudany: {type(e).__name__}: {e}")
     if res.get("error"):
         raise HTTPException(status_code=400, detail=res["error"])
     return res
