@@ -91,6 +91,7 @@ _status: Dict[str, Any] = {
     "orders_inserted": 0,
     "orders_updated": 0,
     "items_added": 0,
+    "items_reconciled": 0,
     "error": None,
     "message": None,
 }
@@ -128,6 +129,7 @@ def mark_started() -> None:
         "orders_inserted": 0,
         "orders_updated": 0,
         "items_added": 0,
+        "items_reconciled": 0,
         "error": None,
         "message": None,
     })
@@ -490,6 +492,279 @@ async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List
 
 
 # ============================================================
+# REKONCYLIACJA KOSZYKÓW (naprawa "insert-once")
+# ============================================================
+# Problem: _insert_new_items pomija zamówienie, które ma JAKIEKOLWIEK pozycje.
+# Edycja koszyka w Sellasiście (dopisana pozycja, zmiana ilości, przecena) nigdy
+# nie trafiała do bazy → zaniżone sztuki i błędny przychód.
+#
+# Wyzwalacz (tryb "log"): wpis UPDATE kolumny `total` w sellasist_orders_log ze
+# stemplem PÓŹNIEJSZYM niż najstarsze data_pobrania pozycji tego zamówienia.
+# Zmiana statusu NIE rusza `total`, więc sygnał jest wąski. Warunek jest samogaszący:
+# po podmianie koszyka data_pobrania pozycji przeskakuje do przodu, więc zamówienie
+# wypada z kolejki — i wraca dopiero przy KOLEJNEJ edycji.
+#
+# Tryb "mismatch": total nagłówka > suma pozycji. Łapie edycje sprzed okna nagłówków
+# (log o nich nie wie). Kierunek istotny — braki dają różnicę dodatnią, a zestawy
+# (linia-rodzic + składowe) zawsze ujemną, więc same się odfiltrowują.
+#
+# Tryb "all": wszystko od podanej daty — młot, do świadomego użycia.
+
+_RECONCILE_MODES = ("log", "mismatch", "all")
+
+
+async def _load_firma(shop: str) -> Optional["Firma"]:
+    """Jedna firma po slugu (do operacji punktowych spoza biegu)."""
+    for f in await _load_firmy():
+        if f.slug == shop:
+            return f
+    return None
+
+
+async def _items_summary(session: AsyncSession, shop: str, oid: str) -> Dict[str, Any]:
+    """Stan koszyka w bazie: liczba linii, sztuk i wartość brutto."""
+    r = await session.execute(text(
+        f"SELECT COUNT(*) AS linii, COALESCE(SUM(quantity), 0) AS sztuk, "
+        f"COALESCE(SUM(quantity * COALESCE(price, 0)), 0) AS wartosc "
+        f"FROM {settings.TABLE_ORDER_ITEMS} WHERE shop = :shop AND order_id::varchar = :oid"
+    ), {"shop": shop, "oid": str(oid)})
+    m = r.mappings().first() or {}
+    return {
+        "linii": int(m.get("linii") or 0),
+        "sztuk": round(float(m.get("sztuk") or 0), 2),
+        "wartosc": round(float(m.get("wartosc") or 0), 2),
+    }
+
+
+def _rows_summary(rows: List[dict]) -> Dict[str, Any]:
+    """To samo co _items_summary, ale dla świeżo znormalizowanych wierszy z API."""
+    return {
+        "linii": len(rows),
+        "sztuk": round(sum(float(r["quantity"] or 0) for r in rows), 2),
+        "wartosc": round(sum(float(r["quantity"] or 0) * float(r["price"] or 0) for r in rows), 2),
+    }
+
+
+async def find_reconcile_candidates(session: AsyncSession, shop: str, since: str,
+                                    mode: str = "log", limit: int = 50) -> List[Dict[str, Any]]:
+    """Lista zamówień do naprawy. NIE dotyka API — czysty odczyt z bazy."""
+    if mode not in _RECONCILE_MODES:
+        raise ValueError(f"Nieznany tryb: {mode} (dozwolone: {', '.join(_RECONCILE_MODES)})")
+    params = {"shop": shop, "since": since, "limit": int(limit)}
+
+    if mode == "log":
+        sql = f"""
+            WITH poz AS (
+                SELECT order_id::varchar AS oid, MIN(data_pobrania) AS pierwsze
+                FROM {settings.TABLE_ORDER_ITEMS}
+                WHERE shop = :shop
+                GROUP BY 1
+            )
+            SELECT DISTINCT o.order_id::varchar AS oid, o.order_date, o.status_name,
+                   o.creator, o.total
+            FROM {settings.TABLE_ORDERS} o
+            JOIN poz p ON p.oid = o.order_id::varchar
+            JOIN {settings.TABLE_ORDERS}_log l
+                 ON l.shop = o.shop
+                AND l.order_id::varchar = o.order_id::varchar
+                AND l.change_type = 'UPDATE'
+                AND l.column_name = 'total'
+                AND l.sync_time > p.pierwsze
+            WHERE o.shop = :shop AND o.order_date >= :since
+            ORDER BY o.order_date DESC
+            LIMIT :limit
+        """
+    elif mode == "mismatch":
+        sql = f"""
+            WITH poz AS (
+                SELECT order_id::varchar AS oid,
+                       SUM(quantity * COALESCE(price, 0)) AS wartosc
+                FROM {settings.TABLE_ORDER_ITEMS}
+                WHERE shop = :shop
+                GROUP BY 1
+            )
+            SELECT o.order_id::varchar AS oid, o.order_date, o.status_name,
+                   o.creator, o.total
+            FROM {settings.TABLE_ORDERS} o
+            JOIN poz p ON p.oid = o.order_id::varchar
+            WHERE o.shop = :shop AND o.order_date >= :since
+              AND COALESCE(o.total, 0)::numeric - p.wartosc::numeric > 1
+            ORDER BY (COALESCE(o.total, 0)::numeric - p.wartosc::numeric) DESC
+            LIMIT :limit
+        """
+    else:  # all
+        sql = f"""
+            SELECT o.order_id::varchar AS oid, o.order_date, o.status_name,
+                   o.creator, o.total
+            FROM {settings.TABLE_ORDERS} o
+            WHERE o.shop = :shop AND o.order_date >= :since
+            ORDER BY o.order_date DESC
+            LIMIT :limit
+        """
+
+    res = await session.execute(text(sql), params)
+    return [dict(m) for m in res.mappings().all()]
+
+
+async def reconcile_one(session: AsyncSession, firma: "Firma", oid: str,
+                        sync_time: datetime, dry_run: bool = False) -> Dict[str, Any]:
+    """Podmienia koszyk JEDNEGO zamówienia. Zwraca różnicę (przed/po).
+
+    Bezpieczniki:
+    · pusta odpowiedź API lub puste `carts` → NIC nie ruszamy (pusty wynik nie może
+      wyczyścić danych — to najczęstszy sposób, w jaki taka naprawa niszczy bazę),
+    · DELETE i INSERT w JEDNEJ transakcji (brak stanu pośredniego z pustym koszykiem),
+    · dry_run → wyłącznie odczyt + policzona różnica, zero zapisów.
+    """
+    shop = firma.slug
+    oid_s = str(oid)
+    before = await _items_summary(session, shop, oid_s)
+
+    h = (await session.execute(text(
+        f"SELECT order_date, currency FROM {settings.TABLE_ORDERS} "
+        f"WHERE shop = :shop AND order_id::varchar = :oid"
+    ), {"shop": shop, "oid": oid_s})).mappings().first()
+    if not h:
+        return {"order_id": oid_s, "shop": shop, "status": "brak_naglowka", "before": before}
+
+    try:
+        detail = await _http_get(firma, f"/orders/{oid_s}")
+    except Exception as e:
+        return {"order_id": oid_s, "shop": shop, "status": "blad_api", "error": str(e), "before": before}
+
+    carts = detail.get("carts", []) if isinstance(detail, dict) else []
+    if not carts:
+        return {"order_id": oid_s, "shop": shop, "status": "pusty_koszyk_pominieto", "before": before}
+
+    rows = _normalize_items(_to_int(oid_s), h.get("order_date"), h.get("currency"), carts)
+    after = _rows_summary(rows)
+    diff = {
+        "linii": after["linii"] - before["linii"],
+        "sztuk": round(after["sztuk"] - before["sztuk"], 2),
+        "wartosc": round(after["wartosc"] - before["wartosc"], 2),
+    }
+    out = {"order_id": oid_s, "shop": shop, "before": before, "after": after, "diff": diff}
+
+    if dry_run:
+        out["status"] = "dry_run"
+        out["pozycje"] = [
+            {"symbol": r["symbol"], "nazwa": r["product_name"],
+             "ilosc": r["quantity"], "cena": r["price"]}
+            for r in rows
+        ]
+        return out
+
+    if diff["linii"] == 0 and abs(diff["sztuk"]) < 1e-9 and abs(diff["wartosc"]) < 0.01:
+        out["status"] = "bez_zmian"
+        return out
+
+    item_cols = [
+        "order_id", "order_date", "product_id", "product_name", "symbol", "ean",
+        "quantity", "price", "price_netto", "tax_rate", "currency", "data_pobrania", "shop",
+    ]
+    insert_sql = text(
+        f"INSERT INTO {settings.TABLE_ORDER_ITEMS} ({', '.join(item_cols)}) "
+        f"VALUES ({', '.join(':' + c for c in item_cols)})"
+    )
+    try:
+        await session.execute(text(
+            f"DELETE FROM {settings.TABLE_ORDER_ITEMS} "
+            f"WHERE shop = :shop AND order_id::varchar = :oid"
+        ), {"shop": shop, "oid": oid_s})
+        for r in rows:
+            await session.execute(insert_sql, {**r, "data_pobrania": sync_time, "shop": shop})
+        await session.execute(text(
+            f"INSERT INTO {settings.TABLE_ORDERS}_log "
+            "(sync_time, order_id, shop, change_type, column_name, old_value, new_value) "
+            "VALUES (:sync_time, :order_id, :shop, 'ITEMS_RECONCILED', 'items', :old, :new)"
+        ), {
+            "sync_time": sync_time, "order_id": oid_s, "shop": shop,
+            "old": f"{before['linii']} lin / {before['sztuk']} szt / {before['wartosc']} zł",
+            "new": f"{after['linii']} lin / {after['sztuk']} szt / {after['wartosc']} zł",
+        })
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        out["status"] = "blad_zapisu"
+        out["error"] = str(e)
+        return out
+
+    _status["items_reconciled"] += 1
+    out["status"] = "naprawione"
+    return out
+
+
+async def reconcile_scan(shop: str, since: Optional[str] = None, mode: str = "log",
+                         limit: int = 50, dry_run: bool = True) -> Dict[str, Any]:
+    """Znajduje kandydatów i (jeśli dry_run=False) naprawia ich po kolei.
+
+    dry_run=True NIE odpytuje API w ogóle — zwraca samą listę kandydatów. To jest
+    właściwy sposób na zmierzenie skali przed jakimkolwiek zapisem."""
+    since = since or settings.SELLASIST_RECONCILE_SINCE
+    firma = await _load_firma(shop)
+    if firma is None:
+        return {"shop": shop, "error": f"Sklep '{shop}' nie jest skonfigurowany"}
+
+    sync_time = _now_local()
+    async with SessionLocal() as session:
+        kandydaci = await find_reconcile_candidates(session, shop, since, mode, limit)
+
+        if dry_run:
+            return {
+                "shop": shop, "mode": mode, "since": since, "dry_run": True,
+                "kandydatow": len(kandydaci),
+                "limit": limit,
+                "zamowienia": kandydaci,
+            }
+
+        wyniki: List[Dict[str, Any]] = []
+        for k in kandydaci:
+            wyniki.append(await reconcile_one(session, firma, k["oid"], sync_time, dry_run=False))
+            await asyncio.sleep(0.1)      # ten sam throttling co przy pobieraniu pozycji
+
+    naprawione = [w for w in wyniki if w.get("status") == "naprawione"]
+    return {
+        "shop": shop, "mode": mode, "since": since, "dry_run": False,
+        "kandydatow": len(kandydaci),
+        "naprawionych": len(naprawione),
+        "sztuk_roznica": round(sum(w["diff"]["sztuk"] for w in naprawione), 2),
+        "wartosc_roznica": round(sum(w["diff"]["wartosc"] for w in naprawione), 2),
+        "wyniki": wyniki,
+    }
+
+
+async def reconcile_order(shop: str, order_id: str, dry_run: bool = True) -> Dict[str, Any]:
+    """Punktowa naprawa jednego zamówienia (endpoint administracyjny)."""
+    firma = await _load_firma(shop)
+    if firma is None:
+        return {"shop": shop, "error": f"Sklep '{shop}' nie jest skonfigurowany"}
+    async with SessionLocal() as session:
+        return await reconcile_one(session, firma, str(order_id), _now_local(), dry_run=dry_run)
+
+
+async def _reconcile_pass(session: AsyncSession, firma: "Firma", sync_time: datetime) -> int:
+    """Automatyczny pass w biegu: naprawia do SELLASIST_RECONCILE_MAX zamówień
+    wykrytych trybem "log". Błąd rekoncyliacji NIE przerywa biegu."""
+    if not settings.SELLASIST_RECONCILE_ENABLED:
+        return 0
+    try:
+        kandydaci = await find_reconcile_candidates(
+            session, firma.slug, settings.SELLASIST_RECONCILE_SINCE,
+            "log", settings.SELLASIST_RECONCILE_MAX,
+        )
+        n = 0
+        for k in kandydaci:
+            r = await reconcile_one(session, firma, k["oid"], sync_time, dry_run=False)
+            if r.get("status") == "naprawione":
+                n += 1
+            await asyncio.sleep(0.1)
+        return n
+    except Exception as e:
+        print(f"[sellasist] rekoncyliacja {firma.slug} pominięta: {e}")
+        return 0
+
+
+# ============================================================
 # BIEG (zadanie w tle)
 async def _fetch_stock(firma: "Firma") -> List[dict]:
     """Pobiera produkty (ze stanami) z Sellasista danego sklepu, stronicowane po offset.
@@ -537,20 +812,25 @@ async def _upsert_external_stock(session: AsyncSession, firma: "Firma", products
 async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> dict:
     """Jeden sklep. Łapie własne błędy — awaria jednej firmy nie ubija pozostałych.
     Zwraca słownik wyniku: slug, ok, ins/upd/items + stany zewnętrzne (dla sklepów nie-AMH)."""
-    before = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
+    before = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"],
+              _status["items_reconciled"])
     err: Optional[str] = None
     try:
         headers = await _fetch_headers(firma, date_from)
         async with SessionLocal() as session:
             inserted_ids = await _upsert_headers(session, firma, headers, sync_time)
             await _insert_new_items(session, firma, headers, sync_time, inserted_ids)
+            # Rekoncyliacja PO wstawieniu nowych pozycji — świeżo dodane koszyki mają
+            # data_pobrania = sync_time, więc nie zapalą wyzwalacza w tym samym biegu.
+            await _reconcile_pass(session, firma, sync_time)
     except urllib.error.HTTPError as e:
         err = f"HTTP {e.code}"
     except urllib.error.URLError as e:
         err = f"brak połączenia ({e.reason})"
     except Exception as e:
         err = str(e)
-    a = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"])
+    a = (_status["orders_inserted"], _status["orders_updated"], _status["items_added"],
+         _status["items_reconciled"])
 
     # 2b: stany zewnętrzne — tylko sklepy nie-AMH (AMH ma stan z Subiektu, nie dublujemy).
     stock_rows: Optional[int] = None
@@ -570,6 +850,7 @@ async def _refresh_one(firma: "Firma", sync_time: datetime, date_from: str) -> d
     return {
         "slug": firma.slug, "ok": err is None, "error": err,
         "ins": a[0] - before[0], "upd": a[1] - before[1], "items": a[2] - before[2],
+        "reconciled": a[3] - before[3],
         "stock_rows": stock_rows, "stock_err": stock_err,
     }
 
@@ -578,6 +859,8 @@ def _result_desc(r: dict) -> str:
     if not r["ok"]:
         return f"błąd {r['error']}"
     base = f"+{r['ins']} nowych, {r['upd']} zm., +{r['items']} poz."
+    if r.get("reconciled"):
+        base += f" · koszyki naprawione: {r['reconciled']}"
     if r.get("stock_err"):
         base += f" · stan: błąd {r['stock_err']}"
     elif r.get("stock_rows") is not None:
