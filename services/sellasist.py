@@ -510,7 +510,14 @@ async def _insert_new_items(session: AsyncSession, firma: "Firma", headers: List
 #
 # Tryb "all": wszystko od podanej daty — młot, do świadomego użycia.
 
-_RECONCILE_MODES = ("log", "mismatch", "all")
+_RECONCILE_MODES = ("log", "mismatch", "zestawy", "all")
+
+# Rozpoznanie linii-zestawu. Bez LIKE z podkresleniem (wymagaloby ESCAPE i latwo o blad):
+# porownujemy dwuznakowy prefiks symbolu. Dane pokazuja trzy warianty zapisu — "Z_...",
+# "Z-..." oraz zestawy BEZ prefiksu (np. "A2_1_prze5s_L5cz_MSTcz" = "Zestaw poczatkujacej
+# stylistki"), dlatego drugim sitem jest nazwa produktu.
+_ZESTAW_PRED = ("(UPPER(LEFT(TRIM(symbol), 2)) IN ('Z_', 'Z-') "
+                "OR product_name ILIKE '%ZESTAW%')")
 
 
 async def _load_firma(shop: str) -> Optional["Firma"]:
@@ -620,6 +627,30 @@ async def find_reconcile_candidates(session: AsyncSession, shop: str, since: str
             WHERE o.shop = :shop AND o.order_date >= CAST(:since AS timestamp)
               AND COALESCE(o.total, 0)::numeric - p.wartosc::numeric > 1
             ORDER BY (COALESCE(o.total, 0)::numeric - p.wartosc::numeric) DESC
+            LIMIT :limit
+        """
+    elif mode == "zestawy":
+        # Sellasist rozbija zestaw na skladowe DOPIERO po zlozeniu zamowienia, a `total`
+        # przy tym sie NIE zmienia — wiec tryb "log" tego nie widzi. Sito: koszyk zlozony
+        # wylacznie z linii wygladajacych na zestaw (symbol Z_... albo nazwa z "ZESTAW").
+        # Po rekoncyliacji linia-zbiorcza znika i zostaja realne SKU — wartosc bez zmian.
+        sql = f"""
+            WITH poz AS (
+                SELECT order_id::varchar AS oid,
+                       COUNT(*) FILTER (WHERE {_ZESTAW_PRED}) AS zestawow,
+                       COUNT(*) AS wszystkich
+                FROM {settings.TABLE_ORDER_ITEMS}
+                WHERE shop = :shop
+                GROUP BY 1
+                HAVING COUNT(*) FILTER (WHERE {_ZESTAW_PRED}) > 0
+                   AND COUNT(*) FILTER (WHERE {_ZESTAW_PRED}) = COUNT(*)
+            )
+            SELECT o.order_id::varchar AS oid, o.order_date, o.status_name,
+                   o.creator, o.total
+            FROM {settings.TABLE_ORDERS} o
+            JOIN poz p ON p.oid = o.order_id::varchar
+            WHERE o.shop = :shop AND o.order_date >= CAST(:since AS timestamp)
+            ORDER BY o.order_date DESC
             LIMIT :limit
         """
     else:  # all
