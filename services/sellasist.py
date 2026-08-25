@@ -536,6 +536,30 @@ async def _items_summary(session: AsyncSession, shop: str, oid: str) -> Dict[str
     }
 
 
+async def _touch_items(session: AsyncSession, shop: str, oid: str, sync_time: datetime,
+                       powod: str) -> None:
+    """Przesuwa data_pobrania pozycji bez zmiany treści koszyka.
+
+    KLUCZOWE dla automatu: wyzwalacz porownuje log nagłówka z MIN(data_pobrania)
+    pozycji. Gdy rekoncyliacja niczego nie zmienia (albo świadomie pomijamy zapis),
+    bez tego znacznika zamówienie zostaje w kolejce NA ZAWSZE i automat mieli w kółko
+    te same rekordy, nie schodząc niżej po liście."""
+    try:
+        await session.execute(text(
+            f"UPDATE {settings.TABLE_ORDER_ITEMS} SET data_pobrania = :ts "
+            f"WHERE shop = :shop AND order_id::varchar = :oid"
+        ), {"ts": sync_time, "shop": shop, "oid": str(oid)})
+        await session.execute(text(
+            f"INSERT INTO {settings.TABLE_ORDERS}_log "
+            "(sync_time, order_id, shop, change_type, column_name, old_value, new_value) "
+            "VALUES (:ts, :oid, :shop, 'ITEMS_VERIFIED', 'items', NULL, :powod)"
+        ), {"ts": sync_time, "oid": str(oid), "shop": shop, "powod": powod})
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        print(f"[sellasist] _touch_items {shop}/{oid} pominięte: {e}")
+
+
 def _rows_summary(rows: List[dict]) -> Dict[str, Any]:
     """To samo co _items_summary, ale dla świeżo znormalizowanych wierszy z API."""
     return {
@@ -640,6 +664,8 @@ async def reconcile_one(session: AsyncSession, firma: "Firma", oid: str,
 
     carts = detail.get("carts", []) if isinstance(detail, dict) else []
     if not carts:
+        if not dry_run:
+            await _touch_items(session, shop, oid_s, sync_time, "API zwrocilo pusty koszyk")
         return {"order_id": oid_s, "shop": shop, "status": "pusty_koszyk_pominieto", "before": before}
 
     rows = _normalize_items(_to_int(oid_s), h.get("order_date"), h.get("currency"), carts)
@@ -660,8 +686,19 @@ async def reconcile_one(session: AsyncSession, firma: "Firma", oid: str,
         ]
         return out
 
+    # BEZPIECZNIK: API bywa zwraca koszyk z samymi zerowymi cenami (zamówienia ręczne,
+    # rekompensaty), podczas gdy w bazie mamy poprawne kwoty. Nadpisanie skasowałoby
+    # realną wartość sprzedaży — takie zamówienie pomijamy i zostawiamy ślad w logu.
+    if (settings.SELLASIST_RECONCILE_SKIP_ZEROING
+            and after["wartosc"] == 0 and before["wartosc"] > 0):
+        out["status"] = "pominieto_zerowanie"
+        await _touch_items(session, shop, oid_s, sync_time,
+                           f"API zwrocilo 0 zl, w bazie {before['wartosc']} zl — pominieto")
+        return out
+
     if diff["linii"] == 0 and abs(diff["sztuk"]) < 1e-9 and abs(diff["wartosc"]) < 0.01:
         out["status"] = "bez_zmian"
+        await _touch_items(session, shop, oid_s, sync_time, "koszyk zgodny z API")
         return out
 
     item_cols = [
@@ -733,6 +770,8 @@ async def reconcile_scan(shop: str, since: Optional[str] = None, mode: str = "lo
         "shop": shop, "mode": mode, "since": since, "dry_run": False,
         "kandydatow": len(kandydaci),
         "naprawionych": len(naprawione),
+        "pominietych_zerowanie": len([w for w in wyniki if w.get("status") == "pominieto_zerowanie"]),
+        "bez_zmian": len([w for w in wyniki if w.get("status") == "bez_zmian"]),
         "sztuk_roznica": round(sum(w["diff"]["sztuk"] for w in naprawione), 2),
         "wartosc_roznica": round(sum(w["diff"]["wartosc"] for w in naprawione), 2),
         "wyniki": wyniki,
