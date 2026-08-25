@@ -121,6 +121,21 @@ class Settings(BaseSettings):
                                          # żeby hourly nie odpytywał w kółko pustych koszyków
     SELLASIST_WEBHOOK_SECRET: str = ""   # rezerwa pod webhook (czat AUTH/później)
 
+    # ---- Rekoncyliacja koszyków (naprawa "insert-once") ----
+    # Pozycje były wstawiane RAZ: gdy zamówienie miało już jakikolwiek koszyk, kolejne
+    # edycje w Sellasiście (dopisana pozycja, zmiana ilości, przecena) NIE trafiały do bazy.
+    # Rekoncyliacja pobiera koszyk ponownie i podmienia go w całości (DELETE+INSERT w jednej
+    # transakcji). Wyzwalacz: zmiana `total` w logu nagłówków PO dacie pobrania pozycji —
+    # status zmienia się po każdym zamówieniu, więc sam `data_pobrania` nagłówka NIE nadaje
+    # się na sygnał (zapalałby się na ~wszystkim).
+    # WYŁĄCZONE DOMYŚLNIE. Samo wgranie kodu niczego nie zmienia w danych — automat
+    # rusza dopiero po ustawieniu SELLASIST_RECONCILE_ENABLED=true na Railway.
+    # Endpointy /reconcile i /reconcile/scan działają niezależnie od tej flagi
+    # (są ręczne i domyślnie w trybie dry_run).
+    SELLASIST_RECONCILE_ENABLED: bool = False
+    SELLASIST_RECONCILE_MAX: int = 50        # ile zamówień na jeden bieg (ochrona API)
+    SELLASIST_RECONCILE_SINCE: str = "2026-01-01"   # starszej historii nie ruszamy
+
     # Automat: co godzinę o pełnej godzinie w oknie [START..END] czasu warszawskiego.
     # Domyślnie 7–20. Wyłącznik: SELLASIST_AUTO_ENABLED=false. Bieg i tak rusza tylko
     # gdy klucz/URL są ustawione i gdy nie trwa już ręczne odświeżanie.
