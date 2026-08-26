@@ -1,19 +1,124 @@
 """Kalendarz zdarzeń (zamówienia/wyczerpania/dostawy), cashflow, historia wartości magazynu."""
 
 from datetime import date, timedelta
+from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from audit import log_audit
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from models import CurrentUser
-from security import get_current_user, require_view_financials, has_perm, resolve_shop
+from security import (
+    get_current_user, require_view_financials, has_perm, resolve_shop,
+    allowed_shops, can_see_calendar_payments, require_edit_containers,
+)
 from services.products import fetch_products
 from services.containers import fetch_containers
 
 router = APIRouter(prefix="/api", tags=["calendar"])
+
+
+# ===== PŁATNOŚCI JAKO ZDARZENIA KALENDARZA =====
+# Ta sama definicja co zakładka „Do zapłaty" w Cashflow: bierzemy WYŁĄCZNIE niezapłacone
+# (brak daty wpłaty albo data w przyszłości), a osią czasu jest `termin` — planowany termin
+# płatności, nie faktyczna data wpłaty. Dzięki temu kalendarz i cashflow nigdy się nie rozjadą.
+#
+# Zapłacone (data ≤ dziś) NIE wchodzą do kalendarza w ogóle — przeszłość jest zamknięta,
+# a kalendarz ma pokazywać zobowiązania, nie historię przelewów.
+#
+# Płatności bez terminu wracają z date=None: nie mają gdzie wylądować w siatce, więc front
+# trzyma je w osobnej karcie „bez terminu" i pozwala przeciągnąć na dzień (= pierwsze ustawienie).
+
+def _payment_firma(fb) -> tuple:
+    """(slug, nazwa) firmy dla płatności — z firma_breakdown lotu albo kontenera.
+
+    Lot jest zwykle jednosklepowy; gdyby wyjątkowo był mieszany, bierzemy firmę
+    o największym udziale wartości. Dokładnie ta sama reguła co w /cashflow/ledger.
+    """
+    def _sv(s):
+        return (s.get("value") if isinstance(s, dict) else getattr(s, "value", 0)) or 0.0
+
+    def _ss(s):
+        return (s.get("slug") if isinstance(s, dict) else getattr(s, "slug", None)) or "amh"
+
+    def _sn(s):
+        return s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
+
+    if not fb:
+        return "amh", "AMH"
+    best = max(fb.values(), key=_sv)
+    slug = (_ss(best) or "amh").lower()
+    return slug, (_sn(best) or slug.upper())
+
+
+def _payment_events(containers, today: date, shop: str) -> list:
+    """Niezapłacone zaliczki i balance jako zdarzenia typu PAYMENT.
+
+    Identyfikacja zdarzenia dla PATCH-a terminu:
+      · zaliczka → advance_id (PK w app_container_advances),
+      · balance  → (container_id, lot_id) — balance nie ma własnego wiersza,
+                   siedzi jako kolumna na kontenerze albo na locie.
+    """
+    events = []
+
+    def _add(c, *, kind, adv_id, lot_id, mfr_id, mfr_name, mfr_color, slug, sname,
+             kwota, waluta, procent, termin, data, order_number):
+        if kwota is None:
+            return
+        if data is not None and data <= today:
+            return                                  # zapłacone — poza kalendarzem
+        if shop and slug != shop:
+            return                                  # zakładka firmowa
+        events.append({
+            "date": termin.isoformat() if termin else None,
+            "type": "PAYMENT",
+            "pay_kind": kind,                       # "zaliczka" | "balance"
+            "advance_id": adv_id,
+            "container_id": c.id,
+            "lot_id": lot_id,
+            "container_number": c.container_number,
+            "order_number": order_number or c.order_number,
+            "manufacturer_id": mfr_id,
+            "manufacturer_name": mfr_name,
+            "manufacturer_color": mfr_color,
+            "kwota": round(float(kwota), 2),
+            "waluta": (waluta or "USD").upper(),
+            "procent": (float(procent) if procent is not None else None),
+            "shop": slug,
+            "shop_name": sname,
+            "termin": termin.isoformat() if termin else None,
+            "overdue": bool(termin and termin < today),
+        })
+
+    for c in containers:
+        c_slug, c_name = _payment_firma(c.firma_breakdown)
+        for a in (c.advances or []):
+            _add(c, kind="zaliczka", adv_id=a.id, lot_id=None,
+                 mfr_id=c.manufacturer_id, mfr_name=c.manufacturer_name, mfr_color=c.manufacturer_color,
+                 slug=c_slug, sname=c_name, kwota=a.kwota, waluta=a.waluta, procent=a.procent,
+                 termin=a.termin, data=a.data, order_number=None)
+        _add(c, kind="balance", adv_id=None, lot_id=None,
+             mfr_id=c.manufacturer_id, mfr_name=c.manufacturer_name, mfr_color=c.manufacturer_color,
+             slug=c_slug, sname=c_name, kwota=c.balance_kwota, waluta=c.balance_waluta, procent=None,
+             termin=c.balance_termin, data=c.zaplacono_data, order_number=None)
+
+        for lot in (c.lots or []):
+            l_slug, l_name = _payment_firma(lot.firma_breakdown)
+            for a in (lot.advances or []):
+                _add(c, kind="zaliczka", adv_id=a.id, lot_id=lot.id,
+                     mfr_id=lot.manufacturer_id, mfr_name=lot.manufacturer_name, mfr_color=lot.manufacturer_color,
+                     slug=l_slug, sname=l_name, kwota=a.kwota, waluta=a.waluta, procent=a.procent,
+                     termin=a.termin, data=a.data, order_number=lot.order_number)
+            _add(c, kind="balance", adv_id=None, lot_id=lot.id,
+                 mfr_id=lot.manufacturer_id, mfr_name=lot.manufacturer_name, mfr_color=lot.manufacturer_color,
+                 slug=l_slug, sname=l_name, kwota=lot.balance_kwota, waluta=lot.balance_waluta, procent=None,
+                 termin=lot.balance_termin, data=lot.zaplacono_data, order_number=lot.order_number)
+
+    return events
 
 
 def _delivery_manufacturers(c) -> tuple:
@@ -126,7 +231,141 @@ async def calendar_events(
             "container_status": eff,
         })
 
+    # Płatności — tylko dla uprawnionych. Odcinamy je SERWEROWO (nie chowamy na froncie),
+    # bo chip niesie kwotę zobowiązania: bez uprawnienia nie ma prawa opuścić backendu.
+    # favorites_only ich nie dotyczy — płatność nie ma SKU, więc jak dostawa jest zawsze widoczna.
+    if can_see_calendar_payments(user):
+        events.extend(_payment_events(containers, date.today(), shop))
+
     return events
+
+
+# ===== PRZESUNIĘCIE TERMINU PŁATNOŚCI (drag & drop w kalendarzu) =====
+class PaymentTerminIn(BaseModel):
+    """Punktowa zmiana planowanego terminu płatności.
+
+    kind="zaliczka" → wymaga advance_id (wiersz w app_container_advances).
+    kind="balance"  → wymaga container_id; lot_id=None dla kontenera nieskonsolidowanego,
+                      lot_id=<id> dla balansu konkretnego lotu.
+
+    expected_termin — termin, który front WIDZIAŁ w chwili przeciągnięcia (ISO albo None).
+    Służy do wykrycia, że ktoś w międzyczasie ruszył kontener; niezgodność → 409 zamiast
+    cichego nadpisania cudzej zmiany. Konieczne, bo pełny zapis kontenera przebudowuje
+    zaliczki przez DELETE+INSERT, więc advance_id nie jest identyfikatorem wiecznym.
+    """
+    kind: str
+    container_id: int
+    lot_id: Optional[int] = None
+    advance_id: Optional[int] = None
+    termin: Optional[date] = None
+    expected_termin: Optional[date] = None
+
+
+@router.patch("/cashflow/payment/termin")
+async def move_payment_termin(
+    payload: PaymentTerminIn,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_edit_containers),
+):
+    """Przesuwa PLANOWANY termin płatności (`termin` / `balance_termin`).
+
+    NIE dotyka faktycznej daty wpłaty (`data` / `zaplacono_data`) — od niej zależy kurs NBP
+    i cała zakładka „Zapłacono", więc zostaje wyłącznie do ręcznego wpisania w kontenerze.
+
+    Uprawnienia: edycja wymaga editContainers (dependency) ORAZ prawa do oglądania płatności
+    w kalendarzu — kto ich nie widzi, nie ma czego przesuwać.
+    """
+    if not can_see_calendar_payments(user):
+        raise HTTPException(403, "Brak uprawnienia: viewCalendarPayments")
+
+    kind = (payload.kind or "").strip().lower()
+    if kind not in ("zaliczka", "balance"):
+        raise HTTPException(400, "kind musi być 'zaliczka' albo 'balance'")
+
+    today = date.today()
+
+    # Zakres firmowy: user ograniczony do firm nie może ruszać cudzych zobowiązań.
+    # Liczymy tylko dla scoped userów — dla reszty to zbędny koszt fetch_containers.
+    scope = allowed_shops(user)
+    if scope:
+        containers = await fetch_containers(db)
+        target = next((c for c in containers if c.id == payload.container_id), None)
+        if target is None:
+            raise HTTPException(404, "Kontener nie istnieje")
+        if payload.lot_id is not None:
+            lot = next((l for l in (target.lots or []) if l.id == payload.lot_id), None)
+            slug, _ = _payment_firma(lot.firma_breakdown if lot else None)
+        else:
+            slug, _ = _payment_firma(target.firma_breakdown)
+        if slug not in scope:
+            raise HTTPException(403, "Płatność spoza Twojego zakresu firmowego")
+
+    if kind == "zaliczka":
+        if payload.advance_id is None:
+            raise HTTPException(400, "Zaliczka wymaga advance_id")
+        r = await db.execute(text(f"""
+            SELECT id, container_id, lot_id, kwota, waluta, termin, data
+            FROM {settings.TABLE_CONTAINER_ADVANCES}
+            WHERE id = :id
+        """), {"id": payload.advance_id})
+        row = r.first()
+        if row is None:
+            raise HTTPException(404, "Zaliczka nie istnieje — odśwież kalendarz")
+        m = row._mapping
+        if m["data"] is not None and m["data"] <= today:
+            raise HTTPException(409, "Zaliczka jest już rozliczona — terminu nie da się przesunąć")
+        if payload.expected_termin != m["termin"]:
+            raise HTTPException(409, "Termin zmienił się w międzyczasie — odśwież kalendarz")
+        await db.execute(
+            text(f"UPDATE {settings.TABLE_CONTAINER_ADVANCES} SET termin = :t WHERE id = :id"),
+            {"t": payload.termin, "id": payload.advance_id},
+        )
+        old_termin, kwota, waluta = m["termin"], m["kwota"], m["waluta"]
+        res_id = f"advance:{payload.advance_id}"
+
+    else:
+        if payload.lot_id is not None:
+            tbl, where, params = settings.TABLE_CONTAINER_LOTS, "id = :id", {"id": payload.lot_id}
+        else:
+            tbl, where, params = settings.TABLE_CONTAINERS, "id = :id", {"id": payload.container_id}
+        r = await db.execute(text(f"""
+            SELECT balance_kwota, balance_waluta, balance_termin, zaplacono_data
+            FROM {tbl} WHERE {where}
+        """), params)
+        row = r.first()
+        if row is None:
+            raise HTTPException(404, "Kontener/lot nie istnieje — odśwież kalendarz")
+        m = row._mapping
+        if m["zaplacono_data"] is not None and m["zaplacono_data"] <= today:
+            raise HTTPException(409, "Balance jest już zapłacony — terminu nie da się przesunąć")
+        if payload.expected_termin != m["balance_termin"]:
+            raise HTTPException(409, "Termin zmienił się w międzyczasie — odśwież kalendarz")
+        await db.execute(
+            text(f"UPDATE {tbl} SET balance_termin = :t WHERE {where}"),
+            {**params, "t": payload.termin},
+        )
+        old_termin, kwota, waluta = m["balance_termin"], m["balance_kwota"], m["balance_waluta"]
+        res_id = f"lot:{payload.lot_id}" if payload.lot_id is not None else f"container:{payload.container_id}"
+
+    await db.commit()
+
+    await log_audit(
+        db, user, "MOVE_PAYMENT_TERMIN", "payment", res_id,
+        details=(f"{kind} {kwota} {waluta or 'USD'} · termin "
+                 f"{old_termin.isoformat() if old_termin else 'brak'} → "
+                 f"{payload.termin.isoformat() if payload.termin else 'brak'} "
+                 f"(kontener {payload.container_id})"),
+    )
+
+    return {
+        "ok": True,
+        "kind": kind,
+        "container_id": payload.container_id,
+        "lot_id": payload.lot_id,
+        "advance_id": payload.advance_id,
+        "termin": payload.termin.isoformat() if payload.termin else None,
+        "previous_termin": old_termin.isoformat() if old_termin else None,
+    }
 
 
 @router.get("/cashflow")
