@@ -97,6 +97,20 @@ export default function Page() {
     } else {
       if (u) markActivity();
       setCurrentUser(u);
+      // Uprawnienia mogły się zmienić od ostatniego logowania (admin postawił ptaszek),
+      // a localStorage trzyma kopię sprzed tej zmiany. Backend czyta uprawnienia z bazy
+      // przy każdym żądaniu, więc bez tego odświeżenia front i serwer widzą różne rzeczy:
+      // dane przychodzą, ale UI je blokuje. Odpytujemy /auth/me w tle — do czasu odpowiedzi
+      // działa kopia lokalna, więc nic nie miga.
+      if (u) {
+        api.get("/auth/me")
+          .then((fresh) => {
+            if (!fresh) return;
+            setUser(fresh as User);
+            setCurrentUser(fresh as User);
+          })
+          .catch(() => { /* offline → zostaje kopia lokalna; 401 i tak wywali sesję wyżej */ });
+      }
     }
     setReady(true);
     const onUnauth = () => { setCurrentUser(null); setView("dashboard"); };
