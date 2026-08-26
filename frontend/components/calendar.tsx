@@ -327,11 +327,20 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
     return Array.from({ length: 7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return d; });
   }, [cursor]);
 
+  // Zdarzenia widoczne dla tego usera. Uprawnienie MUSI ciąć zdarzenia, nie tylko chip filtra:
+  // backend czyta uprawnienia z bazy przy każdym żądaniu, a front z kopii w localStorage, więc
+  // tuż po zmianie ptaszka potrafią się rozjechać. Bez tej bramki płatności wpadały do siatki
+  // (filtr PAYMENT domyślnie włączony), ale drag był zablokowany — „widzę, a nie mogę ruszyć".
+  const allowedEvents = useMemo(
+    () => (showPayments ? events : events.filter(e => e.type !== "PAYMENT")),
+    [events, showPayments]
+  );
+
   // Zdarzenia z datą — tylko one trafiają do siatki. Płatności bez terminu (date=null)
   // odfiltrowujemy tutaj raz, żeby żadna dalsza pętla nie musiała się o nie martwić.
   const datedEvents = useMemo(
-    () => events.filter(e => !!e.date && filters[e.type]),
-    [events, filters]
+    () => allowedEvents.filter(e => !!e.date && filters[e.type]),
+    [allowedEvents, filters]
   );
 
   const eventsByDate = useMemo<Record<string, CalEvent[]>>(() => {
@@ -347,8 +356,8 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
 
   // Płatności bez ustalonego terminu — osobna karta w panelu bocznym.
   const noTermPayments = useMemo(
-    () => (showPayments && filters.PAYMENT ? events.filter(e => e.type === "PAYMENT" && !e.date) : []),
-    [events, filters, showPayments]
+    () => (filters.PAYMENT ? allowedEvents.filter(e => e.type === "PAYMENT" && !e.date) : []),
+    [allowedEvents, filters]
   );
 
   const monthEventCount = useMemo(() => {
@@ -814,11 +823,19 @@ function EventChip({ event, onPayClick, drag }: { event: CalEvent; onPayClick: (
   return (
     <div
       draggable={draggable}
-      onDragStart={draggable && drag ? (ev) => { drag.onDragStart(event); ev.dataTransfer.effectAllowed = "move"; } : undefined}
+      onDragStart={draggable && drag ? (ev) => {
+        drag.onDragStart(event);
+        ev.dataTransfer.effectAllowed = "move";
+        // Firefox NIE rozpocznie przeciągania bez setData — bez tej linii chip jest tam
+        // całkowicie martwy, mimo poprawnych uprawnień. Treść nieistotna, liczy się wywołanie.
+        try { ev.dataTransfer.setData("text/plain", payKey(event)); } catch { /* starsze przeglądarki */ }
+      } : undefined}
       onDragEnd={draggable && drag ? () => drag.onDragEnd() : undefined}
       onClick={isPay ? (ev) => { ev.stopPropagation(); onPayClick(event); } : undefined}
       title={isPay
-        ? (draggable ? `${payLabel(event)} — przeciągnij, by zmienić termin płatności` : payLabel(event))
+        ? (draggable
+            ? `${payLabel(event)} — przeciągnij, by zmienić termin płatności`
+            : `${payLabel(event)} — przesuwanie terminu wymaga uprawnienia „Edycja kontenerów”`)
         : undefined}
       style={{
         display: "flex", alignItems: "center", gap: 4,
@@ -961,7 +978,12 @@ function NoTermPayments({ items, canDrag, drag, onPick }: {
           <div
             key={payKey(e)}
             draggable={canDrag && !!drag}
-            onDragStart={canDrag && drag ? (ev) => { drag.onDragStart(e); ev.dataTransfer.effectAllowed = "move"; } : undefined}
+            onDragStart={canDrag && drag ? (ev) => {
+              drag.onDragStart(e);
+              ev.dataTransfer.effectAllowed = "move";
+              // Patrz komentarz w EventChip — bez setData Firefox nie startuje przeciągania.
+              try { ev.dataTransfer.setData("text/plain", payKey(e)); } catch { /* starsze przeglądarki */ }
+            } : undefined}
             onDragEnd={canDrag && drag ? () => drag.onDragEnd() : undefined}
             onClick={() => onPick(e)}
             style={{
