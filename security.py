@@ -126,10 +126,15 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # łącznie z ADMIN; dostęp daje wyłącznie wpis w kolumnie `permissions` konkretnego usera):
 #   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
 # Dopisanie takiego klucza do ROLE_PERMS otworzy go całej roli — rób to świadomie.
+#
+# viewCalendarPayments — płatności „Do zapłaty" jako zdarzenia kalendarza. Domyślnie TYLKO ADMIN;
+# IMPORT/VIEWER dostają dostęp wyłącznie ręcznym ptaszkiem. Uprawnienie jest KONIUNKCYJNE
+# z viewFinancials (patrz can_see_calendar_payments) — kalendarz pokazuje kwoty zobowiązań,
+# więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy tylnymi drzwiami.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False},
 }
 
 
@@ -162,6 +167,16 @@ require_occupancy = require_perm("viewOccupancy")
 # Załączniki kontenerów to faktury, proformy i BL — pilnujemy ich osobnym uprawnieniem,
 # niezależnym od viewFinancials (viewer widzi wartości w PLN, ale nie ma wglądu w dokumenty).
 require_attachments = require_perm("viewAttachments")
+
+
+def can_see_calendar_payments(user: CurrentUser) -> bool:
+    """Płatności w kalendarzu = viewCalendarPayments ORAZ viewFinancials.
+
+    Koniunkcja, nie alternatywa: chip w kalendarzu niesie kwotę i walutę zobowiązania,
+    więc bez viewFinancials nie ma prawa się pojawić, choćby ptaszek był postawiony.
+    Lustro tej samej reguły siedzi na froncie (permissions.js → canSeeCalendarPayments).
+    """
+    return has_perm(user, "viewCalendarPayments") and has_perm(user, "viewFinancials")
 
 
 # ===== ZAKRES FIRMOWY (company_scope) =====
