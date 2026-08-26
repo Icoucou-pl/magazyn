@@ -26,7 +26,7 @@ import { I, Card, CardHeader, Pill, MfrChip, containerLabel, isDraftNumber } fro
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { useShop } from "@/lib/shop";
-import { fmtNum } from "@/lib/format";
+import { fmtNum, fmtPLN } from "@/lib/format";
 import { can, canSeeCalendarPayments, useUser } from "@/lib/permissions";
 
 // ── Typy ─────────────────────────────────────────────────────
@@ -54,6 +54,8 @@ type CalEvent = {
   lot_id?: number | null;
   kwota?: number;
   waluta?: string;
+  kwota_pln?: number | null;      // szacunek po dzisiejszym kursie NBP (płatność jest niezapłacona)
+  kurs?: number | null;           // kurs użyty do szacunku; null dla PLN i przy braku notowania
   procent?: number | null;
   shop?: string;
   shop_name?: string;
@@ -944,22 +946,38 @@ function EventRow({ event, isLast, openPay, onTogglePay, onOpenContainer }: {
 // --- Rozwinięty szczegół płatności --------------------------
 function PaymentDetail({ event, onOpenContainer }: { event: CalEvent; onOpenContainer?: (id: number) => void }) {
   const nr = isDraftNumber(event.container_number) ? null : (event.container_number || null);
-  const rows: Array<[string, string, React.CSSProperties | undefined]> = [
-    ["Producent", event.manufacturer_name || "Bez producenta", undefined],
-    ["Nr kontenera", nr || "—", undefined],
-    ["Nr PO", event.order_number || "—", undefined],
-    ["Typ", payKindLabel(event), undefined],
-    ["Kwota", payAmount(event), { color: "var(--anomaly)", fontWeight: 600 }],
+  const rows: Array<[string, string, React.CSSProperties | undefined, string | undefined]> = [
+    ["Producent", event.manufacturer_name || "Bez producenta", undefined, undefined],
+    ["Nr kontenera", nr || "—", undefined, undefined],
+    ["Nr PO", event.order_number || "—", undefined, undefined],
+    ["Typ", payKindLabel(event), undefined, undefined],
+    ["Kwota", payAmount(event), { color: "var(--anomaly)", fontWeight: 600 }, undefined],
+  ];
+
+  // Wartość w PLN jest z definicji SZACUNKIEM — płatność jeszcze nie wyszła, więc kursu z dnia
+  // wpłaty nie ma. Stąd „≈" i kurs w tooltipie, dokładnie jak w zakładce „Do zapłaty".
+  // Dla zobowiązań już w PLN nie ma czego przeliczać, więc wiersz pomijamy.
+  if (event.kwota_pln != null && (event.waluta || "USD") !== "PLN") {
+    rows.push([
+      "Wartość PLN",
+      `≈ ${fmtPLN(event.kwota_pln)}`,
+      { color: "var(--text-mid)" },
+      event.kurs ? `Szacunek po dzisiejszym kursie NBP: ${event.kurs.toString().replace(".", ",")}` : undefined,
+    ]);
+  }
+
+  rows.push(
     ["Termin",
       event.termin ? parseLocal(event.termin).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" }) : "bez terminu",
-      event.overdue ? { color: "var(--critical)" } : undefined],
-    ["Firma", event.shop_name || "—", undefined],
-  ];
+      event.overdue ? { color: "var(--critical)" } : undefined, undefined],
+    ["Firma", event.shop_name || "—", undefined, undefined],
+  );
+
   return (
     // stopPropagation: klik w tabelkę nie może zwijać wiersza, który ją zawiera.
     <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 10 }}>
       <div style={{ border: "1px solid var(--border-soft)", borderRadius: "var(--r-sm)", overflow: "hidden" }}>
-        {rows.map(([lbl, value, extra], i) => (
+        {rows.map(([lbl, value, extra, tip], i) => (
           <div key={lbl} style={{
             display: "grid", gridTemplateColumns: "auto 1fr", alignItems: "center",
             borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--border-soft)",
@@ -968,7 +986,7 @@ function PaymentDetail({ event, onOpenContainer }: { event: CalEvent; onOpenCont
               padding: "6px 10px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
               color: "var(--text-lo)", background: "var(--surface-2)", whiteSpace: "nowrap",
             }}>{lbl}</span>
-            <span className="mono" style={{
+            <span className="mono" title={tip} style={{
               padding: "6px 10px", fontSize: 11, textAlign: "right",
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(extra || {}),
             }}>{value}</span>
