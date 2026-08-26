@@ -165,6 +165,24 @@ const eventSub = (e: CalEvent) => {
 // Kalendarz renderuje się wyłącznie po stronie klienta (page.tsx: `if (!ready) return null`),
 // więc odczyt w inicjalizatorze useState jest bezpieczny — brak hydration mismatch.
 const CAL_STATE_KEY = "magazyn:calendar:view";
+// Znacznik „wyszliśmy stąd do popupu kontenera i zaraz wrócimy". Ustawiany tuż przed
+// otwarciem kontenera, konsumowany przy najbliższym montażu kalendarza. Pozwala odróżnić
+// powrót z popupu (odtwarzamy widok 1:1) od świeżego wejścia w zakładkę (płatności chowamy).
+const CAL_ROUNDTRIP_KEY = "magazyn:calendar:roundtrip";
+
+function markContainerRoundtrip(): void {
+  if (typeof window === "undefined") return;
+  try { window.sessionStorage.setItem(CAL_ROUNDTRIP_KEY, "1"); } catch { /* tryb prywatny */ }
+}
+
+function consumeRoundtrip(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const was = window.sessionStorage.getItem(CAL_ROUNDTRIP_KEY) === "1";
+    window.sessionStorage.removeItem(CAL_ROUNDTRIP_KEY);   // jednorazowy — zużywamy od razu
+    return was;
+  } catch { return false; }
+}
 type PersistedCalState = { mode: Mode; cursorTs: number; selected: string; scope: Scope; filters: Filters; openPay: string | null };
 function loadCalState(): Partial<PersistedCalState> {
   if (typeof window === "undefined") return {};
@@ -190,20 +208,27 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
 
   // Stan widoku inicjowany z sessionStorage (lazy) — patrz komentarz przy loadCalState.
   const [saved] = useState<Partial<PersistedCalState>>(loadCalState);
+  // Czy to powrót z popupu kontenera? Czytamy raz, przy montażu (znacznik się zużywa).
+  const [isRoundtrip] = useState<boolean>(consumeRoundtrip);
   const [mode, setMode] = useState<Mode>(saved.mode ?? "month");
   const [cursor, setCursor] = useState<Date>(() => (saved.cursorTs ? new Date(saved.cursorTs) : new Date()));
   const [selected, setSelected] = useState(saved.selected ?? dKey(new Date()));
-  // Stary zapis w sessionStorage nie zna klucza PAYMENT — bez tego domknięcia filtr byłby
-  // `undefined` (czyli fałsz) i po wdrożeniu płatności nigdy by się nie pokazały.
+  // Płatności są DOMYŚLNIE SCHOWANE — jako jedyna kategoria niosą kwoty zobowiązań,
+  // więc nie wyświetlają się same przy wejściu w zakładkę; trzeba świadomie kliknąć chip.
+  // Wyjątek: powrót z popupu kontenera, gdzie odtwarzamy widok 1:1 — inaczej płatność,
+  // z której właśnie wszedłeś w kontener, znikałaby po jego zamknięciu.
+  // Pozostałe filtry działają jak dotąd (zapamiętywane między wejściami).
   const [filters, setFilters] = useState<Filters>(() => {
-    const base: Filters = { ORDER: true, EMPTY: true, DELIVERY: true, PAYMENT: true };
-    return saved.filters ? { ...base, ...saved.filters, PAYMENT: saved.filters.PAYMENT ?? true } : base;
+    const base: Filters = { ORDER: true, EMPTY: true, DELIVERY: true, PAYMENT: false };
+    const merged = { ...base, ...(saved.filters || {}) };
+    return { ...merged, PAYMENT: isRoundtrip ? (saved.filters?.PAYMENT ?? false) : false };
   });
   // Zakres SKU: "watched" = tylko obserwowane (gwiazdka), "active" = wszystkie aktywne.
-  // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy i płatności zawsze widoczne.
+  // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy zawsze widoczne.
   const [scope, setScope] = useState<Scope>(saved.scope ?? "watched");
   // Rozwinięty szczegół płatności w panelu bocznym (klucz z payKey albo null).
-  const [openPay, setOpenPay] = useState<string | null>(saved.openPay ?? null);
+  // Przy świeżym wejściu zeruje się razem z filtrem — nie ma czego rozwijać, gdy płatności schowane.
+  const [openPay, setOpenPay] = useState<string | null>(isRoundtrip ? (saved.openPay ?? null) : null);
   // Dzień podświetlony pod kursorem podczas przeciągania.
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // Przeciągane zdarzenie w ref — stan re-renderowałby siatkę w trakcie dragu i gubił uchwyt.
@@ -416,6 +441,15 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
     setOpenPay(payKey(e));
   }, []);
 
+  // Wyjście do popupu kontenera zostawia znacznik — dzięki niemu po powrocie filtr płatności
+  // i rozwinięty szczegół wracają takie, jakie były, zamiast resetować się jak przy świeżym wejściu.
+  const openContainer = useCallback((id: number) => {
+    markContainerRoundtrip();
+    onOpenContainer?.(id);
+  }, [onOpenContainer]);
+  // Zachowujemy undefined, gdy rodzic nie podał handlera — komponenty niżej sprawdzają jego obecność.
+  const handleOpenContainer = onOpenContainer ? openContainer : undefined;
+
   // Agenda — najbliższe 3 tygodnie
   const agenda = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -452,7 +486,7 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
           {mode === "day" && (
             <Card>
               <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}
-                         openPay={openPay} onTogglePay={setOpenPay} onOpenContainer={onOpenContainer}/>
+                         openPay={openPay} onTogglePay={setOpenPay} onOpenContainer={handleOpenContainer}/>
             </Card>
           )}
         </div>
@@ -463,7 +497,7 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
           {mode !== "day" && (
             <Card>
               <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}
-                         openPay={openPay} onTogglePay={setOpenPay} onOpenContainer={onOpenContainer}/>
+                         openPay={openPay} onTogglePay={setOpenPay} onOpenContainer={handleOpenContainer}/>
             </Card>
           )}
 
