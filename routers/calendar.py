@@ -55,14 +55,20 @@ def _payment_firma(fb) -> tuple:
     return slug, (_sn(best) or slug.upper())
 
 
-def _payment_events(containers, today: date, shop: str) -> list:
+def _payment_events(containers, today: date, shop: str, rates: dict | None = None) -> list:
     """Niezapłacone zaliczki i balance jako zdarzenia typu PAYMENT.
 
     Identyfikacja zdarzenia dla PATCH-a terminu:
       · zaliczka → advance_id (PK w app_container_advances),
       · balance  → (container_id, lot_id) — balance nie ma własnego wiersza,
                    siedzi jako kolumna na kontenerze albo na locie.
+
+    kwota_pln: zawsze SZACUNEK po najnowszym notowaniu NBP, bo w kalendarzu siedzą wyłącznie
+    zobowiązania niezapłacone — kursu z dnia przyszłej wpłaty jeszcze nie ma. To ta sama
+    reguła co „Do zapłaty" w Cashflow (tam front liczy to z rate_today). Brak notowania dla
+    waluty → kwota_pln = None i front po prostu nie pokazuje wiersza PLN.
     """
+    rates = rates or {}
     events = []
 
     def _add(c, *, kind, adv_id, lot_id, mfr_id, mfr_name, mfr_color, slug, sname,
@@ -73,6 +79,8 @@ def _payment_events(containers, today: date, shop: str) -> list:
             return                                  # zapłacone — poza kalendarzem
         if shop and slug != shop:
             return                                  # zakładka firmowa
+        cur = (waluta or "USD").upper()
+        rate = 1.0 if cur == "PLN" else rates.get(cur)
         events.append({
             "date": termin.isoformat() if termin else None,
             "type": "PAYMENT",
@@ -86,7 +94,9 @@ def _payment_events(containers, today: date, shop: str) -> list:
             "manufacturer_name": mfr_name,
             "manufacturer_color": mfr_color,
             "kwota": round(float(kwota), 2),
-            "waluta": (waluta or "USD").upper(),
+            "waluta": cur,
+            "kwota_pln": (round(float(kwota) * rate, 2) if rate is not None else None),
+            "kurs": (round(rate, 4) if rate is not None and cur != "PLN" else None),
             "procent": (float(procent) if procent is not None else None),
             "shop": slug,
             "shop_name": sname,
@@ -235,7 +245,15 @@ async def calendar_events(
     # bo chip niesie kwotę zobowiązania: bez uprawnienia nie ma prawa opuścić backendu.
     # favorites_only ich nie dotyczy — płatność nie ma SKU, więc jak dostawa jest zawsze widoczna.
     if can_see_calendar_payments(user):
-        events.extend(_payment_events(containers, date.today(), shop))
+        # Najnowsze notowanie NBP per waluta — do oszacowania wartości w PLN.
+        # DISTINCT ON bierze pierwszy wiersz z każdej grupy przy sortowaniu malejąco po dacie.
+        fx_rows = await db.execute(text(f"""
+            SELECT DISTINCT ON (currency) currency, mid
+            FROM {settings.TABLE_FX_RATES}
+            ORDER BY currency, rate_date DESC
+        """))
+        rates = {r._mapping["currency"]: float(r._mapping["mid"]) for r in fx_rows}
+        events.extend(_payment_events(containers, date.today(), shop, rates))
 
     return events
 
