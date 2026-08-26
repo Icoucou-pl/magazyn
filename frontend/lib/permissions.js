@@ -25,6 +25,7 @@ export const PERMISSIONS = [
   { key: "viewReports",    label: "Raporty",               desc: "Dostęp do raportów miesięcznych (KPI, PDF/Excel)", group: "Widoczność" },
   { key: "viewOccupancy",  label: "Zajętość magazynu",     desc: "Raport kubatury (m³) i kafelek zajętości na pulpicie", group: "Widoczność" },
   { key: "viewAttachments", label: "Załączniki kontenerów", desc: "Podgląd i pobieranie plików (faktury, proformy, packing list, BL)", group: "Widoczność" },
+  { key: "viewCalendarPayments", label: "Płatności w kalendarzu", desc: "Terminy płatności „Do zapłaty” jako zdarzenia kalendarza (wymaga też Dane finansowe)", group: "Widoczność" },
 ];
 
 // Domyślne uprawnienia per rola — nadpisywalne per użytkownik
@@ -33,10 +34,14 @@ export const PERMISSIONS = [
 // łącznie z ADMIN; dostęp daje wyłącznie ptaszek postawiony konkretnemu userowi):
 //   · viewOccupancy — Zajętość magazynu.
 // Lustro tej samej reguły po stronie backendu siedzi w security.py → ROLE_PERMS.
+//
+// viewCalendarPayments — płatności „Do zapłaty" w kalendarzu. Domyślnie TYLKO ADMIN;
+// IMPORT/VIEWER dostają je wyłącznie ręcznym ptaszkiem. Sprawdzaj przez canSeeCalendarPayments(),
+// nie przez samo can() — uprawnienie jest koniunkcyjne z viewFinancials.
 export const ROLE_PERMS = {
-  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false },
+  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
@@ -53,6 +58,11 @@ export const can = (u, key) => {
 // canEdit: jakakolwiek możliwość zapisu (produkty LUB kontenery)
 export const canEdit = (u) => can(u, "editProducts") || can(u, "editContainers");
 export const isAdmin = (u) => can(u, "manageUsers");
+
+// Płatności w kalendarzu — koniunkcja z viewFinancials (chip niesie kwotę zobowiązania).
+// Backend pilnuje tego samego w security.py → can_see_calendar_payments; front tylko nie rysuje
+// tego, czego i tak nie dostanie z API.
+export const canSeeCalendarPayments = (u) => can(u, "viewCalendarPayments") && can(u, "viewFinancials");
 
 // Efektywna mapa uprawnień użytkownika (domyślne z roli + override)
 export const effectivePerms = (u) => {
