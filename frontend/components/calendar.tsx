@@ -9,22 +9,33 @@
 //               event.mfrId → manufacturer_name + manufacturer_color (MfrChip).
 //     ORDER/EMPTY: event.mfrId → manufacturer_name + manufacturer_color,
 //               event.qty (sugerowana ilość, 6-mies. pokrycie) dochodzi z backendu.
+//
+//   PAYMENT (płatności „Do zapłaty"):
+//     · Backend wysyła je TYLKO userom z viewCalendarPayments ORAZ viewFinancials —
+//       front dodatkowo nie rysuje chipa filtra, żeby nie mrugać pustą kategorią.
+//     · Oś czasu to `termin` (planowany termin płatności), nie data wpłaty. Zapłacone
+//       (data ≤ dziś) nie przychodzą z backendu w ogóle — kalendarz pokazuje zobowiązania.
+//     · Płatności bez terminu mają date=null: nie mieszczą się w siatce, więc siedzą
+//       w osobnej karcie w panelu bocznym i można je stamtąd przeciągnąć na dzień.
+//     · Drag & drop zmienia WYŁĄCZNIE termin (PATCH /cashflow/payment/termin) i wymaga
+//       editContainers. Faktyczna data wpłaty zostaje do ręcznego wpisania w kontenerze.
 // ============================================================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { I, Card, CardHeader, Pill, MfrChip, containerLabel, isDraftNumber } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { useShop } from "@/lib/shop";
 import { fmtNum } from "@/lib/format";
+import { can, canSeeCalendarPayments, useUser } from "@/lib/permissions";
 
 // ── Typy ─────────────────────────────────────────────────────
-type EventType = "ORDER" | "EMPTY" | "DELIVERY";
+type EventType = "ORDER" | "EMPTY" | "DELIVERY" | "PAYMENT";
 type Mode = "month" | "week" | "day";
 type Scope = "watched" | "active";
 
 type CalEvent = {
-  date: string;
+  date: string | null;            // PAYMENT bez terminu → null (poza siatką)
   type: EventType;
   // ORDER / EMPTY
   sku?: string;
@@ -37,7 +48,19 @@ type CalEvent = {
   order_number?: string | null;
   total_units?: number;
   container_status?: string;
+  // PAYMENT
+  pay_kind?: "zaliczka" | "balance";
+  advance_id?: number | null;
+  lot_id?: number | null;
+  kwota?: number;
+  waluta?: string;
+  procent?: number | null;
+  shop?: string;
+  shop_name?: string;
+  termin?: string | null;
+  overdue?: boolean;
   // wspólne (producent)
+  manufacturer_id?: number | null;
   manufacturer_name?: string | null;
   manufacturer_color?: string | null;
 };
@@ -54,14 +77,30 @@ type DayCellData = {
 
 type EventMeta = { label: string; fg: string; bg: string; dot: string };
 
+// Kontekst drag & drop — jeden obiekt zamiast pięciu propsów przewleczonych przez siatki.
+// null = user nie ma editContainers, więc nic nie jest przeciągalne.
+type DragCtx = {
+  onDragStart: (e: CalEvent) => void;
+  onDragEnd: () => void;
+  onDropDay: (dayKey: string) => void;
+  dropTarget: string | null;
+  setDropTarget: (k: string | null) => void;
+  active: React.MutableRefObject<CalEvent | null>;
+};
+
 // ── Meta / stałe ─────────────────────────────────────────────
 const EVENT_META: Record<EventType, EventMeta> = {
   ORDER:    { label: "Zamów do",      fg: "var(--warning)",  bg: "var(--warning-soft)",  dot: "var(--warning)" },
   EMPTY:    { label: "Koniec zapasu", fg: "var(--critical)", bg: "var(--critical-soft)", dot: "var(--critical)" },
   DELIVERY: { label: "Dostawa",       fg: "var(--info)",     bg: "var(--info-soft)",     dot: "var(--info)" },
+  PAYMENT:  { label: "Płatności",     fg: "var(--anomaly)",  bg: "var(--anomaly-soft)",  dot: "var(--anomaly)" },
 };
 
 const MODE_LABEL: Record<Mode, string> = { month: "Mies", week: "Tydz", day: "Dzień" };
+
+// Kolejność zdarzeń w obrębie dnia. Płatność przed dostawą: termin zapłaty jest „akcyjny"
+// (coś trzeba zrobić), dostawa tylko informuje, że towar wjeżdża.
+const TYPE_RANK: Record<EventType, number> = { EMPTY: 0, ORDER: 1, PAYMENT: 2, DELIVERY: 3 };
 
 // Sklep/magazyn — te same slugi i etykiety co na dashboardzie. "" = wszystkie sklepy (suma).
 
@@ -74,14 +113,44 @@ const dKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStar
 const parseLocal = (s: string) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 // Poniedziałek tygodnia zawierającego d
 const mondayOf = (d: Date) => { const x = new Date(d); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); x.setHours(0, 0, 0, 0); return x; };
+// Krótka data do toastów: „5 sie"
+const fmtShortDay = (s?: string | null) =>
+  s ? parseLocal(s).toLocaleDateString("pl-PL", { day: "numeric", month: "short" }) : "bez terminu";
+
+// ── Płatności: identyfikacja i etykiety ──────────────────────
+// Klucz zdarzenia płatności — musi przeżyć re-render między dragstart a drop.
+// Zaliczka ma własny wiersz (advance_id); balance identyfikujemy przez kontener + lot,
+// bo siedzi jako kolumna na kontenerze/locie, nie jako osobny rekord.
+const payKey = (e: CalEvent) =>
+  `${e.pay_kind}:${e.advance_id ?? "-"}:${e.container_id ?? "-"}:${e.lot_id ?? "-"}`;
+
+const payAmount = (e: CalEvent) => `${fmtNum(e.kwota)} ${e.waluta || "USD"}`;
+
+// Etykieta chipa płatności: PRODUCENT · KWOTA WALUTA (fallback na PO/nr kontenera bez producenta).
+const payLabel = (e: CalEvent) => {
+  const who = e.manufacturer_name
+    || (isDraftNumber(e.container_number) ? (e.order_number || "Płatność") : (e.container_number || e.order_number || "Płatność"));
+  return `${who} · ${payAmount(e)}`;
+};
+
+const payKindLabel = (e: CalEvent) =>
+  e.pay_kind === "zaliczka"
+    ? (e.procent != null ? `Zaliczka ${fmtNum(e.procent)}%` : "Zaliczka")
+    : "Balance";
 
 // Etykieta zdarzenia: dostawa pokazuje producenta (fallback: nr kontenera), reszta SKU
-const eventLabel = (e: CalEvent) =>
-  e.type === "DELIVERY"
+const eventLabel = (e: CalEvent) => {
+  if (e.type === "PAYMENT") return payLabel(e);
+  return e.type === "DELIVERY"
     ? (e.manufacturer_name ?? (isDraftNumber(e.container_number) ? (e.order_number || "Dostawa") : (e.container_number ?? "Dostawa")))
     : e.sku ?? "";
+};
 // Podtytuł: dostawa → "nr kontenera · N szt" (producent poszedł na 1 plan), reszta → nazwa produktu
 const eventSub = (e: CalEvent) => {
+  if (e.type === "PAYMENT") {
+    const nr = isDraftNumber(e.container_number) ? null : e.container_number;
+    return [payKindLabel(e), nr || e.order_number].filter(Boolean).join(" · ");
+  }
   if (e.type !== "DELIVERY") return e.name ?? "";
   // Numer roboczy „Draft-…" nie idzie do UI — zastępuje go PO (containerLabel).
   const lab = containerLabel(e);
@@ -91,12 +160,12 @@ const eventSub = (e: CalEvent) => {
 
 // ── Utrwalanie stanu widoku (sessionStorage) ─────────────────
 // Po otwarciu popupu kontenera page.tsx przełącza widok na „containers", przez co
-// kalendarz się odmontowuje. Zapamiętujemy tryb/miesiąc/wybrany dzień/sklep/zakres/filtry,
-// żeby po zamknięciu popupu wrócić dokładnie w to samo miejsce. Kalendarz renderuje się
-// wyłącznie po stronie klienta (page.tsx: `if (!ready) return null`), więc odczyt w
-// inicjalizatorze useState jest bezpieczny — brak hydration mismatch.
+// kalendarz się odmontowuje. Zapamiętujemy tryb/miesiąc/wybrany dzień/sklep/zakres/filtry
+// ORAZ rozwiniętą płatność, żeby po zamknięciu popupu wrócić dokładnie w to samo miejsce.
+// Kalendarz renderuje się wyłącznie po stronie klienta (page.tsx: `if (!ready) return null`),
+// więc odczyt w inicjalizatorze useState jest bezpieczny — brak hydration mismatch.
 const CAL_STATE_KEY = "magazyn:calendar:view";
-type PersistedCalState = { mode: Mode; cursorTs: number; selected: string; scope: Scope; filters: Filters };
+type PersistedCalState = { mode: Mode; cursorTs: number; selected: string; scope: Scope; filters: Filters; openPay: string | null };
 function loadCalState(): Partial<PersistedCalState> {
   if (typeof window === "undefined") return {};
   try {
@@ -112,53 +181,127 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const user = useUser();
+  // Backend i tak nie wyśle płatności bez uprawnienia — to lustro tej reguły, żeby
+  // nie renderować chipa filtra ani karty „bez terminu" dla kogoś, kto nic nie dostanie.
+  const showPayments = canSeeCalendarPayments(user);
+  // Przeciąganie terminów to zapis na kontenerze — osobne uprawnienie niż samo oglądanie.
+  const canDragPayments = showPayments && can(user, "editContainers");
+
   // Stan widoku inicjowany z sessionStorage (lazy) — patrz komentarz przy loadCalState.
   const [saved] = useState<Partial<PersistedCalState>>(loadCalState);
   const [mode, setMode] = useState<Mode>(saved.mode ?? "month");
   const [cursor, setCursor] = useState<Date>(() => (saved.cursorTs ? new Date(saved.cursorTs) : new Date()));
   const [selected, setSelected] = useState(saved.selected ?? dKey(new Date()));
-  const [filters, setFilters] = useState<Filters>(saved.filters ?? { ORDER: true, EMPTY: true, DELIVERY: true });
+  // Stary zapis w sessionStorage nie zna klucza PAYMENT — bez tego domknięcia filtr byłby
+  // `undefined` (czyli fałsz) i po wdrożeniu płatności nigdy by się nie pokazały.
+  const [filters, setFilters] = useState<Filters>(() => {
+    const base: Filters = { ORDER: true, EMPTY: true, DELIVERY: true, PAYMENT: true };
+    return saved.filters ? { ...base, ...saved.filters, PAYMENT: saved.filters.PAYMENT ?? true } : base;
+  });
   // Zakres SKU: "watched" = tylko obserwowane (gwiazdka), "active" = wszystkie aktywne.
-  // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy są zawsze widoczne.
+  // Domyślnie "watched" — kalendarz nie zaśmieca się zgniłymi SKU. Dostawy i płatności zawsze widoczne.
   const [scope, setScope] = useState<Scope>(saved.scope ?? "watched");
+  // Rozwinięty szczegół płatności w panelu bocznym (klucz z payKey albo null).
+  const [openPay, setOpenPay] = useState<string | null>(saved.openPay ?? null);
+  // Dzień podświetlony pod kursorem podczas przeciągania.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  // Przeciągane zdarzenie w ref — stan re-renderowałby siatkę w trakcie dragu i gubił uchwyt.
+  const dragRef = useRef<CalEvent | null>(null);
   // Firma z globalnego fragmentatora w Topbarze (lib/shop).
-  // ORDER/EMPTY liczone są per-firma, DELIVERY zawężone do kontenerów z towarem tej firmy.
+  // ORDER/EMPTY liczone są per-firma, DELIVERY i PAYMENT zawężone do danych tej firmy.
   const { shop } = useShop();
 
   // Zapis stanu widoku przy każdej zmianie — dzięki temu po powrocie z popupu kontenera
-  // (remount) kalendarz odtwarza dokładnie ten sam widok.
+  // (remount) kalendarz odtwarza dokładnie ten sam widok, łącznie z rozwiniętą płatnością.
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       window.sessionStorage.setItem(CAL_STATE_KEY, JSON.stringify({
-        mode, cursorTs: cursor.getTime(), selected, scope, filters,
+        mode, cursorTs: cursor.getTime(), selected, scope, filters, openPay,
       }));
     } catch { /* quota / tryb prywatny — ignorujemy */ }
-  }, [mode, cursor, selected, scope, filters]);
+  }, [mode, cursor, selected, scope, filters, openPay]);
 
-  useEffect(() => {
-    let mounted = true;
+  // Licznik żądań zamiast flagi `mounted`: load() woła też rollback po nieudanym PATCH-u,
+  // więc odpowiedź starszego zapytania nie może nadpisać nowszego stanu.
+  const reqIdRef = useRef(0);
+  const load = useCallback(async () => {
+    const myId = ++reqIdRef.current;
     setLoading(true);
-    (async () => {
-      try {
-        const params = new URLSearchParams();
-        if (scope === "watched") params.set("favorites_only", "1");
-        if (shop) params.set("shop", shop);
-        const qs = params.toString();
-        const data = await api.get(`/calendar${qs ? `?${qs}` : ""}`);
-        if (mounted) setEvents(Array.isArray(data) ? (data as CalEvent[]) : []);
-      } catch {
-        if (mounted) { setEvents([]); toast("Nie udało się pobrać kalendarza", "error"); }
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => { mounted = false; };
+    try {
+      const params = new URLSearchParams();
+      if (scope === "watched") params.set("favorites_only", "1");
+      if (shop) params.set("shop", shop);
+      const qs = params.toString();
+      const data = await api.get(`/calendar${qs ? `?${qs}` : ""}`);
+      if (reqIdRef.current === myId) setEvents(Array.isArray(data) ? (data as CalEvent[]) : []);
+    } catch {
+      if (reqIdRef.current === myId) { setEvents([]); toast("Nie udało się pobrać kalendarza", "error"); }
+    } finally {
+      if (reqIdRef.current === myId) setLoading(false);
+    }
   }, [scope, shop]);
+
+  useEffect(() => { load(); }, [load]);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
   const todayKey = dKey(new Date());
+
+  // ── Drag & drop terminów płatności ─────────────────────────
+  // Optymistycznie przesuwamy chip od razu (UI nie może czekać na round-trip), a przy
+  // błędzie cofamy i przeładowujemy — 409 oznacza, że ktoś ruszył kontener w międzyczasie.
+  const movePayment = useCallback(async (ev: CalEvent, newDate: string) => {
+    const oldDate = ev.date ?? null;
+    if (oldDate === newDate) return;
+    const k = payKey(ev);
+
+    setEvents(prev => prev.map(e =>
+      (e.type === "PAYMENT" && payKey(e) === k)
+        ? { ...e, date: newDate, termin: newDate, overdue: newDate < todayKey }
+        : e
+    ));
+    setSelected(newDate);
+    setOpenPay(k);
+
+    try {
+      await api.patch("/cashflow/payment/termin", {
+        kind: ev.pay_kind,
+        container_id: ev.container_id,
+        lot_id: ev.lot_id ?? null,
+        advance_id: ev.advance_id ?? null,
+        termin: newDate,
+        expected_termin: oldDate,
+      });
+      toast(oldDate
+        ? `Termin przesunięty: ${fmtShortDay(oldDate)} → ${fmtShortDay(newDate)} · ${payAmount(ev)}`
+        : `Termin ustawiony na ${fmtShortDay(newDate)} · ${payAmount(ev)}`);
+    } catch (err) {
+      // Rollback + świeże dane: po odrzuconym zapisie stan serwera jest nieznany.
+      setEvents(prev => prev.map(e =>
+        (e.type === "PAYMENT" && payKey(e) === k)
+          ? { ...e, date: oldDate, termin: oldDate, overdue: !!(oldDate && oldDate < todayKey) }
+          : e
+      ));
+      const msg = (err as { message?: string } | null)?.message || "Nie udało się przesunąć terminu";
+      toast(msg, "error");
+      load();
+    }
+  }, [todayKey, load]);
+
+  const onDragStartPayment = useCallback((ev: CalEvent) => { dragRef.current = ev; }, []);
+  const onDragEndPayment = useCallback(() => { dragRef.current = null; setDropTarget(null); }, []);
+  const onDropDay = useCallback((dayKey: string) => {
+    const ev = dragRef.current;
+    dragRef.current = null;
+    setDropTarget(null);
+    if (ev) movePayment(ev, dayKey);
+  }, [movePayment]);
+
+  const dragCtx: DragCtx | null = canDragPayments
+    ? { onDragStart: onDragStartPayment, onDragEnd: onDragEndPayment, onDropDay, dropTarget, setDropTarget, active: dragRef }
+    : null;
 
   // Siatka miesiąca: 6 tygodni (42 komórki) — dopełniona poprzednim/następnym miesiącem
   const cells = useMemo<DayCellData[]>(() => {
@@ -184,25 +327,36 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
     return Array.from({ length: 7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return d; });
   }, [cursor]);
 
+  // Zdarzenia z datą — tylko one trafiają do siatki. Płatności bez terminu (date=null)
+  // odfiltrowujemy tutaj raz, żeby żadna dalsza pętla nie musiała się o nie martwić.
+  const datedEvents = useMemo(
+    () => events.filter(e => !!e.date && filters[e.type]),
+    [events, filters]
+  );
+
   const eventsByDate = useMemo<Record<string, CalEvent[]>>(() => {
     const map: Record<string, CalEvent[]> = {};
-    events.forEach(e => {
-      if (!filters[e.type]) return;
-      if (!map[e.date]) map[e.date] = [];
-      map[e.date].push(e);
+    datedEvents.forEach(e => {
+      const k = e.date as string;
+      if (!map[k]) map[k] = [];
+      map[k].push(e);
     });
-    // Stała kolejność w dniu: EMPTY > ORDER > DELIVERY
-    const rank: Record<EventType, number> = { EMPTY: 0, ORDER: 1, DELIVERY: 2 };
-    Object.keys(map).forEach(k => map[k].sort((a, b) => rank[a.type] - rank[b.type]));
+    Object.keys(map).forEach(k => map[k].sort((a, b) => TYPE_RANK[a.type] - TYPE_RANK[b.type]));
     return map;
-  }, [events, filters]);
+  }, [datedEvents]);
+
+  // Płatności bez ustalonego terminu — osobna karta w panelu bocznym.
+  const noTermPayments = useMemo(
+    () => (showPayments && filters.PAYMENT ? events.filter(e => e.type === "PAYMENT" && !e.date) : []),
+    [events, filters, showPayments]
+  );
 
   const monthEventCount = useMemo(() => {
-    return events.filter(e => {
-      const d = parseLocal(e.date);
-      return d.getFullYear() === year && d.getMonth() === month && filters[e.type];
+    return datedEvents.filter(e => {
+      const d = parseLocal(e.date as string);
+      return d.getFullYear() === year && d.getMonth() === month;
     }).length;
-  }, [events, year, month, filters]);
+  }, [datedEvents, year, month]);
 
   const selectedEvents = (eventsByDate[selected] || []).slice();
 
@@ -211,10 +365,10 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
     if (mode === "day") return (eventsByDate[selected] || []).length;
     if (mode === "week") {
       const keys = new Set(weekDays.map(dKey));
-      return events.filter(e => filters[e.type] && keys.has(e.date)).length;
+      return datedEvents.filter(e => keys.has(e.date as string)).length;
     }
     return monthEventCount;
-  }, [mode, eventsByDate, selected, weekDays, events, filters, monthEventCount]);
+  }, [mode, eventsByDate, selected, weekDays, datedEvents, monthEventCount]);
 
   // Etykieta nagłówka zależnie od trybu
   const label = useMemo(() => {
@@ -245,15 +399,22 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
   // Zmiana trybu — wyśrodkuj widok na aktualnie wybranym dniu
   const changeMode = (m: Mode) => { setMode(m); setCursor(parseLocal(selected)); };
 
+  // Wybór dnia zwija otwarty szczegół płatności (klik w sam chip płatności idzie osobną ścieżką).
+  const selectDay = useCallback((k: string) => { setSelected(k); setOpenPay(null); }, []);
+  // Klik w chip płatności — skacz na jej dzień i rozwiń szczegół w panelu bocznym.
+  const focusPayment = useCallback((e: CalEvent) => {
+    if (e.date) setSelected(e.date);
+    setOpenPay(payKey(e));
+  }, []);
+
   // Agenda — najbliższe 3 tygodnie
   const agenda = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const end = new Date(today); end.setDate(end.getDate() + 21);
-    return events
-      .filter(e => filters[e.type])
-      .filter(e => { const ed = parseLocal(e.date); return ed >= today && ed <= end; })
-      .sort((a, b) => a.date.localeCompare(b.date));
-  }, [events, filters]);
+    return datedEvents
+      .filter(e => { const ed = parseLocal(e.date as string); return ed >= today && ed <= end; })
+      .sort((a, b) => (a.date as string).localeCompare(b.date as string));
+  }, [datedEvents]);
 
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 80 }}>
@@ -264,6 +425,7 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
         mode={mode} onMode={changeMode}
         filters={filters} setFilters={setFilters}
         scope={scope} onScope={setScope}
+        showPayments={showPayments}
         onPrev={goPrev} onNext={goNext} onToday={goToday}
       />
 
@@ -271,14 +433,17 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
         {/* Główny obszar — zależny od trybu */}
         <div style={{ minWidth: 0 }}>
           {mode === "month" && (
-            <MonthGrid cells={cells} eventsByDate={eventsByDate} todayKey={todayKey} selected={selected} onSelect={setSelected}/>
+            <MonthGrid cells={cells} eventsByDate={eventsByDate} todayKey={todayKey} selected={selected}
+                       onSelect={selectDay} onPayClick={focusPayment} drag={dragCtx}/>
           )}
           {mode === "week" && (
-            <WeekGrid weekDays={weekDays} eventsByDate={eventsByDate} todayKey={todayKey} selected={selected} onSelect={setSelected}/>
+            <WeekGrid weekDays={weekDays} eventsByDate={eventsByDate} todayKey={todayKey} selected={selected}
+                      onSelect={selectDay} onPayClick={focusPayment} drag={dragCtx}/>
           )}
           {mode === "day" && (
             <Card>
-              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading} onOpenContainer={onOpenContainer}/>
+              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}
+                         openPay={openPay} onTogglePay={setOpenPay} onOpenContainer={onOpenContainer}/>
             </Card>
           )}
         </div>
@@ -288,8 +453,14 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
           {/* Wybrany dzień — w trybie „Dzień" główny obszar to już ten dzień, więc tu pomijamy */}
           {mode !== "day" && (
             <Card>
-              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading} onOpenContainer={onOpenContainer}/>
+              <DayDetail dateKey={selected} events={selectedEvents} todayKey={todayKey} loading={loading}
+                         openPay={openPay} onTogglePay={setOpenPay} onOpenContainer={onOpenContainer}/>
             </Card>
+          )}
+
+          {/* Płatności bez ustalonego terminu — nie mieszczą się w siatce, ale nie mogą zginąć */}
+          {showPayments && filters.PAYMENT && (
+            <NoTermPayments items={noTermPayments} canDrag={canDragPayments} drag={dragCtx} onPick={focusPayment}/>
           )}
 
           {/* Agenda */}
@@ -301,12 +472,12 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
                   {loading ? "Ładowanie…" : "Brak wydarzeń"}
                 </div>
               ) : agenda.map((e, i) => {
-                const d = parseLocal(e.date);
+                const d = parseLocal(e.date as string);
                 const showHead = i === 0 || agenda[i - 1].date !== e.date;
                 return (
                   <React.Fragment key={i}>
                     {showHead && <AgendaDateHeader date={d} todayKey={todayKey}/>}
-                    <AgendaRow event={e} onClick={() => setSelected(e.date)}/>
+                    <AgendaRow event={e} onClick={() => (e.type === "PAYMENT" ? focusPayment(e) : selectDay(e.date as string))}/>
                   </React.Fragment>
                 );
               })}
@@ -334,12 +505,16 @@ type ToolbarProps = {
   setFilters: (f: Filters) => void;
   scope: Scope;
   onScope: (s: Scope) => void;
+  showPayments: boolean;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
 };
 
-function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters, scope, onScope, onPrev, onNext, onToday }: ToolbarProps) {
+function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters, scope, onScope, showPayments, onPrev, onNext, onToday }: ToolbarProps) {
+  // Chip „Płatności" istnieje tylko dla uprawnionych — inaczej mrugałby pustą kategorią,
+  // bo backend i tak nie przyśle ani jednego takiego zdarzenia.
+  const chipTypes = (Object.keys(EVENT_META) as EventType[]).filter(k => k !== "PAYMENT" || showPayments);
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
@@ -364,7 +539,7 @@ function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters,
 
       <div style={{ flex: 1 }}/>
 
-      {/* Zakres SKU: obserwowane / aktywne (dostawy zawsze widoczne) */}
+      {/* Zakres SKU: obserwowane / aktywne (dostawy i płatności zawsze widoczne) */}
       <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 7 }}>
         {([
           { key: "watched" as Scope, label: "Obserwowane", icon: true },
@@ -390,7 +565,8 @@ function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters,
 
       {/* Filter chips */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {(Object.entries(EVENT_META) as [EventType, EventMeta][]).map(([key, meta]) => {
+        {chipTypes.map((key) => {
+          const meta = EVENT_META[key];
           const on = filters[key];
           return (
             <button key={key} onClick={() => setFilters({ ...filters, [key]: !on })} style={{
@@ -429,9 +605,26 @@ function CalendarToolbar({ label, eventCount, mode, onMode, filters, setFilters,
   );
 }
 
+// --- Handlery drop dla dnia (wspólne dla siatki miesiąca i tygodnia) ---
+// Bez preventDefault w onDragOver przeglądarka nigdy nie wywoła onDrop — to nie jest kosmetyka.
+function dropHandlers(dayKey: string, drag: DragCtx | null) {
+  if (!drag) return {};
+  return {
+    onDragOver: (ev: React.DragEvent) => {
+      if (!drag.active.current) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+      if (drag.dropTarget !== dayKey) drag.setDropTarget(dayKey);
+    },
+    onDragLeave: () => { if (drag.dropTarget === dayKey) drag.setDropTarget(null); },
+    onDrop: (ev: React.DragEvent) => { ev.preventDefault(); drag.onDropDay(dayKey); },
+  };
+}
+
 // --- Siatka miesiąca ----------------------------------------
-function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect }: {
-  cells: DayCellData[]; eventsByDate: Record<string, CalEvent[]>; todayKey: string; selected: string; onSelect: (k: string) => void;
+function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect, onPayClick, drag }: {
+  cells: DayCellData[]; eventsByDate: Record<string, CalEvent[]>; todayKey: string; selected: string;
+  onSelect: (k: string) => void; onPayClick: (e: CalEvent) => void; drag: DragCtx | null;
 }) {
   return (
     <Card>
@@ -457,6 +650,8 @@ function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect }: {
             isToday={c.key === todayKey}
             isSelected={c.key === selected}
             onSelect={() => onSelect(c.key)}
+            onPayClick={onPayClick}
+            drag={drag}
           />
         ))}
       </div>
@@ -465,22 +660,28 @@ function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect }: {
 }
 
 // --- Komórka dnia (miesiąc) ---------------------------------
-function DayCell({ cell, events, isToday, isSelected, onSelect }: {
-  cell: DayCellData; events: CalEvent[]; isToday: boolean; isSelected: boolean; onSelect: () => void;
+function DayCell({ cell, events, isToday, isSelected, onSelect, onPayClick, drag }: {
+  cell: DayCellData; events: CalEvent[]; isToday: boolean; isSelected: boolean;
+  onSelect: () => void; onPayClick: (e: CalEvent) => void; drag: DragCtx | null;
 }) {
   const visible = events.slice(0, 3);
   const extra = events.length - visible.length;
+  const isDropTarget = drag?.dropTarget === cell.key;
+  const baseBg = cell.outMonth ? "var(--bg)" : (isSelected ? "var(--surface-2)" : "var(--surface-1)");
   return (
-    <div onClick={onSelect} style={{
-      background: cell.outMonth ? "var(--bg)" : (isSelected ? "var(--surface-2)" : "var(--surface-1)"),
+    <div onClick={onSelect} {...dropHandlers(cell.key, drag)} style={{
+      background: isDropTarget ? "var(--anomaly-soft)" : baseBg,
       padding: 6, cursor: "pointer", position: "relative", transition: "background 0.12s",
       display: "flex", flexDirection: "column", gap: 3, minHeight: 0,
     }}
-      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface-2)"; }}
-      onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = cell.outMonth ? "var(--bg)" : "var(--surface-1)"; }}>
+      onMouseEnter={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = "var(--surface-2)"; }}
+      onMouseLeave={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = cell.outMonth ? "var(--bg)" : "var(--surface-1)"; }}>
 
-      {isSelected && (
-        <span style={{ position: "absolute", inset: 0, pointerEvents: "none", boxShadow: "inset 0 0 0 1px var(--accent)" }}/>
+      {(isSelected || isDropTarget) && (
+        <span style={{
+          position: "absolute", inset: 0, pointerEvents: "none",
+          boxShadow: isDropTarget ? "inset 0 0 0 2px var(--anomaly)" : "inset 0 0 0 1px var(--accent)",
+        }}/>
       )}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 4px 0" }}>
@@ -496,7 +697,7 @@ function DayCell({ cell, events, isToday, isSelected, onSelect }: {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
-        {visible.map((e, i) => <EventChip key={i} event={e}/>)}
+        {visible.map((e, i) => <EventChip key={i} event={e} onPayClick={onPayClick} drag={drag}/>)}
         {extra > 0 && (
           <span style={{ fontSize: 10, color: "var(--text-lo)", padding: "0 4px" }}>+{extra} więcej</span>
         )}
@@ -506,8 +707,9 @@ function DayCell({ cell, events, isToday, isSelected, onSelect }: {
 }
 
 // --- Siatka tygodnia ----------------------------------------
-function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect }: {
-  weekDays: Date[]; eventsByDate: Record<string, CalEvent[]>; todayKey: string; selected: string; onSelect: (k: string) => void;
+function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect, onPayClick, drag }: {
+  weekDays: Date[]; eventsByDate: Record<string, CalEvent[]>; todayKey: string; selected: string;
+  onSelect: (k: string) => void; onPayClick: (e: CalEvent) => void; drag: DragCtx | null;
 }) {
   return (
     <Card>
@@ -541,21 +743,25 @@ function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect }: {
           const key = dKey(d);
           const evs = eventsByDate[key] || [];
           const isSelected = key === selected;
+          const isDropTarget = drag?.dropTarget === key;
           return (
-            <div key={i} onClick={() => onSelect(key)} style={{
-              background: isSelected ? "var(--surface-2)" : "var(--surface-1)",
+            <div key={i} onClick={() => onSelect(key)} {...dropHandlers(key, drag)} style={{
+              background: isDropTarget ? "var(--anomaly-soft)" : (isSelected ? "var(--surface-2)" : "var(--surface-1)"),
               minHeight: 440, maxHeight: 560, overflowY: "auto",
               padding: 8, cursor: "pointer", position: "relative",
               display: "flex", flexDirection: "column", gap: 4,
             }}
-              onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface-2)"; }}
-              onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface-1)"; }}>
-              {isSelected && (
-                <span style={{ position: "absolute", inset: 0, pointerEvents: "none", boxShadow: "inset 0 0 0 1px var(--accent)" }}/>
+              onMouseEnter={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = "var(--surface-2)"; }}
+              onMouseLeave={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = "var(--surface-1)"; }}>
+              {(isSelected || isDropTarget) && (
+                <span style={{
+                  position: "absolute", inset: 0, pointerEvents: "none",
+                  boxShadow: isDropTarget ? "inset 0 0 0 2px var(--anomaly)" : "inset 0 0 0 1px var(--accent)",
+                }}/>
               )}
               {evs.length === 0
                 ? <span style={{ fontSize: 10, color: "var(--text-disabled)", padding: "2px 4px" }}>—</span>
-                : evs.map((e, j) => <EventChip key={j} event={e}/>)}
+                : evs.map((e, j) => <EventChip key={j} event={e} onPayClick={onPayClick} drag={drag}/>)}
             </div>
           );
         })}
@@ -565,8 +771,9 @@ function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect }: {
 }
 
 // --- Szczegół dnia (panel boczny / tryb Dzień) --------------
-function DayDetail({ dateKey, events, todayKey, loading, onOpenContainer }: {
-  dateKey: string; events: CalEvent[]; todayKey: string; loading: boolean; onOpenContainer?: (id: number) => void;
+function DayDetail({ dateKey, events, todayKey, loading, openPay, onTogglePay, onOpenContainer }: {
+  dateKey: string; events: CalEvent[]; todayKey: string; loading: boolean;
+  openPay: string | null; onTogglePay: (k: string | null) => void; onOpenContainer?: (id: number) => void;
 }) {
   const d = parseLocal(dateKey);
   return (
@@ -588,22 +795,40 @@ function DayDetail({ dateKey, events, todayKey, loading, onOpenContainer }: {
           <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
             {loading ? "Ładowanie…" : "Brak wydarzeń tego dnia"}
           </div>
-        ) : events.map((e, i) => <EventRow key={i} event={e} isLast={i === events.length - 1} onOpenContainer={onOpenContainer}/>)}
+        ) : events.map((e, i) => (
+          <EventRow key={i} event={e} isLast={i === events.length - 1}
+                    openPay={openPay} onTogglePay={onTogglePay} onOpenContainer={onOpenContainer}/>
+        ))}
       </div>
     </>
   );
 }
 
 // --- Chip zdarzenia (komórka) -------------------------------
-function EventChip({ event }: { event: CalEvent }) {
+// Płatność jest przeciągalna (gdy user ma editContainers) i klikalna — klik rozwija
+// szczegół w panelu bocznym, a nie otwiera od razu kontenera.
+function EventChip({ event, onPayClick, drag }: { event: CalEvent; onPayClick: (e: CalEvent) => void; drag: DragCtx | null }) {
   const meta = EVENT_META[event.type];
+  const isPay = event.type === "PAYMENT";
+  const draggable = isPay && !!drag;
   return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 4,
-      padding: "2px 5px",
-      background: meta.bg, borderLeft: `2px solid ${meta.fg}`, borderRadius: 3,
-      fontSize: 10, fontWeight: 500, color: meta.fg, overflow: "hidden",
-    }} className="mono">
+    <div
+      draggable={draggable}
+      onDragStart={draggable && drag ? (ev) => { drag.onDragStart(event); ev.dataTransfer.effectAllowed = "move"; } : undefined}
+      onDragEnd={draggable && drag ? () => drag.onDragEnd() : undefined}
+      onClick={isPay ? (ev) => { ev.stopPropagation(); onPayClick(event); } : undefined}
+      title={isPay
+        ? (draggable ? `${payLabel(event)} — przeciągnij, by zmienić termin płatności` : payLabel(event))
+        : undefined}
+      style={{
+        display: "flex", alignItems: "center", gap: 4,
+        padding: "2px 5px",
+        background: meta.bg, borderLeft: `2px solid ${meta.fg}`, borderRadius: 3,
+        fontSize: 10, fontWeight: 500, color: meta.fg, overflow: "hidden",
+        cursor: draggable ? "grab" : (isPay ? "pointer" : undefined),
+        // Zaległa płatność musi krzyczeć nawet przy przewijaniu wstecz.
+        boxShadow: event.overdue ? "inset 0 0 0 1px var(--critical)" : undefined,
+      }} className="mono">
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{eventLabel(event)}</span>
     </div>
   );
@@ -611,38 +836,161 @@ function EventChip({ event }: { event: CalEvent }) {
 
 // --- Wiersz zdarzenia (szczegół dnia) -----------------------
 // Dostawa jest klikalna → otwiera popup kontenera (przez onOpenContainer z page.tsx).
+// Płatność rozwija tabelkę ze szczegółami (producent / kontener / PO / kwota / termin),
+// a dopiero z niej przycisk prowadzi do kontenera — po zamknięciu popupu page.tsx wraca
+// na kalendarz, a sessionStorage odtwarza ten sam dzień i tę samą rozwiniętą pozycję.
 // Producent jest na 1 planie (eventLabel), numer kontenera + sztuki niżej (eventSub) —
 // dlatego dolny chip producenta pokazujemy już tylko dla ORDER/EMPTY, gdzie producent
-// nie ma innego miejsca; dla dostawy byłby zdublowaniem tytułu.
-function EventRow({ event, isLast, onOpenContainer }: { event: CalEvent; isLast: boolean; onOpenContainer?: (id: number) => void }) {
+// nie ma innego miejsca; dla dostawy i płatności byłby zdublowaniem tytułu.
+function EventRow({ event, isLast, openPay, onTogglePay, onOpenContainer }: {
+  event: CalEvent; isLast: boolean; openPay: string | null;
+  onTogglePay: (k: string | null) => void; onOpenContainer?: (id: number) => void;
+}) {
   const meta = EVENT_META[event.type];
-  const clickable = event.type === "DELIVERY" && event.container_id != null && !!onOpenContainer;
+  const isPay = event.type === "PAYMENT";
+  const k = isPay ? payKey(event) : "";
+  const expanded = isPay && openPay === k;
+  const clickable = isPay || (event.type === "DELIVERY" && event.container_id != null && !!onOpenContainer);
+
+  const onClick = () => {
+    if (isPay) { onTogglePay(expanded ? null : k); return; }
+    if (event.container_id != null && onOpenContainer) onOpenContainer(event.container_id);
+  };
+
   return (
     <div
-      onClick={clickable ? () => onOpenContainer!(event.container_id!) : undefined}
+      onClick={clickable ? onClick : undefined}
       style={{
         display: "flex", alignItems: "flex-start", gap: 12,
         padding: "12px 18px",
         borderBottom: isLast ? "none" : "1px solid var(--border-soft)",
         cursor: clickable ? "pointer" : "default",
+        background: expanded ? "var(--surface-2)" : "transparent",
       }}
-      onMouseEnter={(e) => { if (clickable) e.currentTarget.style.background = "var(--surface-2)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+      onMouseEnter={(e) => { if (clickable && !expanded) e.currentTarget.style.background = "var(--surface-2)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = expanded ? "var(--surface-2)" : "transparent"; }}>
       <div style={{ width: 3, alignSelf: "stretch", background: meta.dot, borderRadius: 2 }}/>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <Pill bg={meta.bg} fg={meta.fg} size="sm">{meta.label}</Pill>
+          <Pill bg={meta.bg} fg={meta.fg} size="sm">{isPay ? payKindLabel(event).toUpperCase() : meta.label}</Pill>
+          {isPay && event.overdue && <Pill bg="var(--critical-soft)" fg="var(--critical)" size="sm">PO TERMINIE</Pill>}
+          {isPay && event.shop_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm">{event.shop_name}</Pill>}
           {event.qty ? <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>×{event.qty}</span> : null}
         </div>
         <div className="mono" style={{ fontSize: 12, fontWeight: 600, marginTop: 6 }}>{eventLabel(event)}</div>
         <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{eventSub(event)}</div>
-        {event.type !== "DELIVERY" && event.manufacturer_name && (
+        {event.type !== "DELIVERY" && event.type !== "PAYMENT" && event.manufacturer_name && (
           <div style={{ marginTop: 6 }}>
             <MfrChip name={event.manufacturer_name} color={event.manufacturer_color || "var(--text-lo)"}/>
           </div>
         )}
+        {expanded && <PaymentDetail event={event} onOpenContainer={onOpenContainer}/>}
       </div>
     </div>
+  );
+}
+
+// --- Rozwinięty szczegół płatności --------------------------
+function PaymentDetail({ event, onOpenContainer }: { event: CalEvent; onOpenContainer?: (id: number) => void }) {
+  const nr = isDraftNumber(event.container_number) ? null : (event.container_number || null);
+  const rows: Array<[string, string, React.CSSProperties | undefined]> = [
+    ["Producent", event.manufacturer_name || "Bez producenta", undefined],
+    ["Nr kontenera", nr || "—", undefined],
+    ["Nr PO", event.order_number || "—", undefined],
+    ["Typ", payKindLabel(event), undefined],
+    ["Kwota", payAmount(event), { color: "var(--anomaly)", fontWeight: 600 }],
+    ["Termin",
+      event.termin ? parseLocal(event.termin).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" }) : "bez terminu",
+      event.overdue ? { color: "var(--critical)" } : undefined],
+    ["Firma", event.shop_name || "—", undefined],
+  ];
+  return (
+    // stopPropagation: klik w tabelkę nie może zwijać wiersza, który ją zawiera.
+    <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 10 }}>
+      <div style={{ border: "1px solid var(--border-soft)", borderRadius: "var(--r-sm)", overflow: "hidden" }}>
+        {rows.map(([lbl, value, extra], i) => (
+          <div key={lbl} style={{
+            display: "grid", gridTemplateColumns: "auto 1fr", alignItems: "center",
+            borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--border-soft)",
+          }}>
+            <span style={{
+              padding: "6px 10px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
+              color: "var(--text-lo)", background: "var(--surface-2)", whiteSpace: "nowrap",
+            }}>{lbl}</span>
+            <span className="mono" style={{
+              padding: "6px 10px", fontSize: 11, textAlign: "right",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(extra || {}),
+            }}>{value}</span>
+          </div>
+        ))}
+      </div>
+      {event.container_id != null && onOpenContainer && (
+        <button onClick={() => onOpenContainer(event.container_id as number)} style={{
+          display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8,
+          padding: "6px 11px", fontSize: 11, fontWeight: 600,
+          background: "var(--surface-3)", border: "1px solid var(--border)",
+          color: "var(--text-hi)", borderRadius: 6, cursor: "pointer",
+        }}>
+          Otwórz kontener <I.ArrowRight size={12}/>
+        </button>
+      )}
+    </div>
+  );
+}
+
+// --- Płatności bez ustalonego terminu -----------------------
+// Nie mają daty, więc w siatce nie istnieją — ale zapomniane zobowiązanie jest gorsze
+// niż zaległe. Przeciągnięcie na dzień ustawia termin po raz pierwszy.
+function NoTermPayments({ items, canDrag, drag, onPick }: {
+  items: CalEvent[]; canDrag: boolean; drag: DragCtx | null; onPick: (e: CalEvent) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader icon={<I.Wallet size={14}/>} title="Płatności bez terminu" hint={`${items.length} poz.`}/>
+      <div style={{
+        padding: "8px 18px", fontSize: 10, color: "var(--text-lo)",
+        background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)",
+      }}>
+        {canDrag
+          ? "Przeciągnij pozycję na dzień w kalendarzu, żeby ustawić termin płatności."
+          : "Brak uprawnienia do edycji kontenerów — pozycje tylko do podglądu."}
+      </div>
+      <div style={{ maxHeight: 240, overflowY: "auto" }}>
+        {items.map((e, i) => (
+          <div
+            key={payKey(e)}
+            draggable={canDrag && !!drag}
+            onDragStart={canDrag && drag ? (ev) => { drag.onDragStart(e); ev.dataTransfer.effectAllowed = "move"; } : undefined}
+            onDragEnd={canDrag && drag ? () => drag.onDragEnd() : undefined}
+            onClick={() => onPick(e)}
+            style={{
+              display: "flex", alignItems: "center", gap: 9,
+              padding: "9px 18px",
+              borderBottom: i === items.length - 1 ? "none" : "1px solid var(--border-soft)",
+              cursor: canDrag ? "grab" : "pointer",
+            }}
+            onMouseEnter={(ev) => ev.currentTarget.style.background = "var(--surface-2)"}
+            onMouseLeave={(ev) => ev.currentTarget.style.background = "transparent"}>
+            <span style={{ color: "var(--text-disabled)", fontSize: 11, flexShrink: 0, lineHeight: 1 }}>
+              {canDrag ? "⠿" : "·"}
+            </span>
+            <span className="mono" style={{
+              fontSize: 11, fontWeight: 600, flex: 1, minWidth: 0,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {e.manufacturer_name || "Bez producenta"}
+              <span style={{ color: "var(--text-lo)", fontWeight: 400 }}>
+                {" · "}{payKindLabel(e).toLowerCase()}{e.order_number ? ` · ${e.order_number}` : ""}
+              </span>
+            </span>
+            <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "var(--anomaly)", flexShrink: 0 }}>
+              {payAmount(e)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
