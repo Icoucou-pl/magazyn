@@ -75,6 +75,7 @@ async def _sellasist_auto_loop():
         return
     from services.sellasist import is_configured, is_running, mark_started, run_refresh, get_status
     from services import fakturownia as fakt
+    from services import fakturownia_sales as fsales
     start_h = settings.SELLASIST_AUTO_START_HOUR
     end_h = settings.SELLASIST_AUTO_END_HOUR
     while True:
@@ -102,6 +103,19 @@ async def _sellasist_auto_loop():
                 print(f"[fakturownia] auto: {fst.get('error') or fst.get('message')}")
         except Exception as e:
             print(f"[fakturownia] auto błąd (pomijam, pętla działa dalej): {e}")
+
+        # Sprzedaż z Fakturowni (hurt + przesunięcia wewnątrzgrupowe) — trzeci niezależny
+        # blok, ten sam wzorzec: własny guard, własny try. Bieg jest krótki, bo mapa SKU
+        # jest kumulatywna (uczy się tylko z nowych faktur), a faktury bez zmian są
+        # pomijane po src_updated_at. Pierwszy bieg po wdrożeniu jest długi (~900 requestów).
+        try:
+            if fsales.is_configured() and not fsales.is_running():
+                fsales.mark_started()
+                await fsales.run_sync()
+                sst = fsales.get_status()
+                print(f"[fakturownia_sales] auto: {sst.get('error') or sst.get('message')}")
+        except Exception as e:
+            print(f"[fakturownia_sales] auto błąd (pomijam, pętla działa dalej): {e}")
 
 
 SNAPSHOT_TIMES = ((7, 5, "rano"), (20, 5, "wieczor"))   # (godz, min, nazwa pory) — czas warszawski
