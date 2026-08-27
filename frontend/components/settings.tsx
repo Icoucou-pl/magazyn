@@ -13,6 +13,7 @@ import { I, Card, Pill, Avatar } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
+import { fmtPLN } from "@/lib/format";
 import { useUser, isAdmin, canEdit, can, PERMISSIONS, ROLE_PERMS } from "@/lib/permissions";
 import UsagePanel from "./usage-panel";
 import ManufacturerModal from "./manufacturer-modal";
@@ -1820,6 +1821,21 @@ type BackupDetails = {
   artifact?: string; size_mb?: number; public_tables?: number; auth_users?: number;
   attachments_with_data?: number; attachments_total?: number; storage_objects?: number;
 };
+// Odpowiedź GET /api/fakturownia-sales/braki — pozycje faktur bez rozpoznanego SKU.
+type BrakiInfo = {
+  pozycji: number;
+  netto: number;
+  produkty: Array<{
+    shop: string;
+    product_id: string | null;
+    nazwa: string | null;
+    pozycji: number;
+    sztuk: number;
+    netto: number;
+    przyklad_faktury: string | null;
+  }>;
+};
+
 type BackupStatus = {
   status: "ok" | "error" | "stale" | "unknown";
   stale_hours: number;
@@ -1900,6 +1916,12 @@ function FreshnessPanel() {
   const [rows, setRows] = useState<SyncRow[]>([]);
   const [backup, setBackup] = useState<BackupStatus | null>(null);
   const [showBackupHist, setShowBackupHist] = useState(false);
+  // Pozycje z faktur Fakturowni, których nie udało się zmapować na SKU. Ingesta ich
+  // NIE wyrzuca — zapisuje z sku_source='BRAK', żeby brakujący towar był widocznym
+  // problemem, a nie cichym ubytkiem w obrocie. Pobierane leniwie, dopiero po kliknięciu.
+  const [braki, setBraki] = useState<BrakiInfo | null>(null);
+  const [brakiOpen, setBrakiOpen] = useState(false);
+  const [brakiLoading, setBrakiLoading] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
@@ -1920,6 +1942,20 @@ function FreshnessPanel() {
     }
   };
   useEffect(() => { load(); }, []);
+
+  const toggleBraki = async () => {
+    const otwieram = !brakiOpen;
+    setBrakiOpen(otwieram);
+    if (!otwieram || braki !== null) return;
+    setBrakiLoading(true);
+    try {
+      setBraki(await api.get("/fakturownia-sales/braki") as BrakiInfo);
+    } catch {
+      setBraki({ pozycji: 0, netto: 0, produkty: [] });   // endpoint tylko dla ADMIN
+    } finally {
+      setBrakiLoading(false);
+    }
+  };
 
   const th: React.CSSProperties = {
     textAlign: "left", padding: "8px 10px", fontSize: 11, fontWeight: 600,
@@ -1970,10 +2006,51 @@ function FreshnessPanel() {
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>Dziennik pobrań</span>
+        <button onClick={toggleBraki} style={btnSecondary} disabled={brakiLoading}>
+          <I.Alert size={14}/> {brakiLoading ? "Ładowanie…" : "Pozycje bez SKU"}
+          {braki && braki.pozycji > 0 ? ` (${braki.pozycji})` : ""}
+        </button>
         <button onClick={load} style={btnSecondary} disabled={loading}>
           <I.Refresh size={14}/> {loading ? "Ładowanie…" : "Odśwież widok"}
         </button>
       </div>
+
+      {brakiOpen && (
+        <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "10px 12px", fontSize: 12, borderBottom: "1px solid var(--border-soft)", color: "var(--text-mid)" }}>
+            <b style={{ color: "var(--text-hi)" }}>Pozycje faktur bez rozpoznanego SKU</b>
+            {braki && braki.pozycji > 0 && (
+              <span className="num" style={{ marginLeft: 8, color: "var(--warning)" }}>
+                {braki.pozycji} poz. · {fmtPLN(braki.netto)}
+              </span>
+            )}
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-lo)" }}>
+              Wchodzą do przychodu, wypadają z rozbicia per SKU. Zwykle karta produktu w Fakturowni
+              bez wypełnionego pola „kod”, albo pozycja wpisana na fakturę z ręki (brak product_id).
+            </div>
+          </div>
+          {brakiLoading ? (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-lo)" }}>Ładowanie…</div>
+          ) : !braki || braki.produkty.length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--ok)" }}>
+              Wszystkie pozycje zmapowane.
+            </div>
+          ) : braki.produkty.map((b, idx) => (
+            <div key={`${b.shop}-${b.product_id ?? idx}`} style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+              fontSize: 12, borderTop: "1px solid var(--border-soft)",
+            }}>
+              <span style={{ color: "var(--text-lo)", minWidth: 52, textTransform: "uppercase" }}>{b.shop}</span>
+              <span style={{ color: "var(--text-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {b.nazwa || "—"}
+              </span>
+              <span className="num" style={{ color: "var(--text-lo)", minWidth: 60, textAlign: "right" }}>{b.sztuk} szt.</span>
+              <span className="num" style={{ color: "var(--text-hi)", minWidth: 90, textAlign: "right" }}>{fmtPLN(b.netto)}</span>
+              <span className="num" style={{ color: "var(--text-lo)", minWidth: 110, textAlign: "right" }}>{b.przyklad_faktury || "—"}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
         <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse" }}>
