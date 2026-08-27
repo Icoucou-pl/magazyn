@@ -145,6 +145,8 @@ class Wynik:
     nauczono: int = 0
     brak_sku: int = 0
     brak_sku_netto: float = 0.0
+    # Próbki nierozpoznanych pozycji zostają w statusie biegu (GET /status),
+    # ale NIE idą do dziennika pobrań — rozpychały tabelę na kilka ekranów.
     brak_probki: List[str] = field(default_factory=list)
     netto_hurt: float = 0.0
     netto_internal: float = 0.0
@@ -792,32 +794,23 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
 
 
 def _opis(w: Wynik) -> str:
+    """Krótka linijka do dziennika pobrań — musi zmieścić się w kolumnie tabeli.
+
+    Szczegóły (które pozycje bez SKU, konflikty mapy) celowo NIE trafiają tutaj:
+    są pod GET /api/fakturownia-sales/braki i w kolumnie conflicts tabeli mapy.
+    Wcześniejsza wersja wypisywała je w całości i rozpychała dziennik na kilka ekranów.
+    """
     if not w.ok:
         return f"błąd {w.error}"
-    czesci = [
-        f"{w.faktur_ingest} faktur",
-        f"{w.pozycji} pozycji",
-        f"hurt {w.netto_hurt:,.2f} zł".replace(",", " "),
-    ]
-    if w.netto_internal:
-        czesci.append(f"wewn. {w.netto_internal:,.2f} zł".replace(",", " "))
-    if w.faktur_pominietych:
-        czesci.append(f"pominięto {w.faktur_pominietych} korekt detalu")
-    if w.nauczono:
-        czesci.append(f"mapa +{w.nauczono}")
-    if w.brak_sku:
-        czesci.append(
-            f"BEZ SKU: {w.brak_sku} poz. / {w.brak_sku_netto:,.2f} zł".replace(",", " ")
-            + (f" ({'; '.join(w.brak_probki)})" if w.brak_probki else "")
-        )
+
+    czesci = [f"{w.faktur_ingest} faktur"]
     obrot = w.netto_hurt + w.netto_internal
-    if w.marza:
-        czesci.append(f"marża {w.marza:,.2f} zł".replace(",", " ")
-                      + (f" ({w.marza / obrot * 100:.1f}%)" if obrot else ""))
-    if w.bez_kosztu:
-        czesci.append(f"bez kosztu: {w.bez_kosztu} poz.")
-    if w.konflikty:
-        czesci.append(f"konflikty mapy: {w.konflikty}")
+    if obrot:
+        czesci.append(f"{obrot:,.0f} zł".replace(",", " "))
+    if w.marza and obrot:
+        czesci.append(f"marża {w.marza / obrot * 100:.1f}%")
+    if w.brak_sku:
+        czesci.append(f"bez SKU: {w.brak_sku}")
     return " · ".join(czesci)
 
 
