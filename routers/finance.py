@@ -68,14 +68,19 @@ def _period(period: str):
     return ("Ten rok", f"o.{d} >= date_trunc('year', CURRENT_DATE)", date(today.year, 1, 1), today)
 
 
-def _base_cte(period_clause: str, extra_where: str = "") -> str:
+def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool = False) -> str:
     """Wspólne CTE `base`: po jednej pozycji zamówienia z kanałem, przewalutowaniem i kosztem.
     Przewalutowanie: PLN/puste → 1.0; waluta obca → kurs NBP < order_date; brak kursu → mult NULL
     (pozycja wypada z przychodu I kosztu — spójnie, żeby nie psuć marży).
     cost liczony tylko gdy mult IS NOT NULL (ten sam zbiór wierszy co przychód).
     cost_missing = brak dopasowania SKU w Subiekcie (koszt nieznany → marża zawyżona).
     extra_where — opcjonalny dodatkowy warunek WHERE (np. filtr po jednym symbolu),
-    musi zaczynać się od 'AND '."""
+    musi zaczynać się od 'AND '.
+
+    include_internal — czy doliczać przesunięcia wewnątrzgrupowe (faktury Veluxy do AMH).
+    Na zakładce spółki TAK: to jej realny obrót. Na „wszystkich" NIE, bo ten sam towar
+    policzyłby się drugi raz, gdy AMH sprzeda go klientowi przez Sellasista."""
+    internal_clause = "" if include_internal else "AND NOT is_internal"
     return f"""
 WITH base AS (
     SELECT
@@ -118,6 +123,53 @@ WITH base AS (
         ON m.id = pa.manufacturer_id
     WHERE {period_clause}
         {INCLUDED_STATUS_FILTER}
+        {extra_where}
+
+    UNION ALL
+
+    -- Sprzedaż spoza Sellasista: hurt i przesunięcia wewnątrzgrupowe z Fakturowni.
+    -- Aliasy i/o/pa/m są celowo takie same jak wyżej, dzięki czemu extra_where
+    -- (filtry po o.shop, i.symbol, m.name) działa na obu gałęziach bez zmian.
+    SELECT
+        (-o.invoice_id)                                                                    AS order_id,
+        CASE WHEN o.is_internal THEN 'Przesunięcie AMH' ELSE 'Hurt' END                    AS channel,
+        EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                               AS yr,
+        EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                               AS mo,
+        pa.manufacturer_id                                                                 AS manufacturer_id,
+        m.name                                                                             AS mfr_name,
+        m.color                                                                            AS mfr_color,
+        i.quantity                                                                         AS qty,
+        (i.total_net   * fx.mult)                                                          AS net,
+        (i.total_gross * fx.mult)                                                          AS gross,
+        (CASE WHEN fx.mult IS NOT NULL THEN COALESCE(i.total_cost, 0) ELSE 0 END)          AS cost,
+        (i.total_cost IS NULL)                                                             AS cost_missing
+    FROM {settings.TABLE_FAKTUROWNIA_INVOICE_ITEMS} i
+    JOIN (
+        SELECT firma_id, invoice_id, shop, is_internal,
+               issue_date AS {settings.COL_ORDER_DATE}
+        FROM {settings.TABLE_FAKTUROWNIA_INVOICES}
+        WHERE skip_reason IS NULL          -- korekty zwrotów detalicznych: Sellasist już je odjął
+        {internal_clause}
+    ) o ON o.firma_id = i.firma_id AND o.invoice_id = i.invoice_id
+    LEFT JOIN LATERAL (
+        SELECT CASE
+            WHEN UPPER(TRIM(COALESCE(i.currency, '{settings.FX_BASE_CURRENCY}'))) IN ('{settings.FX_BASE_CURRENCY}', '')
+                THEN 1.0
+            ELSE (
+                SELECT r.mid
+                FROM {settings.TABLE_FX_RATES} r
+                WHERE r.currency = UPPER(TRIM(i.currency))
+                  AND r.rate_date < o.{settings.COL_ORDER_DATE}::date
+                ORDER BY r.rate_date DESC
+                LIMIT 1
+            )
+        END AS mult
+    ) fx ON TRUE
+    LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
+        ON LOWER(TRIM(pa.sku)) = i.sku_canon
+    LEFT JOIN {settings.TABLE_MANUFACTURERS} m
+        ON m.id = pa.manufacturer_id
+    WHERE {period_clause}
         {extra_where}
 )
 """
@@ -225,7 +277,7 @@ async def _range_finance(db: AsyncSession, date_from: date, date_to_excl: date, 
         params["prod"] = f"%{prod}%"
     extra = ("AND " + " AND ".join(parts)) if parts else ""
 
-    base = _base_cte(clause, extra)
+    base = _base_cte(clause, extra, include_internal=bool(sklep))
     rows = (await db.execute(text(base + """
         SELECT channel,
             COALESCE(SUM(net),   0)::float                                    AS net,
@@ -338,7 +390,8 @@ async def finance_overview(
         if period not in ALLOWED_PERIODS:
             period = "ytd"
         label, period_clause, date_from, date_to = _period(period)
-    base = _base_cte(period_clause, _shop_clause(shop))
+    # Przesunięcia wewnątrzgrupowe liczymy tylko na zakładce spółki (patrz _base_cte).
+    base = _base_cte(period_clause, _shop_clause(shop), include_internal=bool(shop))
 
     # --- Kanały (z tego wyliczamy też KPI: order=jeden kanał, więc sumy się sumują) ---
     ch_rows = (await db.execute(text(base + """
@@ -585,7 +638,8 @@ async def finance_product(
     sc = _shop_clause(sklep)
     if sc:
         sym_where = f"{sym_where} {sc}"
-    base = _base_cte(period_clause, sym_where)
+    # Karta produktu: pokazujemy pełny obrót danego SKU, z przesunięciami włącznie.
+    base = _base_cte(period_clause, sym_where, include_internal=True)
 
     # --- Sumy sprzedaży (KPI) ---
     tot = (await db.execute(text(base + """
