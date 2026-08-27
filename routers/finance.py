@@ -96,6 +96,7 @@ base AS (
         {SALES_CHANNEL_CASE}                                                               AS channel,
         EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                AS yr,
         EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                AS mo,
+        LOWER(TRIM(i.{settings.COL_ITEM_SKU}))                                             AS sku,
         pa.manufacturer_id                                                                 AS manufacturer_id,
         m.name                                                                             AS mfr_name,
         m.color                                                                            AS mfr_color,
@@ -143,6 +144,7 @@ base AS (
         CASE WHEN o.is_internal THEN 'Przesunięcie AMH' ELSE 'Hurt' END                    AS channel,
         EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                               AS yr,
         EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                               AS mo,
+        i.sku_canon                                                                        AS sku,
         pa.manufacturer_id                                                                 AS manufacturer_id,
         m.name                                                                             AS mfr_name,
         m.color                                                                            AS mfr_color,
@@ -381,6 +383,62 @@ async def month_finance(db: AsyncSession, rok: int, miesiac: int, symbol: Option
     res["rok"] = rok
     res["miesiac"] = miesiac
     return res
+
+
+@router.get("/finance/missing-cost")
+async def finance_missing_cost(
+    period: str = Query("ytd"),
+    shop: str = Query("", description="amh|acti|veluxa; puste = wszystkie sklepy"),
+    from_date: str = Query(""),
+    to_date: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_view_financials),
+):
+    """SKU sprzedane w danym okresie, dla których koszt zakupu jest nieznany.
+
+    Zasila modal pod banerem „X szt. nie ma nigdzie ceny zakupu". Te pozycje liczą się
+    do przychodu, ale ich marża jest zawyżona, bo koszt podstawia się jako 0.
+    Te same warunki co /finance/overview (okres, sklep, przewalutowanie), więc liczby
+    zgadzają się z banerem co do sztuki.
+
+    Cenę zapisuje się przez PUT /api/products/{sku}/attrs — trafia do
+    app_product_attrs.cena_zakupu, czyli na sam szczyt łańcucha kosztu.
+    """
+    shop = resolve_shop(shop, user)
+    custom = _custom_period(from_date, to_date) if period == "custom" else None
+    if custom is not None:
+        _, period_clause, _, _ = custom
+    else:
+        if period not in ALLOWED_PERIODS:
+            period = "ytd"
+        _, period_clause, _, _ = _period(period)
+
+    base = _base_cte(period_clause, _shop_clause(shop), include_internal=bool(shop))
+    rows = (await db.execute(text(base + """
+        SELECT sku, MAX(nazwa) AS nazwa, MAX(mfr_name) AS producent,
+               SUM(units)::int AS sztuk, SUM(net)::float AS przychod
+        FROM (
+            SELECT b.sku, b.mfr_name, b.qty AS units, b.net,
+                   COALESCE(pa.name_override, pn.nazwa) AS nazwa
+            FROM (SELECT * FROM base WHERE cost_missing AND sku IS NOT NULL) b
+            LEFT JOIN app_product_attrs pa ON LOWER(TRIM(pa.sku)) = b.sku
+            LEFT JOIN LATERAL (
+                SELECT nazwa FROM fakturownia_stock WHERE sku_canon = b.sku
+                UNION ALL SELECT nazwa FROM subiekt_dwa_magazyny WHERE LOWER(TRIM(sku)) = b.sku
+                UNION ALL SELECT nazwa FROM subiekt_towary WHERE LOWER(TRIM(symbol)) = b.sku
+                LIMIT 1
+            ) pn ON TRUE
+        ) x
+        GROUP BY sku
+        ORDER BY przychod DESC
+    """))).mappings().all()
+
+    return {
+        "pozycje": len(rows),
+        "sztuk": sum(int(r["sztuk"]) for r in rows),
+        "przychod": round(sum(to_float(r["przychod"]) for r in rows), 2),
+        "produkty": [dict(r) for r in rows],
+    }
 
 
 @router.get("/finance/overview", response_model=FinanceOverview)
