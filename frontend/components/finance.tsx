@@ -14,13 +14,12 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { I } from "./ui";
-import { btnPrimary, btnSecondary } from "./products-ui";
+import { btnPrimary, btnSecondary, Portal, modalBackdrop, modalCard } from "./products-ui";
 import { toast } from "./toast";
 
 // ── Typy: Przegląd ───────────────────────────────────────────
@@ -290,19 +289,20 @@ function MissingCostModal({ period, shop, from, to, onClose, onSaved }: {
     }
   };
 
-  // Portal do body — modal musi być poza stackiem nagłówka, inaczej chowa się pod nim.
-  return createPortal(
-    <div
-      onClick={onClose}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
-               display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
-    >
+  // Ta sama powłoka co pozostałe modale (Portal + modalBackdrop + modalCard z products-ui).
+  // Pierwsza wersja miała własne style z tłem var(--bg-card) — token, którego w tym projekcie
+  // NIE MA, więc karta wyszła przezroczysta i widać było przez nią całą stronę.
+  return (
+    <Portal>
+    <div onClick={onClose} data-modal-backdrop style={modalBackdrop}>
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 14,
-                 width: "min(860px, 100%)", maxHeight: "88dvh", display: "flex", flexDirection: "column" }}
+        data-modal-card
+        className="fade-in"
+        style={{ ...modalCard, maxWidth: 860, maxHeight: "88dvh" }}
       >
-        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-soft)",
+        <div style={{ padding: "14px 18px", background: "var(--bg-elevated)", flexShrink: 0,
+                      borderBottom: "1px solid var(--border-soft)",
                       display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)" }}>Brakujące ceny zakupu</div>
@@ -355,8 +355,8 @@ function MissingCostModal({ period, shop, from, to, onClose, onSaved }: {
           ))}
         </div>
       </div>
-    </div>,
-    document.body
+    </div>
+    </Portal>
   );
 }
 
