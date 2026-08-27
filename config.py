@@ -93,6 +93,18 @@ class Settings(BaseSettings):
     TABLE_CONTAINER_LOTS: str = "app_container_lots"
     TABLE_CONTAINER_ADVANCES: str = "app_container_advances"
     TABLE_SUBIEKT_DWA: str = "subiekt_dwa_magazyny"
+
+    # --- Sprzedaż z Fakturowni (hurt + przesunięcia wewnątrzgrupowe) ---
+    # Faktury BEZ pola `oid` = wystawione ręcznie, poza Sellasistem. Trafiają do
+    # osobnych tabel; Sellasist zostaje źródłem detalu (zna kanał i status).
+    TABLE_FAKTUROWNIA_INVOICES: str = "fakturownia_invoices"
+    TABLE_FAKTUROWNIA_INVOICE_ITEMS: str = "fakturownia_invoice_items"
+    TABLE_FAKTUROWNIA_SKU_MAP: str = "fakturownia_sku_map"
+    TABLE_FAKTUROWNIA_SYNC_STATE: str = "fakturownia_sync_state"
+    # Data początkowa ingesty. Nadpisywalna per sklep przez
+    # FAKTUROWNIA_<SLUG>_SALES_FROM — Acti i Veluxa startowały w innych momentach.
+    FAKTUROWNIA_SALES_FROM: str = "2025-01-01"
+
     TABLE_KPI_SNAPSHOTS: str = "app_kpi_snapshots"      # 4 KPI × firma × pora (2×/dzień)
     TABLE_STOCK_SNAPSHOTS: str = "app_stock_snapshots"  # per SKU × pora (2×/dzień)   # magazyn główny + w drodze (per SKU, świeże ceny)
     TABLE_ATTACHMENTS: str = "app_container_attachments"
