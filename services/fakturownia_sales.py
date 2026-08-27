@@ -148,6 +148,8 @@ class Wynik:
     brak_probki: List[str] = field(default_factory=list)
     netto_hurt: float = 0.0
     netto_internal: float = 0.0
+    marza: float = 0.0
+    bez_kosztu: int = 0
     konflikty: int = 0
 
 
@@ -383,6 +385,7 @@ class SkuMap:
         self.nauczone: Dict[str, str] = {}       # product_id → symbol (z faktur)
         self.nowe: Dict[str, str] = {}           # do zapisania w tej rundzie
         self.konflikty: Dict[str, Set[str]] = {}
+        self.koszt: Dict[str, float] = {}        # product_id → purchase_price_net
 
     def z_katalogu(self, products: List[dict]) -> None:
         for p in products:
@@ -395,6 +398,12 @@ class SkuMap:
             ean = str(p.get("ean_code") or "").strip()
             if ean:
                 self.po_ean[ean] = code
+            # Cena zakupu z karty produktu — stan NA DZIŚ, nie z dnia sprzedaży.
+            # Dlatego to źródło uzupełniające; pierwszym jest products_margin
+            # z nagłówka faktury, który jest historyczny.
+            koszt = _to_float(p.get("purchase_price_net"))
+            if pid and koszt > 0:
+                self.koszt[pid] = koszt
 
     def ucz(self, product_id: Any, code: Any) -> bool:
         """Uczy pary z pozycji faktury. Zwraca True, jeśli para jest nowa."""
@@ -472,6 +481,19 @@ async def _zapisz_mape(session: AsyncSession, firma: Firma, m: SkuMap) -> int:
             "canon": sym.lower().strip(), "konf": konf, "ts": _now_local()})
         n += 1
 
+    for pid, koszt in m.koszt.items():
+        sym = m.katalog.get(pid)
+        await session.execute(text(
+            "INSERT INTO fakturownia_product_cost "
+            "(firma_id, product_id, symbol, sku_canon, purchase_price_net, updated_at) "
+            "VALUES (:fid, :pid, :sym, :canon, :koszt, :ts) "
+            "ON CONFLICT (firma_id, product_id) DO UPDATE SET "
+            "symbol = EXCLUDED.symbol, sku_canon = EXCLUDED.sku_canon, "
+            "purchase_price_net = EXCLUDED.purchase_price_net, updated_at = EXCLUDED.updated_at"
+        ), {"fid": firma.firma_id, "pid": pid, "sym": sym,
+            "canon": sym.lower().strip() if sym else None,
+            "koszt": koszt, "ts": _now_local()})
+
     await session.commit()
     return n
 
@@ -517,6 +539,9 @@ def _przetworz_pozycje(detail: dict, m: SkuMap, wynik: Wynik) -> List[dict]:
         cena_net = round(total_net / qty, 4) if qty else None
         cena_brutto = round(total_gross / qty, 4) if qty else None
 
+        koszt_jedn = m.koszt.get(_txt(p.get("product_id"), 32) or "")
+        koszt_razem = round(koszt_jedn * qty, 2) if (koszt_jedn and qty) else None
+
         out.append({
             "position_id": _to_int(p.get("id")) or 0,
             "symbol": symbol,
@@ -530,6 +555,8 @@ def _przetworz_pozycje(detail: dict, m: SkuMap, wynik: Wynik) -> List[dict]:
             "price_netto": cena_net,
             "price": cena_brutto,
             "is_price_only": (qty == 0 and total_net != 0),
+            "cost_net": round(koszt_jedn, 4) if koszt_jedn else None,
+            "total_cost": koszt_razem,
         })
     return out
 
@@ -547,14 +574,15 @@ async def _zapisz_fakture(session: AsyncSession, firma: Firma, hdr: dict,
     await session.execute(text(
         "INSERT INTO fakturownia_invoices "
         "(firma_id, shop, invoice_id, number, kind, issue_date, sell_date, currency, "
-        " price_net, price_gross, oid, from_invoice_id, parent_oid, buyer_name, "
+        " price_net, price_gross, products_margin, oid, from_invoice_id, parent_oid, buyer_name, "
         " buyer_tax_no, is_internal, is_correction, skip_reason, src_updated_at, ingested_at) "
-        "VALUES (:fid, :shop, :iid, :num, :kind, :issue, :sell, :cur, :net, :gross, :oid, "
+        "VALUES (:fid, :shop, :iid, :num, :kind, :issue, :sell, :cur, :net, :gross, :margin, :oid, "
         " :parent_id, :parent_oid, :buyer, :nip, :internal, :corr, :skip, :srcup, :ts) "
         "ON CONFLICT (firma_id, invoice_id) DO UPDATE SET "
         "number = EXCLUDED.number, kind = EXCLUDED.kind, issue_date = EXCLUDED.issue_date, "
         "sell_date = EXCLUDED.sell_date, currency = EXCLUDED.currency, "
         "price_net = EXCLUDED.price_net, price_gross = EXCLUDED.price_gross, "
+        "products_margin = EXCLUDED.products_margin, "
         "oid = EXCLUDED.oid, from_invoice_id = EXCLUDED.from_invoice_id, "
         "parent_oid = EXCLUDED.parent_oid, buyer_name = EXCLUDED.buyer_name, "
         "buyer_tax_no = EXCLUDED.buyer_tax_no, is_internal = EXCLUDED.is_internal, "
@@ -571,16 +599,17 @@ async def _zapisz_fakture(session: AsyncSession, firma: Firma, hdr: dict,
             "INSERT INTO fakturownia_invoice_items "
             "(firma_id, shop, invoice_id, position_id, symbol, sku_canon, sku_source, "
             " product_id, product_name, quantity, total_net, total_gross, price_netto, "
-            " price, currency, is_price_only, ingested_at) "
+            " price, currency, is_price_only, cost_net, total_cost, ingested_at) "
             "VALUES (:fid, :shop, :iid, :pos, :symbol, :canon, :src, :pid, :pname, "
-            " :qty, :net, :gross, :cena_net, :cena, :cur, :ponly, :ts)"
+            " :qty, :net, :gross, :cena_net, :cena, :cur, :ponly, :koszt, :koszt_raz, :ts)"
         ), {
             "fid": firma.firma_id, "shop": firma.slug, "iid": hdr["iid"],
             "pos": it["position_id"], "symbol": it["symbol"], "canon": it["sku_canon"],
             "src": it["sku_source"], "pid": it["product_id"], "pname": it["product_name"],
             "qty": it["quantity"], "net": it["total_net"], "gross": it["total_gross"],
             "cena_net": it["price_netto"], "cena": it["price"], "cur": hdr["cur"],
-            "ponly": it["is_price_only"], "ts": hdr["ts"],
+            "ponly": it["is_price_only"], "koszt": it["cost_net"],
+            "koszt_raz": it["total_cost"], "ts": hdr["ts"],
         })
 
 
@@ -710,6 +739,11 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
                     "cur": _txt(det.get("currency"), 8) or settings.FX_BASE_CURRENCY,
                     "net": round(_to_float(det.get("price_net")), 2),
                     "gross": round(_to_float(det.get("price_gross")), 2),
+                    # products_margin liczy Fakturownia w chwili wystawienia —
+                    # wartość historyczna, dokładniejsza niż koszt z katalogu.
+                    # Korekty jej nie mają, tam zostaje wyliczenie z pozycji.
+                    "margin": (round(_to_float(det.get("products_margin")), 2)
+                               if _has_val(det.get("products_margin")) else None),
                     "oid": None,
                     "parent_id": parent_id, "parent_oid": parent_oid,
                     "buyer": _txt(det.get("buyer_name")),
@@ -725,6 +759,15 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
                     w.faktur_ingest += 1
                     w.pozycji += len(pozycje)
                     suma = sum(p["total_net"] for p in pozycje)
+                    # Marża: nagłówek gdy jest, inaczej z pozycji (netto − koszt).
+                    if hdr["margin"] is not None:
+                        w.marza += hdr["margin"]
+                    else:
+                        for p in pozycje:
+                            if p["total_cost"] is not None:
+                                w.marza += p["total_net"] - p["total_cost"]
+                            elif p["sku_source"] != "WYSYLKA":
+                                w.bez_kosztu += 1
                     if internal:
                         w.netto_internal += suma
                     else:
@@ -767,6 +810,12 @@ def _opis(w: Wynik) -> str:
             f"BEZ SKU: {w.brak_sku} poz. / {w.brak_sku_netto:,.2f} zł".replace(",", " ")
             + (f" ({'; '.join(w.brak_probki)})" if w.brak_probki else "")
         )
+    obrot = w.netto_hurt + w.netto_internal
+    if w.marza:
+        czesci.append(f"marża {w.marza:,.2f} zł".replace(",", " ")
+                      + (f" ({w.marza / obrot * 100:.1f}%)" if obrot else ""))
+    if w.bez_kosztu:
+        czesci.append(f"bez kosztu: {w.bez_kosztu} poz.")
     if w.konflikty:
         czesci.append(f"konflikty mapy: {w.konflikty}")
     return " · ".join(czesci)
