@@ -141,6 +141,7 @@ class Wynik:
     faktur_lista: int = 0
     faktur_ingest: int = 0
     faktur_pominietych: int = 0
+    faktur_bez_zmian: int = 0
     pozycji: int = 0
     nauczono: int = 0
     brak_sku: int = 0
@@ -705,6 +706,7 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
                     continue
                 src_up = _parse_ts(f.get("updated_at"))
                 if fid in znane and src_up and znane[fid] and src_up <= znane[fid]:
+                    w.faktur_bez_zmian += 1
                     continue                        # bez zmian od ostatniego biegu
 
                 try:
@@ -803,7 +805,15 @@ def _opis(w: Wynik) -> str:
     if not w.ok:
         return f"błąd {w.error}"
 
-    czesci = [f"{w.faktur_ingest} faktur"]
+    # „0 faktur" wyglądało jak porażka, a znaczyło „nic się nie zmieniło od ostatniego
+    # biegu" — faktury bez zmian są pomijane po src_updated_at i to jest normalny stan
+    # przy odświeżaniu co godzinę.
+    if w.faktur_ingest == 0 and w.faktur_bez_zmian > 0:
+        return f"bez zmian ({w.faktur_bez_zmian} faktur sprawdzonych)"
+    if w.faktur_ingest == 0:
+        return "brak faktur do pobrania"
+
+    czesci = [f"{w.faktur_ingest} nowych/zmienionych faktur"]
     obrot = w.netto_hurt + w.netto_internal
     if obrot:
         czesci.append(f"{obrot:,.0f} zł".replace(",", " "))
@@ -842,12 +852,12 @@ async def run_sync() -> None:
         if wyniki:
             for w in wyniki:
                 await _write_sync_log(
-                    f"fakturownia_sales:{w.slug}", sync_time, finished, w.ok,
+                    f"fakturownia_hurt:{w.slug}", sync_time, finished, w.ok,
                     w.faktur_ingest, 0, w.pozycji,
                     _opis(w) if w.ok else None, w.error,
                 )
         else:
-            await _write_sync_log("fakturownia_sales", sync_time, finished,
+            await _write_sync_log("fakturownia_hurt", sync_time, finished,
                                   _status["error"] is None, 0, 0, 0,
                                   _status.get("message"), _status.get("error"))
 
