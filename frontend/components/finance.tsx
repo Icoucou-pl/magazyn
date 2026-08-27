@@ -14,11 +14,14 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { I } from "./ui";
+import { btnPrimary, btnSecondary } from "./products-ui";
+import { toast } from "./toast";
 
 // ── Typy: Przegląd ───────────────────────────────────────────
 type Kpi = {
@@ -177,6 +180,8 @@ function OverviewTab({ period, shop, from, to }: { period: string; shop: string;
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [costModal, setCostModal] = useState(false);
+  const [reload, setReload] = useState(0);   // wymusza odświeżenie KPI po zapisie ceny
 
   useEffect(() => {
     let alive = true;
@@ -189,7 +194,7 @@ function OverviewTab({ period, shop, from, to }: { period: string; shop: string;
       .catch((e: unknown) => { if (alive) setErr(e instanceof Error ? e.message : "Błąd pobierania"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [period, shop, from, to]);
+  }, [period, shop, from, to, reload]);
 
   const k = data?.kpi;
   if (err) return <ErrBox msg={err} />;
@@ -212,14 +217,146 @@ function OverviewTab({ period, shop, from, to }: { period: string; shop: string;
       {data.items_without_cost > 0 && (
         <div style={warnBox}>
           <I.Alert size={14} />
-          {fmtNum(data.items_without_cost)} szt. sprzedanych pozycji nie ma nigdzie ceny zakupu — ich marża jest zawyżona (liczona jak koszt 0).
+          <button
+            onClick={() => setCostModal(true)}
+            style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit",
+                     cursor: "pointer", textDecoration: "underline", textAlign: "left" }}
+          >
+            {fmtNum(data.items_without_cost)} szt. sprzedanych pozycji nie ma nigdzie ceny zakupu — ich marża jest zawyżona (liczona jak koszt 0). Kliknij, aby uzupełnić.
+          </button>
         </div>
       )}
 
       <ChannelTable channels={data.channels} />
       <TrendChart monthly={data.monthly} />
       <MfrTable rows={data.manufacturers} />
+
+      {costModal && (
+        <MissingCostModal
+          period={period} shop={shop} from={from} to={to}
+          onClose={() => setCostModal(false)}
+          onSaved={() => setReload((v) => v + 1)}
+        />
+      )}
     </div>
+  );
+}
+
+// ============================================================
+// MODAL: uzupełnianie brakujących cen zakupu
+// ============================================================
+// Otwierany z banera „X szt. nie ma nigdzie ceny zakupu". Lista SKU sprzedanych
+// w bieżącym okresie, dla których żadne ze źródeł kosztu nie ma ceny (ręczna
+// nadpiska → Fakturownia → subiekt_dwa_magazyny → subiekt_towary). Zapis idzie
+// do app_product_attrs.cena_zakupu, czyli na szczyt tego łańcucha.
+type MissingCostRow = {
+  sku: string; nazwa: string | null; producent: string | null;
+  sztuk: number; przychod: number;
+};
+
+function MissingCostModal({ period, shop, from, to, onClose, onSaved }: {
+  period: string; shop: string; from: string; to: string;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const [rows, setRows] = useState<MissingCostRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [ceny, setCeny] = useState<Record<string, string>>({});
+  const [zapisane, setZapisane] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    const q = period === "custom"
+      ? `period=custom&from_date=${from}&to_date=${to}`
+      : `period=${period}`;
+    api.get(`/finance/missing-cost?${q}${shop ? `&shop=${shop}` : ""}`)
+      .then((d: { produkty: MissingCostRow[] }) => setRows(d.produkty || []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [period, shop, from, to]);
+
+  const zapisz = async (sku: string) => {
+    const v = parseFloat((ceny[sku] || "").replace(",", "."));
+    if (!v || v <= 0) { toast("Podaj cenę większą od zera", "warning"); return; }
+    setBusy(sku);
+    try {
+      await api.put(`/products/${encodeURIComponent(sku)}/attrs`, { cena_zakupu: v });
+      setZapisane((z) => ({ ...z, [sku]: true }));
+      toast(`${sku}: zapisano ${v.toFixed(2)} zł`, "ok");
+      onSaved();
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : "Nie udało się zapisać", "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Portal do body — modal musi być poza stackiem nagłówka, inaczej chowa się pod nim.
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 14,
+                 width: "min(860px, 100%)", maxHeight: "88dvh", display: "flex", flexDirection: "column" }}
+      >
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-soft)",
+                      display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 650, color: "var(--text-hi)" }}>Brakujące ceny zakupu</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-lo)", marginTop: 2 }}>
+              {loading ? "Ładowanie…" : `${rows.length} SKU · marża tych pozycji jest dziś liczona jak koszt 0`}
+            </div>
+          </div>
+          <button onClick={onClose} style={btnSecondary}><I.Close size={14} /> Zamknij</button>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: "6px 0" }}>
+          {loading ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 13 }}>Ładowanie…</div>
+          ) : rows.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--ok)", fontSize: 13 }}>
+              Wszystkie sprzedane pozycje mają cenę zakupu.
+            </div>
+          ) : rows.map((r) => (
+            <div key={r.sku} style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 18px",
+              borderTop: "1px solid var(--border-soft)",
+              opacity: zapisane[r.sku] ? 0.45 : 1,
+            }}>
+              <span className="num" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-hi)", minWidth: 96 }}>{r.sku}</span>
+              <span style={{ fontSize: 12, color: "var(--text-mid)", flex: 1, overflow: "hidden",
+                             textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {r.nazwa || "—"}
+              </span>
+              <span className="num" style={{ fontSize: 12, color: "var(--text-lo)", minWidth: 62, textAlign: "right" }}>{fmtNum(r.sztuk)} szt</span>
+              <span className="num" style={{ fontSize: 12, color: "var(--text-lo)", minWidth: 92, textAlign: "right" }}>{fmtPLN(r.przychod)}</span>
+              {zapisane[r.sku] ? (
+                <span style={{ fontSize: 12, color: "var(--ok)", minWidth: 132, textAlign: "right" }}>✓ zapisano</span>
+              ) : (
+                <span style={{ display: "flex", gap: 6, minWidth: 132 }}>
+                  <input
+                    value={ceny[r.sku] || ""}
+                    onChange={(e) => setCeny((c) => ({ ...c, [r.sku]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === "Enter") zapisz(r.sku); }}
+                    placeholder="cena netto"
+                    inputMode="decimal"
+                    style={{ width: 84, padding: "5px 8px", fontSize: 12, borderRadius: 7,
+                             border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text-hi)" }}
+                  />
+                  <button onClick={() => zapisz(r.sku)} disabled={busy === r.sku} style={btnPrimary}>
+                    {busy === r.sku ? "…" : "Zapisz"}
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
