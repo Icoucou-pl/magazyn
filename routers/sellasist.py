@@ -23,6 +23,7 @@ from security import get_current_user, require_admin
 from services.sellasist import (get_status, is_running, mark_started, run_refresh,
                                 reconcile_order, reconcile_scan)
 from services import fakturownia as fakt
+from services import fakturownia_sales as fhurt
 
 router = APIRouter(prefix="/api/sellasist", tags=["sellasist"])
 
@@ -55,6 +56,14 @@ async def sellasist_refresh(user: CurrentUser = Depends(get_current_user)):
     if fakt.is_configured() and not fakt.is_running():
         fakt.mark_started()
         asyncio.create_task(fakt.run_refresh())
+
+    # Sprzedaż z Fakturowni (faktury spoza Sellasista) — trzeci niezależny blok, ta sama
+    # zasada: własny guard, własny status, osobny wpis fakturownia_hurt:<slug>. Bieg jest
+    # dłuższy niż pozostałe dwa (pobiera szczegóły faktur), ale leci w tle i nie opóźnia
+    # odpowiedzi — ikonka „Odśwież" wraca od razu.
+    if fhurt.is_configured() and not fhurt.is_running():
+        fhurt.mark_started()
+        asyncio.create_task(fhurt.run_sync())
 
     return {"status": "started", **get_status()}
 
