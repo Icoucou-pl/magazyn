@@ -7,7 +7,9 @@
 //                       (info + KPI + rotacja/pokrycie stanu + trend + kanały)
 //   Picker symbolu reużywa GET /search/global (grupa products).
 //   Wszystko w PLN (przewalutowanie NBP), whitelist statusów = sprzedaż zrealizowana.
-//   Marża = przychód netto − koszt (cena_zakupu_netto z Subiekta, bieżący).
+//   Marża = przychód netto − koszt. Koszt idzie łańcuchem PRODUCT_PRICES_CTE (jak w module
+//   Produkty): ręczna nadpiska → Fakturownia → subiekt_dwa_magazyny → subiekt_towary.
+//   Subiekt jest ERP-em AMH i nie zna towaru Acti/Veluxy, więc dla nich wygrywa Fakturownia.
 //   Cały moduł pod uprawnieniem viewFinancials (gate w nav + zasłona defensywna).
 // ============================================================
 
@@ -204,13 +206,13 @@ function OverviewTab({ period, shop, from, to }: { period: string; shop: string;
         <StatCard label="Przychód z VAT" value={fmtPLN(k.revenue_gross)} icon={<I.Cart size={16} />} />
         <StatCard label="Zamówienia" value={fmtNum(k.orders)} sub={`${fmtNum(k.units)} szt`} icon={<I.Box size={16} />} />
         <StatCard label="Śr. wartość zam." value={fmtPLN(k.aov_net)} sub="netto" icon={<I.Activity size={16} />} />
-        <StatCard label="Koszt zakupu" value={fmtPLN(k.cost)} sub="bieżący (Subiekt)" icon={<I.Factory size={16} />} />
+        <StatCard label="Koszt zakupu" value={fmtPLN(k.cost)} sub="bieżący" icon={<I.Factory size={16} />} />
       </div>
 
       {data.items_without_cost > 0 && (
         <div style={warnBox}>
           <I.Alert size={14} />
-          {fmtNum(data.items_without_cost)} szt. sprzedanych pozycji nie ma kosztu w Subiekcie — ich marża jest zawyżona (liczona jak koszt 0).
+          {fmtNum(data.items_without_cost)} szt. sprzedanych pozycji nie ma nigdzie ceny zakupu — ich marża jest zawyżona (liczona jak koszt 0).
         </div>
       )}
 
