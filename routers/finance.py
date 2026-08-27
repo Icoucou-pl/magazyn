@@ -22,6 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings, INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, to_float
+from sql import PRODUCT_PRICES_CTE
 from database import get_db
 from models import (
     CurrentUser,
@@ -73,7 +74,13 @@ def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool 
     Przewalutowanie: PLN/puste → 1.0; waluta obca → kurs NBP < order_date; brak kursu → mult NULL
     (pozycja wypada z przychodu I kosztu — spójnie, żeby nie psuć marży).
     cost liczony tylko gdy mult IS NOT NULL (ten sam zbiór wierszy co przychód).
-    cost_missing = brak dopasowania SKU w Subiekcie (koszt nieznany → marża zawyżona).
+
+    KOSZT: prod_prices (PRODUCT_PRICES_CTE z sql.py) — ten sam łańcuch, którego używa moduł
+    Produkty: ręczna nadpiska → Fakturownia → subiekt_dwa_magazyny → subiekt_towary.
+    Wcześniej stał tu sam subiekt_towary, a Subiekt jest ERP-em AMH i z założenia NIE zna
+    towaru Acti (5 z 41 SKU) — dla reszty koszt wychodził zero, czyli 100% marży. Widać to
+    było na zestawieniu kanałów Acti: detal 79,2% obok hurtu 58,0% na tym samym asortymencie.
+    cost_missing = koszt nieznany w ŻADNYM ze źródeł.
     extra_where — opcjonalny dodatkowy warunek WHERE (np. filtr po jednym symbolu),
     musi zaczynać się od 'AND '.
 
@@ -82,7 +89,8 @@ def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool 
     policzyłby się drugi raz, gdy AMH sprzeda go klientowi przez Sellasista."""
     internal_clause = "" if include_internal else "AND NOT is_internal"
     return f"""
-WITH base AS (
+WITH {PRODUCT_PRICES_CTE.strip()},
+base AS (
     SELECT
         o.{settings.COL_ORDER_ID}                                                          AS order_id,
         {SALES_CHANNEL_CASE}                                                               AS channel,
@@ -95,9 +103,9 @@ WITH base AS (
         (i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0) * fx.mult) AS net,
         (i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE},       0) * fx.mult) AS gross,
         (CASE WHEN fx.mult IS NOT NULL
-              THEN i.{settings.COL_ITEM_QTY} * COALESCE(pr.{settings.COL_PRODUCT_PRICE}, 0)
+              THEN i.{settings.COL_ITEM_QTY} * COALESCE(pp.cena, 0)
               ELSE 0 END)                                                                  AS cost,
-        (pr.{settings.COL_PRODUCT_SKU} IS NULL)                                            AS cost_missing
+        (pp.cena IS NULL)                                                                  AS cost_missing
     FROM {settings.TABLE_ORDER_ITEMS} i
     JOIN {settings.TABLE_ORDERS} o
         ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
@@ -115,8 +123,8 @@ WITH base AS (
             )
         END AS mult
     ) fx ON TRUE
-    LEFT JOIN {settings.TABLE_PRODUCTS} pr
-        ON LOWER(TRIM(pr.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(i.{settings.COL_ITEM_SKU}))
+    LEFT JOIN prod_prices pp
+        ON pp.sku_canon = LOWER(TRIM(i.{settings.COL_ITEM_SKU}))
     LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
         ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(i.{settings.COL_ITEM_SKU}))
     LEFT JOIN {settings.TABLE_MANUFACTURERS} m
@@ -141,8 +149,10 @@ WITH base AS (
         i.quantity                                                                         AS qty,
         (i.total_net   * fx.mult)                                                          AS net,
         (i.total_gross * fx.mult)                                                          AS gross,
-        (CASE WHEN fx.mult IS NOT NULL THEN COALESCE(i.total_cost, 0) ELSE 0 END)          AS cost,
-        (i.total_cost IS NULL)                                                             AS cost_missing
+        (CASE WHEN fx.mult IS NOT NULL
+              THEN COALESCE(i.total_cost, i.quantity * pp.cena, 0)
+              ELSE 0 END)                                                                  AS cost,
+        (i.total_cost IS NULL AND pp.cena IS NULL)                                         AS cost_missing
     FROM {settings.TABLE_FAKTUROWNIA_INVOICE_ITEMS} i
     JOIN (
         SELECT firma_id, invoice_id, shop, is_internal,
@@ -165,6 +175,8 @@ WITH base AS (
             )
         END AS mult
     ) fx ON TRUE
+    LEFT JOIN prod_prices pp
+        ON pp.sku_canon = i.sku_canon
     LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
         ON LOWER(TRIM(pa.sku)) = i.sku_canon
     LEFT JOIN {settings.TABLE_MANUFACTURERS} m
