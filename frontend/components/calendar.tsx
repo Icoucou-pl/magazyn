@@ -140,6 +140,23 @@ const payKindLabel = (e: CalEvent) =>
     ? (e.procent != null ? `Zaliczka ${fmtNum(e.procent)}%` : "Zaliczka")
     : "Balance";
 
+// Wersja chipa na wąskie ekrany. Na telefonie kolumna miesiąca ma ~45 px — „Fosoto · 8 200 USD"
+// nie zmieści się tam nigdy, a ucięte „Fo…" nic nie mówi. Skracamy do symbolu waluty i kwoty
+// w tysiącach: $8,2k / ¥15k / 920 zł. Pełna etykieta zostaje w panelu bocznym i tooltipie.
+const CUR_SYMBOL: Record<string, string> = { USD: "$", EUR: "€", CNY: "¥", GBP: "£", PLN: "zł" };
+
+const payShort = (e: CalEvent) => {
+  const cur = (e.waluta || "USD").toUpperCase();
+  const sym = CUR_SYMBOL[cur] || cur;
+  const v = Math.abs(e.kwota || 0);
+  let num: string;
+  if (v >= 10000) num = `${Math.round(v / 1000)}k`;
+  else if (v >= 1000) num = `${(v / 1000).toFixed(1).replace(".", ",")}k`;
+  else num = fmtNum(Math.round(v));
+  // Złotówki czyta się naturalnie z symbolem z tyłu, waluty obce z przodu.
+  return cur === "PLN" ? `${num} zł` : `${sym}${num}`;
+};
+
 // Etykieta zdarzenia: dostawa pokazuje producenta (fallback: nr kontenera), reszta SKU
 const eventLabel = (e: CalEvent) => {
   if (e.type === "PAYMENT") return payLabel(e);
@@ -532,8 +549,15 @@ function Calendar({ density, onOpenContainer }: { density?: string; onOpenContai
       </div>
 
       <style>{`
+        .cal-chip-short { display: none; }
         @media (max-width: 1100px) {
           .calendar-layout { grid-template-columns: 1fr !important; }
+        }
+        /* Telefon: kolumna miesiąca ma ~45 px. Pełna etykieta płatności ustępuje miejsca
+           skróconej kwocie, a same komórki dostają mniej paddingu i niższy próg wysokości. */
+        @media (max-width: 700px) {
+          .cal-chip-pay .cal-chip-full { display: none; }
+          .cal-chip-pay .cal-chip-short { display: inline; }
         }
       `}</style>
     </div>
@@ -673,7 +697,7 @@ function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect, onPayCli
 }) {
   return (
     <Card>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", borderBottom: "1px solid var(--border-soft)" }}>
         {DAY_NAMES.map((d, i) => (
           <div key={d} style={{
             padding: "10px 12px", fontSize: 10, fontWeight: 600,
@@ -684,7 +708,7 @@ function MonthGrid({ cells, eventsByDate, todayKey, selected, onSelect, onPayCli
         ))}
       </div>
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
+        display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
         gridAutoRows: "minmax(108px, 1fr)", background: "var(--border-soft)", gap: 1,
       }}>
         {cells.map(c => (
@@ -717,7 +741,9 @@ function DayCell({ cell, events, isToday, isSelected, onSelect, onPayClick, drag
     <div onClick={onSelect} {...dropHandlers(cell.key, drag)} style={{
       background: isDropTarget ? "var(--anomaly-soft)" : baseBg,
       padding: 6, cursor: "pointer", position: "relative", transition: "background 0.12s",
-      display: "flex", flexDirection: "column", gap: 3, minHeight: 0,
+      // minWidth:0 — bez tego grid item nie zejdzie poniżej szerokości swojej treści
+      // i długi chip (np. płatność) rozpycha całą siatkę zamiast się przyciąć.
+      display: "flex", flexDirection: "column", gap: 3, minHeight: 0, minWidth: 0,
     }}
       onMouseEnter={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = "var(--surface-2)"; }}
       onMouseLeave={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = cell.outMonth ? "var(--bg)" : "var(--surface-1)"; }}>
@@ -759,7 +785,7 @@ function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect, onPayC
   return (
     <Card>
       {/* Nagłówek: nazwa dnia + numer */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", borderBottom: "1px solid var(--border-soft)" }}>
         {weekDays.map((d, i) => {
           const isToday = dKey(d) === todayKey;
           return (
@@ -783,7 +809,7 @@ function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect, onPayC
         })}
       </div>
       {/* Kolumny dni — pełna lista zdarzeń, przewijalna */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: "var(--border-soft)", gap: 1 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", background: "var(--border-soft)", gap: 1 }}>
         {weekDays.map((d, i) => {
           const key = dKey(d);
           const evs = eventsByDate[key] || [];
@@ -794,7 +820,7 @@ function WeekGrid({ weekDays, eventsByDate, todayKey, selected, onSelect, onPayC
               background: isDropTarget ? "var(--anomaly-soft)" : (isSelected ? "var(--surface-2)" : "var(--surface-1)"),
               minHeight: 440, maxHeight: 560, overflowY: "auto",
               padding: 8, cursor: "pointer", position: "relative",
-              display: "flex", flexDirection: "column", gap: 4,
+              display: "flex", flexDirection: "column", gap: 4, minWidth: 0,
             }}
               onMouseEnter={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = "var(--surface-2)"; }}
               onMouseLeave={(e) => { if (!isSelected && !isDropTarget) e.currentTarget.style.background = "var(--surface-1)"; }}>
@@ -881,8 +907,17 @@ function EventChip({ event, onPayClick, drag }: { event: CalEvent; onPayClick: (
         cursor: draggable ? "grab" : (isPay ? "pointer" : undefined),
         // Zaległa płatność musi krzyczeć nawet przy przewijaniu wstecz.
         boxShadow: event.overdue ? "inset 0 0 0 1px var(--critical)" : undefined,
-      }} className="mono">
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{eventLabel(event)}</span>
+      }} className={isPay ? "mono cal-chip-pay" : "mono"}>
+      <span className="cal-chip-full" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+        {eventLabel(event)}
+      </span>
+      {/* Wariant skrócony — podmieniany CSS-em na wąskich ekranach, bez JS i bez ryzyka
+          niezgodności przy hydratacji (obie wersje są w DOM od razu). */}
+      {isPay && (
+        <span className="cal-chip-short" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+          {payShort(event)}
+        </span>
+      )}
     </div>
   );
 }
@@ -1102,7 +1137,13 @@ function AgendaRow({ event, onClick }: { event: CalEvent; onClick: () => void })
       onMouseEnter={(e) => e.currentTarget.style.background = "var(--surface-2)"}
       onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
       <span style={{ width: 6, height: 6, borderRadius: 99, background: meta.dot, flexShrink: 0 }}/>
-      <span className="mono" style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{eventLabel(event)}</span>
+      {/* Etykieta płatności bywa długa (producent + kwota + waluta), więc w odróżnieniu
+          od krótkich SKU musi mieć prawo się skurczyć — inaczej rozpycha wiersz na telefonie. */}
+      <span className="mono" style={{
+        fontSize: 11, fontWeight: 600,
+        flexShrink: event.type === "PAYMENT" ? 1 : 0,
+        minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>{eventLabel(event)}</span>
       <span style={{ fontSize: 11, color: "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
         {eventSub(event)}
       </span>
