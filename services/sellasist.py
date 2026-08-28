@@ -77,9 +77,15 @@ async def _load_firmy() -> List["Firma"]:
 _ORDER_COLS = [
     "order_id", "order_date", "status_name", "creator", "email", "total",
     "payment_name", "payment_status", "city", "country_code", "currency",
+    "buyer_name", "buyer_company", "buyer_nip",
 ]
 # Zmiana którejkolwiek z tych wartości = UPDATE + wpis do logu.
 _TRACKED_COLS = ["status_name", "payment_status", "total", "currency"]
+
+# Kolumny dosypane po starcie systemu. Stare wiersze mają w nich NULL, a UPDATE
+# odpala się tylko przy zmianie kolumny śledzonej — bez tej listy backfill nigdy
+# by nie doszedł do zamówień, w których nic się nie ruszyło.
+_BACKFILL_COLS = ["buyer_name", "buyer_company", "buyer_nip"]
 
 _PAGE_SAFETY_LIMIT = 300          # twardy limit stron (ochrona przed pętlą)
 
@@ -226,6 +232,32 @@ def _values_differ(old: Any, new: Any) -> bool:
     return str(old) != str(new)
 
 
+def _osoba_z_adresu(raw: dict) -> Optional[str]:
+    """Imię i nazwisko nabywcy z adresu do faktury.
+
+    Potrzebne do rozpoznawania faktur wystawianych ręcznie w Fakturowni do
+    zamówień, które już przeszły przez Sellasist. Taka faktura nie ma pola `oid`,
+    więc ingesta bierze ją za hurt i sprzedaż liczy się dwa razy. Numeru
+    dokumentu Sellasist w takim wypadku nie zna (sprawdzone na czerwcu 2026:
+    48 z 49 faktur automatycznych ma swój numer w `document_number`, ręcznych
+    zero z 27), a kwota nie rozstrzyga — ceny katalogowe 3399 i 5999 schodzą
+    kilkanaście razy w miesiącu. Nazwisko rozstrzyga.
+
+    Firma trafia do osobnej kolumny, bo na fakturze bywa raz nabywcą, a raz
+    tylko dopiskiem przy osobie prywatnej.
+    """
+    imie = (_dig(raw, "bill_address", "name") or "").strip()
+    nazwisko = (_dig(raw, "bill_address", "surname") or "").strip()
+    pelne = f"{imie} {nazwisko}".strip()
+    return pelne or None
+
+
+def _tylko_cyfry(v: Any) -> Optional[str]:
+    """NIP do porównań — bez myślników, spacji i prefiksu kraju."""
+    s = "".join(ch for ch in str(v or "") if ch.isdigit())
+    return s or None
+
+
 def _normalize_order_header(raw: dict) -> dict:
     """Surowe zamówienie z listy → wiersz sellasist_orders."""
     return {
@@ -240,6 +272,9 @@ def _normalize_order_header(raw: dict) -> dict:
         "city":           _dig(raw, "bill_address", "city"),
         "country_code":   _dig(raw, "bill_address", "country", "code"),
         "currency":       _dig(raw, "payment", "currency"),
+        "buyer_name":     _osoba_z_adresu(raw),
+        "buyer_company":  (_dig(raw, "bill_address", "company_name") or None),
+        "buyer_nip":      _tylko_cyfry(_dig(raw, "bill_address", "company_nip")),
     }
 
 
@@ -360,8 +395,20 @@ async def _upsert_headers(session: AsyncSession, firma: "Firma", headers: List[d
             if _values_differ(old_v, new_v):
                 changes.append((col, old_v, new_v))
 
-        if changes:
+        # Kolumny dosypane później mają w starych wierszach NULL. Sam UPDATE
+        # jedzie tylko przy zmianie kolumny śledzonej, więc bez tego warunku
+        # backfill ominąłby wszystkie zamówienia, w których nic się nie zmieniło.
+        # Do logu zmian to NIE idzie — to uzupełnienie braku, nie zdarzenie.
+        uzupelnienie = any(
+            (old.get(c) is None or str(old.get(c)).strip() == "")
+            and h.get(c) not in (None, "")
+            for c in _BACKFILL_COLS
+        )
+
+        if changes or uzupelnienie:
             await session.execute(update_sql, row)
+
+        if changes:
             for col, old_v, new_v in changes:
                 await session.execute(log_sql, {
                     "sync_time": sync_time, "order_id": str(oid), "shop": shop, "change_type": "UPDATE",
@@ -414,6 +461,20 @@ async def _ensure_schema(session: AsyncSession) -> None:
         except Exception as e:
             await session.rollback()
             print(f"[sellasist] migracja {tbl}.shop pominięta: {e}")
+
+    # Dane nabywcy z bill_address — do rozpoznawania faktur wystawianych ręcznie
+    # w Fakturowni do zamówień, które już przeszły przez Sellasist.
+    # Wolno NULL: starsze wiersze uzupełnią się przy najbliższym przebiegu, który
+    # obejmie ich okno dat (patrz SELLASIST_DAYS_BACK).
+    for kol in ("buyer_name", "buyer_company", "buyer_nip"):
+        try:
+            await session.execute(text(
+                f"ALTER TABLE {settings.TABLE_ORDERS} ADD COLUMN IF NOT EXISTS {kol} VARCHAR"
+            ))
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            print(f"[sellasist] migracja {settings.TABLE_ORDERS}.{kol} pominięta: {e}")
 
     # Unikalność: stary indeks po samym order_id blokuje multi-sklep (ten sam order_id
     # w dwóch sklepach). Zamieniamy na (shop, order_id). Każdy krok izolowany commitem —
