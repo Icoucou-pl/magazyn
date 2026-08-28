@@ -92,17 +92,29 @@ function projectProduct(p: Product, monthCols: MonthCol[], curve: number[] | nul
     deliveriesByMonth[offset] = (deliveriesByMonth[offset] || 0) + d.quantity;
   });
 
+  // Bieżący miesiąc jest już częściowo za nami, a p.stock to stan NA DZIŚ (sprzedaż
+  // z minionych dni tego miesiąca już z niego zeszła). Odejmowanie pełnego popytu
+  // miesięcznego liczyło ją drugi raz — 28 sierpnia SKU ze średnią 73/mies. gubiło
+  // 73 szt. na trzy pozostałe dni. Skalujemy popyt pierwszej kolumny liczbą dni,
+  // które realnie zostały do końca miesiąca.
+  const daysInFirstMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const firstMonthRatio = (daysInFirstMonth - today.getDate() + 1) / daysInFirstMonth;
+
   let stock = p.stock;
   return monthCols.map((_col, i) => {
     if (deliveriesByMonth[i]) stock += deliveriesByMonth[i];
     const monthIdx = (today.getMonth() + i) % 12;
     const monthly = curve ? baseMonthly * (curve[monthIdx] ?? 1) : baseMonthly;
+    const demand = i === 0 ? monthly * firstMonthRatio : monthly;
     // Podłoga na zerze. Bez niej stan schodził pod zero i ujemne saldo jechało dalej,
     // a dostawa dopisywana do minusa traciła sztuki na sprzedaż, której nie dało się zrobić
     // (nie było z czego). Produkt pusty przez 2 miesiące „zjadał" 2 miesiące z dostawy.
     // Brak towaru = sprzedaż utracona, nie dług do odrobienia.
-    const endStock = Math.max(0, Math.round(stock - monthly));
+    const endStock = Math.max(0, Math.round(stock - demand));
     stock = endStock;
+    // Kubełek liczymy PEŁNYM tempem miesięcznym, nie skróconym popytem pierwszej
+    // kolumny — inaczej ogon miesiąca zawsze wychodziłby na „wyprzedaż", bo pokrycie
+    // liczyłoby się względem kilku dni zamiast względem miesiąca.
     return { stock: endStock, bucket: classifyCover(endStock, monthly), delivery: deliveriesByMonth[i] || 0 };
   });
 }
