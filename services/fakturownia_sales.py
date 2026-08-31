@@ -94,7 +94,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import text
@@ -121,6 +121,30 @@ _SHIPPING = {
 }
 
 _ONLY_DIGITS = re.compile(r"^\d+$")
+
+# Rodzaje dokumentów, które SĄ sprzedażą. Reszta (proforma, estimate) to papier
+# sprzed transakcji — klient płaci i dostaje `vat` albo parę `advance` + `final`,
+# i to one są przychodem. Bez tego filtra czerwiec 2026 miał u Acti proformę
+# 11 pozycji na 91 715 zł i ofertę równą co do grosza zaliczce, a u Veluxy jedna
+# transakcja siedziała w bazie trzy razy (estimate = advance + final).
+# Łącznie 168 678,67 zł netto papieru liczonego jako obrót.
+# `advance` i `final` zostają OBIE — `final` pokazuje resztę po zaliczce, więc
+# suma się nie dubluje.
+_KIND_SPRZEDAZ = {"vat", "wdt", "advance", "final", "correction"}
+
+# Tolerancja przy porównaniu kwoty faktury z kwotą zamówienia. Faktura bywa
+# wystawiana na sam towar, a zamówienie zawiera wysyłkę — GRZEGORZ BASIEWICZ,
+# czerwiec 2026: faktura 5 999 zł, zamówienie 6 098,99 zł, różnica to kurier.
+_TOL_PCT = 0.05
+_TOL_MIN = 150.0
+
+# Okno dat: faktura bywa wystawiona przed wysyłką i długo po zamówieniu.
+_OKNO_PRZED = 21
+_OKNO_PO = 7
+
+# Polskie znaki → ASCII po obu stronach porównania nazwisk.
+_SQL_ZNAKI_Z = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
+_SQL_ZNAKI_NA = "acelnoszzACELNOSZZ"
 
 
 @dataclass
@@ -151,6 +175,9 @@ class Wynik:
     brak_probki: List[str] = field(default_factory=list)
     netto_hurt: float = 0.0
     netto_internal: float = 0.0
+    dubli: int = 0                    # faktury ręczne do zamówień z Sellasista
+    dubli_brutto: float = 0.0
+    nie_sprzedaz: int = 0             # proformy i oferty
     marza: float = 0.0
     bez_kosztu: int = 0
     konflikty: int = 0
@@ -295,6 +322,20 @@ def _norm_name(v: Any) -> str:
                  ("ó", "o"), ("ś", "s"), ("ź", "z"), ("ż", "z")):
         s = s.replace(a, b)
     return re.sub(r"\s+", " ", s)
+
+
+_PESEL_OGON = re.compile(r"\s*pesel\s*:?.*$", re.IGNORECASE)
+
+
+def _norm_osoba(v: Any) -> str:
+    """Nazwa nabywcy do porównania z zamówieniem Sellasista.
+
+    Fakturownia trzyma w `buyer_name` to, co wpisała osoba wystawiająca, więc
+    trafia się doklejony PESEL („Andrzej Maciejewski Pesel : 60112205678").
+    Bez ucięcia tego ogona porównanie na sztywno nie ma szans.
+    """
+    s = _PESEL_OGON.sub("", str(v or ""))
+    return _norm_name(s)
 
 
 def _is_ean_like(code: str) -> bool:
@@ -641,6 +682,96 @@ async def _rodzic_ma_oid(firma: Firma, parent_id: int,
     return oid
 
 
+def _sql_norm(kol: str) -> str:
+    """Kolumna → postać porównywalna: bez ogonków, bez wielkości liter,
+    ze ściśniętymi spacjami. Ta sama normalizacja co `_norm_osoba` po stronie
+    Pythona, inaczej „Połeć" nie spotkałoby się z „polec"."""
+    return (
+        f"REGEXP_REPLACE(TRANSLATE(LOWER(TRIM(COALESCE({kol}, ''))), "
+        f"'{_SQL_ZNAKI_Z}', '{_SQL_ZNAKI_NA}'), '\\s+', ' ', 'g')"
+    )
+
+
+async def _jest_dublem(session: AsyncSession, firma: Firma, det: dict,
+                       zajete_oidy: Set[int]) -> Optional[str]:
+    """Czy ta faktura bez `oid` opisuje sprzedaż, którą Sellasist już policzył.
+
+    Skąd problem: część zamówień z Sellasista dziewczyny fakturują ręcznie
+    w Fakturowni, zamiast przyciskiem. Taka faktura nie dostaje `oid`, więc
+    reguła „brak oid = hurt" bierze ją za sprzedaż hurtową — a zamówienie
+    poszło już do przychodu po stronie Sellasista. U Acti w czerwcu 2026 było
+    to 21 faktur na 110 025 zł brutto przy 27 fakturach bez `oid` w ogóle.
+
+    Czym NIE da się tego złapać (sprawdzone, nie powtarzać):
+      - e-mail nabywcy — `buyer_email` puste na 28 z 30 faktur Acti
+      - numer dokumentu — Sellasist zna numer tylko faktur automatycznych
+        (48 z 49 trafień), ręcznych nie zna ani jednej z 27; jego własna seria
+        `FV/…` numeruje się niezależnie i daje fałszywe trafienia
+      - sama kwota — 3 399 i 5 999 to ceny katalogowe, schodzą kilkanaście razy
+        w miesiącu; jedna faktura pasowała do sześciu zamówień
+
+    Klucz to tożsamość nabywcy. NIP dla firm, nazwa firmy, w ostateczności
+    imię i nazwisko. Do tego okno dat, whitelist statusów zrealizowanych
+    i zgodność kwoty w tolerancji.
+
+    zajete_oidy — zamówienia, które mają już fakturę wystawioną automatem.
+    Taka faktura jest w Fakturowni osobno i to ona odpowiada zamówieniu;
+    ręczna dotyczy czegoś innego albo jest podwójnym zafakturowaniem
+    (Maria Kołodziej, czerwiec 2026: automat 77/06 i ręczna 32/06 na tę samą
+    kwotę). W obu wypadkach nie jest dublem wobec Sellasista.
+
+    Zwraca order_id dopasowanego zamówienia albo None.
+    """
+    brutto = _to_float(det.get("price_gross"))
+    data = _parse_date(det.get("issue_date")) or _parse_date(det.get("sell_date"))
+    if not data or brutto is None or brutto <= 0:
+        return None
+
+    nazwa = _norm_osoba(det.get("buyer_name"))
+    nip = _digits(det.get("buyer_tax_no"))
+    if not nazwa and not nip:
+        return None
+
+    statusy = [x.strip() for x in settings.INCLUDED_ORDER_STATUSES_EXT.split(",") if x.strip()]
+    if not statusy:
+        return None
+
+    zajete = sorted(zajete_oidy) or [-1]        # ANY() nie znosi pustej listy
+
+    sql = text(f"""
+        SELECT o.{settings.COL_ORDER_ID} AS oid, o.total
+        FROM {settings.TABLE_ORDERS} o
+        WHERE o.shop = :shop
+          AND o.{settings.COL_ORDER_DATE} >= :od
+          AND o.{settings.COL_ORDER_DATE} <  :do
+          AND o.{settings.COL_ORDER_STATUS} = ANY(:statusy)
+          AND o.{settings.COL_ORDER_ID} <> ALL(:zajete)
+          AND ABS(COALESCE(o.total, 0) - :brutto) <= GREATEST(:brutto * :tolpct, :tolmin)
+          AND (
+                (:nip <> '' AND o.buyer_nip = :nip)
+             OR (:nazwa <> '' AND {_sql_norm('o.buyer_company')} = :nazwa)
+             OR (:nazwa <> '' AND {_sql_norm('o.buyer_name')}    = :nazwa)
+          )
+        ORDER BY ABS(COALESCE(o.total, 0) - :brutto), o.{settings.COL_ORDER_DATE} DESC
+        LIMIT 1
+    """)
+
+    r = await session.execute(sql, {
+        "shop": firma.slug,
+        "od": data - timedelta(days=_OKNO_PRZED),
+        "do": data + timedelta(days=_OKNO_PO),
+        "statusy": statusy,
+        "zajete": zajete,
+        "brutto": float(brutto),
+        "tolpct": _TOL_PCT,
+        "tolmin": _TOL_MIN,
+        "nip": nip,
+        "nazwa": nazwa,
+    })
+    row = r.mappings().first()
+    return str(row["oid"]) if row else None
+
+
 async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -> Wynik:
     w = Wynik(slug=firma.slug)
     try:
@@ -676,6 +807,16 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
 
         z_oid = [f for f in faktury if _has_val(f.get("oid"))]
         bez_oid = [f for f in faktury if not _has_val(f.get("oid"))]
+
+        # Zamówienia, które mają już fakturę wystawioną automatem. Lista bierze się
+        # z API, nie z bazy — do `fakturownia_invoices` trafiają wyłącznie faktury
+        # bez `oid`, więc kolumna `oid` w tabeli jest z definicji pusta i nie da się
+        # z niej tego odczytać.
+        zajete_oidy: Set[int] = set()
+        for f in z_oid:
+            v = _to_int(f.get("oid"))
+            if v is not None:
+                zajete_oidy.add(v)
 
         # 3. Nauka mapy — tylko z faktur NOWSZYCH niż ostatnio przerobione.
         #    Bez tego każdy bieg pobierałby szczegóły ~550 faktur detalicznych.
@@ -723,12 +864,24 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
                 parent_id = _to_int(det.get("from_invoice_id"))
                 parent_oid = None
                 skip = None
+                dubel_oid = None
 
-                if is_corr and parent_id:
+                if kind not in _KIND_SPRZEDAZ:
+                    # Proforma i oferta to zapowiedź sprzedaży, nie sprzedaż.
+                    skip = "NIE_SPRZEDAZ"
+
+                if skip is None and is_corr and parent_id:
                     parent_oid = await _rodzic_ma_oid(firma, parent_id, lista_by_id, cache_rodzicow)
                     if parent_oid:
                         # Zwrot detaliczny — Sellasist już go obsłużył statusem.
                         skip = "KOREKTA_DETAL"
+
+                if skip is None and not is_corr:
+                    # Faktura wystawiona ręcznie do zamówienia, które przeszło
+                    # przez Sellasist — inaczej ta sama sprzedaż liczy się dwa razy.
+                    dubel_oid = await _jest_dublem(session, firma, det, zajete_oidy)
+                    if dubel_oid:
+                        skip = "DUBEL_SELLASIST"
 
                 nip = _digits(det.get("buyer_tax_no"))
                 internal = bool(nip and nip in nasze_nipy)
@@ -748,8 +901,13 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
                     # Korekty jej nie mają, tam zostaje wyliczenie z pozycji.
                     "margin": (round(_to_float(det.get("products_margin")), 2)
                                if _has_val(det.get("products_margin")) else None),
+                    # `oid` zostaje pusty — do tabeli trafiają tylko faktury bez
+                    # niego. Przy dublu zapisujemy dopasowane zamówienie w
+                    # `parent_oid`, żeby dało się to zweryfikować bez ponownego
+                    # przeliczania (korekty używają tego pola do swojego rodzica).
                     "oid": None,
-                    "parent_id": parent_id, "parent_oid": parent_oid,
+                    "parent_id": parent_id,
+                    "parent_oid": dubel_oid or parent_oid,
                     "buyer": _txt(det.get("buyer_name")),
                     "nip": _txt(det.get("buyer_tax_no"), 32),
                     "internal": internal, "corr": is_corr,
@@ -759,6 +917,11 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
 
                 if skip:
                     w.faktur_pominietych += 1
+                    if skip == "DUBEL_SELLASIST":
+                        w.dubli += 1
+                        w.dubli_brutto += _to_float(det.get("price_gross"), 0.0) or 0.0
+                    elif skip == "NIE_SPRZEDAZ":
+                        w.nie_sprzedaz += 1
                 else:
                     w.faktur_ingest += 1
                     w.pozycji += len(pozycje)
@@ -776,6 +939,29 @@ async def _bieg_firmy(firma: Firma, nasze_nipy: Set[str], sync_time: datetime) -
                         w.netto_internal += suma
                     else:
                         w.netto_hurt += suma
+
+            # Korekta do faktury uznanej za dubel dzieli jej los — zwrot obsłużył
+            # już Sellasist statusem zamówienia. Robione po pętli, bo rodzic bywa
+            # przetwarzany PO swojej korekcie i w trakcie biegu jeszcze nie wie,
+            # że jest dublem.
+            await session.execute(text(
+                "UPDATE fakturownia_invoices k SET skip_reason = 'KOREKTA_DUBLA' "
+                "FROM fakturownia_invoices r "
+                "WHERE k.firma_id = :fid AND r.firma_id = :fid "
+                "  AND k.is_correction AND k.skip_reason IS NULL "
+                "  AND k.from_invoice_id = r.invoice_id "
+                "  AND r.skip_reason = 'DUBEL_SELLASIST'"
+            ), {"fid": firma.firma_id})
+
+            # Pominięta faktura nie ma prawa mieć pozycji. Zwykle ich nie dostaje
+            # (pozycje liczymy dopiero gdy skip is None), ale wiersz oznaczony
+            # dopiero teraz — albo migracją — mógłby je po sobie zostawić.
+            await session.execute(text(
+                "DELETE FROM fakturownia_invoice_items i "
+                "USING fakturownia_invoices f "
+                "WHERE i.firma_id = f.firma_id AND i.invoice_id = f.invoice_id "
+                "  AND f.firma_id = :fid AND f.skip_reason IS NOT NULL"
+            ), {"fid": firma.firma_id})
 
             await session.execute(text(
                 "INSERT INTO fakturownia_sync_state (firma_id, last_learned_id, last_run) "
@@ -810,10 +996,15 @@ def _opis(w: Wynik) -> str:
     # przy odświeżaniu co godzinę.
     if w.faktur_ingest == 0 and w.faktur_bez_zmian > 0:
         return f"bez zmian ({w.faktur_bez_zmian} faktur sprawdzonych)"
-    if w.faktur_ingest == 0:
+    if w.faktur_ingest == 0 and not (w.dubli or w.nie_sprzedaz):
         return "brak faktur do pobrania"
 
     czesci = [f"{w.faktur_ingest} nowych/zmienionych faktur"]
+    if w.dubli:
+        kwota = f"{w.dubli_brutto:,.0f} zł".replace(",", " ")
+        czesci.append(f"dubli z Sellasista: {w.dubli} ({kwota} brutto)")
+    if w.nie_sprzedaz:
+        czesci.append(f"proform/ofert: {w.nie_sprzedaz}")
     obrot = w.netto_hurt + w.netto_internal
     if obrot:
         czesci.append(f"{obrot:,.0f} zł".replace(",", " "))
