@@ -609,7 +609,9 @@ async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bo
             DATE(o.{settings.COL_ORDER_DATE}) AS sale_date,
             SUM(oi.{settings.COL_ITEM_QTY}) AS qty
         FROM {settings.TABLE_ORDER_ITEMS} oi
-        JOIN {settings.TABLE_ORDERS} o ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
+        JOIN {settings.TABLE_ORDERS} o
+            ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
+           AND o.shop = oi.shop
         WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '{days} days'
             AND (:shop = '' OR o.shop = :shop)
             {INCLUDED_STATUS_FILTER}

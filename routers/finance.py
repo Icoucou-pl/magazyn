@@ -109,7 +109,12 @@ base AS (
         (pp.cena IS NULL)                                                                  AS cost_missing
     FROM {settings.TABLE_ORDER_ITEMS} i
     JOIN {settings.TABLE_ORDERS} o
+        -- shop w warunku jest OBOWIĄZKOWY: order_id jest unikalny dopiero w parze
+        -- ze sklepem (idx_sellasist_orders_shop_id). Bez tego pozycje zamówienia
+        -- AMH nr 12345 doklejają się do zamówienia Acti nr 12345 — czerwiec 2026
+        -- zawyżony o 60 tys. zł netto, ~13% przychodu Acti.
         ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
+       AND o.shop = i.shop
     LEFT JOIN LATERAL (
         SELECT CASE
             WHEN UPPER(TRIM(COALESCE(i.{settings.COL_ITEM_CURRENCY}, '{settings.FX_BASE_CURRENCY}'))) IN ('{settings.FX_BASE_CURRENCY}', '')

@@ -69,7 +69,10 @@ async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> Li
             COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE},       0) * fx.mult), 0)::float  AS val_gross
         FROM {settings.TABLE_ORDER_ITEMS} i
         JOIN {settings.TABLE_ORDERS} o
+            -- order_id jest unikalny tylko w parze ze sklepem — bez `shop`
+            -- doklejają się pozycje z innej spółki o tym samym numerze.
             ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
+           AND o.shop = i.shop
         LEFT JOIN LATERAL (
             SELECT CASE
                 WHEN UPPER(TRIM(COALESCE(i.{settings.COL_ITEM_CURRENCY}, '{settings.FX_BASE_CURRENCY}'))) IN ('{settings.FX_BASE_CURRENCY}', '')
@@ -145,7 +148,9 @@ async def forecast_seasonality(db: AsyncSession = Depends(get_db), user: Current
                COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int              AS qty
         FROM {settings.TABLE_ORDER_ITEMS} i
         JOIN {settings.TABLE_ORDERS} o
+            -- order_id jest unikalny tylko w parze ze sklepem.
             ON o.{settings.COL_ORDER_ID} = i.{settings.COL_ITEM_ORDER_ID}
+           AND o.shop = i.shop
         WHERE o.{settings.COL_ORDER_DATE} >= (date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
             {INCLUDED_STATUS_FILTER}
             AND i.{settings.COL_ITEM_SKU} IS NOT NULL
