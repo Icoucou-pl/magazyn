@@ -138,8 +138,20 @@ _KIND_SPRZEDAZ = {"vat", "wdt", "advance", "final", "correction"}
 _TOL_PCT = 0.05
 _TOL_MIN = 150.0
 
-# Okno dat: faktura bywa wystawiona przed wysyłką i długo po zamówieniu.
-_OKNO_PRZED = 21
+# Okno dat między zamówieniem a fakturą.
+#
+# Było 21 dni i to za mało. Sellasist tworzy zamówienie z proformy (kanał
+# API/Make), a fakturę wystawia się dopiero po zapłacie — czasem po kilku
+# tygodniach. Pomiar na Acti (styczeń–sierpień 2026, pole "Faktura"
+# w additional_fields jako zbiór odniesienia): 88 zamówień zafakturowanych
+# ręcznie, reguła złapała 72. Z 16 pominiętych 14 to były prawdziwe duble,
+# przegapione wyłącznie przez odstęp: 26, 27, 33, 36, 40, 42, 44, 44, 50, 51,
+# 59, 90, 92, 93 dni. Najdalsze 93, stąd 120 z zapasem.
+#
+# Poszerzenie jest bezpieczne, bo klucz to nie sama data: musi się zgadzać
+# nazwisko, firma albo NIP ORAZ kwota w tolerancji 5%, a zamówienie nie może
+# mieć własnej faktury automatycznej.
+_OKNO_PRZED = 120
 _OKNO_PO = 7
 
 # Polskie znaki → ASCII po obu stronach porównania nazwisk.
