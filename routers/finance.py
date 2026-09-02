@@ -69,6 +69,30 @@ def _period(period: str):
     return ("Ten rok", f"o.{d} >= date_trunc('year', CURRENT_DATE)", date(today.year, 1, 1), today)
 
 
+# Jeden wiersz atrybutow na SKU — bez tego przychod rosnie z niczego.
+#
+# app_product_attrs ma SKU zduplikowane przez wielkosc liter (SZP1_Outlet +
+# szp1_outlet, MKP1 w trzech wariantach). Joiny lacza sie po LOWER(TRIM(sku)),
+# wiec kazda pozycja koszyka z takim SKU mnozyla sie przez liczbe wierszy.
+# Zamowien nie przybywalo (COUNT DISTINCT), ale przychod i sztuki tak:
+# Acti +52 400 zl, AMH +46 559 zl netto za 2026 (Veluxa 0 — nie sprzedaje outletow).
+#
+# ORDER BY manufacturer_id NULLS LAST: warianty maja ROZLACZNE dane — nowsze
+# wiersze (sierpien) trzymaja cena_zakupu, starsze (lipiec) manufacturer_id
+# i firma_id. Do tego joina liczy sie producent, wiec wybieramy wiersz, ktory
+# go ma. Scalenie danych i unikalny indeks funkcyjny to osobny etap.
+#
+# To samo rozwiazanie stoi juz w sql.py (prod_prices, DISTINCT ON) —
+# tam problem rozpoznano wczesniej, tutaj nie dotarlo.
+PRODUCT_ATTRS_DEDUP = f"""
+    (SELECT DISTINCT ON (LOWER(TRIM(sku)))
+            LOWER(TRIM(sku)) AS sku_canon, manufacturer_id, firma_id, sku
+     FROM {settings.TABLE_PRODUCT_ATTRS}
+     WHERE sku IS NOT NULL
+     ORDER BY LOWER(TRIM(sku)), manufacturer_id NULLS LAST, updated_at DESC NULLS LAST)
+"""
+
+
 def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool = False) -> str:
     """Wspólne CTE `base`: po jednej pozycji zamówienia z kanałem, przewalutowaniem i kosztem.
     Przewalutowanie: PLN/puste → 1.0; waluta obca → kurs NBP < order_date; brak kursu → mult NULL
@@ -131,8 +155,8 @@ base AS (
     ) fx ON TRUE
     LEFT JOIN prod_prices pp
         ON pp.sku_canon = LOWER(TRIM(i.{settings.COL_ITEM_SKU}))
-    LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
-        ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(i.{settings.COL_ITEM_SKU}))
+    LEFT JOIN {PRODUCT_ATTRS_DEDUP} pa
+        ON pa.sku_canon = LOWER(TRIM(i.{settings.COL_ITEM_SKU}))
     LEFT JOIN {settings.TABLE_MANUFACTURERS} m
         ON m.id = pa.manufacturer_id
     WHERE {period_clause}
@@ -184,8 +208,8 @@ base AS (
     ) fx ON TRUE
     LEFT JOIN prod_prices pp
         ON pp.sku_canon = i.sku_canon
-    LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
-        ON LOWER(TRIM(pa.sku)) = i.sku_canon
+    LEFT JOIN {PRODUCT_ATTRS_DEDUP} pa
+        ON pa.sku_canon = i.sku_canon
     LEFT JOIN {settings.TABLE_MANUFACTURERS} m
         ON m.id = pa.manufacturer_id
     WHERE {period_clause}
@@ -426,7 +450,14 @@ async def finance_missing_cost(
             SELECT b.sku, b.mfr_name, b.qty AS units, b.net,
                    COALESCE(pa.name_override, pn.nazwa) AS nazwa
             FROM (SELECT * FROM base WHERE cost_missing AND sku IS NOT NULL) b
-            LEFT JOIN app_product_attrs pa ON LOWER(TRIM(pa.sku)) = b.sku
+            -- DISTINCT ON: SKU zduplikowane wielkoscia liter mnozylyby wiersze
+            -- w modalu brakujacych cen (te same sztuki liczone dwa razy).
+            LEFT JOIN (SELECT DISTINCT ON (LOWER(TRIM(sku)))
+                              LOWER(TRIM(sku)) AS sku_canon, name_override
+                       FROM app_product_attrs WHERE sku IS NOT NULL
+                       ORDER BY LOWER(TRIM(sku)), name_override NULLS LAST,
+                                updated_at DESC NULLS LAST) pa
+                   ON pa.sku_canon = b.sku
             LEFT JOIN LATERAL (
                 SELECT nazwa FROM fakturownia_stock WHERE sku_canon = b.sku
                 UNION ALL SELECT nazwa FROM subiekt_dwa_magazyny WHERE LOWER(TRIM(sku)) = b.sku
@@ -681,8 +712,8 @@ async def finance_product(
         CROSS JOIN ext_all ea
         CROSS JOIN ord
         LEFT JOIN subiekt s ON TRUE
-        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
-            ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(:symbol))
+        LEFT JOIN {PRODUCT_ATTRS_DEDUP} pa
+            ON pa.sku_canon = LOWER(TRIM(:symbol))
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m
             ON m.id = pa.manufacturer_id
         LEFT JOIN {settings.TABLE_LEAD_TIMES} lt

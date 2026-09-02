@@ -644,7 +644,15 @@ async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bo
             SUM(ci.quantity) AS qty
         FROM {settings.TABLE_CONTAINER_ITEMS} ci
         JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
-        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(ci.sku))
+        -- DISTINCT ON: pa sluzy tu tylko do ustalenia firmy, ale SKU zduplikowane
+        -- wielkoscia liter mnozylo wiersze, a nizej jest SUM(ci.quantity) —
+        -- dostawy z kontenerow liczyly sie wielokrotnie i szly tak do prognozy.
+        LEFT JOIN (SELECT DISTINCT ON (LOWER(TRIM(sku)))
+                          LOWER(TRIM(sku)) AS sku_canon, firma_id
+                   FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
+                   ORDER BY LOWER(TRIM(sku)), firma_id NULLS LAST,
+                            updated_at DESC NULLS LAST) pa
+               ON pa.sku_canon = LOWER(TRIM(ci.sku))
         WHERE c.eta_date IS NOT NULL
             AND COALESCE(c.delivered_date, c.eta_date + {customs}) >= (NOW() - INTERVAL '{days} days')::date
             AND COALESCE(c.delivered_date, c.eta_date + {customs}) <= NOW()::date
