@@ -777,18 +777,21 @@ function ContainerCardBody({
           <div style={sectionLabelStyle}>Odprawa celna — MRN</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {lots.map((l) => (
+              // Wiersz zwęża się do treści (alignSelf) i trzyma MRN tuż za numerem FV.
+              // Wcześniej box szedł przez całą szerokość, a numer był dopchnięty do prawej
+              // krawędzi — przy szerokim ekranie łatwo go było przeoczyć.
               <div key={l.id} style={{
-                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                alignSelf: "flex-start", maxWidth: "100%",
                 padding: "9px 12px", background: "var(--surface-2)", borderRadius: 8,
                 border: `1px solid ${!l.mrn && mrnAlarm ? "color-mix(in oklch, var(--warning) 40%, var(--border-soft))" : "var(--border-soft)"}`,
               }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
-                  <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
-                  {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>FV: {l.order_number}</span>}
-                </div>
-                <div style={{ marginLeft: "auto" }}>
+                <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
+                {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>FV: {l.order_number}</span>}
+                <span style={{ display: "inline-flex", alignItems: "baseline", gap: 5, minWidth: 0 }}>
+                  <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>MRN:</span>
                   {l.mrn ? <MrnText value={l.mrn} /> : <MrnMissing alarm={mrnAlarm} />}
-                </div>
+                </span>
               </div>
             ))}
           </div>
