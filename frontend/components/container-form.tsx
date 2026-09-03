@@ -23,7 +23,11 @@ export type ContainerType = { id: number; name: string; capacity_cbm: number; so
 type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string };
 type AdvanceDraft = { procent: string; kwota: string; waluta: string; termin: string; data: string };
 type LotDraft = {
+  // id istniejącego lotu — backend kasuje i wstawia loty od nowa przy zapisie, więc bez niego
+  // gubi się flaga „wbite do magazynu w drodze" (kropka Subiekt/Fakturownia).
+  id: number | null;
   manufacturer_id: string; order_number: string;
+  mrn: string;                                   // numer odprawy celnej tego lotu
   waluta_towaru: string;
   advances: AdvanceDraft[];
   balance_kwota: string; balance_waluta: string; balance_termin: string; zaplacono_data: string;
@@ -48,7 +52,9 @@ const advDraftsFrom = (src: {
   return [emptyAdvance(cur0)];
 };
 const emptyLot = (): LotDraft => ({
+  id: null,
   manufacturer_id: "", order_number: "",
+  mrn: "",
   waluta_towaru: "USD",
   advances: [emptyAdvance()],
   balance_kwota: "", balance_waluta: "USD", balance_termin: "", zaplacono_data: "",
@@ -89,8 +95,10 @@ export default function ContainerFormModal({
   // Mapowanie lot_id (z bazy) → indeks w tablicy lotów (formularz operuje na indeksach).
   const numStr = (n?: number | null) => (n == null ? "" : String(n));
   const initialLots: LotDraft[] = (initial?.lots || []).map((l) => ({
+    id: l.id,
     manufacturer_id: l.manufacturer_id ? String(l.manufacturer_id) : "",
     order_number: l.order_number || "",
+    mrn: l.mrn || "",
     waluta_towaru: l.waluta_towaru || "USD",
     advances: advDraftsFrom(l),
     balance_kwota: numStr(l.balance_kwota),
@@ -181,6 +189,9 @@ export default function ContainerFormModal({
   const [kosztTransportuMagazyn, setKosztTransportuMagazyn] = useState(numStr(initial?.koszt_transportu_magazyn)); // PLN
   const [folder, setFolder] = useState(initial?.folder || "");
   const [subiektNr, setSubiektNr] = useState(initial?.subiekt_nr || "");
+  // MRN: przy jednym dostawcy na kontenerze, przy skonsolidowanym per lot (tyle numerów,
+  // ilu producentów w środku). Gate to showEdit, nie showFin — to dokument, nie kwota.
+  const [mrn, setMrn] = useState(initial?.mrn || "");
   // Numer roboczy nadaje backend wewnętrznie, gdy pole zostanie puste — nie pokazujemy go użytkownikowi.
   const wasDraft = /^draft-/i.test(initial?.container_number || "");
 
@@ -447,6 +458,7 @@ export default function ContainerFormModal({
       koszt_transportu_magazyn: numOrNull(kosztTransportuMagazyn),   // PLN
       folder: folder.trim() || null,
       subiekt_nr: subiektNr.trim() || null,
+      mrn: isConsolidated ? null : (mrn.trim() || null),
       // płatność kontenera nieskonsolidowanego (przy konsolidacji → puste, dane w lotach)
       waluta_towaru: isConsolidated ? null : walutaTowaru,
       advances: isConsolidated ? [] : advances.map((a) => ({
@@ -458,8 +470,10 @@ export default function ContainerFormModal({
       balance_termin: isConsolidated ? null : dateOrNull(balanceTermin),
       zaplacono_data: isConsolidated ? null : dateOrNull(zaplaconoData),
       lots: isConsolidated ? lots.map((l) => ({
+        id: l.id,
         manufacturer_id: l.manufacturer_id ? Number(l.manufacturer_id) : null,
         order_number: l.order_number.trim() || null,
+        mrn: l.mrn.trim() || null,
         waluta_towaru: l.waluta_towaru || "USD",
         advances: l.advances.map((a) => ({
           procent: numOrNull(a.procent), kwota: numOrNull(a.kwota),
@@ -753,7 +767,49 @@ export default function ContainerFormModal({
                 <Field label="Subiekt">
                   <input value={subiektNr} onChange={(e) => setSubiektNr(e.target.value)} placeholder="numer + cyfra" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
                 </Field>
+                {!isConsolidated && (
+                  <div style={{ gridColumn: "span 2" }}>
+                    <Field label="Nr MRN">
+                      <input value={mrn} onChange={(e) => setMrn(e.target.value.toUpperCase())} placeholder="z dokumentu odprawy, np. 26PL445010E0123456" disabled={!showEdit} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+                    </Field>
+                  </div>
+                )}
               </div>
+
+              {/* Skonsolidowany: tyle MRN-ów, ilu producentów w środku — numer siedzi na locie,
+                  nie na kontenerze. Wpis zostaje tutaj (a nie w sekcji płatności lotów), bo tamta
+                  jest za showFin i osoba wpisująca odprawę mogłaby jej w ogóle nie zobaczyć. */}
+              {isConsolidated && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 9.5, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                    Nr MRN — per lot
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {lots.map((l, i) => {
+                      const mfrName = manufacturers.find((m) => String(m.id) === l.manufacturer_id)?.name;
+                      return (
+                        <div key={i} style={{ display: "grid", gridTemplateColumns: "minmax(130px, 200px) 1fr", gap: 10, alignItems: "center" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {mfrName || `Lot ${i + 1}`}
+                            </span>
+                            {l.order_number.trim() && (
+                              <span style={{ fontSize: 11, color: "var(--text-lo)", fontFamily: "var(--font-mono)" }}>{l.order_number.trim()}</span>
+                            )}
+                          </div>
+                          <input
+                            value={l.mrn}
+                            onChange={(e) => updateLot(i, "mrn", e.target.value.toUpperCase())}
+                            placeholder="z dokumentu odprawy"
+                            disabled={!showEdit}
+                            style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {!isNew && (
                 <div style={{ marginTop: 10, padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>

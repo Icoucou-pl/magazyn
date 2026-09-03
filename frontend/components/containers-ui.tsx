@@ -51,6 +51,7 @@ export type ContainerLot = {
   manufacturer_name: string | null;
   manufacturer_color: string | null;
   order_number: string | null;
+  mrn?: string | null;                  // numer odprawy celnej tego lotu
   waluta_towaru?: string | null;
   advances?: ContainerAdvance[] | null;
   zaliczka_procent?: number | null;
@@ -86,6 +87,7 @@ export type Container = {
   koszt_transportu_magazyn?: number | null;   // PLN — z portu do magazynu
   folder?: string | null;
   subiekt_nr?: string | null;
+  mrn?: string | null;                        // odprawa celna (kontener nieskonsolidowany)
   waluta_towaru?: string | null;
   advances?: ContainerAdvance[] | null;
   zaliczka_procent?: number | null;
@@ -221,6 +223,18 @@ export const STATUS_FULL_META: Record<string, StatusMetaFull> = {
 
 // Status do wyświetlenia: efektywny z backendu, a gdy go brak — ręczny.
 export const eff = (c: { effective_status?: string; status: string }): string => c.effective_status || c.status;
+
+// ── MRN (odprawa celna) ──────────────────────────────────────
+// Brak numeru podświetlamy dopiero od wejścia w odprawę: wcześniej MRN-u fizycznie
+// jeszcze nie ma, więc ostrzeżenie na każdym zamówionym kontenerze byłoby czystym szumem.
+// CUSTOMS to okno wyliczane (ETA+1..ETA+N), po nim kontener sam wchodzi w DELIVERED —
+// dlatego alarm musi obejmować OBA statusy, inaczej gasłby dokładnie wtedy, gdy towar
+// leży już na magazynie bez dokumentu odprawy.
+// MRN_ALARM_FROM odcina historię: kontenery sprzed wdrożenia nie mają wpisanych numerów
+// i bez progu zapaliłyby się wszystkie naraz. Do podniesienia/usunięcia, gdy Ania uzupełni wstecz.
+export const MRN_ALARM_FROM = "2026-09-01";
+export const mrnAlarmOn = (c: { effective_status?: string; status: string; eta_date: string }): boolean =>
+  (eff(c) === "CUSTOMS" || eff(c) === "DELIVERED") && (c.eta_date || "") >= MRN_ALARM_FROM;
 
 // ── Mini stat ────────────────────────────────────────────────
 // Klikalny wariant: podaj onClick + accent (kolor liczby i ramki) + hint (podpowiedź w stopce).
@@ -681,7 +695,10 @@ function ContainerCardBody({
   const erpMsc = _bestSlug === "amh" ? "Subiekcie" : "Fakturowni";
   const isDelivered = eff(c) === "DELIVERED";
   // Sekcje finansowe są teraz zawsze widoczne po rozwinięciu (przy showFin) — bez chowania gdy brak danych.
-  const showDocs = showFin || !!c.folder || !!c.subiekt_nr;
+  // MRN: przy jednym dostawcy siedzi na kontenerze (kafelek w tej siatce), przy skonsolidowanym
+  // na lotach (osobna sekcja niżej) — bo jest tyle numerów, ilu producentów w środku.
+  const mrnAlarm = mrnAlarmOn(c);
+  const showDocs = showFin || !!c.folder || !!c.subiekt_nr || (!consolidated && (!!c.mrn || mrnAlarm));
   const sectionLabelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 };
   return (
     <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }} className="fade-in">
@@ -747,6 +764,33 @@ function ContainerCardBody({
             {showFin && <MoneyCell label="Transport do magazynu" value={fmtCur(c.koszt_transportu_magazyn, "PLN")} sub="port → magazyn" />}
             <MoneyCell label="Folder" value={c.folder || "—"} />
             <MoneyCell label="Subiekt" value={c.subiekt_nr || "—"} />
+            {!consolidated && (
+              <MoneyCell label="Nr MRN" span={2}
+                         value={c.mrn ? <MrnText value={c.mrn} /> : <MrnMissing alarm={mrnAlarm} />} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {consolidated && (
+        <div>
+          <div style={sectionLabelStyle}>Odprawa celna — MRN</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {lots.map((l) => (
+              <div key={l.id} style={{
+                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                padding: "9px 12px", background: "var(--surface-2)", borderRadius: 8,
+                border: `1px solid ${!l.mrn && mrnAlarm ? "color-mix(in oklch, var(--warning) 40%, var(--border-soft))" : "var(--border-soft)"}`,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                  <MfrChip name={l.manufacturer_name || "— bez dostawcy —"} color={l.manufacturer_color ?? "var(--text-lo)"} />
+                  {l.order_number && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>FV: {l.order_number}</span>}
+                </div>
+                <div style={{ marginLeft: "auto" }}>
+                  {l.mrn ? <MrnText value={l.mrn} /> : <MrnMissing alarm={mrnAlarm} />}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -980,9 +1024,26 @@ function DataCell({ label, value, sub }: { label: string; value: React.ReactNode
   );
 }
 
-function MoneyCell({ label, value, sub, muted }: { label: string; value: React.ReactNode; sub?: string; muted?: boolean }) {
+// MrnText / MrnMissing — jedna prezentacja numeru odprawy w obu wariantach kontenera
+// (kafelek przy jednym dostawcy, wiersz lotu przy skonsolidowanym).
+function MrnText({ value }: { value: string }) {
+  return <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-hi)", letterSpacing: "-0.01em", wordBreak: "break-all" }}>{value}</span>;
+}
+
+function MrnMissing({ alarm }: { alarm: boolean }) {
+  if (!alarm) return <span style={{ color: "var(--text-disabled)" }}>—</span>;
   return (
-    <div style={{ padding: "8px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 7 }}>
+    <span style={{
+      display: "inline-block", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.05em",
+      textTransform: "uppercase", padding: "2px 7px", borderRadius: 5,
+      background: "var(--warning-soft)", color: "var(--text-mid)", fontFamily: "var(--font-sans)",
+    }}>brak MRN</span>
+  );
+}
+
+function MoneyCell({ label, value, sub, muted, span }: { label: string; value: React.ReactNode; sub?: string; muted?: boolean; span?: number }) {
+  return (
+    <div style={{ padding: "8px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 7, gridColumn: span && span > 1 ? `span ${span}` : undefined }}>
       <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
       <div className="num" style={{ fontSize: 13, fontWeight: 600, color: muted ? "var(--text-mid)" : "var(--text-hi)", marginTop: 2 }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 1 }}>{sub}</div>}

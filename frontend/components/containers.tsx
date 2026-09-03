@@ -190,15 +190,16 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     if (filter !== "ALL") arr = arr.filter((c) => eff(c) === filter);
     if (search) {
       const q = search.toLowerCase();
-      // W skonsolidowanym kontenerze PO i dostawca żyją na lotach, a nie na kontenerze —
-      // bez przeszukania lotów wyszukiwarka nie znajdowała takich kontenerów po numerze PO.
+      // W skonsolidowanym kontenerze PO, dostawca i MRN żyją na lotach, a nie na kontenerze —
+      // bez przeszukania lotów wyszukiwarka nie znajdowała takich kontenerów po numerze PO ani MRN.
       const hit = (v?: string | null) => !!v && v.toLowerCase().includes(q);
       arr = arr.filter((c) =>
         hit(c.container_number) ||
         hit(c.order_number) ||
         hit(c.manufacturer_name) ||
         hit(c.subiekt_nr) ||
-        (c.lots ?? []).some((l) => hit(l.order_number) || hit(l.manufacturer_name)) ||
+        hit(c.mrn) ||
+        (c.lots ?? []).some((l) => hit(l.order_number) || hit(l.manufacturer_name) || hit(l.mrn)) ||
         c.items.some((i) => hit(i.sku)));
     }
     return [...arr].sort((a, b) => new Date(a.eta_date).getTime() - new Date(b.eta_date).getTime());

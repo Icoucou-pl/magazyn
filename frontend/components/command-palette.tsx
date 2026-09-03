@@ -17,7 +17,7 @@ import { Portal, modalBackdrop, modalCard, readShowInactive } from "@/components
 interface GProduct { sku: string; name: string; stock: number; manufacturer_name: string | null; manufacturer_color: string | null; }
 interface GEan { sku: string; ean: string | null; name: string | null; }
 interface GManufacturer { id: number; name: string; color: string | null; email: string | null; notes: string | null; }
-interface GContainer { id: number; container_number: string; order_number: string | null; eta_date: string | null; status: string; manufacturer_name: string | null; manufacturer_color: string | null; }
+interface GContainer { id: number; container_number: string; order_number: string | null; mrn: string | null; eta_date: string | null; status: string; manufacturer_name: string | null; manufacturer_color: string | null; }
 interface GlobalSearchResponse { products: GProduct[]; ean: GEan[]; manufacturers: GManufacturer[]; containers: GContainer[]; total: number; }
 
 const EMPTY: GlobalSearchResponse = { products: [], ean: [], manufacturers: [], containers: [], total: 0 };
@@ -102,11 +102,16 @@ export default function CommandPalette({ open, onClose, onProduct, onContainer, 
       // Draft-… nie może trafić do podpowiedzi: głównym zostaje prawdziwy numer,
       // a gdy go nie ma — PO (backend podkłada tam też PO lotów dla skonsolidowanych).
       const lab = containerLabel(c);
-      const sub = [c.manufacturer_name, lab.po].filter(Boolean).join(" · ") || c.status;
+      // Gdy kontener trafił przez MRN, pokazujemy ten numer w podpowiedzi — inaczej wyskakuje
+      // pozycja bez śladu, dlaczego pasuje do wpisanej frazy.
+      const needle = q.trim().toLowerCase();
+      const mrnHit = !!c.mrn && needle.length >= 2 && c.mrn.toLowerCase().includes(needle);
+      const sub = [c.manufacturer_name, lab.po, mrnHit ? `MRN ${c.mrn}` : null]
+        .filter(Boolean).join(" · ") || c.status;
       out.push({ kind: "container", id: c.id, label: lab.nr, sub, dot: c.manufacturer_color || undefined });
     }
     return out;
-  }, [res]);
+  }, [res, q]);
 
   const fire = (it: FlatItem) => {
     if (it.kind === "product") onProduct(it.sku);
