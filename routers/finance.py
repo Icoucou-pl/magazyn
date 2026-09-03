@@ -651,10 +651,22 @@ async def finance_product(
     Stan liczony PER-SKLEP, dokładnie jak w Produktach (SALES_QUERY): Subiekt tylko dla
     AMH/„Wszystkie", stan Sellasista (sellasist_stock) dla wybranego sklepu. Dzięki temu karta
     Acti/Veluxa pokazuje stan z ich magazynu, a nie z Subiektu (AMH) — i działa też dla produktów,
-    których w ogóle nie ma w Subiekcie (3/4 asortymentu Acti/Veluxa). Koszt jednostkowy z
-    COALESCE(app_product_attrs.cena_zakupu, subiekt.cena) — to samo źródło co Produkty,
-    czyli ceny uzupełnione ręcznie dla Acti/Veluxa też wchodzą do marży. `subiekt` jest
-    warstwowe: nowa tabela (cena_jednostkowa) wiedzie, stara łata brakujące SKU i zerowe ceny."""
+    których w ogóle nie ma w Subiekcie (3/4 asortymentu Acti/Veluxa).
+
+    KOSZT JEDNOSTKOWY: prod_prices (PRODUCT_PRICES_CTE z sql.py) — ten sam łańcuch, którego
+    używa reszta modułu (_base_cte), moduł Produkty, kontenery i snapshoty: ręczna nadpiska →
+    Fakturownia → subiekt_dwa_magazyny → subiekt_towary. Wcześniej stało tu własne, skrócone
+    COALESCE(app_product_attrs.cena_zakupu, subiekt.cena), które POMIJAŁO Fakturownię i dla
+    towaru Acti/Veluxa spadało na cenę z Subiekta — a Subiekt jest ERP-em AMH i trzyma cenę,
+    po jakiej AMH kupiło towar od spółki, nie koszt importu. Efekt: V1s (Veluxa) miał koszt
+    260 zł zamiast 141,27 zł i fałszywą marżę -13,5% zamiast +38%. Karta była JEDYNYM miejscem
+    w module z własnym łańcuchem ceny — stąd rozjazd z zakładką Przegląd na tym samym SKU.
+
+    ZNANE OGRANICZENIE (osobne zadanie): prod_prices jest globalne per SKU, bez wymiaru firmy.
+    Każde źródło trzyma koszt SWOJEJ spółki (Subiekt = koszt AMH, fakturownia_stock = koszt
+    Acti/Veluxa), więc dla towaru kupionego wewnątrz grupy jedna z zakładek zawsze widzi cenę
+    transferową zamiast importowej. Docelowo koszt(sku, firma) + firma źródłowa z
+    app_product_attrs.firma_id dla widoku „wszystkie"."""
     custom = _custom_period(from_date, to_date) if period == "custom" else None
     if custom is not None:
         period = "custom"
@@ -674,7 +686,8 @@ async def finance_product(
     # --- Info o produkcie: stan per-sklep (Subiekt AMH + Sellasist danego sklepu),
     #     LEFT JOIN po :symbol zamiast kotwicy na Subiekcie → działa dla produktów tylko-Sellasist ---
     info_row = (await db.execute(text(f"""
-        WITH ext AS (
+        WITH {PRODUCT_PRICES_CTE.strip()},
+        ext AS (
             SELECT COALESCE(SUM(quantity), 0) AS qty
             FROM {settings.TABLE_EXTERNAL_STOCK}
             WHERE sku_canon = LOWER(TRIM(:symbol))
@@ -727,7 +740,7 @@ async def finance_product(
             COALESCE(NULLIF(TRIM(pa.name_override), ''), s.nazwa, ord.nazwa, ea.symbol, :symbol) AS name,
             (CASE WHEN :shop IN ('', 'amh') THEN COALESCE(s.stan, 0) ELSE 0 END
                  + ext.qty)::int                                                    AS stock,
-            COALESCE(NULLIF(pa.cena_zakupu, 0), s.cena, 0)::float                    AS unit_cost,
+            COALESCE(pp.cena, 0)::float                                             AS unit_cost,
             pa.cbm_per_unit                                                         AS cbm_per_unit,
             pa.ean                                                                  AS ean,
             pa.manufacturer_id                                                      AS manufacturer_id,
@@ -744,6 +757,8 @@ async def finance_product(
             ON pa.sku_canon = LOWER(TRIM(:symbol))
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m
             ON m.id = pa.manufacturer_id
+        LEFT JOIN prod_prices pp
+            ON pp.sku_canon = LOWER(TRIM(:symbol))
         LEFT JOIN {settings.TABLE_LEAD_TIMES} lt
             ON LOWER(TRIM(lt.sku)) = LOWER(TRIM(:symbol))
         LIMIT 1
