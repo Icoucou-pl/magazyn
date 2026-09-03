@@ -173,11 +173,13 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "zawartosc_kontenera",
-            "description": ("Zawartość konkretnego kontenera po numerze: lista produktów w środku (SKU, nazwa, ilość). "
-                            "Użyj do pytań: co jest w kontenerze, jaki towar/produkty w dostawie."),
+            "description": ("Zawartość konkretnego kontenera po numerze kontenera LUB numerze MRN (odprawa celna): "
+                            "lista produktów w środku (SKU, nazwa, ilość) plus MRN-y. "
+                            "Użyj do pytań: co jest w kontenerze, jaki towar/produkty w dostawie, "
+                            "do którego kontenera należy dany MRN."),
             "parameters": {
                 "type": "object",
-                "properties": {"numer": {"type": "string", "description": "numer kontenera, np. TCKU7064646"}},
+                "properties": {"numer": {"type": "string", "description": "numer kontenera (np. TCKU7064646) albo MRN (np. 26PL445010E0123456)"}},
                 "required": ["numer"],
             },
         },
@@ -792,18 +794,37 @@ async def _tool_kontenery_w_drodze(db: AsyncSession, user: CurrentUser, producen
     return {"liczba": len(upcoming), "kontenery": rows, "filtr_producent": producent}
 
 
+def _container_mrns(c) -> List[Dict[str, Any]]:
+    """MRN-y kontenera: jeden na kontenerze przy jednym dostawcy, po jednym na locie
+    przy skonsolidowanym (tyle MRN-ów, ilu producentów w środku)."""
+    if c.is_consolidated and (c.lots or []):
+        return [{"producent": l.manufacturer_name, "po": l.order_number, "mrn": l.mrn}
+                for l in c.lots if l.mrn]
+    return [{"producent": c.manufacturer_name, "po": c.order_number, "mrn": c.mrn}] if c.mrn else []
+
+
+def _matches_container(c, target: str) -> bool:
+    """Dopasowanie po numerze kontenera albo po MRN (kontenera lub któregokolwiek lotu)."""
+    if (c.container_number or "").strip().upper() == target:
+        return True
+    if (c.mrn or "").strip().upper() == target:
+        return True
+    return any((l.mrn or "").strip().upper() == target for l in (c.lots or []))
+
+
 async def _tool_zawartosc_kontenera(db: AsyncSession, user: CurrentUser, numer: str) -> Dict[str, Any]:
-    target = (numer or "").strip().upper()
+    target = "".join((numer or "").split()).upper()
     if not target:
         return {"znaleziono": False}
     conts = await fetch_containers(db)
-    match = next((c for c in conts if (c.container_number or "").upper() == target), None)
+    match = next((c for c in conts if _matches_container(c, target)), None)
     if not match:
         return {"znaleziono": False, "numer": numer}
     items = [{"sku": it.sku, "nazwa": it.product_name, "ilosc": it.quantity} for it in (match.items or [])]
     return {
         "znaleziono": True, "numer": match.container_number, "producent": match.manufacturer_name,
         "eta": _fmt_date(match.eta_date), "status": match.effective_status,
+        "mrn": _container_mrns(match),
         "razem_sztuk": match.total_units, "pozycje": items,
     }
 
