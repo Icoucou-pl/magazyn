@@ -86,6 +86,9 @@ const PERIODS: [string, string][] = [
   ["ytd", "Ten rok"], ["365", "365 dni"], ["90", "90 dni"], ["30", "30 dni"], ["prev_year", "Zeszły rok"],
 ];
 const dec1 = (n: number) => n.toFixed(1).replace(".", ",");
+// CBM bywa rzedu 0,012 m3 - dec1 zaokraglalo to do "0,0", czyli wygladalo jak brak danych.
+// Reszta apki (products-ui, sku-economics) pokazuje CBM na 3 miejscach - trzymamy sie tego.
+const dec3 = (n: number) => n.toFixed(3).replace(".", ",");
 // Własny zakres („Zakres"): dolny limit 01.01.2025, górny = dziś (data lokalna).
 const CUSTOM_MIN = "2025-01-01";
 const todayISO = () => {
@@ -513,7 +516,7 @@ function ProductCardBody({ data, loading }: { data: ProductCard; loading: boolea
         <div style={{ display: "flex", flexWrap: "wrap", gap: 18, marginTop: 14 }}>
           <Meta label="Stan dostępny" value={`${fmtNum(info.stock)} szt`} />
           <Meta label="Koszt netto / szt" value={fmtPLN(info.unit_cost)} />
-          <Meta label="CBM / szt" value={info.cbm_per_unit != null ? dec1(info.cbm_per_unit) : "—"} />
+          <Meta label="CBM / szt" value={info.cbm_per_unit != null ? `${dec3(info.cbm_per_unit)} m³` : "—"} />
           <Meta label="Lead-time" value={info.lead_time_days != null ? `${info.lead_time_days} dni` : "—"} />
           <Meta label="EAN" value={info.ean || "—"} mono />
         </div>
