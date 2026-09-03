@@ -200,10 +200,54 @@ async def _insert_advances(db: AsyncSession, *, advances: List[dict],
         )
 
 
+def _norm_mrn(v: Optional[str]) -> Optional[str]:
+    """MRN: bez spacji, wielkie litery. Świadomie BEZ walidacji formatu — numery z DE/NL
+    mają inny układ niż polskie i twarda maska odrzucałaby poprawne wpisy."""
+    s = "".join((v or "").split()).upper()
+    return s or None
+
+
+def _lot_key(manufacturer_id, order_number) -> tuple:
+    """Klucz dopasowania lotu „starego" do „nowego" przy przebudowie (gdy front nie przysłał id)."""
+    return (manufacturer_id, (order_number or "").strip().lower())
+
+
 async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
     """Usuwa loty kontenera i wstawia nowe (po kolei). Zwraca listę nowych id w kolejności.
     Zaliczki lotu lecą do app_container_advances (kaskada usuwa je przy DELETE lotu);
-    1. zaliczkę mirror-ujemy do legacy zaliczka_* na locie (bezpieczny rollback)."""
+    1. zaliczkę mirror-ujemy do legacy zaliczka_* na locie (bezpieczny rollback).
+
+    Flaga „wbite do magazynu w drodze" (subiekt_wbite) NIE przychodzi z formularza — steruje nią
+    osobny endpoint /subiekt-wbite. Dlatego przed DELETE robimy jej snapshot i odtwarzamy go na
+    nowym locie: po id (front przysyła je przy edycji), a gdy go brak — po (dostawca, PO).
+    Bez tego zwykłe otwarcie i zapisanie kontenera gasiło zieloną kropkę."""
+    prev = (await db.execute(text(f"""
+        SELECT id, manufacturer_id, order_number, subiekt_wbite, subiekt_wbite_at
+        FROM {settings.TABLE_CONTAINER_LOTS}
+        WHERE container_id = :c
+        ORDER BY position ASC, id ASC
+    """), {"c": cid})).mappings().all()
+    prev_by_id = {row["id"]: row for row in prev}
+    prev_by_key: dict = {}
+    for row in prev:
+        prev_by_key.setdefault(_lot_key(row["manufacturer_id"], row["order_number"]), []).append(row)
+
+    def _take_prev(lot):
+        """Zwraca stary lot odpowiadający nowemu (i zdejmuje go z puli, żeby nie dublować)."""
+        lid = getattr(lot, "id", None)
+        old = prev_by_id.pop(lid, None) if lid is not None else None
+        if old is not None:
+            bucket = prev_by_key.get(_lot_key(old["manufacturer_id"], old["order_number"]))
+            if bucket and old in bucket:
+                bucket.remove(old)
+            return old
+        bucket = prev_by_key.get(_lot_key(lot.manufacturer_id, lot.order_number))
+        if bucket:
+            old = bucket.pop(0)
+            prev_by_id.pop(old["id"], None)
+            return old
+        return None
+
     await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_LOTS} WHERE container_id = :c"), {"c": cid})
     ids: List[int] = []
     for pos, lot in enumerate(lots or []):
@@ -211,16 +255,22 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
         advs = _advances_from(lot.advances, lot.zaliczka_procent, lot.zaliczka_kwota,
                               lot.zaliczka_waluta, lot.zaliczka_data, default_cur)
         first = advs[0] if advs else None
+        old = _take_prev(lot)
         rr = await db.execute(
             text(f"""
                 INSERT INTO {settings.TABLE_CONTAINER_LOTS}
-                (container_id, manufacturer_id, order_number, position,
+                (container_id, manufacturer_id, order_number, position, mrn,
                  waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
-                 balance_kwota, balance_waluta, balance_termin, zaplacono_data)
-                VALUES (:c, :m, :o, :p, :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd)
+                 balance_kwota, balance_waluta, balance_termin, zaplacono_data,
+                 subiekt_wbite, subiekt_wbite_at)
+                VALUES (:c, :m, :o, :p, :mrn, :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd,
+                        :swb, :swb_at)
                 RETURNING id
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
+             "mrn": _norm_mrn(getattr(lot, "mrn", None)),
+             "swb": bool(old["subiekt_wbite"]) if old else False,
+             "swb_at": (old["subiekt_wbite_at"] if old else None),
              "wal": default_cur,
              "zp": (first["procent"] if first else None),
              "zk": (first["kwota"] if first else None),
@@ -260,7 +310,7 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
         "Nr kontenera", "Nr zamówienia", "Producent", "Typ", "Status",
         "Data zamówienia", "ETA", "SKU", "Nazwa produktu",
         "Ilość", "Cena jednostkowa", "Wartość", "CBM total",
-        "Folder", "Subiekt", "Koszt transportu", "Koszt spedycji", "Opłata spedycji", "Transport do magazynu (PLN)",
+        "Folder", "Subiekt", "MRN", "Koszt transportu", "Koszt spedycji", "Opłata spedycji", "Transport do magazynu (PLN)",
     ]
     ws.append(headers)
 
@@ -275,13 +325,13 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
     status_label = {"ORDERED": "Zamówione", "IN_PRODUCTION": "W produkcji", "IN_TRANSIT": "W drodze", "CUSTOMS": "Odprawa celna", "DELIVERED": "Dostarczone"}
 
     for c in containers:
-        lot_map = {l.id: (l.order_number, l.manufacturer_name) for l in c.lots}
+        lot_map = {l.id: (l.order_number, l.manufacturer_name, l.mrn) for l in c.lots}
         for it in c.items:
             cena = float(it.unit_cost) if it.unit_cost else 0
             wartosc = cena * it.quantity
-            po, mfr = c.order_number, c.manufacturer_name
+            po, mfr, mrn = c.order_number, c.manufacturer_name, c.mrn
             if c.is_consolidated and it.lot_id in lot_map:
-                po, mfr = lot_map[it.lot_id]
+                po, mfr, mrn = lot_map[it.lot_id]
             ws.append([
                 c.container_number, po or "",
                 mfr or "", c.container_type_name or "",
@@ -289,14 +339,14 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
                 c.order_date.isoformat(), c.eta_date.isoformat(),
                 it.sku, it.product_name or "",
                 it.quantity, cena, wartosc, it.total_cbm,
-                c.folder or "", c.subiekt_nr or "",
+                c.folder or "", c.subiekt_nr or "", mrn or "",
                 (c.koszt_transportu if c.koszt_transportu is not None else ""),
                 (c.koszt_spedycji if c.koszt_spedycji is not None else ""),
                 (c.oplata_spedycji if c.oplata_spedycji is not None else ""),
                 (c.koszt_transportu_magazyn if c.koszt_transportu_magazyn is not None else ""),
             ])
 
-    column_widths = [16, 16, 18, 8, 14, 14, 14, 12, 35, 8, 14, 14, 10, 10, 12, 16, 15, 15, 22]
+    column_widths = [16, 16, 18, 8, 14, 14, 14, 12, 35, 8, 14, 14, 10, 10, 12, 20, 16, 15, 15, 22]
     for i, width in enumerate(column_widths, 1):
         ws.column_dimensions[chr(64 + i)].width = width
     ws.freeze_panes = "A2"
@@ -352,11 +402,11 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
         text(f"""
             INSERT INTO {settings.TABLE_CONTAINERS}
             (container_number, carrier, order_number, container_type_id, manufacturer_id, order_date, eta_date, status, notes, is_consolidated,
-             koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr,
+             koszt_transportu, koszt_spedycji, koszt_transportu_magazyn, folder, subiekt_nr, mrn,
              waluta_towaru, zaliczka_procent, zaliczka_kwota, zaliczka_waluta, zaliczka_data,
              balance_kwota, balance_waluta, balance_termin, zaplacono_data, expected_delivery_date, delivered_date)
             VALUES (:n, :car, :on, :tid, :mid, :od, :eta, :st, :no, :cons,
-                    :kt, :ks, :ktm, :fol, :sub,
+                    :kt, :ks, :ktm, :fol, :sub, :mrn,
                     :wal, :zp, :zk, :zwal, :zd, :bal, :bwal, :bt, :pd, :edd, :dd)
             RETURNING id
         """),
@@ -370,6 +420,8 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
          "kt": payload.koszt_transportu, "ks": payload.koszt_spedycji,
          "ktm": payload.koszt_transportu_magazyn,   # PLN — zawsze na kontenerze
          "fol": (payload.folder or None), "sub": (payload.subiekt_nr or None),
+         # MRN kontenera tylko przy jednym dostawcy — przy konsolidacji numery siedzą na lotach.
+         "mrn": (None if cons else _norm_mrn(payload.mrn)),
          # legacy zaliczka_* = 1. zaliczka z listy (mirror dla rollbacku); przy konsolidacji NULL
          "wal": (None if cons else default_cur),
          "zp": (first["procent"] if first else None),
@@ -480,6 +532,8 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         updates.append("folder = :fol"); params["fol"] = (payload.folder or None)
     if "subiekt_nr" in fset:
         updates.append("subiekt_nr = :sub"); params["sub"] = (payload.subiekt_nr or None)
+    if "mrn" in fset:
+        updates.append("mrn = :mrn"); params["mrn"] = _norm_mrn(payload.mrn)
 
     # Płatności na kontenerze: przy konsolidacji przenoszą się do lotów → czyścimy;
     # w wariancie nieskonsolidowanym — waluta/balance z payloadu (sterowane fset).

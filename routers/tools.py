@@ -133,7 +133,7 @@ def _visible_products_clause(sku_raw_sql: str) -> str:
 @router.get("/search/global")
 async def search_global(q: str = Query(..., min_length=2), include_inactive: bool = False,
                         only_watched: bool = False, db: AsyncSession = Depends(get_db)):
-    """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera.
+    """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera, MRN.
     Produkty INACTIVE (zero stanu i zero sprzedaży 12m) są domyślnie pomijane
     (_visible_products_clause). include_inactive=1 (z preferencji "Nieaktywne" we froncie)
     wyłącza filtr, żeby dało się je odnaleźć.
@@ -280,25 +280,33 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
     #    front (containerLabel) ma jedno pole i nie musi znać wariantu kontenera —
     #    a numer roboczy „Draft-…" nigdy nie zostaje bez czytelnej alternatywy.
     #    Szukamy też PO lotów, inaczej skonsolidowanego nie dało się znaleźć po jego PO.
+    #    MRN (numer odprawy celnej) szukamy tak samo jak PO: na kontenerze przy jednym dostawcy,
+    #    na lotach przy skonsolidowanym (tam jest tyle MRN-ów, ilu producentów w środku).
+    #    LIKE %…% zostawia szukanie po fragmencie — wpisany ogon numeru też trafia.
     containers_result = await db.execute(text(f"""
-        WITH lot_po AS (
+        WITH lot_agg AS (
             SELECT container_id,
-                   STRING_AGG(DISTINCT TRIM(order_number), ', ' ORDER BY TRIM(order_number)) AS po
+                   STRING_AGG(DISTINCT TRIM(order_number), ', ' ORDER BY TRIM(order_number))
+                     FILTER (WHERE order_number IS NOT NULL AND TRIM(order_number) <> '') AS po,
+                   STRING_AGG(DISTINCT TRIM(mrn), ', ' ORDER BY TRIM(mrn))
+                     FILTER (WHERE mrn IS NOT NULL AND TRIM(mrn) <> '') AS mrn
             FROM {settings.TABLE_CONTAINER_LOTS}
-            WHERE order_number IS NOT NULL AND TRIM(order_number) <> ''
             GROUP BY container_id
         )
         SELECT
             c.id, c.container_number,
             COALESCE(NULLIF(TRIM(c.order_number), ''), lp.po) AS order_number,
+            COALESCE(NULLIF(TRIM(c.mrn), ''), lp.mrn) AS mrn,
             c.eta_date, c.status,
             m.name AS manufacturer_name, m.color AS manufacturer_color
         FROM {settings.TABLE_CONTAINERS} c
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
-        LEFT JOIN lot_po lp ON lp.container_id = c.id
+        LEFT JOIN lot_agg lp ON lp.container_id = c.id
         WHERE LOWER(c.container_number) LIKE :q
            OR LOWER(COALESCE(c.order_number, '')) LIKE :q
            OR LOWER(COALESCE(lp.po, '')) LIKE :q
+           OR LOWER(COALESCE(c.mrn, '')) LIKE :q
+           OR LOWER(COALESCE(lp.mrn, '')) LIKE :q
            OR LOWER(COALESCE(c.notes, '')) LIKE :q
         ORDER BY c.eta_date DESC
         LIMIT 10
