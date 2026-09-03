@@ -93,6 +93,34 @@ PRODUCT_ATTRS_DEDUP = f"""
 """
 
 
+# Ten sam problem duplikatow, ale dla KARTY PRODUKTU — a tam potrzeba wiecej kolumn
+# niz manufacturer_id. PRODUCT_ATTRS_DEDUP ich nie wystawia, wiec join po nim wywalal
+# zapytanie ("column pa.name_override does not exist") → 500 bez naglowkow CORS,
+# czyli goly "Failed to fetch" na froncie.
+#
+# Nie DISTINCT ON, tylko sklejanie per kolumna: warianty tego samego SKU trzymaja
+# ROZLACZNE dane (nowszy wiersz ma cena_zakupu, starszy manufacturer_id). Wybor
+# jednego wiersza gubilby polowe atrybutow. Bierzemy najswiezsza NIEPUSTA wartosc
+# kazdej kolumny osobno; pusty array → NULL, wiec COALESCE nizej dziala jak dotad.
+PRODUCT_ATTRS_CARD = f"""
+    (SELECT LOWER(TRIM(sku))                                                    AS sku_canon,
+            (ARRAY_AGG(sku ORDER BY updated_at DESC NULLS LAST))[1]             AS sku,
+            (ARRAY_AGG(manufacturer_id ORDER BY updated_at DESC NULLS LAST)
+                 FILTER (WHERE manufacturer_id IS NOT NULL))[1]                 AS manufacturer_id,
+            (ARRAY_AGG(name_override ORDER BY updated_at DESC NULLS LAST)
+                 FILTER (WHERE NULLIF(TRIM(name_override), '') IS NOT NULL))[1] AS name_override,
+            (ARRAY_AGG(cena_zakupu ORDER BY updated_at DESC NULLS LAST)
+                 FILTER (WHERE COALESCE(cena_zakupu, 0) <> 0))[1]               AS cena_zakupu,
+            (ARRAY_AGG(cbm_per_unit ORDER BY updated_at DESC NULLS LAST)
+                 FILTER (WHERE COALESCE(cbm_per_unit, 0) <> 0))[1]              AS cbm_per_unit,
+            (ARRAY_AGG(ean ORDER BY updated_at DESC NULLS LAST)
+                 FILTER (WHERE NULLIF(TRIM(ean), '') IS NOT NULL))[1]           AS ean
+     FROM {settings.TABLE_PRODUCT_ATTRS}
+     WHERE sku IS NOT NULL
+     GROUP BY LOWER(TRIM(sku)))
+"""
+
+
 def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool = False) -> str:
     """Wspólne CTE `base`: po jednej pozycji zamówienia z kanałem, przewalutowaniem i kosztem.
     Przewalutowanie: PLN/puste → 1.0; waluta obca → kurs NBP < order_date; brak kursu → mult NULL
@@ -712,7 +740,7 @@ async def finance_product(
         CROSS JOIN ext_all ea
         CROSS JOIN ord
         LEFT JOIN subiekt s ON TRUE
-        LEFT JOIN {PRODUCT_ATTRS_DEDUP} pa
+        LEFT JOIN {PRODUCT_ATTRS_CARD} pa
             ON pa.sku_canon = LOWER(TRIM(:symbol))
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m
             ON m.id = pa.manufacturer_id
