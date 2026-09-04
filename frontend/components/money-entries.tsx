@@ -99,9 +99,12 @@ export function MoneyEntriesTab({ shop }: { shop: string }) {
   const reload = () => load(shop);
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: 14 }}>
-      <BalancesCard shop={shop} rows={bundle.balances} loans={bundle.loans} canEdit={canEdit} onChanged={reload} />
-      <LoansCard shop={shop} rows={bundle.loans} canEdit={canEdit} partners={partners} onChanged={reload} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: 14 }}>
+        <BalancesCard shop={shop} rows={bundle.balances} loans={bundle.loans} canEdit={canEdit} onChanged={reload} />
+        <LoansCard shop={shop} rows={bundle.loans} canEdit={canEdit} partners={partners} onChanged={reload} />
+      </div>
+      {bundle.loans.length > 0 && <PartnersSummary loans={bundle.loans} />}
     </div>
   );
 }
@@ -348,3 +351,89 @@ function LoansCard({
 }
 
 export default MoneyEntriesTab;
+
+// ── Podsumowanie per wspólnik ────────────────────────────────
+function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
+  const rows = useMemo(() => {
+    // Grupujemy po nazwisku bez względu na wielkość liter i podwójne spacje —
+    // „Tomasz" i „tomasz " to ten sam człowiek, a pole jest tekstowe.
+    const acc = new Map<string, { name: string; wplaty: number; zwroty: number; ile: number; last: string }>();
+    loans.forEach((l) => {
+      const key = l.partner.trim().toLowerCase().replace(/\s+/g, " ");
+      const cur = acc.get(key) || { name: l.partner.trim(), wplaty: 0, zwroty: 0, ile: 0, last: "" };
+      if (l.amount_pln >= 0) { cur.wplaty += l.amount_pln; cur.ile += 1; }
+      else cur.zwroty += -l.amount_pln;
+      if (l.loan_date > cur.last) cur.last = l.loan_date;
+      acc.set(key, cur);
+    });
+    return [...acc.values()]
+      .map((r) => ({ ...r, saldo: r.wplaty - r.zwroty }))
+      .sort((a, b) => b.saldo - a.saldo);
+  }, [loans]);
+
+  const total = rows.reduce((s, r) => s + r.saldo, 0);
+  const anyZwroty = rows.some((r) => r.zwroty > 0);
+
+  return (
+    <Card>
+      <CardHeader
+        icon={<I.Wallet size={14} />}
+        title="Do spłaty wspólnikom"
+        hint={`${rows.length} ${rows.length === 1 ? "osoba" : "osoby"}`}
+        accent="var(--anomaly)"
+      />
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Wspólnik</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>Wpłacone</th>
+            {anyZwroty && <th style={{ ...thStyle, textAlign: "right" }}>Zwrócone</th>}
+            <th style={{ ...thStyle, textAlign: "right" }}>Do spłaty</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>Udział</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>Ostatnia wpłata</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td style={{ ...tdStyle, color: "var(--text-hi)", fontWeight: 600 }}>
+                {r.name}
+                <span style={{ color: "var(--text-lo)", fontWeight: 400, marginLeft: 8, fontSize: 11 }}>
+                  {r.ile} {r.ile === 1 ? "wpłata" : r.ile < 5 ? "wpłaty" : "wpłat"}
+                </span>
+              </td>
+              <td style={{ ...tdStyle, textAlign: "right" }} className="num">{fmtPLN(r.wplaty)}</td>
+              {anyZwroty && (
+                <td style={{ ...tdStyle, textAlign: "right", color: r.zwroty ? "var(--critical)" : "var(--text-lo)" }} className="num">
+                  {r.zwroty ? `−${fmtPLN(r.zwroty)}` : "—"}
+                </td>
+              )}
+              <td style={{ ...tdStyle, textAlign: "right", color: "var(--text-hi)", fontWeight: 600 }} className="num">{fmtPLN(r.saldo)}</td>
+              <td style={{ ...tdStyle, textAlign: "right" }} className="num">
+                {total ? `${Math.round((r.saldo / total) * 100)}%` : "—"}
+              </td>
+              <td style={{ ...tdStyle, textAlign: "right" }} className="num">{r.last || "—"}</td>
+            </tr>
+          ))}
+          <tr>
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", color: "var(--text-hi)", fontWeight: 600 }}>
+              Suma całkowita
+            </td>
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right" }} className="num">
+              {fmtPLN(rows.reduce((s, r) => s + r.wplaty, 0))}
+            </td>
+            {anyZwroty && (
+              <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--critical)" }} className="num">
+                −{fmtPLN(rows.reduce((s, r) => s + r.zwroty, 0))}
+              </td>
+            )}
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--accent)", fontWeight: 700, fontSize: 13 }} className="num">
+              {fmtPLN(total)}
+            </td>
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)" }} colSpan={2} />
+          </tr>
+        </tbody>
+      </table>
+    </Card>
+  );
+}
