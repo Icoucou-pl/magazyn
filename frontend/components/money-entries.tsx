@@ -15,7 +15,7 @@
 // poprawia się edycją wiersza. Datalist podpowiada nazwiska już użyte w tej firmie.
 // ============================================================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I, Card, CardHeader } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
@@ -56,6 +56,10 @@ export function MoneyEntriesTab({ shop }: { shop: string }) {
   const [bundle, setBundle] = useState<MoneyBundle | null>(null);
   const [loading, setLoading] = useState(true);
   const [partners, setPartners] = useState<string[]>([]);
+  // Klik „Spłać" w podsumowaniu wypełnia formularz spłaty. `nonce` rośnie przy każdym
+  // kliknięciu, żeby ponowny klik na tego samego wspólnika znów otworzył formularz.
+  const [repayPrefill, setRepayPrefill] = useState<{ partner: string; amount: number; nonce: number } | null>(null);
+  const nonce = useRef(0);
 
   const load = async (slug: string) => {
     setLoading(true);
@@ -103,9 +107,18 @@ export function MoneyEntriesTab({ shop }: { shop: string }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))", gap: 14 }}>
         <BalancesCard shop={shop} rows={bundle.balances} loans={bundle.loans} canEdit={canEdit} onChanged={reload} />
         <LoansCard shop={shop} rows={bundle.loans.filter((l) => l.amount_pln > 0)} canEdit={canEdit} partners={partners} onChanged={reload} kind="loan" />
-        <LoansCard shop={shop} rows={bundle.loans.filter((l) => l.amount_pln < 0)} canEdit={canEdit} partners={partners} onChanged={reload} kind="repay" />
+        <LoansCard shop={shop} rows={bundle.loans.filter((l) => l.amount_pln < 0)} canEdit={canEdit} partners={partners} onChanged={reload} kind="repay" prefill={repayPrefill} />
       </div>
-      {bundle.loans.length > 0 && <PartnersSummary loans={bundle.loans} />}
+      {bundle.loans.length > 0 && (
+        <PartnersSummary
+          loans={bundle.loans}
+          canEdit={canEdit}
+          onRepay={(partner, amount) => {
+            nonce.current += 1;
+            setRepayPrefill({ partner, amount, nonce: nonce.current });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -235,10 +248,12 @@ function BalancesCard({
 // „repay" ujemną (zwrot wspólnikowi). W obu formularzach wpisujesz liczbę dodatnią —
 // znak dokłada kod, żeby nikt nie musiał pamiętać o minusie.
 function LoansCard({
-  shop, rows, canEdit, partners, onChanged, kind,
+  shop, rows, canEdit, partners, onChanged, kind, prefill,
 }: {
   shop: string; rows: OwnerLoan[]; canEdit: boolean; partners: string[];
   onChanged: () => void; kind: "loan" | "repay";
+  // Autowypełnienie z przycisku „Spłać" — wartości zostają edytowalne.
+  prefill?: { partner: string; amount: number; nonce: number } | null;
 }) {
   const isLoan = kind === "loan";
   const [adding, setAdding] = useState(false);
@@ -248,6 +263,19 @@ function LoansCard({
   const [note, setNote] = useState("");
   const [editId, setEditId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Otwarcie formularza z podpowiedzianą kwotą i nazwiskiem. Data = dziś; wszystko
+  // można nadpisać przed zapisem (spłata częściowa to normalna sytuacja).
+  useEffect(() => {
+    if (!prefill || !canEdit) return;
+    setEditId(null);
+    setAdding(true);
+    setPartner(prefill.partner);
+    setAmount(String(Math.round(prefill.amount * 100) / 100));
+    setDate(todayISO());
+    wrapRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [prefill, canEdit]);
 
   const total = rows.reduce((s, r) => s + Math.abs(r.amount_pln), 0);
   const reset = () => { setAdding(false); setEditId(null); setDate(todayISO()); setAmount(""); setPartner(""); setNote(""); };
@@ -295,6 +323,7 @@ function LoansCard({
   const desc = [...rows].sort((a, b) => b.loan_date.localeCompare(a.loan_date));
 
   return (
+    <div ref={wrapRef}>
     <Card>
       <CardHeader
         icon={isLoan ? <I.TrendUp size={14} /> : <I.TrendDown size={14} />}
@@ -359,13 +388,18 @@ function LoansCard({
         </div>
       )}
     </Card>
+    </div>
   );
 }
 
 export default MoneyEntriesTab;
 
 // ── Podsumowanie per wspólnik ────────────────────────────────
-function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
+function PartnersSummary({ loans, canEdit, onRepay }: {
+  loans: OwnerLoan[];
+  canEdit: boolean;
+  onRepay: (partner: string, amount: number) => void;
+}) {
   const rows = useMemo(() => {
     // Grupujemy po nazwisku bez względu na wielkość liter i podwójne spacje —
     // „Tomasz" i „tomasz " to ten sam człowiek, a pole jest tekstowe.
@@ -402,6 +436,7 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
             <th style={{ ...thStyle, textAlign: "right" }}>Do spłaty</th>
             <th style={{ ...thStyle, textAlign: "right" }}>Udział</th>
             <th style={{ ...thStyle, textAlign: "right" }}>Ostatnia wpłata</th>
+            {canEdit && <th style={{ ...thStyle, width: 1 }} />}
           </tr>
         </thead>
         <tbody>
@@ -422,6 +457,19 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
                 {total ? `${Math.round((r.saldo / total) * 100)}%` : "—"}
               </td>
               <td style={{ ...tdStyle, textAlign: "right" }} className="num">{r.last || "—"}</td>
+              {canEdit && (
+                <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
+                  {r.saldo > 0 && (
+                    <button
+                      onClick={() => onRepay(r.name, r.saldo)}
+                      title={`Wpisz spłatę dla: ${r.name}`}
+                      style={{ ...btnStyle, padding: "3px 10px", color: "var(--ok)" }}
+                    >
+                      Spłać
+                    </button>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
           <tr>
@@ -437,7 +485,7 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
             <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--accent)", fontWeight: 700, fontSize: 13 }} className="num">
               {fmtPLN(total)}
             </td>
-            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)" }} colSpan={2} />
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)" }} colSpan={canEdit ? 3 : 2} />
           </tr>
         </tbody>
       </table>
