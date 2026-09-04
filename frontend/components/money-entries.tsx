@@ -190,7 +190,7 @@ function BalancesCard({
         <div style={emptyStyle}>Brak odczytów. Pierwszy wpis odblokuje linię konta na wykresie.</div>
       ) : (
         <div style={{ maxHeight: 420, overflow: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table style={{ width: "100%", minWidth: 420, borderCollapse: "collapse" }}>
             <thead>
               <tr>
                 <th style={thStyle}>Data</th>
@@ -364,7 +364,7 @@ function LoansCard({
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table style={{ width: "100%", minWidth: 980, borderCollapse: "collapse" }}>
             <thead>
               <tr>
                 <th style={thStyle}>Nr umowy</th>
@@ -471,6 +471,7 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
   }, [loans]);
 
   const total = rows.reduce((s, r) => s + r.saldo, 0);
+  const sumaZwrotow = rows.reduce((s, r) => s + r.zwroty, 0);
 
   return (
     <Card>
@@ -480,7 +481,8 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
         hint={`${rows.length} ${rows.length === 1 ? "osoba" : "osoby"}`}
         accent="var(--anomaly)"
       />
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", minWidth: 620, borderCollapse: "collapse" }}>
         <thead>
           <tr>
             <th style={thStyle}>Wspólnik</th>
@@ -518,8 +520,8 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
             <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right" }} className="num">
               {fmtPLN(rows.reduce((s, r) => s + r.wplaty, 0))}
             </td>
-            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--ok)" }} className="num">
-              −{fmtPLN(rows.reduce((s, r) => s + r.zwroty, 0))}
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: sumaZwrotow ? "var(--ok)" : "var(--text-lo)" }} className="num">
+              {sumaZwrotow ? `−${fmtPLN(sumaZwrotow)}` : "—"}
             </td>
             <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--accent)", fontWeight: 700, fontSize: 13 }} className="num">
               {fmtPLN(total)}
@@ -528,6 +530,7 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
           </tr>
         </tbody>
       </table>
+      </div>
     </Card>
   );
 }
