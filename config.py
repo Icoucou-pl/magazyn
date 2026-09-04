@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     TABLE_USERS: str = "app_users"
     TABLE_AUDIT_LOG: str = "app_audit_log"
     TABLE_SESSIONS: str = "app_sessions"
+    # Pieniądze firmy (wykres na pulpicie + zakładka w Cashflow) — wpisy RĘCZNE, per firma.
+    #   app_bank_balances — odczyty salda podane przez księgową (jeden na firmę i dzień)
+    #   app_owner_loans   — wpłaty wspólników (+) i zwroty (−), odejmowane od salda narastająco
+    TABLE_BANK_BALANCES: str = "app_bank_balances"
+    TABLE_OWNER_LOANS: str = "app_owner_loans"
 
     DEFAULT_LEAD_TIME_DAYS: int = 90
 
@@ -252,20 +257,9 @@ def sales_channel_case(alias: str = "o") -> str:
     """Buduje wyrażenie CASE mapujące sellasist_orders.creator → kanał sprzedaży.
     Reguła 1:1 z Power BI: case-insensitive, PIERWSZE trafienie wygrywa (jak if/else if),
     kolejność WHEN ma znaczenie.
-    Kanały marketplace: Allegro, Erli, Studio-Bay, Klaudia.
+    Kanały marketplace: Allegro, Erli, Studio-Bay, Klaudia (klaudia LUB api).
     Reszta (własny sklep, creator NULL/puste) → etykieta zależna od sklepu (per wiersz):
-    veluxa → 'Veluxa.eu', acti → 'Acti4med.pl', amh/pozostałe → 'I-CC.PL'.
-
-    WYJĄTEK dla Acti: creator zawierający 'api' (API/Make) → 'Proformy zrealizowane'.
-    Na Acti integracja zakłada zamówienia z proform i doklejanie ich do Klaudii
-    zniekształcało obraz: 2 zamówienia jej własne (24 210 zł) wobec 17 z integracji
-    (71 382 zł) za styczeń–lipiec 2026. AMH zostaje BEZ ZMIAN — tam 'api' nadal
-    wpada do Klaudii (1 325 zamówień wobec 38 jej własnych), bo tak było ustawione
-    w Power BI i nikt tego nie kwestionował.
-
-    Do przychodu i tak wchodzą wyłącznie zamówienia zrealizowane (INCLUDED_STATUS_FILTER
-    w _base_cte), więc proformy, które nie doszły do skutku, nie są liczone.
-    Stąd nazwa: 'Proformy zrealizowane'."""
+    veluxa → 'Veluxa.eu', acti → 'Acti4med.pl', amh/pozostałe → 'I-CC.PL'."""
     c = f"LOWER(COALESCE({alias}.{settings.COL_ORDER_CREATOR}, ''))"
     s = f"LOWER(COALESCE({alias}.shop, ''))"
     return (
@@ -273,11 +267,7 @@ def sales_channel_case(alias: str = "o") -> str:
         f"WHEN {c} LIKE '%allegro%' THEN 'Allegro' "
         f"WHEN {c} LIKE '%erli%' THEN 'Erli' "
         f"WHEN {c} LIKE '%studio%' THEN 'Studio-Bay' "
-        # Klaudia PRZED regułą api — gdyby creator zawierał oba człony,
-        # pierwszeństwo ma osoba, nie integracja.
-        f"WHEN {c} LIKE '%klaudia%' THEN 'Klaudia' "
-        f"WHEN {s} = 'acti' AND {c} LIKE '%api%' THEN 'Proformy zrealizowane' "
-        f"WHEN {c} LIKE '%api%' THEN 'Klaudia' "
+        f"WHEN {c} LIKE '%klaudia%' OR {c} LIKE '%api%' THEN 'Klaudia' "
         f"WHEN {s} = 'veluxa' THEN 'Veluxa.eu' "
         f"WHEN {s} = 'acti' THEN 'Acti4med.pl' "
         "ELSE 'I-CC.PL' END"

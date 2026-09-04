@@ -272,6 +272,69 @@ class ContainerTypeOut(ContainerTypeIn):
     id: int
 
 
+# ===== PIENIĄDZE FIRMY (saldo konta + pożyczki wspólników) =====
+# Oba byty są RĘCZNE i zawsze przypisane do jednej firmy (firma_slug: amh/acti/veluxa).
+# Rozdzielone celowo: saldo to POMIAR stanu na dany dzień, pożyczka to ZDARZENIE.
+class BankBalanceIn(BaseModel):
+    firma_slug: str = Field(..., min_length=1, max_length=32)
+    balance_date: date
+    amount_pln: float
+    note: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("firma_slug")
+    @classmethod
+    def _slug_lower(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class BankBalanceOut(BankBalanceIn):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class OwnerLoanIn(BaseModel):
+    firma_slug: str = Field(..., min_length=1, max_length=32)
+    loan_date: date
+    amount_pln: float                      # dodatnia = wpłata do firmy, ujemna = zwrot wspólnikowi
+    partner: str = Field(..., min_length=1, max_length=120)
+    note: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("firma_slug")
+    @classmethod
+    def _slug_lower(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @field_validator("partner")
+    @classmethod
+    def _partner_trim(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("Podaj wspólnika")
+        return v
+
+    @field_validator("amount_pln")
+    @classmethod
+    def _not_zero(cls, v: float) -> float:
+        if not v:
+            raise ValueError("Kwota nie może być zerowa")
+        return v
+
+
+class OwnerLoanOut(OwnerLoanIn):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class MoneyBundle(BaseModel):
+    """Wszystko, czego potrzebuje wykres i zakładka: obie listy + co user może zrobić."""
+    shop: str
+    balances: List[BankBalanceOut] = []
+    loans: List[OwnerLoanOut] = []
+    can_edit: bool = False
+
+
 # ===== KONTENERY =====
 class ContainerItemIn(BaseModel):
     sku: str
@@ -305,12 +368,8 @@ class SubiektWbiteIn(BaseModel):
 
 
 class ContainerLotIn(BaseModel):
-    # id istniejącego lotu (edycja). Loty są przy zapisie kasowane i wstawiane od nowa,
-    # więc bez tego przepada flaga „wbite do magazynu w drodze" — patrz _replace_lots.
-    id: Optional[int] = None
     manufacturer_id: Optional[int] = None
     order_number: Optional[str] = None
-    mrn: Optional[str] = None                 # numer odprawy celnej tego lotu
     # płatności per lot; waluta osobno dla zaliczki i balance (USD/CNY/PLN)
     waluta_towaru: Optional[str] = None       # domyślna/pierwotna waluta (seed) — nie edytowana w UI
     # Wiele zaliczek (rat) — nowy model. Legacy pola zaliczka_* zostają jeszcze jeden
@@ -345,7 +404,6 @@ class ContainerCreate(BaseModel):
     koszt_transportu_magazyn: Optional[float] = None    # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
-    mrn: Optional[str] = None                           # odprawa celna; przy konsolidacji MRN siedzi na lotach
     # płatności dla kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = None                 # domyślna/pierwotna waluta (seed)
     advances: List[ContainerAdvanceIn] = []             # wiele zaliczek (rat)
@@ -377,7 +435,6 @@ class ContainerUpdate(BaseModel):
     koszt_transportu_magazyn: Optional[float] = None    # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
-    mrn: Optional[str] = None
     waluta_towaru: Optional[str] = None
     advances: Optional[List[ContainerAdvanceIn]] = None   # wiele zaliczek (rat); None = nie ruszaj
     zaliczka_procent: Optional[float] = None
@@ -411,7 +468,6 @@ class ContainerLotOut(BaseModel):
     manufacturer_name: Optional[str] = None
     manufacturer_color: Optional[str] = None
     order_number: Optional[str] = None
-    mrn: Optional[str] = None                # numer odprawy celnej lotu (kontener skonsolidowany)
     waluta_towaru: Optional[str] = "USD"
     advances: List[ContainerAdvanceOut] = []
     zaliczka_procent: Optional[float] = None
@@ -490,7 +546,6 @@ class ContainerOut(BaseModel):
     koszt_transportu_magazyn: Optional[float] = None   # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
-    mrn: Optional[str] = None                          # odprawa celna (kontener nieskonsolidowany)
     # płatności kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = "USD"
     advances: List[ContainerAdvanceOut] = []

@@ -125,6 +125,11 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # UWAGA — klucze CELOWO nieobecne poniżej (has_perm zwróci dla nich False dla KAŻDEJ roli,
 # łącznie z ADMIN; dostęp daje wyłącznie wpis w kolumnie `permissions` konkretnego usera):
 #   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
+#
+# viewBankBalances / editBankBalances — saldo rachunku firmy i pożyczki wspólników.
+# Domyślnie TYLKO ADMIN. Oba są KONIUNKCYJNE z viewFinancials (patrz can_view_bank):
+# wykres i listy niosą kwoty, więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy.
+# editBankBalances bez viewBankBalances nic nie daje — nie ma czego edytować.
 # Dopisanie takiego klucza do ROLE_PERMS otworzy go całej roli — rób to świadomie.
 #
 # viewCalendarPayments — płatności „Do zapłaty" jako zdarzenia kalendarza. Domyślnie TYLKO ADMIN;
@@ -132,9 +137,9 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # z viewFinancials (patrz can_see_calendar_payments) — kalendarz pokazuje kwoty zobowiązań,
 # więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy tylnymi drzwiami.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False},
 }
 
 
@@ -167,6 +172,32 @@ require_occupancy = require_perm("viewOccupancy")
 # Załączniki kontenerów to faktury, proformy i BL — pilnujemy ich osobnym uprawnieniem,
 # niezależnym od viewFinancials (viewer widzi wartości w PLN, ale nie ma wglądu w dokumenty).
 require_attachments = require_perm("viewAttachments")
+
+
+def can_view_bank(user: CurrentUser) -> bool:
+    """Pieniądze firmy = viewBankBalances ORAZ viewFinancials.
+
+    Koniunkcja, nie alternatywa — dokładnie jak przy płatnościach w kalendarzu.
+    Saldo rachunku to kwota, więc bez viewFinancials nie ma prawa się pokazać.
+    """
+    return has_perm(user, "viewBankBalances") and has_perm(user, "viewFinancials")
+
+
+def can_edit_bank(user: CurrentUser) -> bool:
+    """Edycja wpisów wymaga jeszcze editBankBalances ponad prawo do oglądania."""
+    return can_view_bank(user) and has_perm(user, "editBankBalances")
+
+
+async def require_bank_view(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_view_bank(user):
+        raise HTTPException(403, "Brak uprawnienia: viewBankBalances")
+    return user
+
+
+async def require_bank_edit(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_edit_bank(user):
+        raise HTTPException(403, "Brak uprawnienia: editBankBalances")
+    return user
 
 
 def can_see_calendar_payments(user: CurrentUser) -> bool:
