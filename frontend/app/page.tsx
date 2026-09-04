@@ -68,6 +68,7 @@ export default function Page() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [view, setView] = useState("dashboard");
+  const [cashflowTab, setCashflowTab] = useState<"due" | "paid" | "money">("due");
   const [pendingProductSku, setPendingProductSku] = useState<string | null>(null);
   const [pendingContainerId, setPendingContainerId] = useState<number | null>(null);
   const [containerReturnView, setContainerReturnView] = useState<string | null>(null);
@@ -189,6 +190,11 @@ export default function Page() {
   const goProduct = (sku: string) => { setPendingProductSku(sku); setView("products"); setSearchOpen(false); setScanOpen(false); };
   const goContainers = (id: number, returnView: string | null = null) => { setPendingContainerId(id); setContainerReturnView(returnView); setView("containers"); setSearchOpen(false); };
   const goManufacturer = (id: number) => { setPendingManufacturerId(id); setView("settings"); setSearchOpen(false); };
+  // Deep-link z karty „Pieniądze firmy" na pulpicie → Cashflow, zakładka „Konto i pożyczki".
+  const goMoneyEntries = () => { setCashflowTab("money"); setView("cashflow"); };
+  // Skrót jest jednorazowy: po wyjściu z Cashflow zakładka wraca na „Do zapłaty",
+  // żeby normalne wejście z menu nie lądowało na wpisach salda.
+  useEffect(() => { if (view !== "cashflow") setCashflowTab("due"); }, [view]);
 
   // Unikamy migotania ekranu logowania przy hydratacji (sesja czytana po montażu)
   if (!ready) return null;
@@ -300,6 +306,7 @@ export default function Page() {
             onAutoSuggest={() => { setPendingAutoSuggestMfr(null); setPendingAutoSuggestNew(true); setView("containers"); }}
             onSimulator={openSimulator}
             onCreateContainer={(mfrId) => { setPendingAutoSuggestMfr(mfrId); setPendingAutoSuggestNew(true); setView("containers"); }}
+            onOpenMoneyEntries={goMoneyEntries}
           />
         ) : view === "products" ? (
           <ProductsView
@@ -321,7 +328,7 @@ export default function Page() {
         ) : view === "calendar" ? (
           <Calendar density={t.density} onOpenContainer={(id) => goContainers(id, "calendar")} />
         ) : view === "cashflow" ? (
-          <CashflowView onContainerClick={(id) => goContainers(id, "cashflow")} />
+          <CashflowView onContainerClick={(id) => goContainers(id, "cashflow")} initialTab={cashflowTab} />
         ) : view === "forecast" ? (
           <ForecastView
             density={t.density}
