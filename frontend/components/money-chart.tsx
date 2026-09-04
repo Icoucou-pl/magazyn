@@ -49,7 +49,7 @@ const COLOR: Record<SeriesKey, string> = {
 
 // Opisy w dymku po najechaniu na plakietkę — pisane dla kogoś, kto widzi wykres pierwszy raz.
 const HELP: Record<SeriesKey, [string, string]> = {
-  mag: ["Wartość magazynu", "Ile jest wart towar leżący na półkach. Kontener podbija linię w górę, sprzedaż powoli ją obniża. To ta sama linia, którą miałeś tu dotąd."],
+  mag: ["Wartość magazynu", "Ile jest wart towar leżący na półkach. Kontener podbija linię w górę, sprzedaż powoli ją obniża."],
   raw: ["Stan konta", "Ile pieniędzy leży na rachunku firmy — dokładnie to, co podała księgowa. Kropki to dni z realnym wpisem; odcinki między nimi są zgadywane."],
   adj: ["Bez pożyczek wspólników", "Ile byłoby na koncie, gdyby wspólnicy nic nie dołożyli. Każdą wpłatę odejmujemy od dnia wpłaty w przód, na zawsze. Potrafi zejść poniżej zera i to nie jest błąd."],
   suma: ["Kapitał łącznie", "Konto plus magazyn — wszystkie pieniądze firmy razem. Płasko: kręcisz się w kółko. W górę: zarabiasz. W dół: przejadasz kapitał."],
@@ -497,6 +497,8 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     if (!hasMoney) return onOpenEntries
       ? "Brak wpisów salda dla tej firmy — kliknij „Dodaj wpisy”, żeby zacząć."
       : "Brak wpisów salda dla tej firmy. Dodasz je w Cashflow → Konto i pożyczki.";
+    // hasMoney nadal steruje liniami i podpisem niżej — przycisk świeci zawsze,
+    // bo prowadzi też do poprawiania i kasowania istniejących wpisów.
     if (lead.when) {
       const c = cumAt(lead.when);
       return `Ostatni wpis: ${_dLabel(lead.when)}. ${c ? `Wspólnicy wpłacili do tego dnia ${fmtPLN(c)}.` : "Brak pożyczek od wspólników."}`;
@@ -547,12 +549,10 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
               title="Przejdź do Cashflow → Konto i pożyczki"
               style={{
                 padding: "5px 11px", fontSize: 11, fontWeight: 600, borderRadius: 6,
-                background: hasMoney ? "var(--surface-2)" : "var(--accent-soft)",
-                border: `1px solid ${hasMoney ? "var(--border)" : "transparent"}`,
-                color: hasMoney ? "var(--text-mid)" : "var(--accent)",
+                background: "var(--accent-soft)", border: "1px solid transparent", color: "var(--accent)",
               }}
             >
-              {hasMoney ? "Wpisy" : "Dodaj wpisy"}
+              Dodaj wpisy
             </button>
           )}
           {canFin && (
