@@ -155,10 +155,16 @@ export default function ContainerFormModal({
     try {
       await api.post(`/containers/${initial.id}/subiekt-wbite`, { lot_id: lotId, value });
       toast(value ? `Oznaczono: w ${erpMsc} (magazyn w drodze)` : "Cofnięto: z powrotem w apce", "ok");
-    } catch {
+    } catch (e) {
       if (lotId === null) setSubiektWbite(!value);
       else setLotSubiekt((prev) => ({ ...prev, [lotId]: !value }));
-      toast("Nie udało się zmienić statusu Subiekta", "warning");
+      // Powód wprost z backendu — „nie udało się" bez kodu i treści nie daje się zdiagnozować.
+      // 404 na locie znaczy zwykle, że okno trzyma id sprzed zapisu (loty dostają nowe id).
+      const err = e as { status?: number; message?: string };
+      const why = err?.status === 404 && lotId !== null
+        ? "ten lot ma już inny numer po zapisie — zamknij okno i otwórz kontener ponownie"
+        : [err?.status, err?.message].filter(Boolean).join(": ") || "brak odpowiedzi serwera";
+      toast(`Nie udało się zmienić statusu ${erpDop}: ${why}`, "warning");
     } finally {
       setSubiektBusy(false);
     }

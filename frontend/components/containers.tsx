@@ -348,8 +348,13 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
       await api.post(`/containers/${c.id}/subiekt-wbite`, { lot_id: lotId, value });
       await reload();
       toast(value ? "Oznaczono: w Subiekcie (magazyn w drodze)" : "Cofnięto: z powrotem w apce", "ok");
-    } catch {
-      toast("Nie udało się zmienić statusu Subiekta", "warning");
+    } catch (e) {
+      // Powód wprost z backendu — bez kodu i treści nie da się tego zdiagnozować.
+      const err = e as { status?: number; message?: string };
+      const why = err?.status === 404 && lotId !== null
+        ? "lista jest nieaktualna — odśwież widok kontenerów"
+        : [err?.status, err?.message].filter(Boolean).join(": ") || "brak odpowiedzi serwera";
+      toast(`Nie udało się zmienić statusu: ${why}`, "warning");
     }
   };
 
