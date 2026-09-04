@@ -41,7 +41,8 @@ from services.containers import fetch_containers
 router = APIRouter(prefix="/api", tags=["bank"])
 
 _BAL_COLS = "id, firma_slug, balance_date, amount_pln, note, created_at, updated_at"
-_LOAN_COLS = "id, firma_slug, loan_date, amount_pln, partner, note, created_at, updated_at"
+_LOAN_COLS = ("id, firma_slug, loan_date, amount_pln, partner, numer_umowy, data_zawarcia, "
+              "termin_splaty, oprocentowanie, splacono_data, note, created_at, updated_at")
 
 
 def _bal_out(r) -> BankBalanceOut:
@@ -55,7 +56,10 @@ def _bal_out(r) -> BankBalanceOut:
 def _loan_out(r) -> OwnerLoanOut:
     return OwnerLoanOut(
         id=r["id"], firma_slug=r["firma_slug"], loan_date=r["loan_date"],
-        amount_pln=float(r["amount_pln"] or 0), partner=r["partner"], note=r["note"],
+        amount_pln=float(r["amount_pln"] or 0), partner=r["partner"],
+        numer_umowy=r["numer_umowy"], data_zawarcia=r["data_zawarcia"],
+        termin_splaty=r["termin_splaty"], oprocentowanie=r["oprocentowanie"],
+        splacono_data=r["splacono_data"], note=r["note"],
         created_at=r["created_at"], updated_at=r["updated_at"],
     )
 
@@ -96,8 +100,9 @@ async def get_money(shop: str = "", db: AsyncSession = Depends(get_db),
         {"s": s},
     )
     loans = await db.execute(
+        # Najstarsza wpłata na górze — jej termin spłaty wypada najwcześniej.
         text(f"SELECT {_LOAN_COLS} FROM {settings.TABLE_OWNER_LOANS} "
-             f"WHERE firma_slug = :s ORDER BY loan_date, id"),
+             f"WHERE firma_slug = :s ORDER BY loan_date ASC, id ASC"),
         {"s": s},
     )
     return MoneyBundle(
@@ -180,12 +185,14 @@ async def create_loan(payload: OwnerLoanIn, db: AsyncSession = Depends(get_db),
     r = await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_OWNER_LOANS}
-                (firma_slug, loan_date, amount_pln, partner, note, created_by)
-            VALUES (:s, :d, :a, :p, :n, :u)
+                (firma_slug, loan_date, amount_pln, partner, numer_umowy, data_zawarcia,
+                 termin_splaty, oprocentowanie, splacono_data, note, created_by)
+            VALUES (:s, :d, :a, :p, :nu, :dz, :ts, :op, :sd, :n, :u)
             RETURNING {_LOAN_COLS}
         """),
-        {"s": s, "d": payload.loan_date, "a": payload.amount_pln,
-         "p": payload.partner, "n": payload.note, "u": user.id},
+        {"s": s, "d": payload.loan_date, "a": payload.amount_pln, "p": payload.partner,
+         "nu": payload.numer_umowy, "dz": payload.data_zawarcia, "ts": payload.termin_splaty,
+         "op": payload.oprocentowanie, "sd": payload.splacono_data, "n": payload.note, "u": user.id},
     )
     row = r.mappings().first()
     await db.commit()
@@ -195,7 +202,11 @@ async def create_loan(payload: OwnerLoanIn, db: AsyncSession = Depends(get_db),
 @router.patch("/owner-loans/{lid}", response_model=OwnerLoanOut)
 async def update_loan(lid: int, payload: OwnerLoanIn, db: AsyncSession = Depends(get_db),
                       user: CurrentUser = Depends(require_bank_edit)):
-    """Pełne nadpisanie wiersza — stąd poprawiasz literówkę w nazwisku wspólnika."""
+    """Pełne nadpisanie wiersza — stąd poprawiasz literówkę w nazwisku i oznaczasz spłatę.
+
+    Spłata = ustawienie `splacono_data`. Cofnięcie = wyzerowanie go na NULL.
+    Osobnego endpointu nie ma celowo: jedna ścieżka zapisu, jedna walidacja.
+    """
     s = await _guard_slug(db, payload.firma_slug, user)
     old = (await db.execute(
         text(f"SELECT firma_slug FROM {settings.TABLE_OWNER_LOANS} WHERE id = :id"), {"id": lid}
@@ -205,10 +216,12 @@ async def update_loan(lid: int, payload: OwnerLoanIn, db: AsyncSession = Depends
     await _guard_slug(db, old["firma_slug"], user)
     r = await db.execute(
         text(f"UPDATE {settings.TABLE_OWNER_LOANS} SET firma_slug = :s, loan_date = :d, "
-             f"amount_pln = :a, partner = :p, note = :n, updated_at = now() "
-             f"WHERE id = :id RETURNING {_LOAN_COLS}"),
-        {"s": s, "d": payload.loan_date, "a": payload.amount_pln,
-         "p": payload.partner, "n": payload.note, "id": lid},
+             f"amount_pln = :a, partner = :p, numer_umowy = :nu, data_zawarcia = :dz, "
+             f"termin_splaty = :ts, oprocentowanie = :op, splacono_data = :sd, note = :n, "
+             f"updated_at = now() WHERE id = :id RETURNING {_LOAN_COLS}"),
+        {"s": s, "d": payload.loan_date, "a": payload.amount_pln, "p": payload.partner,
+         "nu": payload.numer_umowy, "dz": payload.data_zawarcia, "ts": payload.termin_splaty,
+         "op": payload.oprocentowanie, "sd": payload.splacono_data, "n": payload.note, "id": lid},
     )
     row = r.mappings().first()
     await db.commit()
