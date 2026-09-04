@@ -37,12 +37,18 @@ export type BankBalance = { id: number; firma_slug: string; balance_date: string
 export type OwnerLoan = { id: number; firma_slug: string; loan_date: string; amount_pln: number; partner: string; note?: string | null };
 export type MoneyBundle = { shop: string; balances: BankBalance[]; loans: OwnerLoan[]; can_edit: boolean };
 
-type SeriesKey = "mag" | "raw" | "adj" | "suma" | "loans";
+type SeriesKey = "mag" | "raw" | "adj" | "transit" | "suma" | "loans";
+export type TransitPoint = { date: string; value: number };
+
+// Teal dobrany w konwencji palety z globals.css (jednolite L+C, zmienia się sam odcień) —
+// tokenu w tym odcieniu nie ma, a wszystkie istniejące są już zajęte przez inne serie.
+const TRANSIT = "oklch(0.700 0.140 195)";
 
 const COLOR: Record<SeriesKey, string> = {
   mag: "var(--info)",
   raw: "var(--ok)",
   adj: "var(--ok)",
+  transit: TRANSIT,
   suma: "var(--accent)",
   loans: "var(--anomaly)",
 };
@@ -52,7 +58,8 @@ const HELP: Record<SeriesKey, [string, string]> = {
   mag: ["Wartość magazynu", "Ile jest wart towar leżący na półkach. Kontener podbija linię w górę, sprzedaż powoli ją obniża."],
   raw: ["Stan konta", "Ile pieniędzy leży na rachunku firmy — dokładnie to, co podała księgowa. Kropki to dni z realnym wpisem; odcinki między nimi są zgadywane."],
   adj: ["Bez pożyczek wspólników", "Ile byłoby na koncie, gdyby wspólnicy nic nie dołożyli. Każdą wpłatę odejmujemy od dnia wpłaty w przód, na zawsze. Potrafi zejść poniżej zera i to nie jest błąd."],
-  suma: ["Kapitał łącznie", "Konto plus magazyn — wszystkie pieniądze firmy razem. Płasko: kręcisz się w kółko. W górę: zarabiasz. W dół: przejadasz kapitał."],
+  transit: ["Zapłacone w drodze", "Pieniądze wydane na kontener, który jeszcze płynie. Rosną w dniu przelewu, znikają w dniu wejścia towaru na magazyn — dokładnie wtedy, gdy podnosi się linia magazynu. Liczone są tylko realnie zapłacone raty; reszta balansu to zobowiązanie, nie kapitał."],
+  suma: ["Kapitał łącznie", "Konto plus magazyn plus to, co zapłacone za towar w drodze — wszystkie pieniądze firmy razem. Płasko: kręcisz się w kółko. W górę: zarabiasz. W dół: przejadasz kapitał."],
   loans: ["Wpłaty wspólników", "Pionowy znacznik w dniu, w którym wspólnik dorzucił pieniądze. Nic nie liczy — tłumaczy, skąd nagły skok na linii konta."],
 };
 
@@ -60,6 +67,7 @@ const SERIES: { k: SeriesKey; label: string; dash?: "d" | "s" }[] = [
   { k: "mag", label: "Wartość magazynu" },
   { k: "raw", label: "Stan konta" },
   { k: "adj", label: "Bez pożyczek wspólników", dash: "s" },
+  { k: "transit", label: "Zapłacone w drodze" },
   { k: "suma", label: "Kapitał łącznie", dash: "d" },
   { k: "loans", label: "Wpłaty wspólników", dash: "s" },
 ];
@@ -78,13 +86,14 @@ const _dLabel = (iso: string) =>
 
 // ── Wykres ───────────────────────────────────────────────────
 function MoneyChart({
-  points, metric, on, balances, loans, height = 220,
+  points, metric, on, balances, loans, transit, height = 220,
 }: {
   points: MoneyPoint[];
   metric: "value" | "units";
   on: Record<SeriesKey, boolean>;
   balances: BankBalance[];
   loans: OwnerLoan[];
+  transit: Record<string, number>;
   height?: number;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -102,9 +111,10 @@ function MoneyChart({
   // Linie pieniężne mają sens tylko w złotówkach.
   const showRaw = !isUnits && on.raw;
   const showAdj = !isUnits && on.adj;
+  const showTransit = !isUnits && on.transit;
   const showSuma = !isUnits && on.suma;
   const showMarks = !isUnits && on.loans;
-  const anyMoney = showRaw || showAdj || showSuma;
+  const anyMoney = showRaw || showAdj || showSuma || showTransit;
 
   // ── Serie pieniężne: interpolacja między wpisami + narastające pożyczki ──
   const money = useMemo(() => {
@@ -163,10 +173,11 @@ function MoneyChart({
   }
 
   const magVals = points.map((p) => (isUnits ? p.units : p.value));
-  const suma = money.raw.map((v, i) => {
-    const base = showAdj && !showRaw ? money.adj[i] : v;
-    return base == null ? null : magVals[i] + base;
-  });
+  const transitVals = points.map((p) => (transit[p.date] ?? null));
+  // Kapitał łącznie ma stałą definicję: magazyn + konto + zapłacone w drodze.
+  // Nie zmienia się od tego, które plakietki są zapalone — inaczej ta sama liczba
+  // znaczyłaby co innego przy każdym ustawieniu.
+  const suma = money.raw.map((v, i) => (v == null ? null : magVals[i] + v + (transitVals[i] ?? 0)));
 
   const fmtTick = (v: number) => (isUnits ? fmtNum(v) : fmtPLNk(v));
   const fmtFull = (v: number) => (isUnits ? `${fmtNum(v)} szt` : fmtPLN(v));
@@ -177,6 +188,8 @@ function MoneyChart({
   const rightVals: number[] = [];
   if (showRaw) money.raw.forEach((v) => { if (v != null) rightVals.push(v); });
   if (showAdj) money.adj.forEach((v) => { if (v != null) rightVals.push(v); });
+  // „W drodze" to setki tysięcy — bliżej mu skalą do konta niż do magazynu.
+  if (showTransit) transitVals.forEach((v) => { if (v != null) rightVals.push(v); });
 
   const lMax = Math.max(...leftVals), lMin = Math.min(...leftVals);
   const lRange = lMax - lMin || 1;
@@ -264,6 +277,7 @@ function MoneyChart({
         {!anyMoney && <path d={areaPath} fill={magFill} />}
         {on.mag && <path d={magPath} stroke={magStroke} strokeWidth="2" fill="none" strokeLinejoin="round" />}
         {showSuma && <path d={line(suma, yL)} stroke={COLOR.suma} strokeWidth="2" fill="none" strokeDasharray="1,5" strokeLinecap="round" />}
+        {showTransit && <path d={line(transitVals, yR)} stroke={TRANSIT} strokeWidth="2" fill="none" strokeLinejoin="round" />}
         {showAdj && <path d={line(money.adj, yR)} stroke={COLOR.adj} strokeWidth="1.8" fill="none" strokeDasharray="6,4" opacity="0.75" />}
         {showRaw && <path d={line(money.raw, yR)} stroke={COLOR.raw} strokeWidth="2" fill="none" strokeLinejoin="round" />}
 
@@ -321,6 +335,7 @@ function MoneyChart({
           {on.mag && <TipRow label={isUnits ? "Magazyn" : "Magazyn"} value={fmtFull(magVals[hover])} color={magStroke} />}
           {showRaw && money.raw[hover] != null && <TipRow label="Stan konta" value={fmtPLN(money.raw[hover] as number)} color={COLOR.raw} />}
           {showAdj && money.adj[hover] != null && <TipRow label="Bez pożyczek" value={fmtPLN(money.adj[hover] as number)} color={COLOR.adj} />}
+          {showTransit && transitVals[hover] != null && <TipRow label="Zapłacone w drodze" value={fmtPLN(transitVals[hover] as number)} color={TRANSIT} />}
           {showSuma && suma[hover] != null && <TipRow label="Kapitał łącznie" value={fmtPLN(suma[hover] as number)} color={COLOR.suma} />}
           {anyMoney && money.cum[hover] !== 0 && <TipRow label="Od wspólników" value={fmtPLN(money.cum[hover])} color={COLOR.loans} />}
         </div>
@@ -354,16 +369,23 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
   const metric: "value" | "units" = canFin ? metricSel : "units";
 
   // Domyślnie widać SAM magazyn — resztę user dokłada klikając plakietki.
-  const [on, setOn] = useState<Record<SeriesKey, boolean>>({ mag: true, raw: false, adj: false, suma: false, loans: false });
+  const [on, setOn] = useState<Record<SeriesKey, boolean>>({ mag: true, raw: false, adj: false, transit: false, suma: false, loans: false });
   const [helpFor, setHelpFor] = useState<SeriesKey | null>(null);
   const marksAuto = useRef(false);
 
   const [bundle, setBundle] = useState<MoneyBundle | null>(null);
+  const [transit, setTransit] = useState<Record<string, number>>({});
+
+  // Ile dni historii „w drodze" pobrać — tyle, ile obejmuje wykres magazynu, żeby serie
+  // się pokrywały. Liczba, nie tablica, żeby zmiana referencji propsa nie odpalała fetcha.
+  const spanDays = useMemo(() => (points.length
+    ? Math.max(30, Math.round((Date.parse(points[points.length - 1].date) - Date.parse(points[0].date)) / 86400000))
+    : 90), [points]);
 
   // Dane pieniężne tylko dla konkretnej firmy: widok „Wszyscy" (shop="") ich nie ma.
   useEffect(() => {
     let alive = true;
-    if (!canBank || !shop) { setBundle(null); return () => { alive = false; }; }
+    if (!canBank || !shop) { setBundle(null); setTransit({}); return () => { alive = false; }; }
     (async () => {
       try {
         const d = (await api.get(`/money?shop=${encodeURIComponent(shop)}`)) as MoneyBundle;
@@ -371,9 +393,19 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
       } catch {
         if (alive) setBundle(null);
       }
+      try {
+        const t = (await api.get(`/transit-paid-history?shop=${encodeURIComponent(shop)}&days=${spanDays}`)) as { points: TransitPoint[] };
+        if (alive) {
+          const map: Record<string, number> = {};
+          (t?.points || []).forEach((pt) => { map[pt.date] = pt.value; });
+          setTransit(map);
+        }
+      } catch {
+        if (alive) setTransit({});
+      }
     })();
     return () => { alive = false; };
-  }, [canBank, shop]);
+  }, [canBank, shop, spanDays]);
 
   const balances = bundle?.balances ?? [];
   const loans = bundle?.loans ?? [];
@@ -387,6 +419,13 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
       if ((k === "raw" || k === "adj") && next[k] && !marksAuto.current) {
         next.loans = true;
         marksAuto.current = true;
+      }
+      // Suma zapala swoje składniki: nikt nie powinien patrzeć na „kapitał łącznie",
+      // nie widząc, z czego się składa. Zgasić je można potem ręcznie.
+      if (k === "suma" && next.suma) {
+        next.mag = true;
+        if (!next.adj) next.raw = true;
+        next.transit = true;
       }
       return next;
     });
@@ -416,10 +455,12 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
 
   // Które serie realnie widać (metric i brak danych mają pierwszeństwo nad ptaszkami).
   const isUnits = metric === "units";
+  const hasTransit = canBank && !!shop && Object.keys(transit).length > 0;
   const vis = {
     mag: on.mag,
     raw: !isUnits && on.raw && hasMoney,
     adj: !isUnits && on.adj && hasMoney,
+    transit: !isUnits && on.transit && hasTransit,
     suma: !isUnits && on.suma && hasMoney,
     loans: !isUnits && on.loans && hasMoney,
   };
@@ -438,10 +479,16 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     if (vis.suma) {
       const b = balAt(to);
       const bp = balAt(_dAddDays(from, -1));
-      const cur = b == null ? null : magVal(sliced[sliced.length - 1]) + (vis.raw || !vis.adj ? b : b - cumAt(to));
+      const cur = b == null ? null : magVal(sliced[sliced.length - 1]) + b + (transit[to] ?? 0);
       const prevPoint = points.find((p) => p.date === _dAddDays(from, -1));
-      const prev = bp == null || !prevPoint ? null : magVal(prevPoint) + bp;
+      const prev = bp == null || !prevPoint ? null : magVal(prevPoint) + bp + (transit[_dAddDays(from, -1)] ?? 0);
       return { label: "Kapitał łącznie", color: COLOR.suma, cur, prev, when: null };
+    }
+    if (vis.transit && !vis.raw && !vis.adj) {
+      return {
+        label: "Zapłacone w drodze", color: TRANSIT,
+        cur: transit[to] ?? null, prev: transit[_dAddDays(from, -1)] ?? null, when: null,
+      };
     }
     if (vis.raw || vis.adj) {
       const b = balAt(to);
@@ -509,6 +556,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
   const legendItems = SERIES.filter((s) => {
     if (isUnits) return s.k === "mag";
     if (s.k === "mag") return true;
+    if (s.k === "transit") return hasTransit;
     return canBank && !!shop;
   });
 
@@ -617,7 +665,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
       )}
 
       <div style={{ padding: "0 8px 4px" }}>
-        <MoneyChart points={sliced} metric={metric} on={vis} balances={balances} loans={loans} height={220} />
+        <MoneyChart points={sliced} metric={metric} on={vis} balances={balances} loans={loans} transit={transit} height={220} />
       </div>
     </Card>
   );
