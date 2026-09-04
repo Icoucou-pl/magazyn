@@ -339,7 +339,13 @@ function TipRow({ label, value, color }: { label: string; value: string; color: 
 }
 
 // ── Karta ────────────────────────────────────────────────────
-export function MoneyChartCard({ points, canFin }: { points: MoneyPoint[]; canFin: boolean }) {
+export function MoneyChartCard({ points, canFin, onOpenEntries }: {
+  points: MoneyPoint[];
+  canFin: boolean;
+  // Skrót do Cashflow → „Konto i pożyczki". Bez niego karta działa tak samo,
+  // tylko zamiast przycisku zostaje wskazówka tekstowa pod kwotą.
+  onOpenEntries?: () => void;
+}) {
   const user = useUser();
   const { shop } = useShop();
   const canBank = can(user, "viewBankBalances") && canFin;
@@ -488,7 +494,9 @@ export function MoneyChartCard({ points, canFin }: { points: MoneyPoint[]; canFi
     if (isUnits) return "Widok w sztukach pokazuje sam magazyn — pieniędzy na koncie nie da się liczyć w sztukach.";
     if (!canBank) return null;
     if (!shop) return "Wybierz firmę u góry, żeby dołożyć stan konta — trzy spółki mają trzy osobne rachunki.";
-    if (!hasMoney) return "Brak wpisów salda dla tej firmy. Dodasz je w Cashflow → Konto i pożyczki.";
+    if (!hasMoney) return onOpenEntries
+      ? "Brak wpisów salda dla tej firmy — kliknij „Dodaj wpisy”, żeby zacząć."
+      : "Brak wpisów salda dla tej firmy. Dodasz je w Cashflow → Konto i pożyczki.";
     if (lead.when) {
       const c = cumAt(lead.when);
       return `Ostatni wpis: ${_dLabel(lead.when)}. ${c ? `Wspólnicy wpłacili do tego dnia ${fmtPLN(c)}.` : "Brak pożyczek od wspólników."}`;
@@ -533,6 +541,20 @@ export function MoneyChartCard({ points, canFin }: { points: MoneyPoint[]; canFi
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {canBank && onOpenEntries && (
+            <button
+              onClick={onOpenEntries}
+              title="Przejdź do Cashflow → Konto i pożyczki"
+              style={{
+                padding: "5px 11px", fontSize: 11, fontWeight: 600, borderRadius: 6,
+                background: hasMoney ? "var(--surface-2)" : "var(--accent-soft)",
+                border: `1px solid ${hasMoney ? "var(--border)" : "transparent"}`,
+                color: hasMoney ? "var(--text-mid)" : "var(--accent)",
+              }}
+            >
+              {hasMoney ? "Wpisy" : "Dodaj wpisy"}
+            </button>
+          )}
           {canFin && (
             <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
               <button onClick={() => setMetricSel("value")} style={segBtn(metric === "value")}>zł</button>

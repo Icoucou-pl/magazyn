@@ -1066,7 +1066,7 @@ function DashboardSkeleton({ gap }: { gap: number }) {
 
 // ── Główny widok ─────────────────────────────────────────────
 export default function Dashboard({
-  density, onProductClick, onContainerClick, onAutoSuggest, onSimulator, onCreateContainer,
+  density, onProductClick, onContainerClick, onAutoSuggest, onSimulator, onCreateContainer, onOpenMoneyEntries,
 }: {
   density?: string;
   onProductClick?: (p: ClickTarget) => void;
@@ -1074,6 +1074,7 @@ export default function Dashboard({
   onAutoSuggest?: () => void;
   onSimulator?: () => void;
   onCreateContainer?: (manufacturerId: number | null) => void;
+  onOpenMoneyEntries?: () => void;   // skrót z karty „Pieniądze firmy" do Cashflow
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -1255,7 +1256,7 @@ export default function Dashboard({
           {can(user, "viewDashboardKpi") && (
             <KpiGrid history={history} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid, remaining: pipeline.green.remaining }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
           )}
-          {history && history.points.length > 1 && <MoneyChartCard points={history.points} canFin={showFin} />}
+          {history && history.points.length > 1 && <MoneyChartCard points={history.points} canFin={showFin} onOpenEntries={onOpenMoneyEntries} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator}
             onProductClick={onProductClick ? (sku) => onProductClick({ sku }) : undefined} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>

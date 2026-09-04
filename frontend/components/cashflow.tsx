@@ -131,12 +131,16 @@ function aggregate(events: LedgerEvent[], cur: string, rt: Record<string, number
 }
 
 // ── Widok główny ─────────────────────────────────────────────
-function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) => void }) {
+function CashflowView({ onContainerClick, initialTab }: {
+  onContainerClick?: (id: number) => void;
+  // Deep-link z pulpitu: „Wpisy" w karcie „Pieniądze firmy" otwiera od razu tę zakładkę.
+  initialTab?: "due" | "paid" | "money";
+}) {
   const user = useUser();
   const [resp, setResp] = useState<LedgerResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [refilling, setRefilling] = useState(false);
-  const [tab, setTab] = useState<"due" | "paid" | "money">("due");
+  const [tab, setTab] = useState<"due" | "paid" | "money">(initialTab || "due");
   // Firma z globalnego fragmentatora w Topbarze (lib/shop).
   const { shop } = useShop();
   const [cur, setCur] = useState("PLN");
