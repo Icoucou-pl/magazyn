@@ -34,7 +34,11 @@ import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
 // ── Typy ─────────────────────────────────────────────────────
 export type MoneyPoint = { date: string; value: number; units: number };
 export type BankBalance = { id: number; firma_slug: string; balance_date: string; amount_pln: number; note?: string | null };
-export type OwnerLoan = { id: number; firma_slug: string; loan_date: string; amount_pln: number; partner: string; note?: string | null };
+export type OwnerLoan = {
+  id: number; firma_slug: string; loan_date: string; amount_pln: number; partner: string;
+  numer_umowy?: string | null; data_zawarcia?: string | null; termin_splaty?: string | null;
+  oprocentowanie?: string | null; splacono_data?: string | null; note?: string | null;
+};
 export type MoneyBundle = { shop: string; balances: BankBalance[]; loans: OwnerLoan[]; can_edit: boolean };
 
 type SeriesKey = "mag" | "raw" | "adj" | "transit" | "suma" | "loans";
@@ -60,7 +64,7 @@ const HELP: Record<SeriesKey, [string, string]> = {
   adj: ["Bez pożyczek wspólników", "Ile byłoby na koncie, gdyby wspólnicy nic nie dołożyli. Każdą wpłatę odejmujemy od dnia wpłaty w przód, na zawsze. Potrafi zejść poniżej zera i to nie jest błąd."],
   transit: ["Zapłacone w drodze", "Pieniądze wydane na kontener, który jeszcze płynie. Rosną w dniu przelewu, znikają w dniu wejścia towaru na magazyn — dokładnie wtedy, gdy podnosi się linia magazynu. Liczone są tylko realnie zapłacone raty; reszta balansu to zobowiązanie, nie kapitał."],
   suma: ["Kapitał łącznie", "Konto plus magazyn plus to, co zapłacone za towar w drodze — wszystkie pieniądze firmy razem. Płasko: kręcisz się w kółko. W górę: zarabiasz. W dół: przejadasz kapitał."],
-  loans: ["Wpłaty wspólników", "Pionowy znacznik w dniu, w którym wspólnik dorzucił pieniądze. Nic nie liczy — tłumaczy, skąd nagły skok na linii konta."],
+  loans: ["Wpłaty wspólników", "Pionowy znacznik w dniu, w którym wspólnik dorzucił pieniądze; pusty znacznik to dzień zwrotu. Nic nie liczy — tłumaczy, skąd nagły skok na linii konta."],
 };
 
 const SERIES: { k: SeriesKey; label: string; dash?: "d" | "s" }[] = [
@@ -122,17 +126,23 @@ function MoneyChart({
     const cum = new Array<number>(n).fill(0);
     const raw = new Array<number | null>(n).fill(null);
     const adj = new Array<number | null>(n).fill(null);
-    if (!n) return { cum, raw, adj, anchors: [] as number[], marks: [] as { i: number; loan: OwnerLoan }[] };
+    if (!n) return { cum, raw, adj, anchors: [] as number[], marks: [] as { i: number; loan: OwnerLoan; back: boolean }[] };
 
     const idxByDate = new Map<string, number>();
     points.forEach((p, i) => idxByDate.set(p.date, i));
 
-    // Suma wpłat o dacie ≤ dzień — jedno przejście, bo obie listy są posortowane.
-    const sortedLoans = [...loans].sort((a, b) => a.loan_date.localeCompare(b.loan_date));
+    // Pożyczka podnosi saldo od dnia wpłaty i przestaje je podnosić od dnia spłaty —
+    // stąd dwa zdarzenia na umowę. Kwota ujemna (stary format „zwrotu") działa jak dawniej.
+    const events: { d: string; v: number }[] = [];
+    loans.forEach((l) => {
+      events.push({ d: l.loan_date, v: l.amount_pln });
+      if (l.splacono_data) events.push({ d: l.splacono_data, v: -l.amount_pln });
+    });
+    events.sort((a, b) => a.d.localeCompare(b.d));
     let acc = 0, li = 0;
     for (let i = 0; i < n; i++) {
-      while (li < sortedLoans.length && sortedLoans[li].loan_date <= points[i].date) {
-        acc += sortedLoans[li].amount_pln;
+      while (li < events.length && events[li].d <= points[i].date) {
+        acc += events[li].v;
         li += 1;
       }
       cum[i] = acc;
@@ -161,9 +171,13 @@ function MoneyChart({
     }
     for (let i = 0; i < n; i++) adj[i] = raw[i] == null ? null : (raw[i] as number) - cum[i];
 
-    const marks = sortedLoans
-      .map((loan) => ({ i: idxByDate.get(loan.loan_date), loan }))
-      .filter((m) => m.i != null) as { i: number; loan: OwnerLoan }[];
+    // Znacznik na dzień wpłaty i (jeśli jest) na dzień zwrotu — oba tłumaczą skok na linii konta.
+    const marks = loans
+      .flatMap((loan) => [
+        { i: idxByDate.get(loan.loan_date), loan, back: false },
+        ...(loan.splacono_data ? [{ i: idxByDate.get(loan.splacono_data), loan, back: true }] : []),
+      ])
+      .filter((m) => m.i != null) as { i: number; loan: OwnerLoan; back: boolean }[];
 
     return { cum, raw, adj, anchors, marks };
   }, [points, balances, loans]);
@@ -267,10 +281,13 @@ function MoneyChart({
           <line key={i} x1={padLeft} x2={size.w - padRight} y1={yL(t)} y2={yL(t)} stroke="var(--border-soft)" strokeDasharray="2,4" strokeWidth="1" />
         ))}
 
-        {showMarks && money.marks.map(({ i, loan }) => (
-          <g key={loan.id}>
-            <line x1={getX(i)} x2={getX(i)} y1={padTop} y2={padTop + innerH} stroke={COLOR.loans} strokeDasharray="3,4" strokeWidth="1" opacity="0.7" />
-            <circle cx={getX(i)} cy={padTop} r="3.5" fill={COLOR.loans} />
+        {showMarks && money.marks.map(({ i, loan, back }) => (
+          <g key={`${loan.id}${back ? "z" : ""}`}>
+            <line x1={getX(i)} x2={getX(i)} y1={padTop} y2={padTop + innerH} stroke={COLOR.loans}
+                  strokeDasharray="3,4" strokeWidth="1" opacity={back ? 0.4 : 0.7} />
+            {back
+              ? <circle cx={getX(i)} cy={padTop} r="3.5" fill="var(--bg)" stroke={COLOR.loans} strokeWidth="1.5" />
+              : <circle cx={getX(i)} cy={padTop} r="3.5" fill={COLOR.loans} />}
           </g>
         ))}
 
