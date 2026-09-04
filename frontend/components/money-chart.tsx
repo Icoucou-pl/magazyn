@@ -381,6 +381,9 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
   const user = useUser();
   const { shop } = useShop();
   const canBank = can(user, "viewBankBalances") && canFin;
+  // Przycisk prowadzi WYŁĄCZNIE do dodawania i poprawiania wpisów — bez prawa zapisu
+  // nie ma czego proponować. Sam wykres i listy zostają widoczne przy samym podglądzie.
+  const canAddEntries = canBank && can(user, "editBankBalances");
 
   const [metricSel, setMetricSel] = useState<"value" | "units">(canFin ? "value" : "units");
   const metric: "value" | "units" = canFin ? metricSel : "units";
@@ -562,6 +565,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     if (!shop) return "Wybierz firmę u góry, żeby dołożyć stan konta — trzy spółki mają trzy osobne rachunki.";
     if (!hasMoney) {
       const co = hasLoans ? "Pożyczki są zapisane, ale bez odczytów salda nie ma z czego narysować linii konta" : "Brak wpisów salda dla tej firmy";
+      if (!canAddEntries) return `${co}. Wpisy dodaje osoba z uprawnieniem do stanu konta.`;
       return onOpenEntries ? `${co} — kliknij „Dodaj wpisy”.` : `${co}. Dodasz je w Cashflow → Konto i pożyczki.`;
     }
     // hasMoney nadal steruje liniami i podpisem niżej — przycisk świeci zawsze,
@@ -606,7 +610,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          {canBank && onOpenEntries && (
+          {canAddEntries && onOpenEntries && (
             <button
               onClick={onOpenEntries}
               title="Przejdź do Cashflow → Konto i pożyczki"
