@@ -100,9 +100,10 @@ export function MoneyEntriesTab({ shop }: { shop: string }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))", gap: 14 }}>
         <BalancesCard shop={shop} rows={bundle.balances} loans={bundle.loans} canEdit={canEdit} onChanged={reload} />
-        <LoansCard shop={shop} rows={bundle.loans} canEdit={canEdit} partners={partners} onChanged={reload} />
+        <LoansCard shop={shop} rows={bundle.loans.filter((l) => l.amount_pln > 0)} canEdit={canEdit} partners={partners} onChanged={reload} kind="loan" />
+        <LoansCard shop={shop} rows={bundle.loans.filter((l) => l.amount_pln < 0)} canEdit={canEdit} partners={partners} onChanged={reload} kind="repay" />
       </div>
       {bundle.loans.length > 0 && <PartnersSummary loans={bundle.loans} />}
     </div>
@@ -229,10 +230,17 @@ function BalancesCard({
   );
 }
 
-// ── Pożyczki wspólników ──────────────────────────────────────
+// ── Pożyczki i spłaty ────────────────────────────────────────
+// Jeden komponent w dwóch odsłonach: „loan" zapisuje kwotę dodatnią (wpłata do firmy),
+// „repay" ujemną (zwrot wspólnikowi). W obu formularzach wpisujesz liczbę dodatnią —
+// znak dokłada kod, żeby nikt nie musiał pamiętać o minusie.
 function LoansCard({
-  shop, rows, canEdit, partners, onChanged,
-}: { shop: string; rows: OwnerLoan[]; canEdit: boolean; partners: string[]; onChanged: () => void }) {
+  shop, rows, canEdit, partners, onChanged, kind,
+}: {
+  shop: string; rows: OwnerLoan[]; canEdit: boolean; partners: string[];
+  onChanged: () => void; kind: "loan" | "repay";
+}) {
+  const isLoan = kind === "loan";
   const [adding, setAdding] = useState(false);
   const [date, setDate] = useState(todayISO());
   const [amount, setAmount] = useState("");
@@ -241,23 +249,24 @@ function LoansCard({
   const [editId, setEditId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const total = rows.reduce((s, r) => s + r.amount_pln, 0);
+  const total = rows.reduce((s, r) => s + Math.abs(r.amount_pln), 0);
   const reset = () => { setAdding(false); setEditId(null); setDate(todayISO()); setAmount(""); setPartner(""); setNote(""); };
 
   const save = async () => {
-    const val = parseAmount(amount);
-    if (val == null || val === 0) { toast("Podaj kwotę (ujemna = zwrot wspólnikowi)", "warning"); return; }
+    const v = parseAmount(amount);
+    if (v == null || v === 0) { toast("Podaj kwotę", "warning"); return; }
     if (!partner.trim()) { toast("Podaj wspólnika", "warning"); return; }
     setBusy(true);
     try {
-      const body = { firma_slug: shop, loan_date: date, amount_pln: val, partner: partner.trim(), note: note || null };
+      const signed = isLoan ? Math.abs(v) : -Math.abs(v);
+      const body = { firma_slug: shop, loan_date: date, amount_pln: signed, partner: partner.trim(), note: note || null };
       if (editId != null) await api.patch(`/owner-loans/${editId}`, body);
       else await api.post("/owner-loans", body);
-      toast(editId != null ? "Pożyczka poprawiona" : "Pożyczka zapisana", "ok");
+      toast(editId != null ? "Wpis poprawiony" : (isLoan ? "Pożyczka zapisana" : "Spłata zapisana"), "ok");
       reset();
       onChanged();
     } catch {
-      toast("Nie udało się zapisać pożyczki", "error");
+      toast("Nie udało się zapisać wpisu", "error");
     } finally {
       setBusy(false);
     }
@@ -278,7 +287,7 @@ function LoansCard({
     setEditId(row.id);
     setAdding(true);
     setDate(row.loan_date);
-    setAmount(String(row.amount_pln));
+    setAmount(String(Math.abs(row.amount_pln)));
     setPartner(row.partner);
     setNote(row.note || "");
   };
@@ -288,27 +297,33 @@ function LoansCard({
   return (
     <Card>
       <CardHeader
-        icon={<I.TrendUp size={14} />}
-        title="Pożyczki od wspólników"
-        hint={rows.length ? `saldo wpłat: ${fmtPLN(total)}` : "kwota ujemna = zwrot"}
-        accent="var(--anomaly)"
-        action={canEdit && !adding ? <button onClick={() => setAdding(true)} style={btnAccent}>+ Dodaj pożyczkę</button> : undefined}
+        icon={isLoan ? <I.TrendUp size={14} /> : <I.TrendDown size={14} />}
+        title={isLoan ? "Pożyczki od wspólników" : "Spłaty pożyczek"}
+        hint={rows.length ? `razem: ${fmtPLN(total)}` : (isLoan ? "wpłaty do firmy" : "zwroty wspólnikom")}
+        accent={isLoan ? "var(--anomaly)" : "var(--ok)"}
+        action={canEdit && !adding
+          ? <button onClick={() => setAdding(true)} style={btnAccent}>{isLoan ? "+ Dodaj pożyczkę" : "+ Dodaj spłatę"}</button>
+          : undefined}
       />
 
       {adding && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", background: "var(--bg-elevated)" }}>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 140 }} />
-          <input inputMode="decimal" placeholder="Kwota w zł" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, width: 130 }} />
-          <input list="magazyn-partners" placeholder="Wspólnik" value={partner} onChange={(e) => setPartner(e.target.value)} style={{ ...inputStyle, width: 150 }} />
-          <datalist id="magazyn-partners">{partners.map((p) => <option key={p} value={p} />)}</datalist>
-          <input placeholder="Notatka (opcjonalnie)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, flex: "1 1 140px" }} />
+          <input inputMode="decimal" placeholder="Kwota w zł" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, width: 120 }} />
+          <input list="magazyn-partners" placeholder="Wspólnik" value={partner} onChange={(e) => setPartner(e.target.value)} style={{ ...inputStyle, width: 140 }} />
+          <datalist id="magazyn-partners">{partners.map((x) => <option key={x} value={x} />)}</datalist>
+          <input placeholder="Notatka" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, flex: "1 1 120px" }} />
           <button onClick={save} disabled={busy} style={{ ...btnAccent, opacity: busy ? 0.6 : 1 }}>{editId != null ? "Zapisz zmiany" : "Zapisz"}</button>
           <button onClick={reset} style={btnStyle}>Anuluj</button>
         </div>
       )}
 
       {desc.length === 0 ? (
-        <div style={emptyStyle}>Brak wpisów. Dodaj pierwszą wpłatę, żeby odjąć ją od linii konta.</div>
+        <div style={emptyStyle}>
+          {isLoan
+            ? "Brak wpisów. Dodaj pierwszą wpłatę, żeby odjąć ją od linii konta."
+            : "Brak spłat. Każda dopisana tutaj zmniejszy kwotę „do spłaty” niżej."}
+        </div>
       ) : (
         <div style={{ maxHeight: 420, overflow: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -326,13 +341,10 @@ function LoansCard({
                   <td style={tdStyle}><span className="num">{r.loan_date}</span></td>
                   <td style={tdStyle}>
                     {r.partner}
-                    {r.amount_pln < 0 && (
-                      <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 999, fontSize: 10, fontWeight: 600, background: "var(--anomaly-soft)", color: "var(--anomaly)" }}>zwrot</span>
-                    )}
                     {r.note && <div style={{ color: "var(--text-lo)", fontSize: 11, marginTop: 2 }}>{r.note}</div>}
                   </td>
-                  <td style={{ ...tdStyle, textAlign: "right", color: r.amount_pln < 0 ? "var(--critical)" : "var(--text-hi)" }} className="num">
-                    {r.amount_pln > 0 ? "+" : ""}{fmtPLN(r.amount_pln)}
+                  <td style={{ ...tdStyle, textAlign: "right", color: isLoan ? "var(--text-hi)" : "var(--ok)" }} className="num">
+                    {isLoan ? "+" : "−"}{fmtPLN(Math.abs(r.amount_pln))}
                   </td>
                   {canEdit && (
                     <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
@@ -372,7 +384,6 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
   }, [loans]);
 
   const total = rows.reduce((s, r) => s + r.saldo, 0);
-  const anyZwroty = rows.some((r) => r.zwroty > 0);
 
   return (
     <Card>
@@ -387,7 +398,7 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
           <tr>
             <th style={thStyle}>Wspólnik</th>
             <th style={{ ...thStyle, textAlign: "right" }}>Wpłacone</th>
-            {anyZwroty && <th style={{ ...thStyle, textAlign: "right" }}>Zwrócone</th>}
+            <th style={{ ...thStyle, textAlign: "right" }}>Spłacone</th>
             <th style={{ ...thStyle, textAlign: "right" }}>Do spłaty</th>
             <th style={{ ...thStyle, textAlign: "right" }}>Udział</th>
             <th style={{ ...thStyle, textAlign: "right" }}>Ostatnia wpłata</th>
@@ -403,11 +414,9 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
                 </span>
               </td>
               <td style={{ ...tdStyle, textAlign: "right" }} className="num">{fmtPLN(r.wplaty)}</td>
-              {anyZwroty && (
-                <td style={{ ...tdStyle, textAlign: "right", color: r.zwroty ? "var(--critical)" : "var(--text-lo)" }} className="num">
-                  {r.zwroty ? `−${fmtPLN(r.zwroty)}` : "—"}
-                </td>
-              )}
+              <td style={{ ...tdStyle, textAlign: "right", color: r.zwroty ? "var(--ok)" : "var(--text-lo)" }} className="num">
+                {r.zwroty ? `−${fmtPLN(r.zwroty)}` : "—"}
+              </td>
               <td style={{ ...tdStyle, textAlign: "right", color: "var(--text-hi)", fontWeight: 600 }} className="num">{fmtPLN(r.saldo)}</td>
               <td style={{ ...tdStyle, textAlign: "right" }} className="num">
                 {total ? `${Math.round((r.saldo / total) * 100)}%` : "—"}
@@ -422,11 +431,9 @@ function PartnersSummary({ loans }: { loans: OwnerLoan[] }) {
             <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right" }} className="num">
               {fmtPLN(rows.reduce((s, r) => s + r.wplaty, 0))}
             </td>
-            {anyZwroty && (
-              <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--critical)" }} className="num">
-                −{fmtPLN(rows.reduce((s, r) => s + r.zwroty, 0))}
-              </td>
-            )}
+            <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--ok)" }} className="num">
+              −{fmtPLN(rows.reduce((s, r) => s + r.zwroty, 0))}
+            </td>
             <td style={{ ...tdStyle, borderBottom: "none", borderTop: "1px solid var(--border)", textAlign: "right", color: "var(--accent)", fontWeight: 700, fontSize: 13 }} className="num">
               {fmtPLN(total)}
             </td>
