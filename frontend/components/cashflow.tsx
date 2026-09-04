@@ -18,6 +18,8 @@ import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { useUser, isAdmin } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
+import MoneyEntriesTab from "./money-entries";
+import { canSeeBank } from "@/lib/permissions";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Status = "paid" | "plan" | "open";
@@ -134,7 +136,7 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const [resp, setResp] = useState<LedgerResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [refilling, setRefilling] = useState(false);
-  const [tab, setTab] = useState<"due" | "paid">("due");
+  const [tab, setTab] = useState<"due" | "paid" | "money">("due");
   // Firma z globalnego fragmentatora w Topbarze (lib/shop).
   const { shop } = useShop();
   const [cur, setCur] = useState("PLN");
@@ -176,7 +178,10 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
   const events = resp?.events ?? [];
   const rt = resp?.rate_today ?? {};
   const missingCount = events.filter(e => e.brak_kursu).length;
-  const showRefill = isAdmin(user) && missingCount > 0;
+  const showRefill = isAdmin(user) && missingCount > 0 && tab !== "money";
+  // Zakładka „Konto i pożyczki" — ręczne wpisy salda rachunku. Osobne uprawnienie,
+  // koniunkcyjne z viewFinancials (permissions.js → canSeeBank).
+  const showBank = canSeeBank(user);
   const scoped = useMemo(() => events.filter(e => !shop || e.shop === shop), [events, shop]);
 
   // Lata liczymy z eventów już zawężonych do wybranej firmy — inaczej np. 2027
@@ -233,15 +238,16 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
         <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
           <TabBtn active={tab === "due"} onClick={() => setTab("due")} icon={<I.Alert size={14} />}>Do zapłaty</TabBtn>
           <TabBtn active={tab === "paid"} onClick={() => setTab("paid")} icon={<I.Customs size={14} />}>Zapłacono</TabBtn>
+          {showBank && <TabBtn active={tab === "money"} onClick={() => setTab("money")} icon={<I.Wallet size={14} />}>Konto i pożyczki</TabBtn>}
         </div>
       </div>
 
       {/* Filtry: rok + waluta (firma → fragmentator w Topbarze) */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          {yearOpts.length > 1 && <Seg label="Rok" options={yearOpts} value={year} onChange={setYear} />}
+          {tab !== "money" && yearOpts.length > 1 && <Seg label="Rok" options={yearOpts} value={year} onChange={setYear} />}
         </div>
-        <Seg label="Waluta" options={CURS.map(c => [c, c] as [string, string])} value={cur} onChange={setCur} />
+        {tab !== "money" && <Seg label="Waluta" options={CURS.map(c => [c, c] as [string, string])} value={cur} onChange={setCur} />}
       </div>
 
       {showRefill && (
@@ -259,13 +265,17 @@ function CashflowView({ onContainerClick }: { onContainerClick?: (id: number) =>
         </button>
       )}
 
-      {tab === "due"
-        ? <DueTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />
-        : <PaidTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />}
+      {tab === "money"
+        ? <MoneyEntriesTab shop={shop} />
+        : tab === "due"
+          ? <DueTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />
+          : <PaidTab events={scoped} cur={cur} rt={rt} shop={shop} year={year} hoveredMfr={hoveredMfr} setHoveredMfr={setHoveredMfr} onContainerClick={onContainerClick} />}
 
       {/* Nota kontekstowa */}
       <div style={noteStyle}>
-        {tab === "due"
+        {tab === "money"
+          ? <><b>Konto i pożyczki</b> — ręczne wpisy, osobno dla każdej spółki. <b>Stan konta</b> to odczyt podany przez księgową; jedna data = jeden wpis, powtórny zapis nadpisuje poprzedni. <b>Pożyczki</b> to wpłaty wspólników (kwota dodatnia) i zwroty (ujemna) — odejmowane od linii konta <b>narastająco</b>, od dnia wpłaty w przód. Wykres karmiony tymi danymi siedzi na pulpicie; kolumna „bez pożyczek” pokazuje, ile firma miałaby z własnej sprzedaży.</>
+          : tab === "due"
           ? <><b>Do zapłaty</b> — otwarte zaliczki i balance, per producent, bucket po <b>terminie płatności</b> (płatności bez wpisanego terminu lądują w koszyku „Bez terminu" na górze). Przy balansie pokazujemy już <b>opłaconą zaliczkę</b> tego kontenera (ile i kiedy). W PLN kwoty otwarte są <b>szacunkiem</b> po dzisiejszym kursie (oznaczone „≈"). W trybie USD/CNY pokazujemy oryginalne kwoty faktur tylko dla zdarzeń danej waluty.</>
           : <><b>Zapłacono</b> — wpłaty z datą ≤ dziś, per producent, bucket po miesiącu faktycznej płatności (realny wypływ kasy). Przy balansie pokazujemy też <b>opłaconą zaliczkę</b> tego kontenera (kiedy i ile) — zaliczki są dodatkowo rozpisane jako osobne pozycje. <b>PLN</b> = kurs historyczny NBP z dnia płatności (zablokowany, dokładny). <b>USD / CNY</b> = oryginalne kwoty faktur, tylko zdarzenia danej waluty (+ PLN w podpisie). Dostawa ≠ zapłata — dostarczony kontener z nieopłaconym balance siedzi w „Do zapłaty".</>}
       </div>

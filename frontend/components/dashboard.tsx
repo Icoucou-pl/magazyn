@@ -22,6 +22,7 @@ import { toast } from "./toast";
 import { can, canEdit, useUser } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
+import MoneyChartCard from "./money-chart";
 import WyprzedazModal from "./wyprzedaz-modal";
 import type { Product } from "./products-ui";
 
@@ -584,6 +585,12 @@ function ValueChartCard({ points, canFin }: { points: StockPoint[]; canFin: bool
     </Card>
   );
 }
+
+// Dawna karta wykresu — od wersji z „Pieniędzmi firmy" nieużywana na pulpicie,
+// ale zostaje nietknięta pod ręką: podmiana MoneyChartCard → ValueChartCard w JSX
+// wyżej przywraca poprzedni stan jedną linią. Eksport, żeby linter nie widział
+// martwego kodu tam, gdzie to celowa rezerwa.
+export { ValueChartCard };
 
 // ── Rozwijanie list w miejscu (5 wierszy → wszystkie) ────────
 const ROW_LIMIT = 5;
@@ -1248,7 +1255,7 @@ export default function Dashboard({
           {can(user, "viewDashboardKpi") && (
             <KpiGrid history={history} kont={pipeline.kont} mag={{ value: transitWh?.value_pln ?? 0, containers: pipeline.green.containers, looseLots: pipeline.green.looseLots, paid: pipeline.green.paid, remaining: pipeline.green.remaining }} shop={shop} missingRates={pipeline.missingRates} onRefillRates={refillRates} />
           )}
-          {history && history.points.length > 1 && <ValueChartCard points={history.points} canFin={showFin} />}
+          {history && history.points.length > 1 && <MoneyChartCard points={history.points} canFin={showFin} />}
           {showEdit && <ActionsBanner onAutoSuggest={onAutoSuggest} onSimulator={onSimulator}
             onProductClick={onProductClick ? (sku) => onProductClick({ sku }) : undefined} />}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
