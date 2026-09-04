@@ -294,10 +294,16 @@ class BankBalanceOut(BankBalanceIn):
 
 
 class OwnerLoanIn(BaseModel):
+    """Umowa pożyczki od wspólnika. Spłatę oznacza `splacono_data`, NIE kwota ujemna."""
     firma_slug: str = Field(..., min_length=1, max_length=32)
-    loan_date: date
-    amount_pln: float                      # dodatnia = wpłata do firmy, ujemna = zwrot wspólnikowi
+    loan_date: date                        # data wpłaty na konto firmy
+    amount_pln: float
     partner: str = Field(..., min_length=1, max_length=120)
+    numer_umowy: Optional[str] = Field(None, max_length=60)
+    data_zawarcia: Optional[date] = None
+    termin_splaty: Optional[date] = None
+    oprocentowanie: Optional[str] = Field(None, max_length=120)   # tekst: „5,85%" albo „wibor3m+2% marża"
+    splacono_data: Optional[date] = None                          # None = jeszcze do spłaty
     note: Optional[str] = Field(None, max_length=500)
 
     @field_validator("firma_slug")
