@@ -375,6 +375,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
 
   const [bundle, setBundle] = useState<MoneyBundle | null>(null);
   const [transit, setTransit] = useState<Record<string, number>>({});
+  const [loaded, setLoaded] = useState(false);
 
   // Ile dni historii „w drodze" pobrać — tyle, ile obejmuje wykres magazynu, żeby serie
   // się pokrywały. Liczba, nie tablica, żeby zmiana referencji propsa nie odpalała fetcha.
@@ -385,24 +386,19 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
   // Dane pieniężne tylko dla konkretnej firmy: widok „Wszyscy" (shop="") ich nie ma.
   useEffect(() => {
     let alive = true;
-    if (!canBank || !shop) { setBundle(null); setTransit({}); return () => { alive = false; }; }
+    if (!canBank || !shop) { setBundle(null); setTransit({}); setLoaded(true); return () => { alive = false; }; }
+    setLoaded(false);
     (async () => {
-      try {
-        const d = (await api.get(`/money?shop=${encodeURIComponent(shop)}`)) as MoneyBundle;
-        if (alive) setBundle(d);
-      } catch {
-        if (alive) setBundle(null);
-      }
-      try {
-        const t = (await api.get(`/transit-paid-history?shop=${encodeURIComponent(shop)}&days=${spanDays}`)) as { points: TransitPoint[] };
-        if (alive) {
-          const map: Record<string, number> = {};
-          (t?.points || []).forEach((pt) => { map[pt.date] = pt.value; });
-          setTransit(map);
-        }
-      } catch {
-        if (alive) setTransit({});
-      }
+      const [b, t] = await Promise.all([
+        api.get(`/money?shop=${encodeURIComponent(shop)}`).catch(() => null),
+        api.get(`/transit-paid-history?shop=${encodeURIComponent(shop)}&days=${spanDays}`).catch(() => null),
+      ]);
+      if (!alive) return;
+      setBundle((b as MoneyBundle) || null);
+      const map: Record<string, number> = {};
+      ((t as { points?: TransitPoint[] })?.points || []).forEach((pt) => { map[pt.date] = pt.value; });
+      setTransit(map);
+      setLoaded(true);
     })();
     return () => { alive = false; };
   }, [canBank, shop, spanDays]);
@@ -455,14 +451,20 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
 
   // Które serie realnie widać (metric i brak danych mają pierwszeństwo nad ptaszkami).
   const isUnits = metric === "units";
-  const hasTransit = canBank && !!shop && Object.keys(transit).length > 0;
+  const hasTransit = canBank && !!shop && Object.values(transit).some((v) => v > 0);
+  const hasLoans = canBank && !!shop && loans.length > 0;
   const vis = {
     mag: on.mag,
     raw: !isUnits && on.raw && hasMoney,
     adj: !isUnits && on.adj && hasMoney,
     transit: !isUnits && on.transit && hasTransit,
     suma: !isUnits && on.suma && hasMoney,
-    loans: !isUnits && on.loans && hasMoney,
+    loans: !isUnits && on.loans && hasLoans,
+  };
+  // Plakietka bez danych za sobą byłaby martwym przyciskiem — klik nic by nie zmienił.
+  // Pokazujemy tylko te serie, które mają czym rysować; czego brakuje, mówi podpis pod kwotą.
+  const available: Record<SeriesKey, boolean> = {
+    mag: true, raw: hasMoney, adj: hasMoney, suma: hasMoney, transit: hasTransit, loans: hasLoans,
   };
 
   // ── Nagłówek: seria wiodąca + porównanie do poprzedniego okna (reguła jak dawniej) ──
@@ -541,9 +543,10 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     if (isUnits) return "Widok w sztukach pokazuje sam magazyn — pieniędzy na koncie nie da się liczyć w sztukach.";
     if (!canBank) return null;
     if (!shop) return "Wybierz firmę u góry, żeby dołożyć stan konta — trzy spółki mają trzy osobne rachunki.";
-    if (!hasMoney) return onOpenEntries
-      ? "Brak wpisów salda dla tej firmy — kliknij „Dodaj wpisy”, żeby zacząć."
-      : "Brak wpisów salda dla tej firmy. Dodasz je w Cashflow → Konto i pożyczki.";
+    if (!hasMoney) {
+      const co = hasLoans ? "Pożyczki są zapisane, ale bez odczytów salda nie ma z czego narysować linii konta" : "Brak wpisów salda dla tej firmy";
+      return onOpenEntries ? `${co} — kliknij „Dodaj wpisy”.` : `${co}. Dodasz je w Cashflow → Konto i pożyczki.`;
+    }
     // hasMoney nadal steruje liniami i podpisem niżej — przycisk świeci zawsze,
     // bo prowadzi też do poprawiania i kasowania istniejących wpisów.
     if (lead.when) {
@@ -553,12 +556,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     return "Kliknij plakietkę, żeby dołożyć linię. Najedź na nią, żeby przeczytać, co pokazuje.";
   })();
 
-  const legendItems = SERIES.filter((s) => {
-    if (isUnits) return s.k === "mag";
-    if (s.k === "mag") return true;
-    if (s.k === "transit") return hasTransit;
-    return canBank && !!shop;
-  });
+  const legendItems = SERIES.filter((s) => (isUnits ? s.k === "mag" : available[s.k]));
 
   return (
     <Card>
@@ -621,7 +619,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
       </div>
 
       {/* Legenda-przełącznik. Widoczna tylko gdy jest co przełączać. */}
-      {canBank && legendItems.length > 1 && (
+      {canBank && loaded && legendItems.length > 1 && (
         <div style={{ position: "relative", padding: "0 20px 10px" }} onMouseLeave={() => setHelpFor(null)}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {legendItems.map((s) => {
