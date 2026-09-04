@@ -18,6 +18,8 @@ przy zapisie świadomie 403 zamiast cichego override'u z resolve_shop: podmiana 
 pod ręką piszącego zapisałaby dane w cudzej książce.
 """
 
+from bisect import bisect_left
+from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,6 +36,7 @@ from models import (
 from security import (
     can_edit_bank, get_current_user, require_bank_edit, require_bank_view, resolve_shop,
 )
+from services.containers import fetch_containers
 
 router = APIRouter(prefix="/api", tags=["bank"])
 
@@ -244,3 +247,127 @@ async def list_partners(shop: str = "", db: AsyncSession = Depends(get_db),
         {"s": s},
     )
     return [row["partner"] for row in r.mappings()]
+
+
+# ===== ZAPŁACONE ZA TOWAR W DRODZE =====
+
+@router.get("/transit-paid-history")
+async def transit_paid_history(days: int = 90, shop: str = "",
+                               db: AsyncSession = Depends(get_db),
+                               user: CurrentUser = Depends(require_bank_view)):
+    """Ile pieniędzy siedziało danego dnia w kontenerach, które jeszcze nie weszły na magazyn.
+
+    Po co: zaliczka schodzi z konta na długo przed tym, zanim towar trafi na półkę.
+    Bez tej serii „kapitał łącznie" ma dziurę — gotówka już wyszła, magazyn jeszcze
+    nie urósł, więc wykres pokazuje stratę tam, gdzie pieniądze tylko zmieniły postać.
+
+    Reguła na dany dzień d:
+        Σ wpłat o dacie ≤ d, dla kontenerów, których data wejścia na magazyn > d.
+
+    Liczymy WYŁĄCZNIE realnie zapłacone raty (status 'paid' w /cashflow/ledger).
+    Reszta balansu to zobowiązanie, nie kapitał — wliczenie jej zawyżałoby obraz.
+
+    Kontener znika z tej serii dokładnie w dniu wejścia na magazyn (kaskada
+    delivered_date → expected_delivery_date → ETA + odprawa, ta sama, której używa
+    reszta aplikacji). Tego samego dnia jego towar wchodzi do /stock-value-history,
+    więc nie ma okna, w którym byłby policzony dwa razy ani takiego, w którym znika.
+
+    Przypisanie do firmy i przeliczenie na PLN — identyczne jak w /cashflow/ledger:
+    firma o największym udziale wartości w locie/kontenerze, kurs NBP z dnia
+    poprzedzającego wpłatę. Wpłata w obcej walucie bez notowania NBP jest POMIJANA
+    (nie zgadujemy kursu) i policzona w `bez_kursu`.
+    """
+    s = resolve_shop(shop, user)
+    today = date.today()
+    start = today - timedelta(days=max(1, min(days, 1200)))
+    containers = await fetch_containers(db)
+
+    def _sv(x):
+        return (x.get("value") if isinstance(x, dict) else getattr(x, "value", 0)) or 0.0
+
+    def _ss(x):
+        return (x.get("slug") if isinstance(x, dict) else getattr(x, "slug", None)) or "amh"
+
+    def _firma(fb) -> str:
+        if not fb:
+            return "amh"
+        return (_ss(max(fb.values(), key=_sv)) or "amh").lower()
+
+    # (data_wpłaty, kwota, waluta, data_wejścia_na_magazyn) dla wybranej firmy
+    pays: List[tuple] = []
+
+    def _add(slug, kwota, waluta, data, wh):
+        if kwota is None or data is None or data > today:
+            return
+        if s and slug != s:
+            return
+        pays.append((data, float(kwota), (waluta or "USD").upper(), wh))
+
+    for c in containers:
+        wh = c.warehouse_delivery_date
+        c_slug = _firma(c.firma_breakdown)
+        for a in (c.advances or []):
+            _add(c_slug, a.kwota, a.waluta, a.data, wh)
+        _add(c_slug, c.balance_kwota, c.balance_waluta, c.zaplacono_data, wh)
+        for lot in (c.lots or []):
+            l_slug = _firma(lot.firma_breakdown)
+            for a in (lot.advances or []):
+                _add(l_slug, a.kwota, a.waluta, a.data, wh)
+            _add(l_slug, lot.balance_kwota, lot.balance_waluta, lot.zaplacono_data, wh)
+
+    # FX: kurs NBP z dnia POPRZEDZAJĄCEGO wpłatę (jak w /cashflow/ledger).
+    curs = sorted({p[2] for p in pays if p[2] != "PLN"})
+    fx: dict = {}
+    if curs:
+        rows = await db.execute(text(f"""
+            SELECT currency, rate_date, mid
+            FROM {settings.TABLE_FX_RATES}
+            WHERE currency = ANY(:curs)
+            ORDER BY currency, rate_date
+        """), {"curs": curs})
+        tmp: dict = {}
+        for r in rows:
+            m = r._mapping
+            tmp.setdefault(m["currency"], []).append((m["rate_date"], float(m["mid"])))
+        for cur, arr in tmp.items():
+            fx[cur] = ([d for d, _ in arr], [v for _, v in arr])
+
+    def _rate_before(cur, d):
+        pair = fx.get(cur)
+        if not pair or d is None:
+            return None
+        dates, mids = pair
+        i = bisect_left(dates, d) - 1
+        return mids[i] if i >= 0 else None
+
+    # Zamiast liczyć sumę dla każdego dnia osobno (O(dni × wpłaty)) robimy różnice:
+    # wpłata dokłada kwotę od dnia płatności, a odejmuje ją od dnia wejścia na magazyn.
+    delta: dict = {}
+    no_rate = 0
+    for d, kwota, cur, wh in pays:
+        if cur == "PLN":
+            pln = kwota
+        else:
+            r = _rate_before(cur, d)
+            if r is None:
+                no_rate += 1
+                continue
+            pln = kwota * r
+        delta[d] = delta.get(d, 0.0) + pln
+        if wh is not None:
+            delta[wh] = delta.get(wh, 0.0) - pln
+
+    running = sum(v for k, v in delta.items() if k < start)
+    points = []
+    cur_day = start
+    while cur_day <= today:
+        running += delta.get(cur_day, 0.0)
+        points.append({"date": cur_day.isoformat(), "value": round(max(running, 0.0), 2)})
+        cur_day += timedelta(days=1)
+
+    return {
+        "shop": s,
+        "points": points,
+        "current_value": points[-1]["value"] if points else 0.0,
+        "bez_kursu": no_rate,
+    }
