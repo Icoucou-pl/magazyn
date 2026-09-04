@@ -171,16 +171,7 @@ function MoneyChart({
   const fmtTick = (v: number) => (isUnits ? fmtNum(v) : fmtPLNk(v));
   const fmtFull = (v: number) => (isUnits ? `${fmtNum(v)} szt` : fmtPLN(v));
 
-  // Geometria: bez linii pieniężnych trzymamy DAWNE marginesy i etykiety po prawej
-  // (żeby domyślny widok był 1:1 ze starą kartą). Z liniami — oś magazynu wędruje
-  // w lewo, prawa zostaje dla konta.
-  const padTop = 20, padBot = 30;
-  const padLeft = anyMoney ? 66 : 8;
-  const padRight = anyMoney ? 66 : 8;
-  const innerH = size.h - padTop - padBot;
-  const innerW = size.w - padLeft - padRight;
-  const getX = (i: number) => padLeft + (i / (points.length - 1)) * innerW;
-
+  // ── Domeny obu osi ──
   const leftVals: number[] = [...magVals];
   if (showSuma) suma.forEach((v) => { if (v != null) leftVals.push(v); });
   const rightVals: number[] = [];
@@ -189,10 +180,33 @@ function MoneyChart({
 
   const lMax = Math.max(...leftVals), lMin = Math.min(...leftVals);
   const lRange = lMax - lMin || 1;
-  const hasRight = rightVals.length > 1;
-  const rMax = hasRight ? Math.max(...rightVals) : 1;
-  const rMin = hasRight ? Math.min(...rightVals) : 0;
+
+  // Jeden odczyt salda to poprawny stan (świeża firma, pierwszy wpis) — wtedy nie ma
+  // rozpiętości do policzenia, więc rozsuwamy oś o ±15%, żeby kropka wylądowała
+  // pośrodku wykresu zamiast poza jego obszarem.
+  const hasRight = rightVals.length > 0;
+  const rawMax = hasRight ? Math.max(...rightVals) : 1;
+  const rawMin = hasRight ? Math.min(...rightVals) : 0;
+  const single = hasRight && rawMax === rawMin;
+  const spread = single ? Math.max(Math.abs(rawMax) * 0.15, 1) : 0;
+  const rMax = rawMax + spread;
+  const rMin = rawMin - spread;
   const rRange = rMax - rMin || 1;
+
+  const lTicks = [lMin + lRange * 0.25, lMin + lRange * 0.5, lMin + lRange * 0.75, lMax];
+  const rTicks = !hasRight ? [] : single ? [rawMax] : [rMin, rMin + rRange * 0.5, rMax];
+
+  // Geometria: bez linii pieniężnych trzymamy DAWNE marginesy i etykiety po prawej
+  // (żeby domyślny widok był 1:1 ze starą kartą). Z liniami — oś magazynu wędruje
+  // w lewo, prawa zostaje dla konta, a marginesy liczymy z NAJDŁUŻSZEJ etykiety,
+  // inaczej „3,29 mln zł" wychodzi poza SVG i zostaje z niego „,29 mln zł".
+  const textW = (t: string) => t.length * 6.2 + 12;
+  const padTop = 20, padBot = 30;
+  const padLeft = anyMoney ? Math.ceil(Math.max(...lTicks.map((t) => textW(fmtTick(t))), 40)) : 8;
+  const padRight = anyMoney ? Math.ceil(Math.max(...rTicks.map((t) => textW(fmtPLNk(t))), 40)) : 8;
+  const innerH = size.h - padTop - padBot;
+  const innerW = size.w - padLeft - padRight;
+  const getX = (i: number) => padLeft + (i / (points.length - 1)) * innerW;
 
   const yL = (v: number) => padTop + innerH - ((v - lMin) / lRange) * innerH;
   const yR = (v: number) => padTop + innerH - ((v - rMin) / rRange) * innerH;
@@ -221,9 +235,6 @@ function MoneyChart({
     const idx = Math.round((((e.clientX - rect.left) - padLeft) / innerW) * (points.length - 1));
     if (idx >= 0 && idx < points.length) setHover(idx);
   };
-
-  const lTicks = [lMin + lRange * 0.25, lMin + lRange * 0.5, lMin + lRange * 0.75, lMax];
-  const rTicks = hasRight ? [rMin, rMin + rRange * 0.5, rMax] : [];
 
   return (
     <div ref={ref} style={{ position: "relative", width: "100%" }}>
@@ -260,7 +271,15 @@ function MoneyChart({
         {(showRaw || showAdj) && money.anchors.map((i) => {
           const v = showRaw ? money.raw[i] : money.adj[i];
           if (v == null) return null;
-          return <circle key={i} cx={getX(i)} cy={yR(v)} r="3" fill="var(--bg)" stroke={COLOR.raw} strokeWidth="2" />;
+          return (
+            <g key={i}>
+              {/* Jeden odczyt = brak linii (nie ma czego łączyć), więc kropka musi być widoczna sama. */}
+              {money.anchors.length === 1 && (
+                <line x1={getX(i) - 14} x2={getX(i) + 14} y1={yR(v)} y2={yR(v)} stroke={COLOR.raw} strokeWidth="2" opacity="0.5" />
+              )}
+              <circle cx={getX(i)} cy={yR(v)} r={money.anchors.length === 1 ? 4.5 : 3} fill="var(--bg)" stroke={COLOR.raw} strokeWidth="2" />
+            </g>
+          );
         })}
 
         {hover != null && (
