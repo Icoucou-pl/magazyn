@@ -14,7 +14,7 @@ import {
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import { api, photoUrl } from "@/lib/api";
-import { resetPhotoCache } from "./photo-hover";
+import { PhotoHover, ProductThumb, resetPhotoCache } from "./photo-hover";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
@@ -118,6 +118,14 @@ export default function ProductModal({
 
   const applyUpdate = (updated: Product) => { setProduct(updated); onUpdated?.(updated); };
 
+  // Po wgraniu/usunięciu zdjęcia dociągamy produkt na nowo — tylko wtedy
+  // photo_id/photo_hash w nagłówku i na liście są aktualne.
+  const refreshProduct = () => {
+    api.get(`/products/${encodeURIComponent(product.sku)}`)
+      .then((p) => applyUpdate(p as Product))
+      .catch(() => { /* zdjęcie i tak się zapisało — brak odświeżenia nie jest błędem do pokazania */ });
+  };
+
   const toggleFav = async () => {
     try {
       const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/favorite`)) as Product;
@@ -161,6 +169,11 @@ export default function ProductModal({
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
           <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+            {product.photo_id && product.photo_hash && (
+              <PhotoHover sku={product.sku} photoId={product.photo_id} photoHash={product.photo_hash} size={320} style={{ display: "flex", flexShrink: 0 }}>
+                <ProductThumb photoId={product.photo_id} photoHash={product.photo_hash} size={64} />
+              </PhotoHover>
+            )}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <StatusPillExt status={statusKey} size="md" />
@@ -231,7 +244,7 @@ export default function ProductModal({
           <ContainersSection product={product} onContainerClick={onContainerClick} onClose={onClose} />
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-            <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} />
+            <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} onPhotosChanged={refreshProduct} />
             <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
           </div>
         </div>
@@ -604,7 +617,7 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
   };
 
   if (photos === null) {
-    return <div style={{ padding: "12px 14px" }}><div style={{ width: 72, height: 72, borderRadius: 8, background: "var(--surface-2)" }} className="pulse-soft" /></div>;
+    return <div style={{ padding: "12px 14px" }}><div style={{ width: 104, height: 104, borderRadius: 8, background: "var(--surface-2)" }} className="pulse-soft" /></div>;
   }
   if (!photos.length && !editing) {
     return <div style={{ padding: "10px 14px", fontSize: 11, color: "var(--text-disabled)" }}>Brak zdjęcia</div>;
@@ -614,13 +627,17 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
     <>
       <div style={{ padding: "12px 14px 4px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
         {photos.map((p, i) => (
-          <div key={p.id} style={{ position: "relative", width: 72, height: 72, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
-            <img
-              src={photoUrl(p.id, p.content_hash, "thumb") || ""}
-              alt={`Zdjęcie ${i + 1}`}
-              onClick={() => setPodglad(p)}
-              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", cursor: "zoom-in" }}
-            />
+          <div key={p.id} style={{ position: "relative", width: 104, height: 104, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
+            {/* Miniatura 128 px rozciągnięta do 104 px jest lekko miękka, ale ładuje się
+                natychmiast. Po najechaniu pokazujemy pełne 800 px w podglądzie 320 px. */}
+            <PhotoHover sku={sku} photoId={p.id} photoHash={p.content_hash} size={320} style={{ display: "block", width: "100%", height: "100%" }}>
+              <img
+                src={photoUrl(p.id, p.content_hash, "thumb") || ""}
+                alt={`Zdjęcie ${i + 1}`}
+                onClick={() => setPodglad(p)}
+                style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", cursor: "zoom-in" }}
+              />
+            </PhotoHover>
             {i === 0 && (
               <span style={{ position: "absolute", top: 3, left: 3, fontSize: 8, fontWeight: 700, letterSpacing: "0.04em", padding: "1px 5px", borderRadius: 99, background: "var(--accent)", color: "var(--accent-ink)" }}>GŁÓWNE</span>
             )}
@@ -639,8 +656,8 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
 
         {editing && photos.length < MAX_PHOTOS && (
           <button onClick={() => inputRef.current?.click()} disabled={busy}
-            style={{ width: 72, height: 72, borderRadius: 8, border: "1.5px dashed var(--border-strong)", background: "transparent", color: "var(--text-lo)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, fontSize: 10 }}>
-            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+            style={{ width: 104, height: 104, borderRadius: 8, border: "1.5px dashed var(--border-strong)", background: "transparent", color: "var(--text-lo)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, fontSize: 10 }}>
+            <span style={{ fontSize: 20, lineHeight: 1 }}>+</span>
             <span>{busy ? "…" : "Zdjęcie"}</span>
           </button>
         )}
@@ -667,10 +684,11 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
 
 // ── Dane podstawowe (edytowalne) ─────────────────────────────
 function AttributesCard({
-  product, manufacturers, firmy, editing, setEditing, onSaved,
+  product, manufacturers, firmy, editing, setEditing, onSaved, onPhotosChanged,
 }: {
   product: Product; manufacturers: Manufacturer[]; firmy?: Firma[];
   editing: boolean; setEditing: (v: boolean) => void; onSaved: (p: Product) => void;
+  onPhotosChanged: () => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -730,7 +748,7 @@ function AttributesCard({
       {/* Po każdej zmianie zdjęć czyścimy cache podglądu-po-najechaniu dla tego SKU,
           inaczej hover w kontenerach pokazywałby stare zdjęcie do końca sesji.
           Miniatura na liście produktów odświeża się przy kolejnym pobraniu katalogu. */}
-      <ProductPhotos sku={product.sku} editing={editing && showEdit} onChanged={() => resetPhotoCache(product.sku)} />
+      <ProductPhotos sku={product.sku} editing={editing && showEdit} onChanged={() => { resetPhotoCache(product.sku); onPhotosChanged(); }} />
       <div style={{ height: 1, background: "var(--border-soft)", margin: "4px 14px" }} />
 
       <div style={{ padding: "6px 0" }}>

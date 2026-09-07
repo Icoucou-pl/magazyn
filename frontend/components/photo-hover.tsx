@@ -57,22 +57,25 @@ function maHover(): boolean {
   return window.matchMedia("(hover: hover)").matches;
 }
 
-const ROZMIAR = 190;   // bok podglądu w px
-const ODSTEP = 12;     // odstęp od elementu wyzwalającego
+const ROZMIAR_DOMYSLNY = 190;   // bok podglądu w px (listy)
+const ODSTEP = 12;              // odstęp od elementu wyzwalającego
 
 /**
  * Owija dowolny element. Po najechaniu pokazuje podgląd zdjęcia obok kursora.
  * Gdy produkt nie ma zdjęcia — nie dzieje się nic, dziecko renderuje się normalnie.
  */
 export function PhotoHover({
-  sku, photoId, photoHash, children, style,
+  sku, photoId, photoHash, children, style, size = ROZMIAR_DOMYSLNY,
 }: {
   sku: string;
   photoId?: number | null;
   photoHash?: string | null;
   children: React.ReactNode;
   style?: React.CSSProperties;
+  /** Bok podglądu w px. Listy zostają na 190, modal używa większego. */
+  size?: number;
 }) {
+  const ROZMIAR = size;
   const znane: PhotoRef = photoId && photoHash ? { id: photoId, hash: photoHash } : null;
   const [ref, setRef] = useState<PhotoRef>(znane);
   const [poz, setPoz] = useState<{ x: number; y: number } | null>(null);
@@ -101,7 +104,7 @@ export function PhotoHover({
       Math.max(8, window.innerHeight - ROZMIAR - 8)
     );
     setPoz({ x, y });
-  }, [ref, sku]);
+  }, [ref, sku, ROZMIAR]);
 
   const wyjscie = useCallback(() => setPoz(null), []);
 
