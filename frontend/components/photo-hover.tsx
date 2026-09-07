@@ -83,24 +83,25 @@ export function PhotoHover({
 
   useEffect(() => { setRef(photoId && photoHash ? { id: photoId, hash: photoHash } : null); }, [photoId, photoHash]);
 
-  const wejscie = useCallback(async () => {
+  const wejscie = useCallback(async (e: React.MouseEvent) => {
     if (!maHover()) return;
+    const kursorX = e.clientX;
+    const kursorY = e.clientY;
+
     let r = ref;
     if (!r) {
       r = await pobierzZdjecie(sku);
       if (!r) return;
       setRef(r);
     }
-    const el = boxRef.current;
-    if (!el) return;
-    const b = el.getBoundingClientRect();
 
-    // Domyślnie po prawej stronie elementu; gdy brakuje miejsca — po lewej.
-    // Pion przycinamy do okna, żeby podgląd nigdy nie wyszedł poza ekran.
-    const zaWaski = b.right + ODSTEP + ROZMIAR > window.innerWidth;
-    const x = zaWaski ? Math.max(8, b.left - ODSTEP - ROZMIAR) : b.right + ODSTEP;
+    // Punktem odniesienia jest KURSOR, nie element. Element bywa szeroki
+    // (kolumna nazwy na całą szerokość tabeli) i podgląd uciekałby wtedy
+    // na drugi koniec ekranu, daleko od tego, na co user patrzy.
+    const zaWaski = kursorX + ODSTEP + ROZMIAR > window.innerWidth;
+    const x = zaWaski ? Math.max(8, kursorX - ODSTEP - ROZMIAR) : kursorX + ODSTEP;
     const y = Math.min(
-      Math.max(8, b.top + b.height / 2 - ROZMIAR / 2),
+      Math.max(8, kursorY - ROZMIAR / 2),
       Math.max(8, window.innerHeight - ROZMIAR - 8)
     );
     setPoz({ x, y });
@@ -125,7 +126,9 @@ export function PhotoHover({
         <div
           style={{
             position: "fixed", left: poz.x, top: poz.y, width: ROZMIAR, height: ROZMIAR,
-            borderRadius: 10, overflow: "hidden", zIndex: 300, pointerEvents: "none",
+            // 2000, bo podgląd musi być NAD modalem produktu (modalBackdrop ma zIndex 1000).
+            // Przy 300 renderował się pod nim i wyglądało to jak „hover nie działa".
+            borderRadius: 10, overflow: "hidden", zIndex: 2000, pointerEvents: "none",
             background: "var(--surface-1)", border: "1px solid var(--border)",
             boxShadow: "0 12px 32px oklch(0 0 0 / 0.28)",
           }}

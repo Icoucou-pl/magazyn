@@ -170,8 +170,8 @@ export default function ProductModal({
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
           <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
             {product.photo_id && product.photo_hash && (
-              <PhotoHover sku={product.sku} photoId={product.photo_id} photoHash={product.photo_hash} size={320} style={{ display: "flex", flexShrink: 0 }}>
-                <ProductThumb photoId={product.photo_id} photoHash={product.photo_hash} size={64} />
+              <PhotoHover sku={product.sku} photoId={product.photo_id} photoHash={product.photo_hash} size={380} style={{ display: "flex", flexShrink: 0 }}>
+                <ProductThumb photoId={product.photo_id} photoHash={product.photo_hash} size={104} />
               </PhotoHover>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -617,7 +617,7 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
   };
 
   if (photos === null) {
-    return <div style={{ padding: "12px 14px" }}><div style={{ width: 104, height: 104, borderRadius: 8, background: "var(--surface-2)" }} className="pulse-soft" /></div>;
+    return <div style={{ padding: "12px 14px" }}><div style={{ width: 120, height: 120, borderRadius: 8, background: "var(--surface-2)" }} className="pulse-soft" /></div>;
   }
   if (!photos.length && !editing) {
     return <div style={{ padding: "10px 14px", fontSize: 11, color: "var(--text-disabled)" }}>Brak zdjęcia</div>;
@@ -627,7 +627,7 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
     <>
       <div style={{ padding: "12px 14px 4px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
         {photos.map((p, i) => (
-          <div key={p.id} style={{ position: "relative", width: 104, height: 104, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
+          <div key={p.id} style={{ position: "relative", width: 120, height: 120, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
             {/* Miniatura 128 px rozciągnięta do 104 px jest lekko miękka, ale ładuje się
                 natychmiast. Po najechaniu pokazujemy pełne 800 px w podglądzie 320 px. */}
             <PhotoHover sku={sku} photoId={p.id} photoHash={p.content_hash} size={320} style={{ display: "block", width: "100%", height: "100%" }}>
@@ -656,7 +656,7 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
 
         {editing && photos.length < MAX_PHOTOS && (
           <button onClick={() => inputRef.current?.click()} disabled={busy}
-            style={{ width: 104, height: 104, borderRadius: 8, border: "1.5px dashed var(--border-strong)", background: "transparent", color: "var(--text-lo)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, fontSize: 10 }}>
+            style={{ width: 120, height: 120, borderRadius: 8, border: "1.5px dashed var(--border-strong)", background: "transparent", color: "var(--text-lo)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, fontSize: 10 }}>
             <span style={{ fontSize: 20, lineHeight: 1 }}>+</span>
             <span>{busy ? "…" : "Zdjęcie"}</span>
           </button>
@@ -672,7 +672,9 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
 
       {podglad && (
         <Portal>
-          <div onClick={() => setPodglad(null)} style={{ ...modalBackdrop, display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out", zIndex: 200 }}>
+          {/* zIndex 1100: modalBackdrop ma 1000, więc 200 chowało podgląd pod modalem
+              i klik w zdjęcie wyglądał jakby nic nie robił. */}
+          <div onClick={() => setPodglad(null)} style={{ ...modalBackdrop, display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out", zIndex: 1100 }}>
             <img src={photoUrl(podglad.id, podglad.content_hash, "full") || ""} alt=""
               style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 10, boxShadow: "0 20px 60px oklch(0 0 0 / 0.5)" }} />
           </div>
