@@ -10,6 +10,7 @@ import React from "react";
 import { I, Pill, MfrChip, ContainerNr, isDraftNumber } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
+import { PhotoHover } from "./photo-hover";
 import { download } from "@/lib/api";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
@@ -839,8 +840,12 @@ function ContainerCardBody({
               // dwie pierwsze kolumny siatki, na telefonie łamie się na dwie linie nad liczbami.
               <div key={item.id} className="it-row" style={{ padding: "8px 12px", borderBottom: i === c.items.length - 1 ? "none" : "1px solid var(--border-soft)", fontSize: 12 }}>
                 <div className="it-id">
-                  <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.sku}</span>
-                  <span className="it-name" style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product_name}</span>
+                  <PhotoHover sku={item.sku} style={{ display: "block", overflow: "hidden", minWidth: 0 }}>
+                    <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.sku}</span>
+                  </PhotoHover>
+                  <PhotoHover sku={item.sku} style={{ display: "block", overflow: "hidden", minWidth: 0 }}>
+                    <span className="it-name" style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.product_name}</span>
+                  </PhotoHover>
                 </div>
                 <span className="num it-qty" style={{ color: "var(--text-hi)", fontWeight: 600 }}>×{item.quantity}</span>
                 <span className="num it-cbm" style={{ color: "var(--text-lo)" }}>{itemCbm.toFixed(3)} m³</span>

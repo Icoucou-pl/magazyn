@@ -13,6 +13,7 @@ import { exportCsv, toast, type CsvColumn } from "./toast";
 import { api } from "@/lib/api";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtNum, fmtPLNk } from "@/lib/format";
+import { PhotoHover, ProductThumb } from "./photo-hover";
 
 // ── Typ produktu (z /api/products) ───────────────────────────
 export type IncomingDelivery = {
@@ -100,7 +101,7 @@ export type ColDef = {
 
 export const PRODUCT_COLS: ColDef[] = [
   { id: "fav", label: "", w: 36, align: "center", sortKey: null, alwaysVisible: true },
-  { id: "sku", label: "SKU", w: 132, align: "left", sortKey: "sku", alwaysVisible: true },
+  { id: "sku", label: "SKU", w: 168, align: "left", sortKey: "sku", alwaysVisible: true },
   { id: "name", label: "Nazwa", w: "minmax(180px, 1fr)", align: "left", sortKey: "name", alwaysVisible: true },
   { id: "firma", label: "Firma", w: 110, align: "left", sortKey: "firma_name" },
   { id: "mfr", label: "Producent", w: 150, align: "left", sortKey: "manufacturer_name" },
@@ -391,9 +392,22 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
         </div>
       );
     case "sku":
-      return <div style={baseStyle}><span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span></div>;
+      return (
+        <div style={{ ...baseStyle, gap: 8 }}>
+          <PhotoHover sku={p.sku} photoId={p.photo_id} photoHash={p.photo_hash} style={{ display: "flex", flexShrink: 0 }}>
+            <ProductThumb photoId={p.photo_id} photoHash={p.photo_hash} />
+          </PhotoHover>
+          <span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.sku}</span>
+        </div>
+      );
     case "name":
-      return <div style={baseStyle}><span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span></div>;
+      return (
+        <div style={baseStyle}>
+          <PhotoHover sku={p.sku} photoId={p.photo_id} photoHash={p.photo_hash} style={{ overflow: "hidden", minWidth: 0 }}>
+            <span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{p.name}</span>
+          </PhotoHover>
+        </div>
+      );
     case "firma":
       return <div style={baseStyle}>{p.firma_name ? <MfrChip name={p.firma_name} color={p.firma_color ?? "var(--text-lo)"} /> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
     case "mfr":

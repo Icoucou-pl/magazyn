@@ -14,6 +14,7 @@ import {
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import { api, photoUrl } from "@/lib/api";
+import { resetPhotoCache } from "./photo-hover";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
@@ -726,7 +727,10 @@ function AttributesCard({
         )}
       </div>
 
-      <ProductPhotos sku={product.sku} editing={editing && showEdit} onChanged={() => { /* miniatura na liście odświeży się przy kolejnym pobraniu katalogu */ }} />
+      {/* Po każdej zmianie zdjęć czyścimy cache podglądu-po-najechaniu dla tego SKU,
+          inaczej hover w kontenerach pokazywałby stare zdjęcie do końca sesji.
+          Miniatura na liście produktów odświeża się przy kolejnym pobraniu katalogu. */}
+      <ProductPhotos sku={product.sku} editing={editing && showEdit} onChanged={() => resetPhotoCache(product.sku)} />
       <div style={{ height: 1, background: "var(--border-soft)", margin: "4px 14px" }} />
 
       <div style={{ padding: "6px 0" }}>
