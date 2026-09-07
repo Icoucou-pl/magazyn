@@ -155,6 +155,16 @@ export const api = {
   del: (path, opts) => request("DELETE", path, undefined, opts),
 };
 
+// ---- Zdjęcia produktów ----
+// Endpointy obrazków są BEZ nagłówka Authorization (tag <img> nie umie go wysłać),
+// za to wymagają pełnego content_hash w ścieżce — hash pełni rolę klucza-URL.
+// Ten sam hash daje cache-busting: podmiana zdjęcia = inny URL, więc backend
+// może odpowiadać `immutable` i przeglądarka nie odpytuje go ponownie.
+export function photoUrl(id, hash, wariant = "thumb") {
+  if (!id || !hash) return null;
+  return `${API_BASE}/product-photos/${id}/${hash}/${wariant}`;
+}
+
 // ---- Logowanie / wylogowanie ----
 // Backend: POST /auth/login → { access_token, token_type, user }
 export async function login(email, password) {
