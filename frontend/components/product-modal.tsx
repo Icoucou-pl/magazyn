@@ -13,7 +13,7 @@ import {
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
-import { api } from "@/lib/api";
+import { api, photoUrl } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
@@ -231,7 +231,7 @@ export default function ProductModal({
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
             <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} />
-            <LeadTimeCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
+            <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
           </div>
         </div>
 
@@ -515,7 +515,156 @@ function ContainersSection({ product, onContainerClick, onClose }: { product: Pr
   );
 }
 
-// ── Atrybuty (edytowalne) ────────────────────────────────────
+// ── Zdjęcia produktu ─────────────────────────────────────────
+// Konwersja do WebP dzieje się TUTAJ, w przeglądarce (canvas.toBlob).
+// Backend nie ma Pillow i nie musi mieć — dostaje gotową parę plików.
+// Wysyłamy dwa warianty: pełny (~800 px, modal/hover) i miniaturę (~128 px, listy).
+type Photo = {
+  id: number; sku: string; sort_order: number; content_hash: string;
+  content_type: string; filename: string | null; width: number | null; height: number | null;
+  thumb_bytes: number; full_bytes: number; uploaded_at: string; uploaded_by: string | null;
+};
+
+const MAX_PHOTOS = 8;
+
+async function toWebp(img: HTMLImageElement, maxPx: number, jakosc: number): Promise<Blob> {
+  const skala = Math.min(1, maxPx / Math.max(img.width, img.height));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(img.width * skala));
+  c.height = Math.max(1, Math.round(img.height * skala));
+  const ctx = c.getContext("2d");
+  if (!ctx) throw new Error("brak canvas 2d");
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return new Promise((res, rej) =>
+    c.toBlob((b) => (b ? res(b) : rej(new Error("konwersja nieudana"))), "image/webp", jakosc)
+  );
+}
+
+function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: boolean; onChanged: () => void }) {
+  const [photos, setPhotos] = useState<Photo[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [podglad, setPodglad] = useState<Photo | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const load = React.useCallback(() => {
+    api.get(`/products/${encodeURIComponent(sku)}/photos`)
+      .then((d) => setPhotos((d as Photo[]) || []))
+      .catch(() => setPhotos([]));
+  }, [sku]);
+
+  useEffect(() => { setPhotos(null); load(); }, [load]);
+
+  const wgraj = async (files: FileList | null) => {
+    if (!files || !files.length || busy) return;
+    const wolne = MAX_PHOTOS - (photos?.length ?? 0);
+    if (wolne <= 0) { toast(`Maksymalnie ${MAX_PHOTOS} zdjęć na produkt`, "warning"); return; }
+    setBusy(true);
+    try {
+      for (const f of Array.from(files).slice(0, wolne)) {
+        if (!f.type.startsWith("image/")) { toast(`${f.name}: to nie jest obrazek`, "warning"); continue; }
+        const img = new Image();
+        const url = URL.createObjectURL(f);
+        try {
+          img.src = url;
+          await img.decode();
+          const [pelne, mini] = await Promise.all([toWebp(img, 800, 0.82), toWebp(img, 128, 0.8)]);
+          const fd = new FormData();
+          fd.append("full", pelne, "full.webp");
+          fd.append("thumb", mini, "thumb.webp");
+          fd.append("width", String(img.width));
+          fd.append("height", String(img.height));
+          await api.post(`/products/${encodeURIComponent(sku)}/photos`, fd);
+        } finally { URL.revokeObjectURL(url); }
+      }
+      load();
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się wgrać zdjęcia", "warning");
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const usun = async (id: number) => {
+    if (busy) return;
+    setBusy(true);
+    try { await api.del(`/product-photos/${id}`); load(); onChanged(); }
+    catch { toast("Nie udało się usunąć zdjęcia", "warning"); }
+    finally { setBusy(false); }
+  };
+
+  const ustawGlowne = async (id: number) => {
+    if (busy) return;
+    setBusy(true);
+    try { const d = (await api.put(`/product-photos/${id}/main`, {})) as Photo[]; setPhotos(d || []); onChanged(); }
+    catch { toast("Nie udało się ustawić zdjęcia głównego", "warning"); }
+    finally { setBusy(false); }
+  };
+
+  if (photos === null) {
+    return <div style={{ padding: "12px 14px" }}><div style={{ width: 72, height: 72, borderRadius: 8, background: "var(--surface-2)" }} className="pulse-soft" /></div>;
+  }
+  if (!photos.length && !editing) {
+    return <div style={{ padding: "10px 14px", fontSize: 11, color: "var(--text-disabled)" }}>Brak zdjęcia</div>;
+  }
+
+  return (
+    <>
+      <div style={{ padding: "12px 14px 4px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+        {photos.map((p, i) => (
+          <div key={p.id} style={{ position: "relative", width: 72, height: 72, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
+            <img
+              src={photoUrl(p.id, p.content_hash, "thumb") || ""}
+              alt={`Zdjęcie ${i + 1}`}
+              onClick={() => setPodglad(p)}
+              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", cursor: "zoom-in" }}
+            />
+            {i === 0 && (
+              <span style={{ position: "absolute", top: 3, left: 3, fontSize: 8, fontWeight: 700, letterSpacing: "0.04em", padding: "1px 5px", borderRadius: 99, background: "var(--accent)", color: "var(--accent-ink)" }}>GŁÓWNE</span>
+            )}
+            {editing && (
+              <div style={{ position: "absolute", top: 3, right: 3, display: "flex", gap: 3 }}>
+                {i !== 0 && (
+                  <button onClick={() => ustawGlowne(p.id)} disabled={busy} title="Ustaw jako główne"
+                    style={{ width: 18, height: 18, borderRadius: 99, border: "none", background: "oklch(0.2 0 0 / 0.62)", color: "#fff", fontSize: 10, lineHeight: 1, padding: 0 }}>★</button>
+                )}
+                <button onClick={() => usun(p.id)} disabled={busy} title="Usuń zdjęcie"
+                  style={{ width: 18, height: 18, borderRadius: 99, border: "none", background: "oklch(0.2 0 0 / 0.62)", color: "#fff", fontSize: 10, lineHeight: 1, padding: 0 }}>✕</button>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {editing && photos.length < MAX_PHOTOS && (
+          <button onClick={() => inputRef.current?.click()} disabled={busy}
+            style={{ width: 72, height: 72, borderRadius: 8, border: "1.5px dashed var(--border-strong)", background: "transparent", color: "var(--text-lo)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, fontSize: 10 }}>
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+            <span>{busy ? "…" : "Zdjęcie"}</span>
+          </button>
+        )}
+        <input ref={inputRef} type="file" accept="image/*" multiple hidden onChange={(e) => wgraj(e.target.files)} />
+      </div>
+
+      {editing && (
+        <div style={{ padding: "0 14px 8px", fontSize: 10, color: "var(--text-disabled)", lineHeight: 1.5 }}>
+          Dowolny JPG/PNG zostanie przekonwertowany do WebP. Pierwsze zdjęcie jest miniaturką na liście produktów.
+        </div>
+      )}
+
+      {podglad && (
+        <Portal>
+          <div onClick={() => setPodglad(null)} style={{ ...modalBackdrop, display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out", zIndex: 200 }}>
+            <img src={photoUrl(podglad.id, podglad.content_hash, "full") || ""} alt=""
+              style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 10, boxShadow: "0 20px 60px oklch(0 0 0 / 0.5)" }} />
+          </div>
+        </Portal>
+      )}
+    </>
+  );
+}
+
+// ── Dane podstawowe (edytowalne) ─────────────────────────────
 function AttributesCard({
   product, manufacturers, firmy, editing, setEditing, onSaved,
 }: {
@@ -526,7 +675,6 @@ function AttributesCard({
   const showEdit = canEdit(user);
   const showFin = can(user, "viewFinancials");
   const init = () => ({
-    cbm: product.cbm_per_unit ?? 0,
     nazwa: product.name_override_manual ?? "",
     ean: product.ean ?? "",
     classification: product.forced_status || "AUTO",
@@ -540,14 +688,13 @@ function AttributesCard({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.cbm_per_unit, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock]);
+  }, [product.sku, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock]);
 
   const save = async () => {
     if (busy) return;
     setBusy(true);
     try {
       const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/attrs`, {
-        cbm_per_unit: draft.cbm,
         name_override: draft.nazwa,
         manufacturer_id: draft.mfrId === "" ? 0 : Number(draft.mfrId),
         firma_id: draft.firmaId === "" ? 0 : Number(draft.firmaId),
@@ -573,14 +720,17 @@ function AttributesCard({
   return (
     <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid var(--border-soft)" }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)" }}>Atrybuty</span>
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)" }}>Dane podstawowe</span>
         {showEdit && (
           <button onClick={() => (editing ? save() : setEditing(true))} disabled={busy} style={btnGhostMini}>{editing ? (busy ? "Zapisuję…" : "Zapisz") : "Edytuj"}</button>
         )}
       </div>
+
+      <ProductPhotos sku={product.sku} editing={editing && showEdit} onChanged={() => { /* miniatura na liście odświeży się przy kolejnym pobraniu katalogu */ }} />
+      <div style={{ height: 1, background: "var(--border-soft)", margin: "4px 14px" }} />
+
       <div style={{ padding: "6px 0" }}>
         <AttrInput label="Nazwa (ręczna)" wide value={editing ? draft.nazwa : (product.name_override_manual || "—")} editing={editing} placeholder={product.name} onChange={(v) => setDraft({ ...draft, nazwa: v })} />
-        <AttrInput label="CBM / szt" suffix="m³" value={editing ? draft.cbm : (product.cbm_per_unit ?? 0).toFixed(3)} editing={editing} type="number" step="0.001" onChange={(v) => setDraft({ ...draft, cbm: parseFloat(v) || 0 })} />
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>Cena zakupu</span>
@@ -641,6 +791,166 @@ function AttributesCard({
   );
 }
 
+// ── Wymiary i logistyka ──────────────────────────────────────
+// Wymiary opisują KARTON eksportowy. CBM/szt = objętość kartonu ÷ szt. w kartonie.
+// Ręczne nadpisanie (cbm_manual) zawsze wygrywa — backend liczy to samo w
+// compute_effective_cbm, tutaj tylko podglądamy wynik na żywo przed zapisem.
+function DimensionsCard({
+  product, editing, setEditing, onSaved,
+}: {
+  product: Product; editing: boolean; setEditing: (v: boolean) => void; onSaved: (p: Product) => void;
+}) {
+  const user = useUser();
+  const showEdit = canEdit(user);
+  const init = () => ({
+    dl: product.dlugosc_cm != null ? String(product.dlugosc_cm) : "",
+    sz: product.szerokosc_cm != null ? String(product.szerokosc_cm) : "",
+    wy: product.wysokosc_cm != null ? String(product.wysokosc_cm) : "",
+    szt: product.szt_w_kartonie != null ? String(product.szt_w_kartonie) : "",
+    cbmMan: product.cbm_manual != null ? String(product.cbm_manual) : "",
+    moq: product.moq != null ? String(product.moq) : "",
+    zaokr: product.zaokraglaj_karton ?? false,
+    lt: String(product.lead_time_days ?? 0),
+  });
+  const [draft, setDraft] = useState(init);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setDraft(init()); // eslint-disable-next-line
+  }, [product.sku, product.dlugosc_cm, product.szerokosc_cm, product.wysokosc_cm, product.szt_w_kartonie, product.cbm_manual, product.moq, product.zaokraglaj_karton, product.lead_time_days]);
+
+  const num = (s: string) => parseFloat((s || "").replace(",", ".")) || 0;
+
+  // Podgląd na żywo — ta sama kolejność co compute_effective_cbm na backendzie.
+  const podglad = useMemo(() => {
+    const man = num(draft.cbmMan);
+    if (man > 0) return { cbm: man, zrodlo: "manual" as const, karton: 0, szt: 1 };
+    const d = num(draft.dl), s = num(draft.sz), w = num(draft.wy);
+    if (d > 0 && s > 0 && w > 0) {
+      const szt = Math.max(1, parseInt(draft.szt, 10) || 1);
+      const karton = (d * s * w) / 1_000_000;
+      return { cbm: karton / szt, zrodlo: "dims" as const, karton, szt };
+    }
+    return { cbm: 0, zrodlo: "none" as const, karton: 0, szt: 1 };
+  }, [draft.dl, draft.sz, draft.wy, draft.szt, draft.cbmMan]);
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      // Konwencja backendu: <=0 czyści pole, >0 ustawia. Puste inputy → 0.
+      let updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/attrs`, {
+        dlugosc_cm: num(draft.dl),
+        szerokosc_cm: num(draft.sz),
+        wysokosc_cm: num(draft.wy),
+        szt_w_kartonie: parseInt(draft.szt, 10) || 0,
+        cbm_per_unit: num(draft.cbmMan),
+        moq: parseInt(draft.moq, 10) || 0,
+        zaokraglaj_karton: draft.zaokr,
+      })) as Product;
+
+      // Lead time żyje w osobnej tabeli i ma własny endpoint.
+      const lt = Math.max(1, Math.min(365, parseInt(draft.lt, 10) || 0));
+      if (lt !== product.lead_time_days) {
+        updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/lead-time`, { lead_time_days: lt })) as Product;
+      }
+      onSaved(updated);
+      setEditing(false);
+    } catch {
+      toast("Nie udało się zapisać wymiarów", "warning");
+    } finally { setBusy(false); }
+  };
+
+  const dimInput = (v: string, on: (s: string) => void) => (
+    <input type="number" step="0.1" inputMode="decimal" value={v} onChange={(e) => on(e.target.value)}
+      style={{ padding: "4px 6px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: 58, textAlign: "right", fontFamily: "var(--font-mono)" }} />
+  );
+
+  const wymiaryTekst = (product.dlugosc_cm && product.szerokosc_cm && product.wysokosc_cm)
+    ? `${product.dlugosc_cm} × ${product.szerokosc_cm} × ${product.wysokosc_cm} cm`
+    : "—";
+
+  const zrodloLabel = podglad.zrodlo === "manual" ? "(ręczny)" : podglad.zrodlo === "dims" ? "(z wymiarów)" : "";
+
+  return (
+    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid var(--border-soft)" }}>
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)" }}>Wymiary i logistyka</span>
+        {showEdit && (
+          <button onClick={() => (editing ? save() : setEditing(true))} disabled={busy} style={btnGhostMini}>{editing ? (busy ? "Zapisuję…" : "Zapisz") : "Edytuj"}</button>
+        )}
+      </div>
+
+      <div style={{ padding: "6px 0" }}>
+        <div style={attrRowStyle}>
+          <span style={attrLabelStyle}>Wymiary kartonu</span>
+          {editing ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {dimInput(draft.dl, (v) => setDraft({ ...draft, dl: v }))}
+              <span style={{ fontSize: 11, color: "var(--text-lo)" }}>×</span>
+              {dimInput(draft.sz, (v) => setDraft({ ...draft, sz: v }))}
+              <span style={{ fontSize: 11, color: "var(--text-lo)" }}>×</span>
+              {dimInput(draft.wy, (v) => setDraft({ ...draft, wy: v }))}
+              <span style={{ fontSize: 11, color: "var(--text-lo)", minWidth: 18 }}>cm</span>
+            </div>
+          ) : (
+            <span className="num" style={{ fontSize: 12, color: wymiaryTekst === "—" ? "var(--text-disabled)" : "var(--text-hi)", fontWeight: 500 }}>{wymiaryTekst}</span>
+          )}
+        </div>
+
+        <AttrInput label="Szt. w kartonie" suffix="szt" type="number"
+          value={editing ? draft.szt : (product.szt_w_kartonie != null ? String(product.szt_w_kartonie) : "1")}
+          editing={editing} onChange={(v) => setDraft({ ...draft, szt: v })} />
+
+        <div style={attrRowStyle}>
+          <span style={attrLabelStyle}>CBM / szt</span>
+          <span className="num" style={{ fontSize: 12, fontWeight: 500, color: podglad.zrodlo === "manual" ? "var(--accent)" : podglad.zrodlo === "none" ? "var(--text-disabled)" : "var(--text-hi)" }}>
+            {podglad.cbm.toFixed(3)} m³ <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>{zrodloLabel}</span>
+          </span>
+        </div>
+        {podglad.zrodlo === "dims" && (
+          <div style={{ padding: "0 14px 6px", fontSize: 10, color: "var(--text-disabled)", textAlign: "right" }}>
+            {podglad.karton.toFixed(4)} m³ karton ÷ {podglad.szt} szt
+          </div>
+        )}
+
+        <AttrInput label="CBM ręczny (nadpisuje)" suffix="m³" type="number" step="0.001"
+          value={editing ? draft.cbmMan : (product.cbm_manual != null ? String(product.cbm_manual) : "—")}
+          editing={editing} onChange={(v) => setDraft({ ...draft, cbmMan: v })} />
+
+        <div style={{ height: 1, background: "var(--border-soft)", margin: "6px 14px" }} />
+
+        <AttrInput label="Min. zamówienie (MOQ)" suffix="szt" type="number"
+          value={editing ? draft.moq : (product.moq != null ? String(product.moq) : "—")}
+          editing={editing} onChange={(v) => setDraft({ ...draft, moq: v })} />
+        <AttrToggle label="Zaokrąglaj do pełnych kartonów" value={draft.zaokr} editing={editing} onChange={(v) => setDraft({ ...draft, zaokr: v })} />
+
+        <div style={{ height: 1, background: "var(--border-soft)", margin: "6px 14px" }} />
+
+        <div style={attrRowStyle}>
+          <span style={attrLabelStyle}>Lead time produkcji</span>
+          {editing ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="number" value={draft.lt} onChange={(e) => setDraft({ ...draft, lt: e.target.value })}
+                style={{ padding: "4px 8px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: 64, textAlign: "right", fontFamily: "var(--font-mono)" }} />
+              <span style={{ fontSize: 11, color: "var(--text-lo)", minWidth: 22 }}>dni</span>
+            </div>
+          ) : (
+            <span style={{ display: "inline-flex", alignItems: "baseline", gap: 5 }}>
+              <span className="num" style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>{product.lead_time_days}</span>
+              <span style={{ fontSize: 11, color: "var(--text-mid)" }}>dni</span>
+            </span>
+          )}
+        </div>
+
+        <div style={{ margin: "6px 0 0", padding: "8px 14px 10px", borderTop: "1px solid var(--border-soft)", fontSize: 10, color: "var(--text-lo)", lineHeight: 1.5 }}>
+          CBM zasila zajętość kontenera. Lead time wpływa na termin „zamów do" w prognozie stanu.
+          {(product.moq || product.zaokraglaj_karton) ? " MOQ i zaokrąglanie są na razie informacyjne — nie zmieniają jeszcze listy zakupów." : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AttrInput({ label, value, editing, type = "text", mono, suffix, step, wide, placeholder, onChange }: { label: string; value: string | number; editing: boolean; type?: string; mono?: boolean; suffix?: string; step?: string; wide?: boolean; placeholder?: string; onChange: (v: string) => void }) {
   return (
     <div style={attrRowStyle}>
@@ -685,59 +995,6 @@ function AttrToggle({ label, value, editing, onChange }: { label: string; value:
 
 const attrRowStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", gap: 12 };
 const attrLabelStyle: React.CSSProperties = { fontSize: 11, color: "var(--text-lo)", flexShrink: 0 };
-
-// ── Lead time ────────────────────────────────────────────────
-function LeadTimeCard({
-  product, editing, setEditing, onSaved,
-}: {
-  product: Product; editing: boolean; setEditing: (v: boolean) => void; onSaved: (p: Product) => void;
-}) {
-  const user = useUser();
-  const showEdit = canEdit(user);
-  const showFin = can(user, "viewFinancials");
-  const [draft, setDraft] = useState(product.lead_time_days);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => { setDraft(product.lead_time_days); }, [product.lead_time_days]);
-
-  const save = async () => {
-    if (busy) return;
-    const lt = Math.max(1, Math.min(365, Math.round(Number(draft) || 0)));
-    setBusy(true);
-    try {
-      const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/lead-time`, { lead_time_days: lt })) as Product;
-      onSaved(updated);
-      setEditing(false);
-    } catch {
-      toast("Nie udało się zapisać lead-time", "warning");
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)" }}>Lead time produkcji</span>
-        {showEdit && (
-          <button onClick={() => (editing ? save() : setEditing(true))} disabled={busy} style={btnGhostMini}>{editing ? (busy ? "Zapisuję…" : "Zapisz") : "Edytuj"}</button>
-        )}
-      </div>
-      {editing ? (
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 14 }}>
-          <input type="number" value={draft} onChange={(e) => setDraft(parseInt(e.target.value, 10) || 0)} style={{ padding: "8px 12px", fontSize: 24, fontWeight: 700, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 7, color: "var(--text-hi)", outline: "none", width: 90, textAlign: "center", fontFamily: "var(--font-mono)" }} />
-          <span style={{ color: "var(--text-mid)", fontSize: 13 }}>dni</span>
-        </div>
-      ) : (
-        <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 14 }}>
-          <span className="num" style={{ fontSize: 32, fontWeight: 700, color: "var(--accent)", letterSpacing: "-0.02em" }}>{product.lead_time_days}</span>
-          <span style={{ fontSize: 13, color: "var(--text-mid)" }}>dni od zamówienia do dostawy</span>
-        </div>
-      )}
-      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border-soft)", fontSize: 11, color: "var(--text-lo)" }}>
-        Wpływa na termin „zamów do" w prognozie stanu.
-      </div>
-    </div>
-  );
-}
 
 const iconBtnHeader: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 7, color: "var(--text-mid)" };
 const btnGhostMini: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "transparent", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, fontWeight: 500 };

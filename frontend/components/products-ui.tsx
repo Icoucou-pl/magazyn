@@ -41,7 +41,17 @@ export type Product = {
   nearest_delivery_date: string | null;
   nearest_delivery_source: "delivered" | "expected" | "estimate" | null;
   product_status: "ACTIVE" | "ACTIVE_NO_STOCK" | "DEAD_STOCK" | "INACTIVE" | "SAMPLE";
-  cbm_per_unit: number;
+  cbm_per_unit: number;                  // CBM EFEKTYWNY (ręczny albo policzony z wymiarów)
+  cbm_manual?: number | null;            // ręczne nadpisanie (null = leci z wymiarów)
+  cbm_source?: "manual" | "dims" | "none";
+  dlugosc_cm?: number | null;            // wymiary KARTONU eksportowego, w cm
+  szerokosc_cm?: number | null;
+  wysokosc_cm?: number | null;
+  szt_w_kartonie?: number | null;        // null = 1 (produkt pakowany pojedynczo)
+  moq?: number | null;                   // minimalna ilość zamówienia — na razie informacyjnie
+  zaokraglaj_karton?: boolean;           // zaokrąglanie do pełnych kartonów — informacyjnie
+  photo_id?: number | null;              // zdjęcie główne
+  photo_hash?: string | null;
   manufacturer_id: number | null;
   manufacturer_name: string | null;
   manufacturer_color: string | null;
