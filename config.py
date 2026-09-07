@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     TABLE_KPI_SNAPSHOTS: str = "app_kpi_snapshots"      # 4 KPI × firma × pora (2×/dzień)
     TABLE_STOCK_SNAPSHOTS: str = "app_stock_snapshots"  # per SKU × pora (2×/dzień)   # magazyn główny + w drodze (per SKU, świeże ceny)
     TABLE_ATTACHMENTS: str = "app_container_attachments"
+    # Zdjęcia produktów (WebP w BYTEA). Bajty w kolumnach thumb_data/full_data siedzą
+    # w TOAST — NIGDY nie wolno ich wciągać do zapytań listowych ani do SELECT *.
+    TABLE_PRODUCT_PHOTOS: str = "app_product_photos"
+    MAX_PHOTO_BYTES: int = 2 * 1024 * 1024        # twardy limit pełnego zdjęcia (CHECK w bazie ma tę samą wartość)
+    MAX_PHOTO_THUMB_BYTES: int = 256 * 1024       # twardy limit miniatury
+    MAX_PHOTOS_PER_SKU: int = 8
     TABLE_USERS: str = "app_users"
     TABLE_AUDIT_LOG: str = "app_audit_log"
     TABLE_SESSIONS: str = "app_sessions"

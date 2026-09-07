@@ -166,6 +166,18 @@ sales_global AS (
     WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'
       {INCLUDED_STATUS_FILTER}
     GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU}))
+),
+-- Zdjęcie główne = rekord o najniższym sort_order dla danego SKU.
+-- UWAGA: jawna lista kolumn, bez gwiazdki — thumb_data/full_data NIE MOGĄ tu wejść,
+-- bo wciągnęłyby bajty z TOAST-a do zapytania listowego całego katalogu.
+main_photo AS (
+    SELECT DISTINCT ON (LOWER(TRIM(sku)))
+        LOWER(TRIM(sku)) AS sku_canon,
+        id           AS photo_id,
+        content_hash AS photo_hash
+    FROM {settings.TABLE_PRODUCT_PHOTOS}
+    WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+    ORDER BY LOWER(TRIM(sku)), sort_order, id
 )
 SELECT
     p.{settings.COL_PRODUCT_SKU} AS sku,
@@ -199,6 +211,16 @@ SELECT
     pa.cena_zakupu::float AS cena_zakupu_manual,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
     COALESCE(pa.cbm_per_unit, 0)::float AS cbm_per_unit,
+    -- Wymiary kartonu eksportowego. Efektywny CBM liczy backend (compute_effective_cbm
+    -- w services/products.py) — do bazy nie zapisujemy go nigdy.
+    pa.dlugosc_cm::float   AS dlugosc_cm,
+    pa.szerokosc_cm::float AS szerokosc_cm,
+    pa.wysokosc_cm::float  AS wysokosc_cm,
+    pa.szt_w_kartonie::int AS szt_w_kartonie,
+    pa.moq::int            AS moq,
+    COALESCE(pa.zaokraglaj_karton, FALSE) AS zaokraglaj_karton,
+    mp.photo_id::int   AS photo_id,
+    mp.photo_hash      AS photo_hash,
     pa.manufacturer_id,
     m.name AS manufacturer_name,
     m.color AS manufacturer_color,
@@ -244,6 +266,7 @@ LEFT JOIN (
     WHERE sku IS NOT NULL AND TRIM(sku) <> ''
     ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
 ) pa ON pa.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+LEFT JOIN main_photo mp ON mp.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
 LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
 WHERE (

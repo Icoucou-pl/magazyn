@@ -138,7 +138,18 @@ class ProductSummary(BaseModel):
     nearest_delivery_date: Optional[date] = None
     nearest_delivery_source: Optional[str] = None   # 'delivered' | 'expected' | 'estimate'
     product_status: ProductStatus
-    cbm_per_unit: float
+    cbm_per_unit: float                     # CBM EFEKTYWNY (ręczny override albo policzony z wymiarów)
+    cbm_manual: Optional[float] = None      # ręczne nadpisanie (None = brak, CBM leci z wymiarów)
+    cbm_source: str = "none"                # "manual" | "dims" | "none" — czym podpisać wartość na froncie
+    # Wymiary kartonu eksportowego (cm) i pakowanie
+    dlugosc_cm: Optional[float] = None
+    szerokosc_cm: Optional[float] = None
+    wysokosc_cm: Optional[float] = None
+    szt_w_kartonie: Optional[int] = None    # None = 1 (produkt pakowany pojedynczo)
+    moq: Optional[int] = None               # minimalna ilość zamówienia — na razie informacyjnie
+    zaokraglaj_karton: bool = False         # zaokrąglanie listy zakupów do pełnych kartonów — informacyjnie
+    photo_id: Optional[int] = None          # zdjęcie główne; bajty pod /api/product-photos/{id}/{hash}/...
+    photo_hash: Optional[str] = None
     manufacturer_id: Optional[int]
     manufacturer_name: Optional[str]
     manufacturer_color: Optional[str] = None
@@ -178,7 +189,13 @@ class LeadTimeUpdate(BaseModel):
 
 
 class ProductAttrsUpdate(BaseModel):
-    cbm_per_unit: Optional[float] = Field(None, ge=0)
+    cbm_per_unit: Optional[float] = Field(None, ge=0)   # ręczne nadpisanie CBM; 0 = wyczyść (→ licz z wymiarów)
+    dlugosc_cm: Optional[float] = Field(None, ge=0)     # <=0 = wyczyść
+    szerokosc_cm: Optional[float] = Field(None, ge=0)
+    wysokosc_cm: Optional[float] = Field(None, ge=0)
+    szt_w_kartonie: Optional[int] = Field(None, ge=0)   # 0 = wyczyść (→ traktowane jak 1)
+    moq: Optional[int] = Field(None, ge=0)              # 0 = wyczyść
+    zaokraglaj_karton: Optional[bool] = None
     manufacturer_id: Optional[int] = None
     firma_id: Optional[int] = None
     seasonality_enabled: Optional[bool] = None
@@ -188,6 +205,23 @@ class ProductAttrsUpdate(BaseModel):
     forced_status: Optional[str] = None  # "ACTIVE","ACTIVE_NO_STOCK","DEAD_STOCK","INACTIVE", lub None (auto)
     cena_zakupu: Optional[float] = None  # None = nie zmieniaj; <=0 = wyczyść override (→ Subiekt); >0 = ustaw. Wymaga viewFinancials.
     name_override: Optional[str] = None  # None = nie zmieniaj; "" = wyczyść (→ nazwa z Subiektu/zamówień); tekst = ustaw ręczną nazwę.
+
+
+class ProductPhotoOut(BaseModel):
+    """Metadane zdjęcia produktu. Bajty NIE są tu zwracane — front składa URL
+    z id + content_hash i wstawia go w <img src>."""
+    id: int
+    sku: str
+    sort_order: int
+    content_hash: str
+    content_type: str
+    filename: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    thumb_bytes: int
+    full_bytes: int
+    uploaded_at: datetime
+    uploaded_by: Optional[str] = None
 
 
 class SampleCreate(BaseModel):
