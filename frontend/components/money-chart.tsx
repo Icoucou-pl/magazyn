@@ -49,7 +49,11 @@ export type TransitPoint = { date: string; value: number };
 const TRANSIT = "oklch(0.700 0.140 195)";
 
 const COLOR: Record<SeriesKey, string> = {
-  mag: "var(--info)",
+  // Magazyn ma JEDEN kolor, zawsze. Wcześniej zależał od trendu (zielony przy wzroście,
+  // czerwony przy spadku) i dodatkowo przeskakiwał na niebieski po włączeniu linii
+  // pieniężnych — ta sama seria miała trzy kolory, a plakietka w legendzie czwarty.
+  // Kierunek zmiany czytasz z delty procentowej w nagłówku, więc sygnał nie ginie.
+  mag: "var(--critical)",
   raw: "var(--ok)",
   adj: "var(--ok)",
   transit: TRANSIT,
@@ -251,11 +255,8 @@ function MoneyChart({
   const magPath = line(magVals, yL);
   const areaPath = `${magPath} L${getX(points.length - 1).toFixed(1)},${padTop + innerH} L${getX(0).toFixed(1)},${padTop + innerH} Z`;
 
-  // Bez linii pieniężnych magazyn zachowuje dawny kolor trendu i gradient.
-  // Z nimi przechodzi na niebieski, żeby nie gryzł się z zielenią konta.
-  const positive = magVals[magVals.length - 1] - magVals[0] >= 0;
-  const magStroke = anyMoney ? COLOR.mag : (positive ? "var(--ok)" : "var(--critical)");
-  const magFill = positive ? "url(#chartGradOk)" : "url(#chartGradBad)";
+  const magStroke = COLOR.mag;
+  const magFill = "url(#chartGradMag)";
 
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -267,12 +268,8 @@ function MoneyChart({
     <div ref={ref} style={{ position: "relative", width: "100%" }}>
       <svg width={size.w} height={size.h} onMouseMove={handleMove} onMouseLeave={() => setHover(null)} style={{ display: "block" }}>
         <defs>
-          <linearGradient id="chartGradOk" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="oklch(0.730 0.150 155)" stopOpacity="0.32" />
-            <stop offset="100%" stopColor="oklch(0.730 0.150 155)" stopOpacity="0" />
-          </linearGradient>
-          <linearGradient id="chartGradBad" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="oklch(0.640 0.190 25)" stopOpacity="0.32" />
+          <linearGradient id="chartGradMag" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="oklch(0.640 0.190 25)" stopOpacity="0.30" />
             <stop offset="100%" stopColor="oklch(0.640 0.190 25)" stopOpacity="0" />
           </linearGradient>
         </defs>
@@ -528,7 +525,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     }
     return {
       label: metric === "value" ? "Wartość magazynu" : "Liczba sztuk",
-      color: "var(--text-hi)",
+      color: metric === "value" ? COLOR.mag : "var(--text-hi)",
       cur: magVal(sliced[sliced.length - 1]),
       prev: (() => {
         const N = _dSpan(from, to);
