@@ -18,6 +18,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 import { useUser, can } from "@/lib/permissions";
+import { PhotoHover } from "./photo-hover";
 import { useShop } from "@/lib/shop";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { I, MfrChip } from "./ui";
@@ -352,7 +353,11 @@ export default function ForecastView({
 
   const metaCellValue = (id: string, p: Product): React.ReactNode => {
     switch (id) {
-      case "sku": return <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>;
+      case "sku": return (
+        <PhotoHover sku={p.sku} photoId={p.photo_id} photoHash={p.photo_hash} style={{ display: "inline-block", minWidth: 0 }}>
+          <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)" }}>{p.sku}</span>
+        </PhotoHover>
+      );
       case "stock": return <span className="num" style={{ fontWeight: 600, color: p.stock === 0 ? "var(--critical)" : "var(--text-hi)" }}>{p.stock}</span>;
       case "sales": return <span className="num" style={{ color: "var(--text-mid)" }}>{p.sales_1m}</span>;
       case "sales60": return <span className="num" style={{ color: "var(--text-mid)" }}>{p.sales_1m + p.sales_2m}</span>;

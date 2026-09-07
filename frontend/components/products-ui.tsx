@@ -401,13 +401,9 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
         </div>
       );
     case "name":
-      return (
-        <div style={baseStyle}>
-          <PhotoHover sku={p.sku} photoId={p.photo_id} photoHash={p.photo_hash} style={{ overflow: "hidden", minWidth: 0 }}>
-            <span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{p.name}</span>
-          </PhotoHover>
-        </div>
-      );
+      // Bez podglądu po najechaniu — w tej tabeli jest miniatura w kolumnie SKU
+      // i to ona jest jedynym miejscem, które powiększa zdjęcie.
+      return <div style={baseStyle}><span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span></div>;
     case "firma":
       return <div style={baseStyle}>{p.firma_name ? <MfrChip name={p.firma_name} color={p.firma_color ?? "var(--text-lo)"} /> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
     case "mfr":

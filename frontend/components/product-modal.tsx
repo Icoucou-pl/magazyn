@@ -14,7 +14,7 @@ import {
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import { api, photoUrl } from "@/lib/api";
-import { PhotoHover, ProductThumb, resetPhotoCache } from "./photo-hover";
+import { PhotoHover, ProductThumb, resetPhotoCache } from "./photo-hover";   // PhotoHover — tylko kafelki w „Danych podstawowych”
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
@@ -169,10 +169,13 @@ export default function ProductModal({
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
           <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+            {/* Świadomie BEZ podglądu po najechaniu: w nagłówku zdjęcie pełni rolę
+                identyfikatora, a nie miniatury do rozwijania. Powiększanie jest niżej,
+                w karcie „Dane podstawowe". */}
             {product.photo_id && product.photo_hash && (
-              <PhotoHover sku={product.sku} photoId={product.photo_id} photoHash={product.photo_hash} size={380} style={{ display: "flex", flexShrink: 0 }}>
+              <div style={{ display: "flex", flexShrink: 0 }}>
                 <ProductThumb photoId={product.photo_id} photoHash={product.photo_hash} size={104} />
-              </PhotoHover>
+              </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
