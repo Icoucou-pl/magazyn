@@ -67,7 +67,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 
 @router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
     # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
@@ -112,10 +112,29 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     # Ręczny stan sampla — liczy się tylko dla SKU bez innego źródła stanu (patrz SALES_QUERY, src_pri = 4).
     sample_stock = payload.sample_stock if payload.sample_stock is not None else (int(e.sample_stock or 0) if e else 0)
 
+    # Wymiary kartonu + logistyka zamawiania.
+    # Konwencja spójna z ceną i nazwą: None = nie zmieniaj, <=0 = wyczyść, >0 = ustaw.
+    def _num(nowa, stara, precyzja=1):
+        if nowa is None:
+            return (float(stara) if stara is not None else None)
+        return None if nowa <= 0 else round(float(nowa), precyzja)
+
+    def _int(nowa, stara):
+        if nowa is None:
+            return (int(stara) if stara is not None else None)
+        return None if nowa <= 0 else int(nowa)
+
+    dlugosc   = _num(payload.dlugosc_cm,   e.dlugosc_cm   if e else None)
+    szerokosc = _num(payload.szerokosc_cm, e.szerokosc_cm if e else None)
+    wysokosc  = _num(payload.wysokosc_cm,  e.wysokosc_cm  if e else None)
+    szt_kart  = _int(payload.szt_w_kartonie, e.szt_w_kartonie if e else None)
+    moq       = _int(payload.moq,            e.moq            if e else None)
+    zaokr     = payload.zaokraglaj_karton if payload.zaokraglaj_karton is not None else (bool(e.zaokraglaj_karton) if e else False)
+
     await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, updated_at)
-            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, :is_sample, :sample_stock, CURRENT_TIMESTAMP)
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, :is_sample, :sample_stock, :dl, :sz, :wy, :szt_kart, :moq, :zaokr, CURRENT_TIMESTAMP)
             ON CONFLICT (sku) DO UPDATE SET
                 cbm_per_unit = EXCLUDED.cbm_per_unit,
                 manufacturer_id = EXCLUDED.manufacturer_id,
@@ -127,10 +146,17 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
                 name_override = EXCLUDED.name_override,
                 is_sample = EXCLUDED.is_sample,
                 sample_stock = EXCLUDED.sample_stock,
+                dlugosc_cm = EXCLUDED.dlugosc_cm,
+                szerokosc_cm = EXCLUDED.szerokosc_cm,
+                wysokosc_cm = EXCLUDED.wysokosc_cm,
+                szt_w_kartonie = EXCLUDED.szt_w_kartonie,
+                moq = EXCLUDED.moq,
+                zaokraglaj_karton = EXCLUDED.zaokraglaj_karton,
                 updated_at = CURRENT_TIMESTAMP
         """),
         {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced,
-         "cena": cena, "name_ov": name_ov, "is_sample": is_sample, "sample_stock": sample_stock}
+         "cena": cena, "name_ov": name_ov, "is_sample": is_sample, "sample_stock": sample_stock,
+         "dl": dlugosc, "sz": szerokosc, "wy": wysokosc, "szt_kart": szt_kart, "moq": moq, "zaokr": zaokr}
     )
     await db.commit()
     return _mask_financials([await get_product(db, sku)], user)[0]
