@@ -15,6 +15,31 @@ from models import ProductSummary, IncomingDelivery
 from services.containers import compute_effective_status
 
 
+def compute_effective_cbm(row: dict) -> tuple[float, str]:
+    """Efektywny CBM/szt + jego źródło. Liczony w locie, NIGDY nie zapisywany do bazy
+    (ta sama zasada co compute_effective_status).
+
+      1. cbm_per_unit > 0            -> wartość ręczna                       ("manual")
+      2. wymiary kartonu uzupełnione -> (D*S*W / 1e6) / szt_w_kartonie       ("dims")
+      3. brak danych                 -> 0                                    ("none")
+
+    Wymiary opisują KARTON EKSPORTOWY, więc dzielimy przez liczbę sztuk w kartonie.
+    szt_w_kartonie NULL/0 traktujemy jak 1 (produkt pakowany pojedynczo).
+    """
+    manual = float(row.get("cbm_per_unit") or 0)
+    if manual > 0:
+        return round(manual, 3), "manual"
+
+    d = float(row.get("dlugosc_cm") or 0)
+    s = float(row.get("szerokosc_cm") or 0)
+    w = float(row.get("wysokosc_cm") or 0)
+    if d > 0 and s > 0 and w > 0:
+        pcs = int(row.get("szt_w_kartonie") or 0) or 1
+        return round((d * s * w) / 1_000_000.0 / pcs, 3), "dims"
+
+    return 0.0, "none"
+
+
 def _arrival_and_source(inc: dict):
     """Data wejścia na magazyn dla dostawy z kontenera + skąd pochodzi.
 
@@ -216,6 +241,7 @@ def calculate_forecast(row: dict, incoming: List[dict],
     total_available = row["stock"] + stock_in_transit
     months_of_stock = (total_available / avg_monthly) if avg_monthly > 0 else 999.0
     price = float(row.get("price") or 0)
+    cbm_eff, cbm_src = compute_effective_cbm(row)
 
     return ProductSummary(
         sku=row["sku"],
@@ -232,7 +258,17 @@ def calculate_forecast(row: dict, incoming: List[dict],
         nearest_delivery_date=nearest_date,
         nearest_delivery_source=nearest_source,
         product_status=classify_product(row),
-        cbm_per_unit=row.get("cbm_per_unit", 0),
+        cbm_per_unit=cbm_eff,
+        cbm_manual=(round(float(row["cbm_per_unit"]), 3) if float(row.get("cbm_per_unit") or 0) > 0 else None),
+        cbm_source=cbm_src,
+        dlugosc_cm=row.get("dlugosc_cm"),
+        szerokosc_cm=row.get("szerokosc_cm"),
+        wysokosc_cm=row.get("wysokosc_cm"),
+        szt_w_kartonie=row.get("szt_w_kartonie"),
+        moq=row.get("moq"),
+        zaokraglaj_karton=bool(row.get("zaokraglaj_karton", False)),
+        photo_id=row.get("photo_id"),
+        photo_hash=row.get("photo_hash"),
         manufacturer_id=row.get("manufacturer_id"),
         manufacturer_name=row.get("manufacturer_name"),
         manufacturer_color=row.get("manufacturer_color"),
