@@ -469,7 +469,8 @@ async def cashflow_ledger(
 
     events = []
 
-    def _add(c, mfr_id, mfr_name, mfr_color, slug, sname, typ, kwota, waluta, data, termin, lot_id):
+    def _add(c, mfr_id, mfr_name, mfr_color, slug, sname, typ, kwota, waluta, data, termin, lot_id,
+             order_number=None):
         if kwota is None:
             return
         cur = (waluta or "USD").upper()
@@ -482,7 +483,10 @@ async def cashflow_ledger(
         events.append({
             "id": c.id,
             "kontener": c.container_number,
-            "po": c.order_number,
+            # Kontener skonsolidowany nie ma własnego PO — numer siedzi na locie. Bez tego
+            # fallbacku wiersz w Cashflow pokazywał sam nazwę producenta, bez identyfikacji
+            # zamówienia (ta sama reguła co w _payment_events wyżej).
+            "po": order_number or c.order_number,
             "mfr_id": mfr_id,
             "mfr_name": mfr_name or "Bez producenta",
             "mfr_color": mfr_color or "var(--text-lo)",
@@ -514,9 +518,11 @@ async def cashflow_ledger(
             l_slug, l_name = _firma(lot.firma_breakdown)
             for a in (lot.advances or []):
                 _add(c, lot.manufacturer_id, lot.manufacturer_name, lot.manufacturer_color,
-                     l_slug, l_name, "zaliczka", a.kwota, a.waluta, a.data, a.termin, lot.id)
+                     l_slug, l_name, "zaliczka", a.kwota, a.waluta, a.data, a.termin, lot.id,
+                     order_number=lot.order_number)
             _add(c, lot.manufacturer_id, lot.manufacturer_name, lot.manufacturer_color,
-                 l_slug, l_name, "balance", lot.balance_kwota, lot.balance_waluta, lot.zaplacono_data, lot.balance_termin, lot.id)
+                 l_slug, l_name, "balance", lot.balance_kwota, lot.balance_waluta, lot.zaplacono_data, lot.balance_termin, lot.id,
+                 order_number=lot.order_number)
 
     # --- FX: notowania NBP dla wszystkich obcych walut w zdarzeniach ---
     curs = sorted({e["waluta"] for e in events if e["waluta"] != "PLN"})
