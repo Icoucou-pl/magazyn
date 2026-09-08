@@ -3,7 +3,7 @@
 import io
 import asyncio
 from datetime import date
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
@@ -212,7 +212,7 @@ def _lot_key(manufacturer_id, order_number) -> tuple:
     return (manufacturer_id, (order_number or "").strip().lower())
 
 
-async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
+async def _replace_lots(db: AsyncSession, cid: int, lots, *, inherit_from: Optional[Any] = None) -> List[int]:
     """Usuwa loty kontenera i wstawia nowe (po kolei). Zwraca listę nowych id w kolejności.
     Zaliczki lotu lecą do app_container_advances (kaskada usuwa je przy DELETE lotu);
     1. zaliczkę mirror-ujemy do legacy zaliczka_* na locie (bezpieczny rollback).
@@ -252,14 +252,24 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
     # na kontenerze. Od momentu zapisu snapshots.py czyta ją z lotu (źródło wybiera po
     # is_consolidated), więc bez przeniesienia flaga gaśnie — towar wraca do liczenia
     # „w kontenerze", będąc już w magazynie „w drodze" ERP. Dubel kapitału, bez alarmu.
-    # Warunek celowo wąski: brak starych lotów + dokładnie jeden nowy = niedwuznaczna migracja.
-    inherit = None
-    if not prev and len(lots or []) == 1:
-        crow = (await db.execute(text(f"""
-            SELECT subiekt_wbite, subiekt_wbite_at FROM {settings.TABLE_CONTAINERS} WHERE id = :c
-        """), {"c": cid})).mappings().first()
-        if crow and crow["subiekt_wbite"]:
-            inherit = crow
+    #
+    # inherit_from = stan kontenera SPRZED update'u (dostawca i PO są tam jeszcze wypełnione;
+    # UPDATE ustawia je na NULL przed wywołaniem tej funkcji, więc czytanie ich tutaj jest
+    # za późne). Kropkę dostaje ten lot, który przejął tożsamość kontenera — użytkownik może
+    # dorzucić drugiego dostawcę w tym samym zapisie i wtedy „dokładnie jeden lot" nie działa.
+    inherit_idx: Optional[int] = None
+    inherit_at = None
+    if not prev and inherit_from is not None and inherit_from["subiekt_wbite"]:
+        want = _lot_key(inherit_from["manufacturer_id"], inherit_from["order_number"])
+        for i, lot in enumerate(lots or []):
+            if _lot_key(lot.manufacturer_id, lot.order_number) == want:
+                inherit_idx = i
+                break
+        # Jeden lot = niedwuznaczne nawet wtedy, gdy dostawcę po drodze podmieniono.
+        if inherit_idx is None and len(lots or []) == 1:
+            inherit_idx = 0
+        if inherit_idx is not None:
+            inherit_at = inherit_from["subiekt_wbite_at"]
 
     await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_LOTS} WHERE container_id = :c"), {"c": cid})
     ids: List[int] = []
@@ -282,8 +292,8 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
              "mrn": _norm_mrn(getattr(lot, "mrn", None)),
-             "swb": (bool(old["subiekt_wbite"]) if old else bool(inherit)),
-             "swb_at": (old["subiekt_wbite_at"] if old else (inherit["subiekt_wbite_at"] if inherit else None)),
+             "swb": (bool(old["subiekt_wbite"]) if old else (pos == inherit_idx)),
+             "swb_at": (old["subiekt_wbite_at"] if old else (inherit_at if pos == inherit_idx else None)),
              "wal": default_cur,
              "zp": (first["procent"] if first else None),
              "zk": (first["kwota"] if first else None),
@@ -299,7 +309,7 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
 
     # Flaga przeniesiona na lot → gasimy ją na kontenerze, żeby nie zostawała martwa dana,
     # która zmartwychwstanie (i to nieaktualna) przy ewentualnym odkonsolidowaniu.
-    if inherit is not None:
+    if inherit_idx is not None:
         await db.execute(
             text(f"UPDATE {settings.TABLE_CONTAINERS} SET subiekt_wbite = FALSE, subiekt_wbite_at = NULL WHERE id = :c"),
             {"c": cid},
@@ -478,7 +488,9 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
 @router.patch("/containers/{cid}", response_model=ContainerOut)
 async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     cur = (await db.execute(
-        text(f"SELECT container_number, status, is_consolidated FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
+        text(f"""SELECT container_number, status, is_consolidated,
+                        manufacturer_id, order_number, subiekt_wbite, subiekt_wbite_at
+                 FROM {settings.TABLE_CONTAINERS} WHERE id = :id"""),
         {"id": cid},
     )).mappings().first()
     if not cur:
@@ -645,7 +657,7 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         # cons=None (częściowa aktualizacja) → ruszamy loty tylko gdy front je przysłał.
         use_lots = bool(cons) if cons is not None else (payload.lots is not None)
         rebuild = (cons is not None) or (payload.lots is not None)
-        lot_ids = await _replace_lots(db, cid, payload.lots if use_lots else []) if rebuild else []
+        lot_ids = await _replace_lots(db, cid, payload.lots if use_lots else [], inherit_from=cur) if rebuild else []
         for item in payload.items:
             lid = _resolve_lot(item.lot_ref, lot_ids) if use_lots else None
             await db.execute(
@@ -653,7 +665,7 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
                 {"c": cid, "s": item.sku, "q": item.quantity, "u": item.unit_cost, "l": lid}
             )
     elif payload.lots is not None:
-        await _replace_lots(db, cid, payload.lots)
+        await _replace_lots(db, cid, payload.lots, inherit_from=cur)
 
     await db.commit()
     return await get_container_by_id(db, cid)
