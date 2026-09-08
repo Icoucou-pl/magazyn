@@ -410,6 +410,7 @@ class SubiektWbiteIn(BaseModel):
 class ContainerLotIn(BaseModel):
     manufacturer_id: Optional[int] = None
     order_number: Optional[str] = None
+    mrn: Optional[str] = None                 # numer odprawy celnej tego lotu (kontener skonsolidowany)
     # płatności per lot; waluta osobno dla zaliczki i balance (USD/CNY/PLN)
     waluta_towaru: Optional[str] = None       # domyślna/pierwotna waluta (seed) — nie edytowana w UI
     # Wiele zaliczek (rat) — nowy model. Legacy pola zaliczka_* zostają jeszcze jeden
@@ -444,6 +445,7 @@ class ContainerCreate(BaseModel):
     koszt_transportu_magazyn: Optional[float] = None    # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
+    mrn: Optional[str] = None                           # odprawa celna — tylko kontener nieskonsolidowany
     # płatności dla kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = None                 # domyślna/pierwotna waluta (seed)
     advances: List[ContainerAdvanceIn] = []             # wiele zaliczek (rat)
@@ -475,6 +477,7 @@ class ContainerUpdate(BaseModel):
     koszt_transportu_magazyn: Optional[float] = None    # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
+    mrn: Optional[str] = None                           # odprawa celna — tylko kontener nieskonsolidowany
     waluta_towaru: Optional[str] = None
     advances: Optional[List[ContainerAdvanceIn]] = None   # wiele zaliczek (rat); None = nie ruszaj
     zaliczka_procent: Optional[float] = None
@@ -508,6 +511,7 @@ class ContainerLotOut(BaseModel):
     manufacturer_name: Optional[str] = None
     manufacturer_color: Optional[str] = None
     order_number: Optional[str] = None
+    mrn: Optional[str] = None                 # numer odprawy celnej tego lotu
     waluta_towaru: Optional[str] = "USD"
     advances: List[ContainerAdvanceOut] = []
     zaliczka_procent: Optional[float] = None
@@ -586,6 +590,7 @@ class ContainerOut(BaseModel):
     koszt_transportu_magazyn: Optional[float] = None   # PLN — z portu do magazynu
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
+    mrn: Optional[str] = None                          # odprawa celna (kontener nieskonsolidowany)
     # płatności kontenera nieskonsolidowanego (jeden dostawca)
     waluta_towaru: Optional[str] = "USD"
     advances: List[ContainerAdvanceOut] = []
