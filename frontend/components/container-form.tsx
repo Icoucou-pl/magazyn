@@ -59,6 +59,17 @@ const emptyLot = (): LotDraft => ({
   advances: [emptyAdvance()],
   balance_kwota: "", balance_waluta: "USD", balance_termin: "", zaplacono_data: "",
 });
+// Lot „dziewiczy" — powstały z emptyLot(), nietknięty przez użytkownika. Waluty nie
+// sprawdzamy: emptyLot() ustawia ją na USD, więc nigdy nie jest pusta.
+const isBlankLot = (l: LotDraft): boolean =>
+  !l.manufacturer_id &&
+  !l.order_number.trim() &&
+  !l.mrn.trim() &&
+  !l.balance_kwota.trim() &&
+  !l.balance_termin.trim() &&
+  !l.zaplacono_data.trim() &&
+  l.advances.every((a) => !a.procent.trim() && !a.kwota.trim() && !a.termin.trim() && !a.data.trim());
+
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -400,7 +411,12 @@ export default function ContainerFormModal({
   // znikały — użytkownik klikał przełącznik i wpisywał wszystko od nowa.
   const toggleConsolidated = (on: boolean) => {
     setIsConsolidated(on);
-    if (!on || lots.length > 0) return;   // ponowne włączenie nie nadpisuje tego, co już wpisano
+    // Seedujemy tylko wtedy, gdy nie ma czego nadpisać. UWAGA: lots startuje z [emptyLot()]
+    // (patrz useState wyżej), więc „lots.length === 0" nigdy nie jest prawdą — warunkiem musi
+    // być pustość lotu, nie jego brak.
+    if (!on) return;
+    if (lots.length > 1) return;                       // ktoś już dodał drugiego dostawcę
+    if (lots.length === 1 && !isBlankLot(lots[0])) return;   // lot #1 już wypełniony ręcznie
     setLots([{
       id: null,
       manufacturer_id: manufacturerId,
