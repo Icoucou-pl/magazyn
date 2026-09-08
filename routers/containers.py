@@ -314,6 +314,25 @@ async def _replace_lots(db: AsyncSession, cid: int, lots, *, inherit_from: Optio
             text(f"UPDATE {settings.TABLE_CONTAINERS} SET subiekt_wbite = FALSE, subiekt_wbite_at = NULL WHERE id = :c"),
             {"c": cid},
         )
+
+    # Odkonsolidowanie (były loty, nie ma nowych): droga powrotna tej samej flagi. Kontener ma
+    # już wpisanego dostawcę i PO z payloadu (UPDATE poszedł wcześniej), więc kropkę oddajemy
+    # temu ze starych lotów, którego tożsamość kontener przejął. Bez tego snapshots.py wraca do
+    # czytania kolumny kontenera — pustej — i towar leżący w magazynie "w drodze" ERP liczyłby
+    # się drugi raz z kontenera.
+    if prev and not lots:
+        crow = (await db.execute(
+            text(f"SELECT manufacturer_id, order_number FROM {settings.TABLE_CONTAINERS} WHERE id = :c"),
+            {"c": cid},
+        )).mappings().first()
+        if crow:
+            want = _lot_key(crow["manufacturer_id"], crow["order_number"])
+            back = next((r for r in prev if _lot_key(r["manufacturer_id"], r["order_number"]) == want), None)
+            if back is not None and back["subiekt_wbite"]:
+                await db.execute(
+                    text(f"UPDATE {settings.TABLE_CONTAINERS} SET subiekt_wbite = TRUE, subiekt_wbite_at = :at WHERE id = :c"),
+                    {"c": cid, "at": back["subiekt_wbite_at"]},
+                )
     return ids
 
 
