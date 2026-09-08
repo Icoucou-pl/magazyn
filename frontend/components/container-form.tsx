@@ -393,9 +393,30 @@ export default function ContainerFormModal({
       return it;
     }));
   };
+  // Włączenie konsolidacji na istniejącym kontenerze musi PRZENIEŚĆ dane jednego dostawcy
+  // do lotu #1, a nie tworzyć pusty lot. Przy zapisie kontener traci je bezpowrotnie:
+  // front wysyła null-e (isConsolidated ? null : ...), a backend dokłada SET ... = NULL
+  // w gałęzi cons=True. Wcześniej producent, PO, MRN, waluta, zaliczki i balance po prostu
+  // znikały — użytkownik klikał przełącznik i wpisywał wszystko od nowa.
   const toggleConsolidated = (on: boolean) => {
     setIsConsolidated(on);
-    if (on && lots.length === 0) setLots([emptyLot()]);
+    if (!on || lots.length > 0) return;   // ponowne włączenie nie nadpisuje tego, co już wpisano
+    setLots([{
+      id: null,
+      manufacturer_id: manufacturerId,
+      order_number: orderNumber,
+      mrn,
+      waluta_towaru: walutaTowaru,
+      advances,
+      balance_kwota: balanceKwota,
+      balance_waluta: balanceWaluta || walutaTowaru || "USD",
+      balance_termin: balanceTermin,
+      zaplacono_data: zaplaconoData,
+    }]);
+    // Jeden lot = nie ma czego wybierać. Bez tego walidacja blokowała zapis komunikatem
+    // „przypisz lot do każdej pozycji", mimo że wybór był jednoznaczny (addItem robi to
+    // samo dla nowych wierszy — istniejące zostawały bez przypisania).
+    setItems((prev) => prev.map((it) => ({ ...it, lotRef: "0" })));
   };
 
   const guessType = (name: string) => {
