@@ -72,6 +72,15 @@ const isBlankLot = (l: LotDraft): boolean =>
 
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
 
+// Polska odmiana liczebników: 1 → poj., 2–4 → mnoga, reszta → dopełniacz (12–14 wyjątkiem).
+// Lokalna kopia — ten sam helper żyje w cashflow.tsx, też jako const modułowy.
+const plural = (n: number, one: string, few: string, many: string) => {
+  const d = n % 10, h = n % 100;
+  if (n === 1) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
+};
+
 const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
 // Okno odprawy celnej — musi odpowiadać CONTAINER_CUSTOMS_DAYS na backendzie (domyślnie 7).
@@ -138,6 +147,9 @@ export default function ContainerFormModal({
     Object.fromEntries((initial?.lots || []).map((l) => [l.id, !!l.subiekt_wbite])),
   );
   const [subiektBusy, setSubiektBusy] = useState(false);
+  // Odkonsolidowanie z kilku lotów jest stratne (kontener ma jeden komplet pól płatności),
+  // więc wybór „który dostawca zostaje" idzie przez modal z jawnym bilansem strat.
+  const [deconsolidate, setDeconsolidate] = useState<{ keep: number } | null>(null);
   // Błąd walidacji zostaje na ekranie przy przycisku. Toast tu nie wystarcza: formularz
   // jest długi, a komunikat znika po 3 sekundach — łatwo go przegapić i wyjść z wrażeniem,
   // że „przycisk nie działa".
@@ -404,17 +416,49 @@ export default function ContainerFormModal({
       return it;
     }));
   };
+  // Spłaszczenie lotu z powrotem na kontener — lustro seedowania przy konsolidacji.
+  // Bez tego wyłączenie przełącznika gubiło płatności dokładnie tak, jak włączenie gubiło je
+  // wcześniej w drugą stronę.
+  const applyDeconsolidation = (idx: number) => {
+    const keep = lots[idx];
+    if (!keep) return;
+    setManufacturerId(keep.manufacturer_id);
+    setOrderNumber(keep.order_number);
+    setMrn(keep.mrn);
+    setAdvances(keep.advances.length ? keep.advances : [emptyAdvance(keep.waluta_towaru || "USD")]);
+    setBalanceKwota(keep.balance_kwota);
+    setBalanceWaluta(keep.balance_waluta || keep.waluta_towaru || "USD");
+    setBalanceTermin(keep.balance_termin);
+    setZaplaconoData(keep.zaplacono_data);
+    // Zostają pozycje wybranego lotu. Nieprzypisane (lotRef "") też zatrzymujemy — to anomalia
+    // danych, a nie powód, żeby po cichu skasować komuś towar.
+    setItems((prev) => {
+      const kept = prev.filter((it) => it.lotRef === String(idx) || it.lotRef === "")
+                       .map((it) => ({ ...it, lotRef: "" }));
+      return kept.length ? kept : [{ sku: "", quantity: "", unit_cost: "", lotRef: "" }];
+    });
+    setLots([emptyLot()]);   // czysty lot = ponowna konsolidacja znów zaseeduje z kontenera
+    setIsConsolidated(false);
+    setDeconsolidate(null);
+  };
+
   // Włączenie konsolidacji na istniejącym kontenerze musi PRZENIEŚĆ dane jednego dostawcy
   // do lotu #1, a nie tworzyć pusty lot. Przy zapisie kontener traci je bezpowrotnie:
   // front wysyła null-e (isConsolidated ? null : ...), a backend dokłada SET ... = NULL
   // w gałęzi cons=True. Wcześniej producent, PO, MRN, waluta, zaliczki i balance po prostu
   // znikały — użytkownik klikał przełącznik i wpisywał wszystko od nowa.
   const toggleConsolidated = (on: boolean) => {
-    setIsConsolidated(on);
+    if (!on) {
+      // Kilka lotów = wybór jest stratny, pytamy. Jeden wypełniony = spłaszczamy bez pytania.
+      if (lots.length > 1) { setDeconsolidate({ keep: 0 }); return; }
+      if (lots.length === 1 && !isBlankLot(lots[0])) { applyDeconsolidation(0); return; }
+      setIsConsolidated(false);
+      return;
+    }
+    setIsConsolidated(true);
     // Seedujemy tylko wtedy, gdy nie ma czego nadpisać. UWAGA: lots startuje z [emptyLot()]
     // (patrz useState wyżej), więc „lots.length === 0" nigdy nie jest prawdą — warunkiem musi
     // być pustość lotu, nie jego brak.
-    if (!on) return;
     if (lots.length > 1) return;                       // ktoś już dodał drugiego dostawcę
     if (lots.length === 1 && !isBlankLot(lots[0])) return;   // lot #1 już wypełniony ręcznie
     setLots([{
@@ -1009,6 +1053,107 @@ export default function ContainerFormModal({
           </div>
         </div>
       </div>
+
+      {/* ── Modal: który lot zostaje przy odkonsolidowaniu ─────────────────
+          z-index 1001, żeby usiąść nad formularzem (modalBackdrop = 1000). */}
+      {deconsolidate && (
+        <div data-modal-backdrop style={{ ...modalBackdrop, zIndex: 1001 }}>
+          <div data-modal-card style={{ ...modalCard, maxWidth: 640 }}>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-soft)" }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-hi)" }}>Odkonsolidowanie kontenera</div>
+              <div style={{ fontSize: 12, color: "var(--text-mid)", marginTop: 5, lineHeight: 1.5 }}>
+                Kontener obsługuje jednego dostawcę, więc zostanie tylko wybrany lot.
+                Dane pozostałych — zaliczki, balance, MRN-y i wpisy do Subiektu — znikną bezpowrotnie.
+              </div>
+            </div>
+
+            <div style={{ overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+              {lots.map((l, i) => {
+                const mfr = manufacturers.find((m) => String(m.id) === l.manufacturer_id);
+                const own = itemDetails.filter((it) => it.lotRef === String(i) && it.qty > 0);
+                const qty = own.reduce((a, it) => a + it.qty, 0);
+                const val = own.reduce((a, it) => a + it.value, 0);
+                const green = l.id != null && !!lotSubiekt[l.id];
+                const on = deconsolidate.keep === i;
+                return (
+                  <button key={i} type="button" onClick={() => setDeconsolidate({ keep: i })}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 13px", textAlign: "left",
+                      background: on ? "var(--accent-soft)" : "var(--surface-2)",
+                      border: `1px solid ${on ? "var(--accent)" : "var(--border-soft)"}`,
+                      borderRadius: 9, cursor: "pointer", transition: "all 0.12s",
+                    }}>
+                    <span style={{
+                      width: 15, height: 15, borderRadius: 99, flexShrink: 0, marginTop: 2,
+                      border: `2px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                      background: on ? "var(--accent)" : "transparent",
+                      boxShadow: on ? "inset 0 0 0 2.5px var(--bg-elevated)" : "none",
+                    }} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-hi)" }}>
+                          {mfr?.name || `Lot #${i + 1}`}
+                        </span>
+                        {l.order_number && (
+                          <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>{l.order_number}</span>
+                        )}
+                        {green && (
+                          <span style={{
+                            display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600,
+                            padding: "1px 6px", borderRadius: 99, color: "var(--ok)",
+                            background: "color-mix(in oklch, var(--ok) 15%, transparent)",
+                          }}>
+                            <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--ok)" }} /> w Subiekcie
+                          </span>
+                        )}
+                      </span>
+                      <span className="mono" style={{ display: "block", fontSize: 11, color: "var(--text-lo)", marginTop: 3 }}>
+                        {own.length} {plural(own.length, "pozycja", "pozycje", "pozycji")} · {fmtNum(qty)} szt
+                        {showFin && <> · {fmtPLN(val)}</>}
+                        {l.mrn && <> · MRN {l.mrn}</>}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {(() => {
+              // Bilans strat liczony z tych samych danych, co wiersze wyżej — użytkownik
+              // widzi liczby, zanim potwierdzi, a nie dowiaduje się o nich po fakcie.
+              const lost = lots.map((_, i) => i).filter((i) => i !== deconsolidate.keep);
+              const lostItems = itemDetails.filter((it) => lost.some((i) => it.lotRef === String(i)) && it.qty > 0);
+              const lostQty = lostItems.reduce((a, it) => a + it.qty, 0);
+              const lostVal = lostItems.reduce((a, it) => a + it.value, 0);
+              const lostGreen = lost.filter((i) => { const id = lots[i]?.id; return id != null && !!lotSubiekt[id]; }).length;
+              return (
+                <div style={{
+                  padding: "10px 20px", borderTop: "1px solid var(--border-soft)",
+                  background: "color-mix(in oklch, var(--critical) 9%, transparent)",
+                  fontSize: 12, color: "var(--critical)", fontWeight: 600, display: "flex", flexDirection: "column", gap: 3,
+                }}>
+                  <span>
+                    Usuniesz {lost.length} {plural(lost.length, "lot", "loty", "lotów")}
+                    {lostItems.length > 0 && <> · {lostItems.length} {plural(lostItems.length, "pozycja", "pozycje", "pozycji")} · {fmtNum(lostQty)} szt{showFin && <> · {fmtPLN(lostVal)}</>}</>}
+                  </span>
+                  {lostGreen > 0 && (
+                    <span style={{ fontWeight: 500 }}>
+                      Uwaga: {lostGreen} z nich {lostGreen === 1 ? "jest wbity" : "są wbite"} do magazynu „w drodze" w Subiekcie — usuń stamtąd towar ręcznie.
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 20px", borderTop: "1px solid var(--border-soft)" }}>
+              <button type="button" onClick={() => setDeconsolidate(null)} style={btnSecondary}>Anuluj</button>
+              <button type="button" onClick={() => applyDeconsolidation(deconsolidate.keep)} style={btnPrimary}>
+                Zostaw wybrany lot
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Portal>
   );
 }
