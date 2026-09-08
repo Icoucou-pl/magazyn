@@ -156,6 +156,26 @@ def _delivery_manufacturers(c) -> tuple:
     return (" · ".join(names) if names else None), color
 
 
+def _delivery_order_numbers(c) -> Optional[str]:
+    """Numer(y) PO dla dostawy — bliźniak _delivery_manufacturers.
+
+    Kontener zwykły ma PO na sobie (c.order_number). SKONSOLIDOWANY ma je puste —
+    numery siedzą na lotach. Składamy unikalne, w kolejności lotów, złączone ' · '.
+    """
+    nums: list = []
+
+    def _push(n):
+        n = (n or "").strip()
+        if n and n not in nums:
+            nums.append(n)
+
+    _push(c.order_number)
+    for lot in (getattr(c, "lots", None) or []):
+        _push(getattr(lot, "order_number", None))
+
+    return " · ".join(nums) if nums else None
+
+
 @router.get("/calendar")
 async def calendar_events(
     favorites_only: bool = False,
@@ -236,7 +256,7 @@ async def calendar_events(
         events.append({
             "date": deliv_date.isoformat(), "type": "DELIVERY",
             "container_id": c.id, "container_number": c.container_number,
-            "order_number": c.order_number, "manufacturer_name": mfr_label,
+            "order_number": _delivery_order_numbers(c), "manufacturer_name": mfr_label,
             "manufacturer_color": mfr_color, "total_units": c.total_units,
             "container_status": eff,
         })
@@ -407,11 +427,13 @@ async def cashflow(months: int = 6, db: AsyncSession = Depends(get_db), user: Cu
         eta = c.eta_date
         idx = (eta.year - today.year) * 12 + (eta.month - today.month)
         if 0 <= idx < months:
+            f_mfr, f_color = _delivery_manufacturers(c)
             result[idx]["containers"].append({
                 "id": c.id, "container_number": c.container_number,
-                "order_number": c.order_number,
-                "manufacturer_name": c.manufacturer_name,
-                "manufacturer_color": c.manufacturer_color,
+                # Skonsolidowany kontener ma oba pola puste — producenci i PO są na lotach.
+                "order_number": _delivery_order_numbers(c),
+                "manufacturer_name": f_mfr,
+                "manufacturer_color": f_color,
                 "eta_date": c.eta_date.isoformat(),
                 "total_value": c.total_value,
             })
