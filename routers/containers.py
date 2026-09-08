@@ -248,6 +248,19 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
             return old
         return None
 
+    # Konsolidacja istniejącego kontenera: dotąd nie było lotów, a zielona kropka mieszkała
+    # na kontenerze. Od momentu zapisu snapshots.py czyta ją z lotu (źródło wybiera po
+    # is_consolidated), więc bez przeniesienia flaga gaśnie — towar wraca do liczenia
+    # „w kontenerze", będąc już w magazynie „w drodze" ERP. Dubel kapitału, bez alarmu.
+    # Warunek celowo wąski: brak starych lotów + dokładnie jeden nowy = niedwuznaczna migracja.
+    inherit = None
+    if not prev and len(lots or []) == 1:
+        crow = (await db.execute(text(f"""
+            SELECT subiekt_wbite, subiekt_wbite_at FROM {settings.TABLE_CONTAINERS} WHERE id = :c
+        """), {"c": cid})).mappings().first()
+        if crow and crow["subiekt_wbite"]:
+            inherit = crow
+
     await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_LOTS} WHERE container_id = :c"), {"c": cid})
     ids: List[int] = []
     for pos, lot in enumerate(lots or []):
@@ -269,8 +282,8 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
              "mrn": _norm_mrn(getattr(lot, "mrn", None)),
-             "swb": bool(old["subiekt_wbite"]) if old else False,
-             "swb_at": (old["subiekt_wbite_at"] if old else None),
+             "swb": (bool(old["subiekt_wbite"]) if old else bool(inherit)),
+             "swb_at": (old["subiekt_wbite_at"] if old else (inherit["subiekt_wbite_at"] if inherit else None)),
              "wal": default_cur,
              "zp": (first["procent"] if first else None),
              "zk": (first["kwota"] if first else None),
@@ -283,6 +296,14 @@ async def _replace_lots(db: AsyncSession, cid: int, lots) -> List[int]:
         lid = rr.scalar_one()
         await _insert_advances(db, advances=advs, lot_id=lid)
         ids.append(lid)
+
+    # Flaga przeniesiona na lot → gasimy ją na kontenerze, żeby nie zostawała martwa dana,
+    # która zmartwychwstanie (i to nieaktualna) przy ewentualnym odkonsolidowaniu.
+    if inherit is not None:
+        await db.execute(
+            text(f"UPDATE {settings.TABLE_CONTAINERS} SET subiekt_wbite = FALSE, subiekt_wbite_at = NULL WHERE id = :c"),
+            {"c": cid},
+        )
     return ids
 
 
