@@ -437,6 +437,10 @@ export default function ContainerFormModal({
                        .map((it) => ({ ...it, lotRef: "" }));
       return kept.length ? kept : [{ sku: "", quantity: "", unit_cost: "", lotRef: "" }];
     });
+    // Kropka wraca z lotu na kontener — backend zrobi to samo przy zapisie (_replace_lots,
+    // gałąź „prev and not lots"). Ustawiamy ją też lokalnie, żeby przełącznik nie pokazywał
+    // przez chwilę czerwonego: zapisuje się natychmiast, więc mylący stan kusi do kliknięcia.
+    setSubiektWbite(keep.id != null && !!lotSubiekt[keep.id]);
     setLots([emptyLot()]);   // czysty lot = ponowna konsolidacja znów zaseeduje z kontenera
     setIsConsolidated(false);
     setDeconsolidate(null);
