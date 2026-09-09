@@ -374,6 +374,12 @@ function ProductTab({ period, shop, from, to }: { period: string; shop: string; 
   const [data, setData] = useState<ProductCard | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Zaznaczone kanały (puste = wszystkie). Przeżywa zmianę okresu — tam filtr ma sens.
+  const [picked, setPicked] = useState<string[]>([]);
+
+  // Zmiana produktu albo firmy kasuje wybór: nowy SKU może w ogóle nie sprzedawać się
+  // przez zaznaczony kanał i karta pokazałaby same zera bez widocznej przyczyny.
+  useEffect(() => { setPicked([]); }, [symbol, shop]);
 
   useEffect(() => {
     if (!symbol) { setData(null); return; }
@@ -382,12 +388,16 @@ function ProductTab({ period, shop, from, to }: { period: string; shop: string; 
     const q = period === "custom"
       ? `period=custom&from_date=${from}&to_date=${to}`
       : `period=${period}`;
-    api.get(`/finance/product?symbol=${encodeURIComponent(symbol)}&${q}${shop ? `&shop=${shop}` : ""}`)
+    const chQ = picked.map((c) => `&channel=${encodeURIComponent(c)}`).join("");
+    api.get(`/finance/product?symbol=${encodeURIComponent(symbol)}&${q}${shop ? `&shop=${shop}` : ""}${chQ}`)
       .then((d: ProductCard) => { if (alive) setData(d); })
       .catch((e: unknown) => { if (alive) { setErr(e instanceof Error ? e.message : "Błąd pobierania"); setData(null); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [symbol, period, shop, from, to]);
+  }, [symbol, period, shop, from, to, picked]);
+
+  const toggleChannel = (name: string) =>
+    setPicked((prev) => prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -400,7 +410,7 @@ function ProductTab({ period, shop, from, to }: { period: string; shop: string; 
         </div>
       ) : err ? <ErrBox msg={err} />
         : loading && !data ? <LoadBox />
-          : data ? <ProductCardBody data={data} loading={loading} /> : null}
+          : data ? <ProductCardBody data={data} loading={loading} picked={picked} onToggle={toggleChannel} onClear={() => setPicked([])} /> : null}
     </div>
   );
 }
@@ -497,8 +507,12 @@ function SymbolPicker({ value, onPick }: { value: string | null; onPick: (s: str
   );
 }
 
-function ProductCardBody({ data, loading }: { data: ProductCard; loading: boolean }) {
+function ProductCardBody({ data, loading, picked, onToggle, onClear }: {
+  data: ProductCard; loading: boolean;
+  picked: string[]; onToggle: (name: string) => void; onClear: () => void;
+}) {
   const { info, kpi, rotation } = data;
+  const filtered = picked.length > 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, opacity: loading ? 0.6 : 1, transition: "opacity 0.15s" }}>
       {/* Nagłówek produktu */}
@@ -522,7 +536,24 @@ function ProductCardBody({ data, loading }: { data: ProductCard; loading: boolea
         </div>
       </div>
 
-      <p style={{ margin: 0, fontSize: 12, color: "var(--text-lo)" }}>{data.period_label} · {data.date_from} – {data.date_to} · w PLN</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <p style={{ margin: 0, fontSize: 12, color: "var(--text-lo)" }}>{data.period_label} · {data.date_from} – {data.date_to} · w PLN</p>
+        {filtered && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-mid)" }}>
+            <span style={{ color: "var(--text-lo)" }}>·</span>
+            <span>KPI i trend tylko dla: <strong style={{ color: "var(--text-hi)" }}>{picked.join(", ")}</strong></span>
+            <button
+              onClick={onClear}
+              style={{
+                border: "1px solid var(--border)", background: "var(--surface-1)", color: "var(--text-mid)",
+                borderRadius: 999, padding: "2px 10px", fontSize: 11, cursor: "pointer",
+              }}
+            >
+              wyczyść
+            </button>
+          </span>
+        )}
+      </div>
 
       {/* KPI */}
       <div style={kpiGrid}>
@@ -535,19 +566,19 @@ function ProductCardBody({ data, loading }: { data: ProductCard; loading: boolea
       </div>
 
       {/* Rotacja / pokrycie stanu */}
-      <RotationBlock rotation={rotation} leadTime={info.lead_time_days} />
+      <RotationBlock rotation={rotation} leadTime={info.lead_time_days} filtered={filtered} />
 
       {/* Trend miesięczny */}
       <ProductTrendChart monthly={data.monthly} />
 
       {/* Kanały */}
-      <ProductChannelTable channels={data.channels} />
+      <ProductChannelTable channels={data.channels} picked={picked} onToggle={onToggle} />
     </div>
   );
 }
 
 // ── Rotacja ──────────────────────────────────────────────────
-function RotationBlock({ rotation, leadTime }: { rotation: ProductRotation; leadTime: number | null }) {
+function RotationBlock({ rotation, leadTime, filtered = false }: { rotation: ProductRotation; leadTime: number | null; filtered?: boolean }) {
   const dc = rotation.days_of_cover;
   const lt = leadTime ?? 45;
   let tone: "ok" | "warn" | "bad" | "muted" = "muted";
@@ -560,7 +591,13 @@ function RotationBlock({ rotation, leadTime }: { rotation: ProductRotation; lead
   const dcColor = tone === "bad" ? "var(--critical)" : tone === "warn" ? "var(--warning)" : tone === "ok" ? "var(--ok)" : "var(--text-lo)";
   return (
     <div style={panel}>
-      <SectionHead icon={<I.Refresh size={15} />} title="Rotacja i pokrycie stanu" hint="na podstawie sprzedaży w okresie" />
+      <SectionHead
+        icon={<I.Refresh size={15} />}
+        title="Rotacja i pokrycie stanu"
+        hint={filtered
+          ? "na podstawie sprzedaży w okresie · zawsze wszystkie kanały (stan magazynowy jest wspólny)"
+          : "na podstawie sprzedaży w okresie"}
+      />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 0 }}>
         <RotCell label="Śr. sprzedaż / dzień" value={`${dec1(rotation.avg_daily_units)} szt`} />
         <RotCell label="Śr. sprzedaż / mies." value={`${fmtNum(Math.round(rotation.avg_monthly_units))} szt`} />
@@ -658,7 +695,9 @@ function ProductTrendChart({ monthly }: { monthly: ProductMonthly[] }) {
 }
 
 // ── Kanały produktu ──────────────────────────────────────────
-function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
+function ProductChannelTable({ channels, picked = [], onToggle }: {
+  channels: ProductChannelRow[]; picked?: string[]; onToggle?: (name: string) => void;
+}) {
   // Przesunięcia wewnątrzgrupowe zawsze na dole i wyszarzone: to obrót między naszymi
   // spółkami, nie sprzedaż na zewnątrz. Zostają widoczne, żeby było wiadomo, że transfer
   // się odbył — ale nie wliczają się do KPI ani do sumy udziałów.
@@ -668,7 +707,11 @@ function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
   });
   return (
     <div style={panel}>
-      <SectionHead icon={<I.Cart size={15} />} title="Sprzedaż wg kanału" hint="gdzie się sprzedaje" />
+      <SectionHead
+        icon={<I.Cart size={15} />}
+        title="Sprzedaż wg kanału"
+        hint={onToggle ? "kliknij kanał, aby zawęzić KPI · można zaznaczyć kilka" : "gdzie się sprzedaje"}
+      />
       <div style={{ overflowX: "auto" }}>
         <table style={tbl}>
           <thead><tr><Th>Kanał</Th><Th right>Sztuki</Th><Th right>Przychód netto</Th><Th>Udział</Th></tr></thead>
@@ -679,15 +722,36 @@ function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
               // Wyszarzamy tylko wiersze faktycznie pominięte w KPI tej zakładki. Na
               // zakładce spółki przesunięcie liczy się normalnie, więc wygląda jak
               // każdy inny kanał — z paskiem i udziałem.
+              // Wiersz wykluczony nie jest wybieralny: na „wszyscy" i tak nie wchodzi do KPI,
+              // więc zaznaczenie go nie miałoby czego pokazać.
+              const selectable = !!onToggle && !c.excluded_from_kpi;
+              const isOn = picked.includes(c.channel);
               const cell: React.CSSProperties = c.excluded_from_kpi
                 ? { ...td, background: "var(--surface-2)", color: "var(--text-lo)" }
-                : td;
+                : isOn
+                  ? { ...td, background: "var(--surface-2)" }
+                  : td;
               return (
-                <tr key={c.channel}>
+                <tr
+                  key={c.channel}
+                  onClick={selectable ? () => onToggle!(c.channel) : undefined}
+                  style={selectable ? { cursor: "pointer" } : undefined}
+                  title={selectable ? (isOn ? "Kliknij, aby odznaczyć" : "Kliknij, aby zawęzić KPI do tego kanału") : undefined}
+                >
                   <td style={cell}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                       <span style={{ width: 10, height: 10, borderRadius: 3, background: c.excluded_from_kpi ? "var(--text-lo)" : chColor(c.channel) }} />
-                      <span style={{ fontWeight: 600 }}>{c.channel}</span>
+                      <span style={{ fontWeight: isOn ? 700 : 600, color: isOn ? "var(--text-hi)" : undefined }}>{c.channel}</span>
+                      {isOn && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase",
+                          padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap",
+                          background: "var(--accent-soft, var(--surface-2))", color: "var(--text-hi)",
+                          border: "1px solid var(--border)",
+                        }}>
+                          w KPI
+                        </span>
+                      )}
                       {c.excluded_from_kpi && (
                         <span style={{
                           fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase",
