@@ -48,6 +48,9 @@ type CalEvent = {
   order_number?: string | null;
   total_units?: number;
   container_status?: string;
+  eta_date?: string | null;            // przyjście do PORTU — data, którą operuje spedytor
+  delivery_source?: "delivered" | "expected" | "eta";
+  customs_days?: number;
   // PAYMENT
   pay_kind?: "zaliczka" | "balance";
   advance_id?: number | null;
@@ -175,6 +178,28 @@ const eventSub = (e: CalEvent) => {
   const lab = containerLabel(e);
   const nr = lab.isFallback ? null : [lab.nr, lab.po].filter(Boolean).join(" ");
   return [nr, `${fmtNum(e.total_units)} szt`].filter(Boolean).join(" · ");
+};
+
+// Skąd wzięła się data dostawy. „27.12 umówione" to inna informacja niż „27.12 z szacunku",
+// a do tej pory UI pokazywał obie tak samo.
+const DELIVERY_SOURCE: Record<string, string> = {
+  delivered: "potwierdzona dostawa",
+  expected:  "umówiony odbiór",
+  eta:       "szacunek",
+};
+
+// Rozpis dat dla dostawy: port (ETA) → magazyn. Zwraca null dla zdarzeń bez ETA.
+const deliveryDates = (e: CalEvent) => {
+  if (e.type !== "DELIVERY") return null;
+  const fmt = (d: string) => parseLocal(d).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" });
+  const src = e.delivery_source || "eta";
+  return {
+    port: e.eta_date ? fmt(e.eta_date) : null,
+    warehouse: fmt(e.date),
+    source: DELIVERY_SOURCE[src] || "szacunek",
+    // Dla szacunku dopisujemy regułę — inaczej „+7 dni" jest niewidoczną magią.
+    hint: src === "eta" && e.customs_days != null ? `ETA + ${e.customs_days} dni odprawy` : null,
+  };
 };
 
 // ── Utrwalanie stanu widoku (sessionStorage) ─────────────────
@@ -898,7 +923,15 @@ function EventChip({ event, onPayClick, drag }: { event: CalEvent; onPayClick: (
         ? (draggable
             ? `${payLabel(event)} — przeciągnij, by zmienić termin płatności`
             : `${payLabel(event)} — przesuwanie terminu wymaga uprawnienia „Edycja kontenerów”`)
-        : undefined}
+        : (() => {
+            const d = deliveryDates(event);
+            if (!d) return undefined;
+            return [
+              eventLabel(event),
+              d.port ? `W porcie: ${d.port}` : null,
+              `Na magazynie: ${d.warehouse} (${d.source}${d.hint ? `, ${d.hint}` : ""})`,
+            ].filter(Boolean).join("\n");
+          })()}
       style={{
         display: "flex", alignItems: "center", gap: 4,
         padding: "2px 5px",
@@ -972,6 +1005,30 @@ function EventRow({ event, isLast, openPay, onTogglePay, onOpenContainer }: {
             <MfrChip name={event.manufacturer_name} color={event.manufacturer_color || "var(--text-lo)"}/>
           </div>
         )}
+        {/* Port vs magazyn — spedytor mówi datą przyjścia do portu, kalendarz pokazuje
+            wejście na magazyn. Bez obu dat obok siebie te same „27 grudnia" znaczyły
+            co innego po każdej stronie rozmowy. */}
+        {(() => {
+          const d = deliveryDates(event);
+          if (!d) return null;
+          return (
+            <div style={{ marginTop: 7, display: "flex", flexDirection: "column", gap: 3 }}>
+              {d.port && (
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11 }}>
+                  <span style={{ color: "var(--text-lo)", minWidth: 74 }}>W porcie</span>
+                  <span className="mono" style={{ color: "var(--text-mid)" }}>{d.port}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11 }}>
+                <span style={{ color: "var(--text-lo)", minWidth: 74 }}>Na magazynie</span>
+                <span className="mono" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{d.warehouse}</span>
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-lo)", paddingLeft: 80 }}>
+                {d.source}{d.hint ? ` · ${d.hint}` : ""}
+              </div>
+            </div>
+          );
+        })()}
         {expanded && <PaymentDetail event={event} onOpenContainer={onOpenContainer}/>}
       </div>
     </div>
