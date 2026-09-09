@@ -853,17 +853,24 @@ async def finance_product(
         ORDER BY net DESC
     """), {"symbol": symbol})).mappings().all()
 
+    def _excluded(row) -> bool:
+        return bool(row["is_internal"]) and not sklep
+
     channels = [
         FinanceProductChannelRow(
             channel=r["channel"],
-            is_internal=bool(r["is_internal"]),
+            # Wykluczamy TYLKO na „wszyscy". Na zakładce spółki przesunięcie jest jej
+            # realną sprzedażą (Veluxa naprawdę zarabia na fakturze do AMH) i wchodzi
+            # do KPI tak jak dotąd — wtedy flaga musi być False, inaczej tabela pisze
+            # „wykluczone" przy wierszu, który siedzi w sumie.
+            excluded_from_kpi=_excluded(r),
             units=int(r["units"]),
             revenue_net=to_float(r["net"]),
-            # Udział liczymy wobec przychodu zewnętrznego (revenue_net jest już bez
-            # przesunięć), więc kanały zewnętrzne sumują się do 100%. Wiersz wewnętrzny
-            # dostaje 0 — jest informacyjny i nie należy do tej sumy.
+            # Udział zawsze wobec bazy, która trafiła do KPI: na „wszyscy" revenue_net
+            # jest bez przesunięć, więc kanały zewnętrzne sumują się do 100%, a wiersz
+            # wykluczony dostaje 0. Na zakładce spółki liczymy normalnie.
             share_pct=(
-                0.0 if (bool(r["is_internal"]) and not sklep)
+                0.0 if _excluded(r)
                 else (to_float(r["net"]) / revenue_net * 100.0) if revenue_net > 0 else 0.0
             ),
         )
