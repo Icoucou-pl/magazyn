@@ -57,7 +57,7 @@ type ProductRotation = {
   days_in_period: number; avg_daily_units: number; avg_monthly_units: number;
   days_of_cover: number | null; stock: number;
 };
-type ProductChannelRow = { channel: string; units: number; revenue_net: number; share_pct: number; is_internal?: boolean };
+type ProductChannelRow = { channel: string; units: number; revenue_net: number; share_pct: number; excluded_from_kpi?: boolean };
 type ProductMonthly = { year: number; month: number; units: number; revenue_net: number };
 type ProductCard = {
   period: string; period_label: string; date_from: string; date_to: string; currency: string;
@@ -663,7 +663,7 @@ function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
   // spółkami, nie sprzedaż na zewnątrz. Zostają widoczne, żeby było wiadomo, że transfer
   // się odbył — ale nie wliczają się do KPI ani do sumy udziałów.
   const sorted = [...channels].sort((a, b) => {
-    const ai = a.is_internal ? 1 : 0, bi = b.is_internal ? 1 : 0;
+    const ai = a.excluded_from_kpi ? 1 : 0, bi = b.excluded_from_kpi ? 1 : 0;
     return ai !== bi ? ai - bi : b.revenue_net - a.revenue_net;
   });
   return (
@@ -676,18 +676,19 @@ function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
             {sorted.length === 0 ? (
               <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "var(--text-lo)", padding: 20 }}>Brak sprzedaży w tym okresie</td></tr>
             ) : sorted.map((c) => {
-              // Wiersz wewnętrzny: całe tło przygaszone + jawna etykieta. Sama opacity na
-              // tekście nie wystarcza — kolumna i tak jest szara i nic nie było widać.
-              const cell: React.CSSProperties = c.is_internal
+              // Wyszarzamy tylko wiersze faktycznie pominięte w KPI tej zakładki. Na
+              // zakładce spółki przesunięcie liczy się normalnie, więc wygląda jak
+              // każdy inny kanał — z paskiem i udziałem.
+              const cell: React.CSSProperties = c.excluded_from_kpi
                 ? { ...td, background: "var(--surface-2)", color: "var(--text-lo)" }
                 : td;
               return (
                 <tr key={c.channel}>
                   <td style={cell}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: 3, background: c.is_internal ? "var(--text-lo)" : chColor(c.channel) }} />
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: c.excluded_from_kpi ? "var(--text-lo)" : chColor(c.channel) }} />
                       <span style={{ fontWeight: 600 }}>{c.channel}</span>
-                      {c.is_internal && (
+                      {c.excluded_from_kpi && (
                         <span style={{
                           fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase",
                           padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap",
@@ -702,7 +703,7 @@ function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
                   <td style={{ ...cell, textAlign: "right" }} className="num">{fmtNum(c.units)}</td>
                   <td style={{ ...cell, textAlign: "right" }} className="num">{fmtPLN(c.revenue_net)}</td>
                   <td style={{ ...cell, minWidth: 150 }}>
-                    {c.is_internal ? (
+                    {c.excluded_from_kpi ? (
                       <span style={{ fontSize: 11, color: "var(--text-lo)", fontStyle: "italic", whiteSpace: "nowrap" }}>
                         przesunięcie wewnętrzne — nie wliczane do KPI
                       </span>
