@@ -57,7 +57,7 @@ type ProductRotation = {
   days_in_period: number; avg_daily_units: number; avg_monthly_units: number;
   days_of_cover: number | null; stock: number;
 };
-type ProductChannelRow = { channel: string; units: number; revenue_net: number; share_pct: number };
+type ProductChannelRow = { channel: string; units: number; revenue_net: number; share_pct: number; is_internal?: boolean };
 type ProductMonthly = { year: number; month: number; units: number; revenue_net: number };
 type ProductCard = {
   period: string; period_label: string; date_from: string; date_to: string; currency: string;
@@ -659,7 +659,13 @@ function ProductTrendChart({ monthly }: { monthly: ProductMonthly[] }) {
 
 // ── Kanały produktu ──────────────────────────────────────────
 function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
-  const sorted = [...channels].sort((a, b) => b.revenue_net - a.revenue_net);
+  // Przesunięcia wewnątrzgrupowe zawsze na dole i wyszarzone: to obrót między naszymi
+  // spółkami, nie sprzedaż na zewnątrz. Zostają widoczne, żeby było wiadomo, że transfer
+  // się odbył — ale nie wliczają się do KPI ani do sumy udziałów.
+  const sorted = [...channels].sort((a, b) => {
+    const ai = a.is_internal ? 1 : 0, bi = b.is_internal ? 1 : 0;
+    return ai !== bi ? ai - bi : b.revenue_net - a.revenue_net;
+  });
   return (
     <div style={panel}>
       <SectionHead icon={<I.Cart size={15} />} title="Sprzedaż wg kanału" hint="gdzie się sprzedaje" />
@@ -669,26 +675,49 @@ function ProductChannelTable({ channels }: { channels: ProductChannelRow[] }) {
           <tbody>
             {sorted.length === 0 ? (
               <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "var(--text-lo)", padding: 20 }}>Brak sprzedaży w tym okresie</td></tr>
-            ) : sorted.map((c) => (
-              <tr key={c.channel}>
-                <td style={td}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 3, background: chColor(c.channel) }} />
-                    <span style={{ fontWeight: 600 }}>{c.channel}</span>
-                  </span>
-                </td>
-                <td style={{ ...td, textAlign: "right" }} className="num">{fmtNum(c.units)}</td>
-                <td style={{ ...td, textAlign: "right" }} className="num">{fmtPLN(c.revenue_net)}</td>
-                <td style={{ ...td, minWidth: 150 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ flex: 1, height: 7, background: "var(--surface-2)", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: `${Math.max(2, c.share_pct)}%`, height: "100%", background: chColor(c.channel), borderRadius: 4 }} />
-                    </div>
-                    <span className="num" style={{ fontSize: 11, color: "var(--text-mid)", minWidth: 38, textAlign: "right" }}>{dec1(c.share_pct)}%</span>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            ) : sorted.map((c) => {
+              // Wiersz wewnętrzny: całe tło przygaszone + jawna etykieta. Sama opacity na
+              // tekście nie wystarcza — kolumna i tak jest szara i nic nie było widać.
+              const cell: React.CSSProperties = c.is_internal
+                ? { ...td, background: "var(--surface-2)", color: "var(--text-lo)" }
+                : td;
+              return (
+                <tr key={c.channel}>
+                  <td style={cell}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: c.is_internal ? "var(--text-lo)" : chColor(c.channel) }} />
+                      <span style={{ fontWeight: 600 }}>{c.channel}</span>
+                      {c.is_internal && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase",
+                          padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap",
+                          background: "var(--surface-1)", color: "var(--text-lo)",
+                          border: "1px solid var(--border)",
+                        }}>
+                          wykluczone
+                        </span>
+                      )}
+                    </span>
+                  </td>
+                  <td style={{ ...cell, textAlign: "right" }} className="num">{fmtNum(c.units)}</td>
+                  <td style={{ ...cell, textAlign: "right" }} className="num">{fmtPLN(c.revenue_net)}</td>
+                  <td style={{ ...cell, minWidth: 150 }}>
+                    {c.is_internal ? (
+                      <span style={{ fontSize: 11, color: "var(--text-lo)", fontStyle: "italic", whiteSpace: "nowrap" }}>
+                        przesunięcie wewnętrzne — nie wliczane do KPI
+                      </span>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ flex: 1, height: 7, background: "var(--surface-2)", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ width: `${Math.max(2, c.share_pct)}%`, height: "100%", background: chColor(c.channel), borderRadius: 4 }} />
+                        </div>
+                        <span className="num" style={{ fontSize: 11, color: "var(--text-mid)", minWidth: 38, textAlign: "right" }}>{dec1(c.share_pct)}%</span>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
