@@ -21,7 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings, INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, to_float
+from config import (settings, INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, to_float,
+                    KNOWN_CHANNELS, INTERNAL_CHANNELS)
 from sql import product_prices_cte
 from database import get_db
 from models import (
@@ -649,6 +650,7 @@ async def finance_product(
     symbol: str = Query(..., min_length=1),
     period: str = Query("ytd"),
     shop: str = Query("", description="amh|acti|veluxa; puste = wszystkie sklepy"),
+    channel: List[str] = Query(default_factory=list, description="filtr kanalow; puste = wszystkie"),
     from_date: str = Query("", description="własny zakres: początek RRRR-MM-DD (period=custom)"),
     to_date: str = Query("", description="własny zakres: koniec RRRR-MM-DD włącznie (period=custom)"),
     db: AsyncSession = Depends(get_db),
@@ -801,18 +803,53 @@ async def finance_product(
     # raz gdy Veluxa fakturuje ją do AMH, drugi raz gdy AMH sprzeda ją klientowi.
     # Na zakładce spółki przesunięcie to jej realny obrót, więc wchodzi normalnie.
     base = _base_cte(period_clause, sym_where, include_internal=True, shop=sklep)
-    ext_where = "" if sklep else "WHERE NOT is_internal"
+    # Filtr kanalow: tylko etykiety ze znanego slownika. Nieznana wartosc z URL-a jest
+    # odrzucana, zeby nie wyciszyla po cichu calego filtra ani nie trafila do zapytania.
+    picked = [c for c in dict.fromkeys(channel) if c in KNOWN_CHANNELS]
+    if not sklep:
+        # Na „wszyscy" przesuniecia sa poza KPI, wiec nie sa wybieralne.
+        picked = [c for c in picked if c not in INTERNAL_CHANNELS]
 
-    # --- Sumy sprzedaży (KPI) ---
-    tot = (await db.execute(text(base + f"""
+    conds: List[str] = []
+    if not sklep:
+        conds.append("NOT is_internal")
+
+    # Sumy PELNE (bez filtra kanalu) sluza do dwoch rzeczy: udzialow w tabeli kanalow
+    # i rotacji. Dzieki temu paski nie skacza przy klikaniu w wiersze, a dni pokrycia
+    # nie robia sie optymistyczne tylko dlatego, ze patrzysz na jeden kanal — stan
+    # magazynowy jest wspolny dla wszystkich kanalow.
+    where_all = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+    params: dict = {"symbol": symbol}
+    conds_kpi = list(conds)
+    if picked:
+        keys = []
+        for i, c in enumerate(picked):
+            params[f"ch{i}"] = c
+            keys.append(f":ch{i}")
+        conds_kpi.append(f"channel IN ({', '.join(keys)})")
+    where_kpi = ("WHERE " + " AND ".join(conds_kpi)) if conds_kpi else ""
+
+    AGG = """
         SELECT
             COALESCE(SUM(net),   0)::float AS net,
             COALESCE(SUM(gross), 0)::float AS gross,
             COALESCE(SUM(qty),   0)::int   AS units,
             COUNT(DISTINCT order_id)::int  AS orders
         FROM base
-        {ext_where}
-    """), {"symbol": symbol})).mappings().first()
+    """
+
+    # --- Sumy pelne (udzialy + rotacja) ---
+    tot_all = (await db.execute(
+        text(base + AGG + where_all), {"symbol": symbol}
+    )).mappings().first()
+    units_all = int(tot_all["units"] or 0)
+    revenue_all = to_float(tot_all["net"])
+
+    # --- Sumy do KPI (z filtrem kanalu, jesli aktywny) ---
+    tot = tot_all if not picked else (await db.execute(
+        text(base + AGG + where_kpi), params
+    )).mappings().first()
 
     units = int(tot["units"] or 0)
     orders = int(tot["orders"] or 0)
@@ -839,7 +876,11 @@ async def finance_product(
 
     # --- Rotacja / pokrycie stanu ---
     days_in_period = max(1, (date_to - date_from).days + 1)
-    avg_daily = units / days_in_period
+    # UWAGA: rotacja celowo liczy sie z units_all, a nie z przefiltrowanych `units`.
+    # Stan magazynowy jest wspolny dla wszystkich kanalow, wiec dni pokrycia policzone
+    # ze sprzedazy jednego kanalu klamalyby w bezpieczna strone (przy 3 szt na stanie
+    # i filtrze na jeden kanal wyszloby kilkanascie dni zamiast dwoch).
+    avg_daily = units_all / days_in_period
     rotation = FinanceProductRotation(
         days_in_period=days_in_period,
         avg_daily_units=avg_daily,
@@ -877,7 +918,7 @@ async def finance_product(
             # wykluczony dostaje 0. Na zakładce spółki liczymy normalnie.
             share_pct=(
                 0.0 if _excluded(r)
-                else (to_float(r["net"]) / revenue_net * 100.0) if revenue_net > 0 else 0.0
+                else (to_float(r["net"]) / revenue_all * 100.0) if revenue_all > 0 else 0.0
             ),
         )
         for r in ch_rows
@@ -889,10 +930,10 @@ async def finance_product(
             COALESCE(SUM(qty), 0)::int   AS units,
             COALESCE(SUM(net), 0)::float AS net
         FROM base
-        {ext_where}
+        {where_kpi}
         GROUP BY yr, mo
         ORDER BY yr, mo
-    """), {"symbol": symbol})).mappings().all()
+    """), params)).mappings().all()
 
     monthly = [
         FinanceProductMonthly(
