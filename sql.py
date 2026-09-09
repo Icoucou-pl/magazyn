@@ -396,26 +396,61 @@ SELECT UPPER(sku_canon) AS sku, nazwa AS n FROM prod_names;
 # dla towaru Acti/Veluxa (raport per SKU, wartość pozycji kontenera).
 # NULLIF(...,0) wszędzie, bo zerowa cena w tych tabelach znaczy „nie wiem",
 # a nie „za darmo" — bez tego zero z Subiektu przykrywałoby realną cenę z Fakturowni.
-PRODUCT_PRICES_CTE = f"""
+def product_prices_cte(shop: str = "") -> str:
+    """Łańcuch kosztu zakupu per SKU, z priorytetem źródeł zależnym od zakładki firmy.
+
+    Domyślnie (shop pusty = „wszyscy", oraz acti/veluxa):
+        ręczna nadpiska → Fakturownia → subiekt_dwa_magazyny → subiekt_towary
+    Na zakładce AMH Subiekt przeskakuje Fakturownię:
+        ręczna nadpiska → subiekt_dwa_magazyny → subiekt_towary → Fakturownia
+
+    DLACZEGO: każde źródło trzyma koszt SWOJEJ spółki. Subiekt jest ERP-em AMH, więc
+    zna cenę, po jakiej AMH nabyło towar — także wtedy, gdy nabyło go od Veluxy czy Acti
+    po cenie transferowej. Fakturownia obsługuje Acti/Veluxę, więc dla towaru kupionego
+    wewnątrz grupy pokazuje koszt importu spółki-matki, nie koszt AMH. Do zeszłej wersji
+    zakładka AMH brała właśnie ten koszt importu i przez to maskowała przypadki, w których
+    AMH sprzedaje taniej, niż kupiło od spółki siostrzanej.
+
+    Ręczna nadpiska (`cena_zakupu`) zostaje na szczycie zawsze — to świadoma decyzja
+    człowieka i nie ma powodu, by Subiekt ją nadpisywał.
+
+    NA „WSZYSCY" ZOSTAJE ŁAŃCUCH DOMYŚLNY i to jest celowe: w widoku skonsolidowanym
+    kosztem grupy jest koszt importu, a nie cena transferowa. Gdyby konsolidacja wzięła
+    koszt AMH, marża spółki-matki na przesunięciu policzyłaby się jako zysk grupy — czyli
+    ten sam dubel, który wycinamy po stronie przychodu, wróciłby po stronie kosztu.
+
+    UWAGA: łańcuch jest globalny per SKU, bez wymiaru firmy w danych. To parametryzacja
+    KOLEJNOŚCI źródeł, nie prawdziwy koszt(sku, firma); ten wymaga kolumny firmowej i jest
+    osobnym zadaniem."""
+    amh = (shop or "").strip().lower() == "amh"
+    pri_fakturownia = 3 if amh else 1
+    pri_subiekt_nowy = 1 if amh else 2
+    pri_subiekt_stary = 2 if amh else 3
+    return f"""
 prod_prices AS (
     SELECT DISTINCT ON (sku_canon) sku_canon, cena
     FROM (
         SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(cena_zakupu, 0)::float AS cena, 0 AS pri
         FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
         UNION ALL
-        SELECT sku_canon, NULLIF(purchase_price_net, 0)::float, 1
+        SELECT sku_canon, NULLIF(purchase_price_net, 0)::float, {pri_fakturownia}
         FROM {settings.TABLE_FAKTUROWNIA_STOCK}
         UNION ALL
-        SELECT LOWER(TRIM(sku)), NULLIF(cena_jednostkowa, 0)::float, 2
+        SELECT LOWER(TRIM(sku)), NULLIF(cena_jednostkowa, 0)::float, {pri_subiekt_nowy}
         FROM {settings.TABLE_SUBIEKT_DWA} WHERE sku IS NOT NULL
         UNION ALL
-        SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF({settings.COL_PRODUCT_PRICE}, 0)::float, 3
+        SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF({settings.COL_PRODUCT_PRICE}, 0)::float, {pri_subiekt_stary}
         FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
     ) c
     WHERE c.cena IS NOT NULL
     ORDER BY sku_canon, pri
 )
 """
+
+
+# Wariant domyślny — używany przez Produkty, kontenery, snapshoty i sku_economics.
+# NIE zmieniać jego semantyki: parametryzacja per firma jest na razie tylko w Finansach.
+PRODUCT_PRICES_CTE = product_prices_cte()
 
 # Wariant samodzielny dla kodu budującego słownik w Pythonie (snapshoty / raport per SKU).
 PRODUCT_PRICES_QUERY = f"""
