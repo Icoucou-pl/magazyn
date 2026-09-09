@@ -158,7 +158,8 @@ base AS (
         (CASE WHEN fx.mult IS NOT NULL
               THEN i.{settings.COL_ITEM_QTY} * COALESCE(pp.cena, 0)
               ELSE 0 END)                                                                  AS cost,
-        (pp.cena IS NULL)                                                                  AS cost_missing
+        (pp.cena IS NULL)                                                                  AS cost_missing,
+        FALSE                                                                              AS is_internal
     FROM {settings.TABLE_ORDER_ITEMS} i
     JOIN {settings.TABLE_ORDERS} o
         -- shop w warunku jest OBOWIĄZKOWY: order_id jest unikalny dopiero w parze
@@ -211,7 +212,8 @@ base AS (
         (CASE WHEN fx.mult IS NOT NULL
               THEN COALESCE(i.total_cost, i.quantity * pp.cena, 0)
               ELSE 0 END)                                                                  AS cost,
-        (i.total_cost IS NULL AND pp.cena IS NULL)                                         AS cost_missing
+        (i.total_cost IS NULL AND pp.cena IS NULL)                                         AS cost_missing,
+        o.is_internal                                                                      AS is_internal
     FROM {settings.TABLE_FAKTUROWNIA_INVOICE_ITEMS} i
     JOIN (
         SELECT firma_id, invoice_id, shop, is_internal,
@@ -787,17 +789,23 @@ async def finance_product(
     sc = _shop_clause(sklep)
     if sc:
         sym_where = f"{sym_where} {sc}"
-    # Karta produktu: pokazujemy pełny obrót danego SKU, z przesunięciami włącznie.
+    # Karta produktu: przesunięcia wewnątrzgrupowe ZOSTAJĄ w `base`, żeby tabela kanałów
+    # mogła je pokazać jako wiersz informacyjny. Z KPI, rotacji i trendu są wycinane na
+    # zakładce „wszyscy" (sklep puste) — inaczej ta sama sztuka liczy się dwa razy:
+    # raz gdy Veluxa fakturuje ją do AMH, drugi raz gdy AMH sprzeda ją klientowi.
+    # Na zakładce spółki przesunięcie to jej realny obrót, więc wchodzi normalnie.
     base = _base_cte(period_clause, sym_where, include_internal=True)
+    ext_where = "" if sklep else "WHERE NOT is_internal"
 
     # --- Sumy sprzedaży (KPI) ---
-    tot = (await db.execute(text(base + """
+    tot = (await db.execute(text(base + f"""
         SELECT
             COALESCE(SUM(net),   0)::float AS net,
             COALESCE(SUM(gross), 0)::float AS gross,
             COALESCE(SUM(qty),   0)::int   AS units,
             COUNT(DISTINCT order_id)::int  AS orders
         FROM base
+        {ext_where}
     """), {"symbol": symbol})).mappings().first()
 
     units = int(tot["units"] or 0)
@@ -837,6 +845,7 @@ async def finance_product(
     # --- Kanały (dla tego produktu) ---
     ch_rows = (await db.execute(text(base + """
         SELECT channel,
+            BOOL_OR(is_internal)         AS is_internal,
             COALESCE(SUM(qty), 0)::int   AS units,
             COALESCE(SUM(net), 0)::float AS net
         FROM base
@@ -847,19 +856,27 @@ async def finance_product(
     channels = [
         FinanceProductChannelRow(
             channel=r["channel"],
+            is_internal=bool(r["is_internal"]),
             units=int(r["units"]),
             revenue_net=to_float(r["net"]),
-            share_pct=(to_float(r["net"]) / revenue_net * 100.0) if revenue_net > 0 else 0.0,
+            # Udział liczymy wobec przychodu zewnętrznego (revenue_net jest już bez
+            # przesunięć), więc kanały zewnętrzne sumują się do 100%. Wiersz wewnętrzny
+            # dostaje 0 — jest informacyjny i nie należy do tej sumy.
+            share_pct=(
+                0.0 if (bool(r["is_internal"]) and not sklep)
+                else (to_float(r["net"]) / revenue_net * 100.0) if revenue_net > 0 else 0.0
+            ),
         )
         for r in ch_rows
     ]
 
     # --- Trend miesięczny (sztuki + przychód netto) ---
-    mo_rows = (await db.execute(text(base + """
+    mo_rows = (await db.execute(text(base + f"""
         SELECT yr, mo,
             COALESCE(SUM(qty), 0)::int   AS units,
             COALESCE(SUM(net), 0)::float AS net
         FROM base
+        {ext_where}
         GROUP BY yr, mo
         ORDER BY yr, mo
     """), {"symbol": symbol})).mappings().all()
