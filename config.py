@@ -283,3 +283,17 @@ def sales_channel_case(alias: str = "o") -> str:
 EXCLUDED_STATUS_FILTER = excluded_status_clause("o")
 INCLUDED_STATUS_FILTER = included_status_clause("o")
 SALES_CHANNEL_CASE = sales_channel_case("o")
+
+# Zamknięty słownik etykiet kanałów. Pierwsze cztery + trzy sklepowe pochodzą z
+# sales_channel_case (gałąź Sellasista), dwa ostatnie z gałęzi Fakturowni w _base_cte.
+# Służy do walidacji filtra kanałów z URL-a: nieznana etykieta jest odrzucana, zamiast
+# po cichu wyzerować wynik albo wpuścić dowolny tekst do zapytania.
+KNOWN_CHANNELS = frozenset({
+    "Allegro", "Erli", "Studio-Bay", "Klaudia",
+    "Veluxa.eu", "Acti4med.pl", "I-CC.PL",
+    "Przesunięcie AMH", "Hurt",
+})
+
+# Kanały odpowiadające obrotowi wewnątrzgrupowemu — na „wszyscy" są poza KPI, więc
+# nie da się ich wybrać w filtrze.
+INTERNAL_CHANNELS = frozenset({"Przesunięcie AMH"})
