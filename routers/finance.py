@@ -22,7 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings, INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, to_float
-from sql import PRODUCT_PRICES_CTE
+from sql import product_prices_cte
 from database import get_db
 from models import (
     CurrentUser,
@@ -121,14 +121,16 @@ PRODUCT_ATTRS_CARD = f"""
 """
 
 
-def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool = False) -> str:
+def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool = False,
+              shop: str = "") -> str:
     """Wspólne CTE `base`: po jednej pozycji zamówienia z kanałem, przewalutowaniem i kosztem.
     Przewalutowanie: PLN/puste → 1.0; waluta obca → kurs NBP < order_date; brak kursu → mult NULL
     (pozycja wypada z przychodu I kosztu — spójnie, żeby nie psuć marży).
     cost liczony tylko gdy mult IS NOT NULL (ten sam zbiór wierszy co przychód).
 
-    KOSZT: prod_prices (PRODUCT_PRICES_CTE z sql.py) — ten sam łańcuch, którego używa moduł
+    KOSZT: prod_prices (product_prices_cte z sql.py). Poza AMH kolejność jak w module
     Produkty: ręczna nadpiska → Fakturownia → subiekt_dwa_magazyny → subiekt_towary.
+    Na zakładce AMH Subiekt wchodzi zaraz po ręcznej nadpisce (patrz product_prices_cte).
     Wcześniej stał tu sam subiekt_towary, a Subiekt jest ERP-em AMH i z założenia NIE zna
     towaru Acti (5 z 41 SKU) — dla reszty koszt wychodził zero, czyli 100% marży. Widać to
     było na zestawieniu kanałów Acti: detal 79,2% obok hurtu 58,0% na tym samym asortymencie.
@@ -138,10 +140,14 @@ def _base_cte(period_clause: str, extra_where: str = "", include_internal: bool 
 
     include_internal — czy doliczać przesunięcia wewnątrzgrupowe (faktury Veluxy do AMH).
     Na zakładce spółki TAK: to jej realny obrót. Na „wszystkich" NIE, bo ten sam towar
-    policzyłby się drugi raz, gdy AMH sprzeda go klientowi przez Sellasista."""
+    policzyłby się drugi raz, gdy AMH sprzeda go klientowi przez Sellasista.
+
+    shop — steruje kolejnością źródeł kosztu (product_prices_cte). Na AMH Subiekt bije
+    Fakturownię, bo to ERP AMH i zna realną cenę nabycia tej spółki. Na „wszyscy" łańcuch
+    zostaje domyślny, żeby konsolidacja liczyła koszt importu, nie cenę transferową."""
     internal_clause = "" if include_internal else "AND NOT is_internal"
     return f"""
-WITH {PRODUCT_PRICES_CTE.strip()},
+WITH {product_prices_cte(shop).strip()},
 base AS (
     SELECT
         o.{settings.COL_ORDER_ID}                                                          AS order_id,
@@ -350,7 +356,7 @@ async def _range_finance(db: AsyncSession, date_from: date, date_to_excl: date, 
         params["prod"] = f"%{prod}%"
     extra = ("AND " + " AND ".join(parts)) if parts else ""
 
-    base = _base_cte(clause, extra, include_internal=bool(sklep))
+    base = _base_cte(clause, extra, include_internal=bool(sklep), shop=sklep)
     rows = (await db.execute(text(base + """
         SELECT channel,
             COALESCE(SUM(net),   0)::float                                    AS net,
@@ -472,7 +478,7 @@ async def finance_missing_cost(
             period = "ytd"
         _, period_clause, _, _ = _period(period)
 
-    base = _base_cte(period_clause, _shop_clause(shop), include_internal=bool(shop))
+    base = _base_cte(period_clause, _shop_clause(shop), include_internal=bool(shop), shop=shop or "")
     rows = (await db.execute(text(base + """
         SELECT sku, MAX(nazwa) AS nazwa, MAX(mfr_name) AS producent,
                SUM(units)::int AS sztuk, SUM(net)::float AS przychod
@@ -527,7 +533,7 @@ async def finance_overview(
             period = "ytd"
         label, period_clause, date_from, date_to = _period(period)
     # Przesunięcia wewnątrzgrupowe liczymy tylko na zakładce spółki (patrz _base_cte).
-    base = _base_cte(period_clause, _shop_clause(shop), include_internal=bool(shop))
+    base = _base_cte(period_clause, _shop_clause(shop), include_internal=bool(shop), shop=shop or "")
 
     # --- Kanały (z tego wyliczamy też KPI: order=jeden kanał, więc sumy się sumują) ---
     ch_rows = (await db.execute(text(base + """
@@ -655,7 +661,7 @@ async def finance_product(
     Acti/Veluxa pokazuje stan z ich magazynu, a nie z Subiektu (AMH) — i działa też dla produktów,
     których w ogóle nie ma w Subiekcie (3/4 asortymentu Acti/Veluxa).
 
-    KOSZT JEDNOSTKOWY: prod_prices (PRODUCT_PRICES_CTE z sql.py) — ten sam łańcuch, którego
+    KOSZT JEDNOSTKOWY: prod_prices (product_prices_cte z sql.py) — ten sam łańcuch, którego
     używa reszta modułu (_base_cte), moduł Produkty, kontenery i snapshoty: ręczna nadpiska →
     Fakturownia → subiekt_dwa_magazyny → subiekt_towary. Wcześniej stało tu własne, skrócone
     COALESCE(app_product_attrs.cena_zakupu, subiekt.cena), które POMIJAŁO Fakturownię i dla
@@ -688,7 +694,7 @@ async def finance_product(
     # --- Info o produkcie: stan per-sklep (Subiekt AMH + Sellasist danego sklepu),
     #     LEFT JOIN po :symbol zamiast kotwicy na Subiekcie → działa dla produktów tylko-Sellasist ---
     info_row = (await db.execute(text(f"""
-        WITH {PRODUCT_PRICES_CTE.strip()},
+        WITH {product_prices_cte(sklep).strip()},
         ext AS (
             SELECT COALESCE(SUM(quantity), 0) AS qty
             FROM {settings.TABLE_EXTERNAL_STOCK}
@@ -794,7 +800,7 @@ async def finance_product(
     # zakładce „wszyscy" (sklep puste) — inaczej ta sama sztuka liczy się dwa razy:
     # raz gdy Veluxa fakturuje ją do AMH, drugi raz gdy AMH sprzeda ją klientowi.
     # Na zakładce spółki przesunięcie to jej realny obrót, więc wchodzi normalnie.
-    base = _base_cte(period_clause, sym_where, include_internal=True)
+    base = _base_cte(period_clause, sym_where, include_internal=True, shop=sklep)
     ext_where = "" if sklep else "WHERE NOT is_internal"
 
     # --- Sumy sprzedaży (KPI) ---
