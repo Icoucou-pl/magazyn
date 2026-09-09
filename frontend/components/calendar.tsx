@@ -190,7 +190,9 @@ const DELIVERY_SOURCE: Record<string, string> = {
 
 // Rozpis dat dla dostawy: port (ETA) → magazyn. Zwraca null dla zdarzeń bez ETA.
 const deliveryDates = (e: CalEvent) => {
-  if (e.type !== "DELIVERY") return null;
+  // date jest `string | null` (płatności bez terminu siedzą poza siatką). Dostawa zawsze
+  // ma datę, ale typ o tym nie wie — bez tego guardu build wywala się na type-checku.
+  if (e.type !== "DELIVERY" || !e.date) return null;
   const fmt = (d: string) => parseLocal(d).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" });
   const src = e.delivery_source || "eta";
   return {
