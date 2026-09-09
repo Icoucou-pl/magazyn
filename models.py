@@ -865,10 +865,11 @@ class FinanceProductRotation(BaseModel):
 
 
 class FinanceProductChannelRow(BaseModel):
+    # Czy TEN wiersz został pominięty w KPI tej konkretnej zakładki. Przesunięcie
+    # wewnątrzgrupowe wypada wyłącznie na „wszyscy"; na zakładce spółki to jej realny
+    # obrót i liczy się normalnie, więc flaga jest tam False mimo internal=True na FV.
+    excluded_from_kpi: bool = False
     channel: str
-    # Przesunięcie wewnątrzgrupowe (faktura między AMH / Acti / Veluxa po NIP-ie).
-    # Na zakładce „wszyscy" taki wiersz jest wyświetlany, ale NIE wchodzi do KPI.
-    is_internal: bool = False
     units: int
     revenue_net: float
     share_pct: float
