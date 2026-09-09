@@ -195,9 +195,17 @@ async def calendar_events(
         własnej firmy, wynika ona z właściciela SKU (firma_breakdown[slug].units > 0), dokładnie
         jak lista dostaw na dashboardzie.
 
-    Data dostawy = data wejścia do magazynu, czyli ręczne „dostarczono" (delivered_date),
-    a gdy go brak — ETA + odprawa celna (CONTAINER_CUSTOMS_DAYS). Kontenery auto-domknięte
-    po ETA+N (bez ręcznej daty) już fizycznie weszły do magazynu, więc nie zaśmiecają kalendarza.
+    Data dostawy = warehouse_delivery_date z services/containers.py, czyli hierarchia
+    delivered_date → expected_delivery_date → ETA + CONTAINER_CUSTOMS_DAYS. Kalendarz liczył
+    to wcześniej sam, POMIJAJĄC środkowy stopień: umówiony odbiór („u nas") był ignorowany
+    i chip siedział na szacunku +7 dni, choć raporty i prognoza pokazywały datę umówioną.
+
+    Kontenery auto-domknięte po ETA+N (bez ręcznej daty) już fizycznie weszły do magazynu,
+    więc nie zaśmiecają kalendarza.
+
+    Zdarzenie niesie też eta_date (przyjście do PORTU) i delivery_source — port to data,
+    którą operuje spedytor, a magazyn to port + odprawa. Bez pokazania obu dat te same
+    „27 grudnia" znaczyły co innego po każdej stronie rozmowy.
     """
     # Klamrowanie do zakresu firmowego usera — dla scoped usera "" nie znaczy „wszystkie".
     shop = resolve_shop((shop or "").strip().lower(), user)
@@ -209,12 +217,8 @@ async def calendar_events(
     # nie miał rozbicia (wariant bez danych), nie chowamy wszystkich dostaw — pokazujemy jak dawniej.
     has_breakdown = any(c.firma_breakdown for c in containers)
 
-    # Ręczne daty dostawy (ustawiane tylko przy ręcznym DELIVERED; auto-dostawa ma NULL).
-    deliv_rows = await db.execute(
-        text(f"SELECT id, delivered_date FROM {settings.TABLE_CONTAINERS} WHERE delivered_date IS NOT NULL")
-    )
-    delivered_map = {r._mapping["id"]: r._mapping["delivered_date"] for r in deliv_rows}
-    customs = int(settings.CONTAINER_CUSTOMS_DAYS)
+    # delivered_date i warehouse_delivery_date siedzą już na obiekcie z fetch_containers —
+    # osobne zapytanie było duplikatem tej samej wiedzy.
 
     events = []
     for p in products:
@@ -245,13 +249,18 @@ async def calendar_events(
             if not share or (getattr(share, "units", 0) or 0) <= 0:
                 continue
         eff = c.effective_status or c.status
-        manual = delivered_map.get(c.id)
-        if manual is not None:
-            deliv_date = manual                                   # ręczne „dostarczono"
-        elif eff != "DELIVERED":
-            deliv_date = c.eta_date + timedelta(days=customs)     # ETA + odprawa celna
+        if c.delivered_date is None and eff == "DELIVERED":
+            continue                                  # auto-domknięte po ETA+N — już w magazynie
+        deliv_date = c.warehouse_delivery_date
+        if deliv_date is None:
+            continue                                  # bez ETA i bez dat ręcznych nie ma czego wstawić
+        # Skąd wzięła się data — „27.12 umówione" to inna informacja niż „27.12 z szacunku".
+        if c.delivered_date is not None:
+            source = "delivered"
+        elif c.expected_delivery_date is not None:
+            source = "expected"
         else:
-            continue                                             # auto-domknięte po ETA+N — już w magazynie
+            source = "eta"
         mfr_label, mfr_color = _delivery_manufacturers(c)
         events.append({
             "date": deliv_date.isoformat(), "type": "DELIVERY",
@@ -259,6 +268,9 @@ async def calendar_events(
             "order_number": _delivery_order_numbers(c), "manufacturer_name": mfr_label,
             "manufacturer_color": mfr_color, "total_units": c.total_units,
             "container_status": eff,
+            "eta_date": c.eta_date.isoformat() if c.eta_date else None,
+            "delivery_source": source,
+            "customs_days": int(settings.CONTAINER_CUSTOMS_DAYS),
         })
 
     # Płatności — tylko dla uprawnionych. Odcinamy je SERWEROWO (nie chowamy na froncie),
