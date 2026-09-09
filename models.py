@@ -866,6 +866,9 @@ class FinanceProductRotation(BaseModel):
 
 class FinanceProductChannelRow(BaseModel):
     channel: str
+    # Przesunięcie wewnątrzgrupowe (faktura między AMH / Acti / Veluxa po NIP-ie).
+    # Na zakładce „wszyscy" taki wiersz jest wyświetlany, ale NIE wchodzi do KPI.
+    is_internal: bool = False
     units: int
     revenue_net: float
     share_pct: float
