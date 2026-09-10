@@ -19,7 +19,8 @@ odpowiadać nagłówkiem `immutable` i przeglądarka nie odpytuje serwera ponown
 import asyncio
 import hashlib
 import io
-from typing import List, Optional
+from collections import OrderedDict
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends, File, Form, UploadFile
 from fastapi.responses import Response
@@ -40,6 +41,46 @@ require_edit_products = require_perm("editProducts")
 _CACHE_HEADER = "public, max-age=31536000, immutable"
 
 _ALLOWED_TYPES = {"image/webp", "image/jpeg", "image/png"}
+
+# ── Dlaczego to wszystko poniżej istnieje ────────────────────────────────
+# database.py używa NullPool: KAŻDE żądanie zestawia nowe połączenie do poolera
+# Supabase. Przeglądarka renderująca listę produktów wypuszcza kilkadziesiąt
+# żądań o miniatury równolegle (HTTP/2), więc backend próbował w tej samej
+# sekundzie otworzyć kilkadziesiąt połączeń TLS. Część się nie łapała i user
+# widział „broken image" w losowych wierszach.
+#
+# Trzy warstwy obrony:
+#   1. Cache w pamięci procesu — treść jest niezmienna (URL zawiera sha256),
+#      więc raz pobrany obrazek nigdy się nie dezaktualizuje.
+#   2. Semafor — burst 40 żądań ustawia się w kolejce po 4 zamiast szturmować bazę.
+#   3. Retry — pojedyncze zerwane połączenie nie kończy się błędem u usera.
+#
+# KLUCZOWE: te endpointy NIE używają Depends(get_db). Zależność otwierałaby
+# połączenie zanim handler wystartuje, czyli przed semaforem — czyli dokładnie
+# to, czemu semafor ma zapobiec. Sesję otwieramy ręcznie, już za kolejką.
+
+_CACHE_LIMIT_BYTES = 24 * 1024 * 1024        # ~24 MB; miniatura ~2.5 kB, pełne ~40 kB
+_cache: "OrderedDict[Tuple[int, str, str], Tuple[bytes, str]]" = OrderedDict()
+_cache_bytes = 0
+_db_semafor = asyncio.Semaphore(4)
+
+
+def _cache_get(klucz):
+    dane = _cache.get(klucz)
+    if dane is not None:
+        _cache.move_to_end(klucz)      # LRU: świeżo użyte na koniec
+    return dane
+
+
+def _cache_put(klucz, wartosc):
+    global _cache_bytes
+    if klucz in _cache:
+        return
+    _cache[klucz] = wartosc
+    _cache_bytes += len(wartosc[0])
+    while _cache_bytes > _CACHE_LIMIT_BYTES and _cache:
+        _, stare = _cache.popitem(last=False)
+        _cache_bytes -= len(stare[0])
 
 # Jawna lista kolumn metadanych — bez thumb_data/full_data.
 _META_COLS = ("id, sku, sort_order, content_hash, content_type, filename, "
@@ -144,33 +185,54 @@ async def upload_photo(
     raise HTTPException(503, f"Zapis zdjęcia nieudany po kilku próbach: {last_err}")
 
 
-async def _serve(db: AsyncSession, pid: int, content_hash: str, kolumna: str) -> Response:
+async def _serve(pid: int, content_hash: str, kolumna: str) -> Response:
     """Zwraca bajty jednego wariantu. Hash musi się zgadzać — bez tego 404."""
-    r = await db.execute(
-        text(f"SELECT {kolumna} AS data, content_type FROM {settings.TABLE_PRODUCT_PHOTOS} "
-             f"WHERE id = :id AND content_hash = :h"),
-        {"id": pid, "h": content_hash},
-    )
-    row = r.first()
-    if not row or row.data is None:
-        raise HTTPException(404, "Zdjęcie nie znalezione")
-    return Response(
-        content=bytes(row.data),
-        media_type=row.content_type or "image/webp",
-        headers={"Cache-Control": _CACHE_HEADER},
-    )
+    klucz = (pid, content_hash, kolumna)
+
+    trafienie = _cache_get(klucz)
+    if trafienie is None:
+        sql = text(f"SELECT {kolumna} AS data, content_type FROM {settings.TABLE_PRODUCT_PHOTOS} "
+                   f"WHERE id = :id AND content_hash = :h")
+        params = {"id": pid, "h": content_hash}
+
+        ostatni: Exception | None = None
+        async with _db_semafor:
+            # Drugie sprawdzenie cache: przy burście kilkanaście żądań o ten sam
+            # obrazek czeka na semaforze; pierwsze go pobiera, reszta ma już gotowe.
+            trafienie = _cache_get(klucz)
+            if trafienie is None:
+                for proba in range(3):
+                    try:
+                        async with SessionLocal() as db:
+                            r = await db.execute(sql, params)
+                            row = r.first()
+                        if not row or row.data is None:
+                            raise HTTPException(404, "Zdjęcie nie znalezione")
+                        trafienie = (bytes(row.data), row.content_type or "image/webp")
+                        _cache_put(klucz, trafienie)
+                        break
+                    except HTTPException:
+                        raise
+                    except (OperationalError, InterfaceError) as e:
+                        ostatni = e
+                        await asyncio.sleep(0.25 * (proba + 1))
+                else:
+                    raise HTTPException(503, f"Nie udało się odczytać zdjęcia: {ostatni}")
+
+    dane, ctype = trafienie
+    return Response(content=dane, media_type=ctype, headers={"Cache-Control": _CACHE_HEADER})
 
 
 @router.get("/product-photos/{pid}/{content_hash}/thumb")
-async def get_thumb(pid: int, content_hash: str, db: AsyncSession = Depends(get_db)):
+async def get_thumb(pid: int, content_hash: str):
     """Miniatura ~128 px. Bez autoryzacji — patrz nota na górze pliku."""
-    return await _serve(db, pid, content_hash, "thumb_data")
+    return await _serve(pid, content_hash, "thumb_data")
 
 
 @router.get("/product-photos/{pid}/{content_hash}/full")
-async def get_full(pid: int, content_hash: str, db: AsyncSession = Depends(get_db)):
+async def get_full(pid: int, content_hash: str):
     """Zdjęcie ~800 px. Bez autoryzacji — patrz nota na górze pliku."""
-    return await _serve(db, pid, content_hash, "full_data")
+    return await _serve(pid, content_hash, "full_data")
 
 
 @router.delete("/product-photos/{pid}", status_code=204)
