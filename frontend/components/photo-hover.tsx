@@ -149,14 +149,40 @@ export function PhotoHover({
 export function ProductThumb({
   photoId, photoHash, size = 28,
 }: { photoId?: number | null; photoHash?: string | null; size?: number }) {
-  const src = photoUrl(photoId, photoHash, "thumb");
+  const bazowy = photoUrl(photoId, photoHash, "thumb");
+  // Ponowienie po błędzie. Przeglądarka nie próbuje sama — raz nieudany <img>
+  // zostaje zepsutą ikoną do końca życia strony. Dwie próby z narastającą
+  // przerwą wystarczają na chwilowe potknięcie połączenia.
+  const [proba, setProba] = useState(0);
+  const [poddane, setPoddane] = useState(false);
+
+  useEffect(() => { setProba(0); setPoddane(false); }, [bazowy]);
+
   const wspolne: React.CSSProperties = {
     width: size, height: size, borderRadius: 5, flexShrink: 0,
     border: "1px solid var(--border-soft)", background: "var(--surface-2)",
   };
-  if (!src) {
+  if (!bazowy || poddane) {
     return <span style={{ ...wspolne, display: "inline-block" }} aria-hidden />;
   }
+
+  // Parametr `r` tylko przy ponowieniu — pierwsze żądanie ma czysty URL,
+  // żeby trafiało w ten sam wpis cache co podgląd i inne widoki.
+  const src = proba === 0 ? bazowy : `${bazowy}?r=${proba}`;
+
   // loading="lazy": przy 200 wierszach ładują się tylko widoczne miniatury.
-  return <img src={src} alt="" loading="lazy" decoding="async" style={{ ...wspolne, objectFit: "cover", display: "block" }} />;
+  return (
+    <img
+      key={src}
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => {
+        if (proba < 2) setTimeout(() => setProba((n) => n + 1), 500 * (proba + 1));
+        else setPoddane(true);   // brak zdjęcia w bazie — pokazujemy pusty placeholder, nie zepsutą ikonę
+      }}
+      style={{ ...wspolne, objectFit: "cover", display: "block" }}
+    />
+  );
 }
