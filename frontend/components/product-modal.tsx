@@ -292,7 +292,7 @@ export default function ProductModal({
             gdy SKU ma historię. Dla wszystkich innych nie ma go w DOM,
             więc modal jest bit w bit taki jak przed tą zmianą. */}
         {showTabs && (
-          <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto" }}>
+          <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto", flexShrink: 0 }}>
             {([["przeglad", "Przegląd"], ["zycie", "Życie produktu"], ["sprzedaz", "Sprzedaż"], ["dane", "Dane"]] as const).map(([k, label]) => (
               <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
                 style={{
@@ -307,7 +307,7 @@ export default function ProductModal({
         )}
 
         {/* Body */}
-        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22 }}>
+        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
           {!showTabs && (
             <>
               {kpiBlok}
