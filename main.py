@@ -15,6 +15,7 @@ from routers import (
     containers, manufacturers, container_types, calendar, tools, fx, finance,
     sellasist, sync, firmy, assistant, cn_sku, reports,
     fakturownia, fakturownia_sales, sku_economics, bank, product_photos,
+    product_history,
 )
 
 app = FastAPI(title="Magazyn API", version="5.0", lifespan=lifespan)
@@ -34,5 +35,6 @@ app.middleware("http")(audit_middleware)
 for r in (auth, users, audit_log, meta, products, anomalies,
           containers, manufacturers, container_types, calendar, tools, fx, finance,
           sellasist, sync, firmy, assistant, cn_sku, reports,
-          fakturownia, fakturownia_sales, sku_economics, bank, product_photos):
+          fakturownia, fakturownia_sales, sku_economics, bank, product_photos,
+          product_history):
     app.include_router(r.router)
