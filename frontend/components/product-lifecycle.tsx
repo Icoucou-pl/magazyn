@@ -110,6 +110,7 @@ export default function LifecycleTab({ sku, showFin }: { sku: string; showFin: b
       <Podsumowanie h={h} showFin={showFin} />
       <KrzywaCeny h={h} />
       <KrzywaStanu h={h} />
+      <OsCzasu h={h} />
       <TabelaPrzyjec h={h} />
     </div>
   );
@@ -133,10 +134,26 @@ function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
     return ((b / a) - 1) * 100;
   }, [h.przyjecia]);
 
+  // Ostatnia REALNA dostawa — zwroty i przesunięcia nie są dostawą,
+  // a przy tym produkcie potrafią być świeższe i myliłyby datę.
+  const ostatnia = useMemo(() => {
+    const z = h.przyjecia.filter((p) => p.typ === "ZAKUP");
+    if (!z.length) return null;
+    const last = z[z.length - 1];
+    const dni = Math.round((Date.now() - new Date(last.data).getTime()) / 86400000);
+    return { ...last, dni };
+  }, [h.przyjecia]);
+
   const pola: [React.ReactNode, string][] = [
     [wiek, h.pierwsze_przyjecie ? `w ofercie od<br>${fmtD(h.pierwsze_przyjecie)}` : "brak przyjęć"],
     [`${h.liczba_zakupow} dostaw`, "wejść z zewnątrz"],
-    [`${fmtNum(h.sprowadzono_szt)} szt`, showFin ? `sprowadzono łącznie<br>${fmtNum(h.sprowadzono_pln)} zł` : "sprowadzono łącznie"],
+    [
+      ostatnia ? `+${fmtNum(ostatnia.ilosc)} szt` : "—",
+      ostatnia
+        ? `ostatnia dostawa<br>${fmtD(ostatnia.data)} · ${ostatnia.dni} dni temu`
+        : "brak dostaw",
+    ],
+    [`${fmtNum(h.sprowadzono_szt)} szt`, showFin ? `sprowadzono łącznie<br>koszt ${fmtNum(h.sprowadzono_pln)} zł` : "sprowadzono łącznie"],
     [`${fmtNum(h.stan_dzis)} szt`, "na stanie dziś"],
     [
       zmianaKosztu == null ? "—" : (
@@ -483,6 +500,176 @@ function KrzywaStanu({ h }: { h: Historia }) {
           Rekonstrukcja rozjeżdża się o {fmtNum(Math.abs(h.dryf))} szt w skali całej historii —
           stan na dziś jest dokładny, ale im dalej wstecz, tym mniej dokładna krzywa.
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Oś czasu ─────────────────────────────────────────────────
+// Zdarzenia wyprowadzone z odpowiedzi API. Świadomie NIE ma tu
+// zmian atrybutów (cena ręczna, MOQ, lead time) — te siedzą
+// w app_audit_log, którego endpoint jeszcze nie czyta.
+type Zdarzenie = {
+  data: string; kolor: string; tytul: string; opis: string;
+};
+
+function OsCzasu({ h }: { h: Historia }) {
+  const [wszystkie, setWszystkie] = useState(false);
+
+  const zdarzenia = useMemo<Zdarzenie[]>(() => {
+    const z: Zdarzenie[] = [];
+    const zakupy = h.przyjecia.filter((p) => p.typ === "ZAKUP");
+    if (!zakupy.length) return z;
+
+    const opisDostawy = (p: Przyjecie, poprz?: Przyjecie) => {
+      const cz: string[] = [];
+      if (p.numer_dokumentu) cz.push(p.numer_dokumentu);
+      if (p.dostawca) cz.push(p.dostawca);
+      if (p.koszt_jednostkowy != null) {
+        const d = poprz?.koszt_jednostkowy
+          ? ((p.koszt_jednostkowy / poprz.koszt_jednostkowy) - 1) * 100 : null;
+        cz.push(`${fmtC(p.koszt_jednostkowy)} zł/szt${d != null && Math.abs(d) >= 0.05 ? ` (${d > 0 ? "+" : ""}${fmtC(d, 1)}%)` : ""}`);
+      }
+      return cz.join(" · ");
+    };
+
+    // Pierwsza i ostatnia dostawa
+    z.push({
+      data: zakupy[0].data, kolor: "var(--text-lo)",
+      tytul: `Pierwsza dostawa — ${fmtNum(zakupy[0].ilosc)} szt`,
+      opis: `${opisDostawy(zakupy[0])} · produkt wchodzi do oferty`,
+    });
+    if (zakupy.length > 1) {
+      const last = zakupy[zakupy.length - 1];
+      z.push({
+        data: last.data, kolor: "var(--ok)",
+        tytul: `Ostatnia dostawa — ${fmtNum(last.ilosc)} szt`,
+        opis: opisDostawy(last, zakupy[zakupy.length - 2]),
+      });
+    }
+
+    // Największa dostawa — tylko jeśli wyraźnie odstaje
+    const max = zakupy.reduce((a, b) => (b.ilosc > a.ilosc ? b : a));
+    const sr = zakupy.reduce((s, p) => s + p.ilosc, 0) / zakupy.length;
+    if (max.ilosc > sr * 1.8 && max !== zakupy[0] && max !== zakupy[zakupy.length - 1]) {
+      z.push({
+        data: max.data, kolor: "var(--info)",
+        tytul: `Największe zamówienie — ${fmtNum(max.ilosc)} szt`,
+        opis: `${opisDostawy(max)} · ${fmtC(max.ilosc / sr, 1)}× średnia dostawa`,
+      });
+    }
+
+    // Zmiany dostawcy
+    h.dostawcy.slice(1).forEach((d, i) => {
+      const poprz = h.dostawcy[i];
+      const zmiana = d.sredni_koszt != null && poprz.sredni_koszt
+        ? ((d.sredni_koszt / poprz.sredni_koszt) - 1) * 100 : null;
+      z.push({
+        data: d.od, kolor: "var(--anomaly)",
+        tytul: `Zmiana dostawcy — ${poprz.nazwa} → ${d.nazwa}`,
+        opis: zmiana != null
+          ? `średni koszt ${fmtC(poprz.sredni_koszt as number)} → ${fmtC(d.sredni_koszt as number)} zł/szt (${zmiana > 0 ? "+" : ""}${fmtC(zmiana, 1)}%)`
+          : `${d.przyjec} dostaw od tego dostawcy`,
+      });
+    });
+
+    // Przejście na rozliczanie w obcej walucie
+    const walutowy = zakupy.find((p) => p.kurs != null && Math.abs(p.kurs - 1) > 0.001);
+    if (walutowy && walutowy !== zakupy[0]) {
+      z.push({
+        data: walutowy.data, kolor: "var(--warning)",
+        tytul: "Przejście na rozliczanie w obcej walucie",
+        opis: `${walutowy.numer_dokumentu || ""} · pierwszy dokument z kursem innym niż 1,0`.trim(),
+      });
+    }
+
+    // Korekty kosztu — zgrupowane po dacie, bo jeden KPZ poprawia zwykle kilka pozycji
+    const kor = new Map<string, Przyjecie[]>();
+    for (const p of h.przyjecia) {
+      if (!p.skorygowane) continue;
+      const k = kor.get(p.data) || [];
+      k.push(p); kor.set(p.data, k);
+    }
+    for (const [data, poz] of kor) {
+      z.push({
+        data, kolor: "var(--critical)",
+        tytul: `Koszt skorygowany — ${poz.length} ${poz.length === 1 ? "pozycja" : "pozycje"}`,
+        opis: `${poz.map((p) => p.numer_dokumentu).filter(Boolean).join(", ") || "dokument KPZ"} · koszt pierwotny został zastąpiony`,
+      });
+    }
+
+    // Okresy bez pokrycia — sklejone w ciągi
+    const bez = [...h.miesiace_bez_pokrycia].sort();
+    let i = 0;
+    while (i < bez.length) {
+      let j = i;
+      while (j + 1 < bez.length) {
+        const a = new Date(bez[j]); const b = new Date(bez[j + 1]);
+        const roznica = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+        if (roznica !== 1) break;
+        j++;
+      }
+      const ile = j - i + 1;
+      const stan = h.stan_miesiecznie.find((p) => p.miesiac === bez[j]);
+      z.push({
+        data: bez[j], kolor: "var(--critical)",
+        tytul: ile === 1
+          ? `Zapas poniżej miesięcznej sprzedaży`
+          : `Zapas poniżej sprzedaży przez ${ile} mies.`,
+        opis: `${ile === 1 ? fmtM(bez[i]) : `${fmtM(bez[i])} – ${fmtM(bez[j])}`}${stan ? ` · na koniec ${fmtNum(stan.stan)} szt przy sprzedaży ${fmtNum(stan.wydano)}/mies` : ""}`,
+      });
+      i = j + 1;
+    }
+
+    return z.sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0));
+  }, [h]);
+
+  if (!zdarzenia.length) return null;
+
+  // Domyślnie ostatnie 12 miesięcy — przy produkcie z 3-letnią historią
+  // pełna lista rozjeżdża modal, a najnowsze zdarzenia są najważniejsze.
+  const prog = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+  const swieze = zdarzenia.filter((e) => e.data >= prog);
+  const widoczne = wszystkie || swieze.length < 3 ? zdarzenia : swieze;
+  const ukryte = zdarzenia.length - widoczne.length;
+
+  let rok = "";
+
+  return (
+    <div style={sect}>
+      <div style={sectHead}>
+        <span style={sectTitle}>Co się z nim działo</span>
+        <span style={sectHint}>dostawy, zmiany dostawcy, braki towaru</span>
+      </div>
+
+      <div style={{ position: "relative", paddingLeft: 26 }}>
+        <div style={{ position: "absolute", left: 7, top: 6, bottom: 6, width: 2, background: "var(--border-soft)" }} />
+        {widoczne.map((e, i) => {
+          const r = e.data.slice(0, 4);
+          const naglowekRoku = r !== rok ? (rok = r) : null;
+          return (
+            <React.Fragment key={`${e.data}-${i}`}>
+              {naglowekRoku && (
+                <div className="mono" style={{ position: "relative", margin: "0 0 12px -26px", fontSize: 11, fontWeight: 700, color: "var(--text-disabled)", letterSpacing: "0.08em" }}>
+                  {naglowekRoku}
+                </div>
+              )}
+              <div style={{ position: "relative", paddingBottom: 16 }}>
+                <span style={{ position: "absolute", left: -24, top: 4, width: 12, height: 12, borderRadius: 99, background: e.kolor, border: "2px solid var(--bg)", boxShadow: "0 0 0 2px var(--border-soft)" }} />
+                <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>{fmtD(e.data)}</div>
+                <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 1, color: e.kolor === "var(--critical)" ? "var(--critical)" : "var(--text-hi)" }}>{e.tytul}</div>
+                <div style={{ fontSize: 11.5, color: "var(--text-mid)", marginTop: 3 }}>{e.opis}</div>
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      {ukryte > 0 && (
+        <button onClick={() => setWszystkie(true)}
+          style={{ width: "100%", marginTop: 4, padding: 9, background: "transparent", border: "1px dashed var(--border)", borderRadius: 8, color: "var(--text-lo)", fontSize: 12, cursor: "pointer" }}>
+          Pokaż wcześniejsze zdarzenia ({ukryte})
+        </button>
       )}
     </div>
   );
