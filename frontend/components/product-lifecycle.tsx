@@ -116,6 +116,30 @@ export default function LifecycleTab({ sku, showFin }: { sku: string; showFin: b
   );
 }
 
+// ── Kafelek KPI ──────────────────────────────────────────────
+// Świadomie ten sam kształt co MetricBox w product-modal.tsx.
+// Nie importuję go, bo tam jest lokalny — ale gdyby kiedyś został
+// wyciągnięty do products-ui, ten komponent powinien zniknąć.
+function Kafelek({ label, value, sub, tone = "neutral", dot }: {
+  label: string; value: React.ReactNode; sub?: string;
+  tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string;
+}) {
+  const color = {
+    neutral: "var(--text-hi)", critical: "var(--critical)",
+    warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)",
+  }[tone];
+  return (
+    <div style={{ padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 5 }}>
+        {dot && <span style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />}
+        {label}
+      </div>
+      <div className="num" style={{ fontSize: 22, fontWeight: 600, color, lineHeight: 1.1, marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
 // ── Pasek podsumowania ───────────────────────────────────────
 function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
   const wiek = useMemo(() => {
@@ -123,7 +147,7 @@ function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
     const od = new Date(h.pierwsze_przyjecie);
     const m = Math.round((Date.now() - od.getTime()) / 86400000 / 30.44);
     const lata = Math.floor(m / 12);
-    return lata > 0 ? `${lata} l. ${m % 12} mies.` : `${m} mies.`;
+    return lata > 0 ? `${lata}l ${m % 12}m` : `${m}m`;
   }, [h.pierwsze_przyjecie]);
 
   const zmianaKosztu = useMemo(() => {
@@ -135,7 +159,7 @@ function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
   }, [h.przyjecia]);
 
   // Ostatnia REALNA dostawa — zwroty i przesunięcia nie są dostawą,
-  // a przy tym produkcie potrafią być świeższe i myliłyby datę.
+  // a potrafią być świeższe i podawałyby fałszywą datę.
   const ostatnia = useMemo(() => {
     const z = h.przyjecia.filter((p) => p.typ === "ZAKUP");
     if (!z.length) return null;
@@ -144,36 +168,36 @@ function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
     return { ...last, dni };
   }, [h.przyjecia]);
 
-  const pola: [React.ReactNode, string][] = [
-    [wiek, h.pierwsze_przyjecie ? `w ofercie od<br>${fmtD(h.pierwsze_przyjecie)}` : "brak przyjęć"],
-    [`${h.liczba_zakupow} dostaw`, "wejść z zewnątrz"],
-    [
-      ostatnia ? `+${fmtNum(ostatnia.ilosc)} szt` : "—",
-      ostatnia
-        ? `ostatnia dostawa<br>${fmtD(ostatnia.data)} · ${ostatnia.dni} dni temu`
-        : "brak dostaw",
-    ],
-    [`${fmtNum(h.sprowadzono_szt)} szt`, showFin ? `sprowadzono łącznie<br>koszt ${fmtNum(h.sprowadzono_pln)} zł` : "sprowadzono łącznie"],
-    [`${fmtNum(h.stan_dzis)} szt`, "na stanie dziś"],
-    [
-      zmianaKosztu == null ? "—" : (
-        <span style={{ color: zmianaKosztu > 0 ? "var(--critical)" : "var(--ok)" }}>
-          {zmianaKosztu > 0 ? "+" : ""}{fmtC(zmianaKosztu, 1)}%
-        </span>
-      ),
-      "koszt: pierwsza<br>vs ostatnia dostawa",
-    ],
-  ];
-
   return (
-    <div style={{ ...box, padding: "14px 16px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(128px, 1fr))", gap: 14, ...sect }}>
-      {pola.map(([v, l], i) => (
-        <div key={i} style={i > 0 ? { borderLeft: "1px solid var(--border-soft)", paddingLeft: 14 } : undefined}>
-          <div className="mono" style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>{v}</div>
-          <div style={{ fontSize: 10.5, color: "var(--text-lo)", marginTop: 3, lineHeight: 1.35 }}
-               dangerouslySetInnerHTML={{ __html: l }} />
-        </div>
-      ))}
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, ...sect }}>
+      <Kafelek
+        label="W ofercie"
+        value={wiek}
+        sub={h.pierwsze_przyjecie ? `od ${fmtD(h.pierwsze_przyjecie)}` : "brak przyjęć"} />
+      <Kafelek
+        label="Ostatnia dostawa"
+        dot="var(--ok)"
+        value={ostatnia ? fmtD(ostatnia.data) : "—"}
+        sub={ostatnia ? `+${fmtNum(ostatnia.ilosc)} szt · ${ostatnia.dni} dni temu` : "brak dostaw"}
+        tone={ostatnia ? "ok" : "neutral"} />
+      <Kafelek
+        label="Dostawy"
+        value={h.liczba_zakupow}
+        sub="wejść z zewnątrz" />
+      <Kafelek
+        label="Sprowadzono"
+        value={fmtNum(h.sprowadzono_szt)}
+        sub={showFin ? `koszt ${fmtNum(h.sprowadzono_pln)} zł` : "•••••"} />
+      <Kafelek
+        label="Stan dziś"
+        value={fmtNum(h.stan_dzis)}
+        sub="na magazynie"
+        tone={h.stan_dzis === 0 ? "critical" : "neutral"} />
+      <Kafelek
+        label="Zmiana kosztu"
+        value={zmianaKosztu == null ? "—" : `${zmianaKosztu > 0 ? "+" : ""}${fmtC(zmianaKosztu, 1)}%`}
+        sub="pierwsza vs ostatnia dostawa"
+        tone={zmianaKosztu == null ? "neutral" : zmianaKosztu > 0 ? "critical" : "ok"} />
     </div>
   );
 }
