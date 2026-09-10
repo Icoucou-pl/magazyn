@@ -19,6 +19,7 @@ import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
+import LifecycleTab from "./product-lifecycle";
 
 type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
@@ -91,6 +92,31 @@ export default function ProductModal({
   const [proj, setProj] = useState<Projection | null>(null);
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
 
+  // ── Zakładki: WYŁĄCZNIE super-admin ─────────────────────────
+  // Zwykły użytkownik nie dostaje nawet paska — modal wygląda
+  // dokładnie tak, jak przed tą zmianą. `hasHistory` jest sondą:
+  // SKU spoza Subiekta (Acti/Veluxa) dostają 404 i wtedy zakładki
+  // też się nie pokazują, bo nie byłoby czego w nich pokazać.
+  const isSuper = Boolean(
+    (user as { is_super_admin?: boolean; isSuper?: boolean } | null)?.is_super_admin
+    ?? (user as { isSuper?: boolean } | null)?.isSuper,
+  );
+  const [hasHistory, setHasHistory] = useState(false);
+  const [tab, setTab] = useState<"przeglad" | "zycie" | "sprzedaz" | "dane">("przeglad");
+
+  useEffect(() => {
+    if (!isSuper) { setHasHistory(false); return; }
+    let alive = true;
+    setHasHistory(false);
+    setTab("przeglad");
+    api.get(`/products/${encodeURIComponent(product.sku)}/historia`)
+      .then(() => { if (alive) setHasHistory(true); })
+      .catch(() => { if (alive) setHasHistory(false); });
+    return () => { alive = false; };
+  }, [product.sku, isSuper]);
+
+  const showTabs = isSuper && hasHistory;
+
   useEffect(() => setProduct(initialProduct), [initialProduct]);
 
   useEffect(() => {
@@ -159,6 +185,47 @@ export default function ProductModal({
         }
       : { value: "—", sub: "brak dostaw", tone: "neutral" };
 
+  // Bloki treści wydzielone, żeby OBIE ścieżki renderowania — z zakładkami
+  // i bez — używały dokładnie tego samego JSX. Bez tego zwykły użytkownik
+  // i super-admin patrzyliby na dwie kopie, które z czasem by się rozjechały.
+  const kpiBlok = (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+      <MetricBox label="Stan" value={product.stock} sub={showFin ? fmtPLN(product.stock_value) : "•••••"} tone={product.stock === 0 ? "critical" : "neutral"} />
+      <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do ERP (w drodze)" : "nic w drodze"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
+      <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
+      <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
+      <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
+      <MetricBox label="Mies. zapasu" value={monthsStr === "∞" ? "∞" : monthsStr + "m"} sub={product.days_until_empty < 365 ? `${product.days_until_empty}d do końca` : "brak ruchu"} tone={monthsTone} />
+    </div>
+  );
+
+  const sezonBlok = (
+    <Section title="Sprzedaż — sezon do sezonu">
+      {season ? (
+        <SeasonChart data={season} showFin={showFin} accent="var(--accent)" />
+      ) : (
+        <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />
+      )}
+    </Section>
+  );
+
+  const prognozaBlok = (
+    <Section title="Prognoza stanu — 180 dni" hint={proj ? `${proj.deliveries.length} planowanych dostaw · sprzedaż ${Math.round(product.avg_monthly_weighted)}/mies` : "ładowanie…"}>
+      {proj ? <StockProjectionChart projection={proj} product={product} /> : <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />}
+    </Section>
+  );
+
+  const konteneryBlok = (
+    <ContainersSection product={product} onContainerClick={onContainerClick} onClose={onClose} />
+  );
+
+  const kartyBlok = (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+      <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} onPhotosChanged={refreshProduct} />
+      <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
+    </div>
+  );
+
   return (
     <Portal>
       {/* data-modal-* — bez tych atrybutów mobilne reguły modali z globals.css nie miały
@@ -221,35 +288,45 @@ export default function ProductModal({
           </div>
         </div>
 
+        {/* Pasek zakładek — renderuje się TYLKO dla super-admina i tylko
+            gdy SKU ma historię. Dla wszystkich innych nie ma go w DOM,
+            więc modal jest bit w bit taki jak przed tą zmianą. */}
+        {showTabs && (
+          <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto" }}>
+            {([["przeglad", "Przegląd"], ["zycie", "Życie produktu"], ["sprzedaz", "Sprzedaż"], ["dane", "Dane"]] as const).map(([k, label]) => (
+              <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
+                style={{
+                  background: "none", border: 0, padding: "12px 14px 11px",
+                  color: tab === k ? "var(--text-hi)" : "var(--text-lo)",
+                  fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", cursor: "pointer",
+                  borderBottom: `2px solid ${tab === k ? "var(--accent)" : "transparent"}`,
+                  marginBottom: -1,
+                }}>{label}</button>
+            ))}
+          </div>
+        )}
+
         {/* Body */}
         <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
-            <MetricBox label="Stan" value={product.stock} sub={showFin ? fmtPLN(product.stock_value) : "•••••"} tone={product.stock === 0 ? "critical" : "neutral"} />
-            <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do ERP (w drodze)" : "nic w drodze"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
-            <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
-            <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
-            <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
-            <MetricBox label="Mies. zapasu" value={monthsStr === "∞" ? "∞" : monthsStr + "m"} sub={product.days_until_empty < 365 ? `${product.days_until_empty}d do końca` : "brak ruchu"} tone={monthsTone} />
-          </div>
-
-          <Section title="Sprzedaż — sezon do sezonu">
-            {season ? (
-              <SeasonChart data={season} showFin={showFin} accent="var(--accent)" />
-            ) : (
-              <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />
-            )}
-          </Section>
-
-          <Section title="Prognoza stanu — 180 dni" hint={proj ? `${proj.deliveries.length} planowanych dostaw · sprzedaż ${Math.round(product.avg_monthly_weighted)}/mies` : "ładowanie…"}>
-            {proj ? <StockProjectionChart projection={proj} product={product} /> : <div style={{ height: 200, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }} className="pulse-soft" />}
-          </Section>
-
-          <ContainersSection product={product} onContainerClick={onContainerClick} onClose={onClose} />
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-            <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} onPhotosChanged={refreshProduct} />
-            <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
-          </div>
+          {!showTabs && (
+            <>
+              {kpiBlok}
+              {sezonBlok}
+              {prognozaBlok}
+              {konteneryBlok}
+              {kartyBlok}
+            </>
+          )}
+          {showTabs && tab === "przeglad" && (
+            <>
+              {kpiBlok}
+              {prognozaBlok}
+              {konteneryBlok}
+            </>
+          )}
+          {showTabs && tab === "zycie" && <LifecycleTab sku={product.sku} showFin={showFin} />}
+          {showTabs && tab === "sprzedaz" && sezonBlok}
+          {showTabs && tab === "dane" && kartyBlok}
         </div>
 
         {/* Footer */}
