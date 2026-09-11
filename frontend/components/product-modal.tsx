@@ -20,6 +20,7 @@ import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import LifecycleTab from "./product-lifecycle";
+import LifecycleTabV2 from "./product-lifecycle-v2";
 
 type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
@@ -102,7 +103,7 @@ export default function ProductModal({
     ?? (user as { isSuper?: boolean } | null)?.isSuper,
   );
   const [hasHistory, setHasHistory] = useState(false);
-  const [tab, setTab] = useState<"przeglad" | "zycie" | "dane">("przeglad");
+  const [tab, setTab] = useState<"przeglad" | "zycie" | "zycie2" | "dane">("przeglad");
 
   useEffect(() => {
     if (!isSuper) { setHasHistory(false); return; }
@@ -293,7 +294,7 @@ export default function ProductModal({
             więc modal jest bit w bit taki jak przed tą zmianą. */}
         {showTabs && (
           <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto", flexShrink: 0 }}>
-            {([["przeglad", "Przegląd"], ["zycie", "Życie produktu"], ["dane", "Dane"]] as const).map(([k, label]) => (
+            {([["przeglad", "Przegląd"], ["zycie", "Życie produktu"], ["zycie2", "Życie produktu 2.0"], ["dane", "Dane"]] as const).map(([k, label]) => (
               <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
                 style={{
                   background: "none", border: 0, padding: "12px 14px 11px",
@@ -326,6 +327,7 @@ export default function ProductModal({
             </>
           )}
           {showTabs && tab === "zycie" && <LifecycleTab sku={product.sku} showFin={showFin} />}
+          {showTabs && tab === "zycie2" && <LifecycleTabV2 sku={product.sku} showFin={showFin} />}
           {showTabs && tab === "dane" && kartyBlok}
         </div>
 

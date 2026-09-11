@@ -45,34 +45,34 @@ export type Historia = {
 };
 
 // ── Pomocnicze ───────────────────────────────────────────────
-const fmtD = (s: string) => { const [y, m, d] = s.split("-"); return `${d}.${m}.${y}`; };
-const fmtM = (s: string) => { const [y, m] = s.split("-"); return `${m}.${y.slice(2)}`; };
-const fmtC = (n: number, d = 2) =>
+export const fmtD = (s: string) => { const [y, m, d] = s.split("-"); return `${d}.${m}.${y}`; };
+export const fmtM = (s: string) => { const [y, m] = s.split("-"); return `${m}.${y.slice(2)}`; };
+export const fmtC = (n: number, d = 2) =>
   n.toLocaleString("pl-PL", { minimumFractionDigits: d, maximumFractionDigits: d });
 
-const MIES = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"];
+export const MIES = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"];
 
 // Kolory dostawców — stabilne, przypisywane po kolejności pierwszego zakupu.
 const PALETA = ["var(--accent)", "var(--anomaly)", "var(--info)", "var(--ok)", "var(--warning)"];
 
-const sect: React.CSSProperties = { marginBottom: 22 };
-const sectHead: React.CSSProperties = {
+export const sect: React.CSSProperties = { marginBottom: 22 };
+export const sectHead: React.CSSProperties = {
   display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10, flexWrap: "wrap",
 };
-const sectTitle: React.CSSProperties = {
+export const sectTitle: React.CSSProperties = {
   fontSize: 11, fontWeight: 600, letterSpacing: "0.06em",
   textTransform: "uppercase", color: "var(--text-mid)",
 };
-const sectHint: React.CSSProperties = { fontSize: 11, color: "var(--text-lo)" };
-const box: React.CSSProperties = {
+export const sectHint: React.CSSProperties = { fontSize: 11, color: "var(--text-lo)" };
+export const box: React.CSSProperties = {
   background: "var(--surface-1)", border: "1px solid var(--border-soft)",
   borderRadius: 12, overflow: "hidden",
 };
-const note: React.CSSProperties = {
+export const note: React.CSSProperties = {
   fontSize: 10.5, color: "var(--text-disabled)", lineHeight: 1.55, marginTop: 8,
 };
 
-type Tip = { x: number; y: number; html: React.ReactNode } | null;
+export type Tip = { x: number; y: number; html: React.ReactNode } | null;
 
 // ============================================================
 export default function LifecycleTab({ sku, showFin }: { sku: string; showFin: boolean }) {
@@ -120,7 +120,7 @@ export default function LifecycleTab({ sku, showFin }: { sku: string; showFin: b
 // Świadomie ten sam kształt co MetricBox w product-modal.tsx.
 // Nie importuję go, bo tam jest lokalny — ale gdyby kiedyś został
 // wyciągnięty do products-ui, ten komponent powinien zniknąć.
-function Kafelek({ label, value, sub, tone = "neutral", dot }: {
+export function Kafelek({ label, value, sub, tone = "neutral", dot }: {
   label: string; value: React.ReactNode; sub?: string;
   tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string;
 }) {
@@ -141,7 +141,7 @@ function Kafelek({ label, value, sub, tone = "neutral", dot }: {
 }
 
 // ── Pasek podsumowania ───────────────────────────────────────
-function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
+export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
   const wiek = useMemo(() => {
     if (!h.pierwsze_przyjecie) return "—";
     const od = new Date(h.pierwsze_przyjecie);
@@ -205,7 +205,7 @@ function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) {
 // ── Krzywa ceny zakupu ───────────────────────────────────────
 type TrybCeny = "pln" | "waluta" | "split";
 
-function KrzywaCeny({ h }: { h: Historia }) {
+export function KrzywaCeny({ h }: { h: Historia }) {
   const [tryb, setTryb] = useState<TrybCeny>("pln");
   const [tip, setTip] = useState<Tip>(null);
 
@@ -393,7 +393,7 @@ function KrzywaCeny({ h }: { h: Historia }) {
 }
 
 // ── Krzywa stanu ─────────────────────────────────────────────
-function KrzywaStanu({ h }: { h: Historia }) {
+export function KrzywaStanu({ h }: { h: Historia }) {
   const [tip, setTip] = useState<Tip>(null);
 
   const pkt = h.stan_miesiecznie;
@@ -537,7 +537,7 @@ type Zdarzenie = {
   data: string; kolor: string; tytul: string; opis: string;
 };
 
-function OsCzasu({ h }: { h: Historia }) {
+export function OsCzasu({ h }: { h: Historia }) {
   const [wszystkie, setWszystkie] = useState(false);
 
   const zdarzenia = useMemo<Zdarzenie[]>(() => {
@@ -700,7 +700,7 @@ function OsCzasu({ h }: { h: Historia }) {
 }
 
 // ── Tabela przyjęć ───────────────────────────────────────────
-function TabelaPrzyjec({ h }: { h: Historia }) {
+export function TabelaPrzyjec({ h }: { h: Historia }) {
   const [wszystkie, setWszystkie] = useState(false);
 
   const wiersze = useMemo(() => {
@@ -792,7 +792,7 @@ function TabelaPrzyjec({ h }: { h: Historia }) {
 }
 
 // ── Tooltip ──────────────────────────────────────────────────
-function Tooltip({ tip }: { tip: Tip }) {
+export function Tooltip({ tip }: { tip: Tip }) {
   const ref = useRef<HTMLDivElement | null>(null);
   if (!tip) return null;
   const w = ref.current?.offsetWidth ?? 200;
