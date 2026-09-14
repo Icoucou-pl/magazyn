@@ -1,6 +1,6 @@
 "use client";
 // ============================================================
-// MAGAZYN — Zakładka „Życie produktu”.
+// MAGAZYN — Zakładka „Historia produktu”.
 //
 // WIDOCZNA WYŁĄCZNIE DLA SUPER-ADMINA. Modal decyduje o tym sam
 // (patrz product-modal.tsx); ten komponent nie zna uprawnień —
@@ -29,8 +29,11 @@ export type Przyjecie = {
   skorygowane: boolean; dokument: string | null; numer_dokumentu: string | null;
   dostawca: string | null;
 };
+// `wydano` — cały rozchód poza przesunięciami (tym cofa się stan).
+// `sprzedano` — wyłącznie sprzedaż. Różnica to RW i zwroty do
+// dostawcy: schodzą z magazynu, ale nie mają przychodu.
 export type PunktStanu = {
-  miesiac: string; przyjeto: number; wydano: number; stan: number;
+  miesiac: string; przyjeto: number; wydano: number; sprzedano: number; stan: number;
   koszt_wlasny: number | null;
 };
 export type Dostawca = {
@@ -482,11 +485,14 @@ export function KrzywaStanu({ h }: { h: Historia }) {
                         </div>
                         <div><b>stan {fmtNum(p.stan)} szt</b></div>
                         {q > 0 && <div style={{ color: "var(--info)", marginTop: 3 }}>dostawa {fmtNum(q)} szt</div>}
-                        <div style={{ color: "var(--text-mid)" }}>sprzedaż {fmtNum(p.wydano)} szt</div>
+                        <div style={{ color: "var(--text-mid)" }}>sprzedaż {fmtNum(p.sprzedano)} szt</div>
+                        {p.wydano > p.sprzedano && (
+                          <div style={{ color: "var(--text-lo)" }}>rozchód wewn. {fmtNum(p.wydano - p.sprzedano)} szt</div>
+                        )}
                         {zwroty > 0 && <div style={{ color: "var(--text-lo)" }}>zwroty {fmtNum(zwroty)} szt</div>}
-                        {p.wydano > 0 && (
-                          <div style={{ color: p.stan < p.wydano ? "var(--critical)" : "var(--text-lo)", marginTop: 3 }}>
-                            zapas na {fmtC(p.stan / p.wydano, 1)} mies.
+                        {p.sprzedano > 0 && (
+                          <div style={{ color: p.stan < p.sprzedano ? "var(--critical)" : "var(--text-lo)", marginTop: 3 }}>
+                            zapas na {fmtC(p.stan / p.sprzedano, 1)} mies.
                           </div>
                         )}
                       </>
@@ -640,7 +646,7 @@ export function OsCzasu({ h }: { h: Historia }) {
         tytul: ile === 1
           ? `Zapas poniżej miesięcznej sprzedaży`
           : `Zapas poniżej sprzedaży przez ${ile} mies.`,
-        opis: `${ile === 1 ? fmtM(bez[i]) : `${fmtM(bez[i])} – ${fmtM(bez[j])}`}${stan ? ` · na koniec ${fmtNum(stan.stan)} szt przy sprzedaży ${fmtNum(stan.wydano)}/mies` : ""}`,
+        opis: `${ile === 1 ? fmtM(bez[i]) : `${fmtM(bez[i])} – ${fmtM(bez[j])}`}${stan ? ` · na koniec ${fmtNum(stan.stan)} szt przy sprzedaży ${fmtNum(stan.sprzedano)}/mies` : ""}`,
       });
       i = j + 1;
     }

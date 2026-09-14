@@ -294,7 +294,7 @@ export default function ProductModal({
             więc modal jest bit w bit taki jak przed tą zmianą. */}
         {showTabs && (
           <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto", flexShrink: 0 }}>
-            {([["przeglad", "Przegląd"], ["zycie", "Życie produktu"], ["zycie2", "Życie produktu 2.0"], ["dane", "Dane"]] as const).map(([k, label]) => (
+            {([["przeglad", "Przegląd"], ["zycie", "Historia produktu"], ["zycie2", "Historia produktu 2.0"], ["dane", "Dane"]] as const).map(([k, label]) => (
               <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
                 style={{
                   background: "none", border: 0, padding: "12px 14px 11px",

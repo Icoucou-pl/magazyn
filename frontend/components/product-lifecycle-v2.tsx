@@ -1,6 +1,6 @@
 "use client";
 // ============================================================
-// MAGAZYN — Zakładka „Życie produktu 2.0”.
+// MAGAZYN — Zakładka „Historia produktu 2.0”.
 //
 // Wersja porównawcza, stojąca OBOK v1. Nie kopiuje jej kodu —
 // składa się z tych samych komponentów (product-lifecycle.tsx)
@@ -85,7 +85,7 @@ export default function LifecycleTabV2({ sku, showFin }: { sku: string; showFin:
 function UtraconaSprzedaz({ h, showFin }: { h: Historia; showFin: boolean }) {
   const wynik = useMemo(() => {
     const pkt = h.stan_miesiecznie;
-    const sprz = new Map(pkt.map((p) => [p.miesiac.slice(0, 7), p.wydano]));
+    const sprz = new Map(pkt.map((p) => [p.miesiac.slice(0, 7), p.sprzedano]));
     const szczegoly: { m: string; bylo: number; popyt: number; strata: number }[] = [];
     let bezOdniesienia = 0;
 
@@ -96,19 +96,19 @@ function UtraconaSprzedaz({ h, showFin }: { h: Historia; showFin: boolean }) {
       const naStart = i > 0 ? pkt[i - 1].stan : 0;
 
       if (popyt == null) {
-        if (p.wydano > 0 && naStart < p.wydano) bezOdniesienia++;
+        if (p.sprzedano > 0 && naStart < p.sprzedano) bezOdniesienia++;
         return;
       }
       if (naStart >= popyt) return;
 
       const ostatnie = pkt.slice(Math.max(0, i - 3), i)
-        .map((x) => x.wydano).filter((v) => v > 0).sort((a, b) => a - b);
+        .map((x) => x.sprzedano).filter((v) => v > 0).sort((a, b) => a - b);
       if (!ostatnie.length) return;
       const mediana = ostatnie[Math.floor(ostatnie.length / 2)];
-      if (p.wydano >= mediana) return;
+      if (p.sprzedano >= mediana) return;
 
-      const strata = Math.max(0, popyt - p.wydano);
-      if (strata > 0) szczegoly.push({ m, bylo: p.wydano, popyt, strata });
+      const strata = Math.max(0, popyt - p.sprzedano);
+      if (strata > 0) szczegoly.push({ m, bylo: p.sprzedano, popyt, strata });
     });
 
     const suma = szczegoly.reduce((s, x) => s + x.strata, 0);
@@ -118,10 +118,10 @@ function UtraconaSprzedaz({ h, showFin }: { h: Historia; showFin: boolean }) {
   // Średni koszt własny ostatniego roku — do przeliczenia straty na złotówki
   // liczymy po koszcie, nie po cenie sprzedaży, bo ceny tu nie znamy.
   const sredniKoszt = useMemo(() => {
-    const z = h.stan_miesiecznie.filter((p) => p.koszt_wlasny != null && p.wydano > 0).slice(-12);
+    const z = h.stan_miesiecznie.filter((p) => p.koszt_wlasny != null && p.sprzedano > 0).slice(-12);
     if (!z.length) return null;
-    const q = z.reduce((s, p) => s + p.wydano, 0);
-    return z.reduce((s, p) => s + p.wydano * (p.koszt_wlasny as number), 0) / q;
+    const q = z.reduce((s, p) => s + p.sprzedano, 0);
+    return z.reduce((s, p) => s + p.sprzedano * (p.koszt_wlasny as number), 0) / q;
   }, [h.stan_miesiecznie]);
 
   if (!wynik.szczegoly.length && !wynik.bezOdniesienia) return null;
@@ -170,17 +170,21 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
 
   const dane = useMemo(() => {
     if (!season?.length) return [];
-    const przychod = new Map<string, number>();
+    // Ilość i przychód MUSZĄ pochodzić z tego samego źródła. Wcześniej
+    // koszt liczył się od `wydano` (cały rozchód, z RW i zwrotami do
+    // dostawcy), a przychód od sprzedaży — stąd ujemne marże w
+    // miesiącach z dużym RW.
+    const sprzedaz = new Map<string, { net: number; qty: number }>();
     for (const s of season) {
-      przychod.set(`${s.year}-${String(s.month + 1).padStart(2, "0")}`, s.value_net);
+      sprzedaz.set(`${s.year}-${String(s.month + 1).padStart(2, "0")}`, { net: s.value_net, qty: s.qty });
     }
     return h.stan_miesiecznie
       .map((p) => {
         const m = p.miesiac.slice(0, 7);
-        const rev = przychod.get(m);
-        if (rev == null || rev <= 0 || p.koszt_wlasny == null || p.wydano <= 0) return null;
-        const koszt = p.wydano * p.koszt_wlasny;
-        return { m, rev, koszt, qty: p.wydano, kw: p.koszt_wlasny, marza: ((rev - koszt) / rev) * 100 };
+        const s = sprzedaz.get(m);
+        if (!s || s.net <= 0 || s.qty <= 0 || p.koszt_wlasny == null) return null;
+        const koszt = s.qty * p.koszt_wlasny;
+        return { m, rev: s.net, koszt, qty: s.qty, kw: p.koszt_wlasny, marza: ((s.net - koszt) / s.net) * 100 };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
   }, [h.stan_miesiecznie, season]);
@@ -248,7 +252,7 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
                         <>
                           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-lo)", marginBottom: 3 }}>{fmtM(`${d.m}-01`)}</div>
                           <div><b>marża {fmtC(d.marza, 1)}%</b></div>
-                          <div style={{ color: "var(--text-mid)", marginTop: 3 }}>sprzedano {fmtNum(d.qty)} szt</div>
+                          <div style={{ color: "var(--text-mid)", marginTop: 3 }}>sprzedano {fmtNum(d.qty)} szt wg zamówień</div>
                           <div style={{ color: "var(--text-mid)" }}>przychód {fmtNum(d.rev)} zł netto</div>
                           <div style={{ color: "var(--critical)" }}>koszt własny {fmtC(d.kw)} zł/szt = {fmtNum(d.koszt)} zł</div>
                         </>
@@ -278,9 +282,12 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
 
       <div style={note}>
         Koszt własny to <span className="mono">Rozchody.KosztMagazynowy</span> — ile Subiekt po FIFO
-        przypisał do konkretnych sprzedanych sztuk, a nie średnia cena zakupu. Przychód netto pochodzi
-        z faktur. Wykres sięga tylko tam, gdzie są oba źródła: sprzedaż jest liczona od stycznia
-        zeszłego roku, więc wcześniejsze miesiące historii tu nie wejdą.
+        przypisał do sprzedanych sztuk, a nie średnia cena zakupu; przy kilku warstwach w miesiącu
+        jest to średnia ważona ilością. Liczy się <b>wyłącznie rozchód na WZ</b> — RW i zwroty do
+        dostawcy schodzą ze stanu, ale nie są sprzedażą i do marży nie wchodzą. Ilość i przychód
+        netto pochodzą z tego samego źródła, czyli z pozycji zamówień. Wykres sięga tylko tam, gdzie
+        są oba źródła: sprzedaż jest liczona od stycznia zeszłego roku, więc wcześniejsze miesiące
+        historii tu nie wejdą.
       </div>
     </div>
   );
