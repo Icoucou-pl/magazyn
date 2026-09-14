@@ -39,6 +39,33 @@ się policzyć.
 
 Ruch z magazynu SPOZA pary (zdarzyło się 100002) to realne wejście
 na stan i liczy się normalnie.
+
+ROZCHÓD ≠ SPRZEDAŻ
+------------------
+`subiekt_rozchody_mies.typ` rozróżnia rodzaj rozchodu po symbolu
+dokumentu w Subiekcie:
+
+    WYDANIE          WZ/KWZ  — sprzedaż
+    WEWNETRZNE       RW      — rozchód wewnętrzny
+    ZWROT_DOSTAWCA   KPZ     — korekta przyjęcia, towar wraca do dostawcy
+    PRZESUNIECIE     MW      — ruch między naszymi magazynami
+    INNE                     — symbol nieznany albo brak dokumentu
+
+Rozróżnienie jest konieczne, bo RW i KPZ ZDEJMUJĄ towar ze stanu,
+ale NIE są sprzedażą. Stąd dwie różne agregacje z tej samej tabeli:
+
+  · krzywa stanu  — wszystko poza PRZESUNIECIE  (pole `wydano`)
+  · marża         — wyłącznie WYDANIE           (pole `sprzedano`)
+
+Mieszanie tych dwóch daje ujemne marże w miesiącach z dużym RW:
+koszt własny liczy się od pełnego rozchodu, a przychód tylko od
+sprzedaży. Na D2cz w 07.2026 było to 464 szt rozchodu wobec 134 szt
+sprzedaży — RW 156/07/2026 na 230 szt i KPZ 6/07/2026 na 100 szt.
+
+Obie reguły są poprawne także dla danych sprzed zmiany skryptu,
+gdzie istniały wyłącznie typy WYDANIE i PRZESUNIECIE — wtedy
+`sprzedano` równa się `wydano`, czyli zachowaniu sprzed zmiany.
+Dzięki temu kolejność wdrożenia backendu i skryptu nie ma znaczenia.
 """
 
 from datetime import date
@@ -106,9 +133,18 @@ class Przyjecie(BaseModel):
 
 
 class PunktStanu(BaseModel):
+    """Miesięczny punkt krzywej stanu.
+
+    `wydano`   — cały rozchód poza przesunięciami; tym cofamy stan.
+    `sprzedano`— wyłącznie sprzedaż; tym liczymy marżę i popyt.
+    Różnica to RW i zwroty do dostawcy — realnie schodzą z magazynu,
+    ale nie mają przychodu po drugiej stronie.
+    """
+
     miesiac: date
     przyjeto: float
     wydano: float
+    sprzedano: float = 0.0
     stan: float
     koszt_wlasny: Optional[float] = None
 
@@ -246,7 +282,14 @@ async def historia_produktu(
     # ── miesięczne delty ─────────────────────────────────────
     wejscia: Dict[date, float] = {}
     wyjscia: Dict[date, float] = {}
-    cogs: Dict[date, float] = {}
+    sprzedaz: Dict[date, float] = {}
+
+    # Koszt własny zbieramy jako sumę wartości i sumę ilości, a nie
+    # jako pojedynczą liczbę. Wiersze są per magazyn i per typ, więc
+    # w jednym miesiącu bywa ich kilka — podstawienie ostatniego
+    # dawało koszt przypadkowego wiersza zamiast średniej.
+    cogs_wartosc: Dict[date, float] = {}
+    cogs_ilosc: Dict[date, float] = {}
 
     for r in przyjecia_rows:
         if _wewnetrzny(r["magazyn_zrodlowy"], r["magazyn_id"]):
@@ -256,14 +299,30 @@ async def historia_produktu(
         wejscia[m] = wejscia.get(m, 0.0) + float(r["ilosc"])
 
     for r in rozchody_rows:
-        if r["typ"] != "WYDANIE":
+        typ = r["typ"]
+
+        # Przesunięcie nie zmienia stanu łącznego — wypada z obu sum.
+        if typ == "PRZESUNIECIE":
             continue
 
         m = r["miesiac"]
-        wyjscia[m] = wyjscia.get(m, 0.0) + float(r["ilosc"])
+        ilosc = float(r["ilosc"])
+
+        # Stan: liczy się każdy rozchód, który realnie zdjął towar.
+        wyjscia[m] = wyjscia.get(m, 0.0) + ilosc
+
+        # Marża i popyt: tylko sprzedaż.
+        if typ != "WYDANIE":
+            continue
+
+        sprzedaz[m] = sprzedaz.get(m, 0.0) + ilosc
 
         if r["koszt_wlasny"] is not None:
-            cogs[m] = float(r["koszt_wlasny"])
+            cogs_wartosc[m] = (
+                cogs_wartosc.get(m, 0.0)
+                + ilosc * float(r["koszt_wlasny"])
+            )
+            cogs_ilosc[m] = cogs_ilosc.get(m, 0.0) + ilosc
 
     if not wejscia and not wyjscia:
         raise HTTPException(404, f"Brak ruchów dla SKU {sku}")
@@ -292,11 +351,19 @@ async def historia_produktu(
     # i wystawiamy to na wierzch zamiast chować.
     dryf = round(biezacy, 3)
 
+    # Średnia ważona ilością — po jednej liczbie na miesiąc.
+    cogs: Dict[date, float] = {
+        m: round(cogs_wartosc[m] / cogs_ilosc[m], 4)
+        for m in cogs_ilosc
+        if cogs_ilosc[m]
+    }
+
     stan_miesiecznie = [
         PunktStanu(
             miesiac=m,
             przyjeto=round(wejscia.get(m, 0.0), 3),
             wydano=round(wyjscia.get(m, 0.0), 3),
+            sprzedano=round(sprzedaz.get(m, 0.0), 3),
             stan=round(stany[m], 3),
             koszt_wlasny=cogs.get(m),
         )
@@ -308,7 +375,7 @@ async def historia_produktu(
     bez_pokrycia = [
         p.miesiac
         for p in stan_miesiecznie
-        if p.wydano > 0 and p.stan < p.wydano
+        if p.sprzedano > 0 and p.stan < p.sprzedano
     ]
 
     # ── dostawcy ─────────────────────────────────────────────
