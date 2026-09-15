@@ -365,6 +365,9 @@ async def fetch_lots_bulk(db: AsyncSession, container_ids: List[int], lot_totals
 
 async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> List[ContainerOut]:
     """Lista kontenerów z pozycjami + załącznikami + wyliczeniami wypełnienia/wartości."""
+    # Import lokalny: services.products importuje services.containers (compute_effective_status),
+    # więc import na górze pliku zrobiłby cykl.
+    from services.products import compute_effective_cbm
     where = "WHERE c.status = :status" if status else ""
     r = await db.execute(text(f"""
         WITH {PRODUCT_NAMES_CTE},
@@ -382,6 +385,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             pn.nazwa AS product_name,
             COALESCE(pp.cena, 0) AS purchase_price,   -- prod_prices ma już ręczną nadpiskę na pri 0
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
+            pa.dlugosc_cm, pa.szerokosc_cm, pa.wysokosc_cm, pa.szt_w_kartonie,
             pa.firma_id,
             f.slug AS firma_slug, f.name AS firma_name, f.color AS firma_color
         FROM {settings.TABLE_CONTAINERS} c
@@ -393,7 +397,8 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         LEFT JOIN (
             SELECT DISTINCT ON (LOWER(TRIM(sku)))
                    LOWER(TRIM(sku)) AS sku_canon,
-                   firma_id, cena_zakupu, cbm_per_unit, name_override
+                   firma_id, cena_zakupu, cbm_per_unit, name_override,
+                   dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie
             FROM {settings.TABLE_PRODUCT_ATTRS}
             WHERE sku IS NOT NULL AND TRIM(sku) <> ''
             ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
@@ -451,7 +456,10 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "firma_breakdown": {},
             }
         if row["item_id"] is not None:
-            cbm_pu = float(row["cbm_per_unit"]) if row["cbm_per_unit"] else 0
+            # CBM efektywny: ręczny override albo z wymiarów kartonu — to samo źródło co karta
+            # produktu i formularz kontenera (compute_effective_cbm). Sam cbm_per_unit dawał 0
+            # dla SKU, które mają tylko wymiary.
+            cbm_pu, _ = compute_effective_cbm(row)
             tcb = cbm_pu * row["quantity"]
             # Koszt jednostkowy: jeśli pozycja nie ma własnego unit_cost,
             # podstaw cenę zakupu produktu (cena_zakupu_netto) — tak jak liczona jest wartość magazynu.
