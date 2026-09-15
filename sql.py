@@ -146,16 +146,29 @@ ext_stock_global AS (
     GROUP BY sku_canon
 ),
 fakturownia_data AS (
-    -- Cena zakupu (z PZ) i nazwa z Fakturowni Acti/Veluxa, po sku_canon (SKU globalnie unikalne 1:1;
-    -- MAX tylko na wypadek gdyby ten sam symbol trafił do >1 Fakturowni). Bez filtra na cenę,
+    -- Cena zakupu (z PZ) i nazwa z Fakturowni Acti/Veluxa, po sku_canon. Bez filtra na cenę,
     -- bo produkt może mieć nazwę przy zerowej cenie. Filtrowanie zer robimy dopiero przy użyciu:
     -- cena przez NULLIF(fd.ppn,0), nazwa przez NULLIF(TRIM(fd.nazwa),'').
-    -- AMH nie ma tu wierszy → jego cena/nazwa zostają bez zmian (Subiekt).
-    SELECT sku_canon,
-           MAX(purchase_price_net) AS ppn,
-           MAX(nazwa)              AS nazwa
-    FROM {settings.TABLE_FAKTUROWNIA_STOCK}
-    GROUP BY sku_canon
+    --
+    -- FILTR NA FIRMĘ JEST KONIECZNY. Wcześniej ten CTE grupował po samym sku_canon,
+    -- bez wiedzy, z której Fakturowni pochodzi wiersz. Założenie brzmiało „SKU jest
+    -- globalnie unikalne 1:1, MAX tylko na wszelki wypadek" i było prawdziwe, dopóki
+    -- ten sam symbol nie zaczął żyć w dwóch spółkach naraz. Odkąd AMH i Acti handlują
+    -- tym samym towarem (Szp1, Pod_1b), na zakładce AMH potrafiła wskoczyć cena z PZ
+    -- Acti — wystarczyło, że w app_product_attrs nie było ceny ręcznej. MAX wybierał
+    -- wtedy wyższą z dwóch spółek, a nie właściwą.
+    --
+    -- :shop = 'amh'  → brak wierszy (AMH nie ma Fakturowni) → cena i nazwa z Subiekta,
+    -- :shop = 'acti' → wyłącznie Fakturownia Acti,
+    -- :shop = ''     → wszystkie firmy, jak dotąd. To widok zbiorczy „Wszyscy" i tam
+    --                  MAX z kilku spółek jest świadomym uproszczeniem, nie pomyłką.
+    SELECT fs.sku_canon,
+           MAX(fs.purchase_price_net) AS ppn,
+           MAX(fs.nazwa)              AS nazwa
+    FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
+    JOIN {settings.TABLE_FIRMY} ff ON ff.id = fs.firma_id
+    WHERE (:shop = '' OR LOWER(ff.slug) = :shop)
+    GROUP BY fs.sku_canon
 ),
 sales_global AS (
     SELECT
