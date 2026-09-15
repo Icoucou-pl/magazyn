@@ -369,6 +369,7 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         if classify_product(p) not in include_set:
             continue
         sku_key = p["sku"].strip().lower() if p["sku"] else ""
+        p_firma = (p.get("firma_slug") or "amh").strip().lower()
         if not shop:
             # TRYB SUMA („Wszyscy" / globalne wyszukiwanie): łączny obraz produktu po
             # wszystkich firmach — realne „ile mam i mogę przerzucić". STAN jest już sumą
@@ -378,23 +379,20 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             inc_lines = incoming_by_sku.get(sku_key, [])
             skip_wbite = True
         else:
-            # TRYB FIRMY (zakładka AMH/Acti/Veluxa).
-            #
-            # CO SIĘ ZMIENIA Z FIRMĄ: stan, sprzedaż i miesiące zapasu. To są
-            # liczby, które naprawdę należą do jednej spółki.
-            #
-            # CO NIE: towar w drodze, kontenery i najbliższa dostawa. Te są
-            # pokazywane ZAWSZE, niezależnie od wybranej zakładki. Powód jest
-            # praktyczny: wcześniej kontener zniknął z karty, gdy fragmentator
-            # stał na innej spółce, i wyglądało to jak brak jakiejkolwiek
-            # dostawy w drodze. Łatwo wtedy nie zauważyć, że patrzy się na
-            # inną firmę, i zamówić towar, który już płynie. Wolimy pokazać
-            # dostawę siostry niż zataić własną.
-            erp = subiekt_transit.get(sku_key, 0) + fakturownia_transit_all.get(sku_key, 0)
+            # TRYB FIRMY (zakładka AMH/Acti/Veluxa): widok jednej firmy.
+            cf = shop
+            if cf == "amh":
+                erp = subiekt_transit.get(sku_key, 0)
+            else:
+                # Każda firma z wpiętą Fakturownią (Acti, Veluxa, …) — jej WŁASNY transit.
+                erp = fakturownia_transit_by_firma.get(cf, {}).get(sku_key, 0)
+            # Kontenery tylko na zakładce firmy produktu — bez przecieku na obcą firmę.
             inc_lines = incoming_by_sku.get(sku_key, [])
-            # `erp` obejmuje teraz tranzyt wszystkich ERP-ów, więc wbite loty
-            # wykluczamy bezwarunkowo — inaczej policzyłyby się dwa razy.
-            skip_wbite = True
+            if p_firma != shop:
+                inc_lines = []
+            # Wbite wykluczamy dla firm z wpiętym ERP „w drodze" (AMH→Subiekt,
+            # Acti/Veluxa→Fakturownia) — zielone loty są już w erp_transit, inaczej dubel.
+            skip_wbite = cf in ("amh", "acti", "veluxa")
         # Tranzyt sióstr (ich „magazyn w drodze" z Fakturowni) — potrzebny tylko na zakładce
         # AMH, do stanu WAIT znacznika transferu. Poza AMH nie liczymy, żeby nie mielić na darmo.
         sibling_transit: Dict[str, int] = {}
@@ -403,11 +401,40 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
                 q = per_sku.get(sku_key, 0)
                 if q:
                     sibling_transit[slug] = q
-        results.append(calculate_forecast(
+        wynik = calculate_forecast(
             p, inc_lines,
             transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop,
             erp_transit=erp, skip_wbite=skip_wbite,
-            transfer_transit=sibling_transit))
+            transfer_transit=sibling_transit)
+
+        # DOSTAWY SĄ WSPÓLNE DLA CAŁEJ GRUPY — ale tylko do pokazania.
+        #
+        # Kontener zniknięty z karty, bo fragmentator stał na innej spółce,
+        # wygląda jak brak jakiejkolwiek dostawy w drodze. Łatwo wtedy nie
+        # zauważyć, że patrzy się na inną firmę, i zamówić towar, który już
+        # płynie. Dlatego „w drodze", „w kontenerach", najbliższa dostawa i
+        # lista kontenerów pokazują obraz CAŁEJ grupy na każdej zakładce.
+        #
+        # ALE NIE WCHODZĄ DO LICZENIA. Prognoza, status i miesiące zapasu
+        # zostają policzone na własnym tranzycie firmy — inaczej AMH liczyło
+        # sobie 1000 szt płynących do Veluxy jako własny zapas i Pod_1b
+        # skakał z 0,4 na 15,6 miesiąca. Liczymy więc drugi raz, w wariancie
+        # grupowym, i przepisujemy WYŁĄCZNIE pola informacyjne.
+        if shop:
+            glob = calculate_forecast(
+                p, incoming_by_sku.get(sku_key, []),
+                transfer_stock=transfer_by_sku.get(sku_key, []), shop=shop,
+                erp_transit=(subiekt_transit.get(sku_key, 0)
+                             + fakturownia_transit_all.get(sku_key, 0)),
+                skip_wbite=True, transfer_transit=sibling_transit)
+            wynik.stock_in_transit = glob.stock_in_transit
+            wynik.stock_in_transit_wbite = glob.stock_in_transit_wbite
+            wynik.stock_in_transit_containers = glob.stock_in_transit_containers
+            wynik.nearest_delivery_date = glob.nearest_delivery_date
+            wynik.nearest_delivery_source = glob.nearest_delivery_source
+            wynik.incoming_deliveries = glob.incoming_deliveries
+
+        results.append(wynik)
     return results
 
 
@@ -416,11 +443,10 @@ async def get_product(db: AsyncSession, sku: str, shop: str = "") -> ProductSumm
     Dopasowanie po kanonicznym SKU (case-insensitive) — globalne wyszukiwanie i lista
     mogą renderować różną wielkość liter tego samego SKU.
 
-    `shop` domyślnie pusty, czyli suma po firmach — tak działało to od zawsze i
-    tak ma zostać dla „Wszyscy". Ale wejście z globalnej wyszukiwarki ustawia
-    teraz firmę właściciela produktu, więc karta musi umieć pokazać liczby TEJ
-    spółki. Bez tego parametru przełącznik mówił „Veluxa", a stan był sumą
-    wszystkich firm."""
+    `shop` domyślnie pusty, czyli suma po firmach — tak było od zawsze i tak ma
+    zostać dla „Wszyscy". Ale wejście z globalnej wyszukiwarki ustawia teraz
+    firmę właściciela produktu, więc karta musi umieć pokazać liczby TEJ spółki.
+    Bez tego przełącznik mówił „Veluxa", a stan był sumą wszystkich firm."""
     from fastapi import HTTPException
     products = await fetch_products(
         db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}, shop)
