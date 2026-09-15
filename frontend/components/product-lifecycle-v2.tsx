@@ -27,7 +27,7 @@ import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 import {
   Kafelek, KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip,
-  box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle,
+  box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle, useWaskiEkran,
   type Historia, type Przyjecie, type Tip,
 } from "./product-lifecycle";
 
@@ -203,7 +203,9 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   if (!season) return <div style={{ height: 260, ...box, ...sect }} className="pulse-soft" />;
   if (dane.length < 3) return null;
 
-  const W = 720, H = 280, L = 58, R = 44, T = 20, B = 34;
+  const waski = useWaskiEkran();
+  const W = waski ? 380 : 720, H = waski ? 230 : 280;
+  const L = waski ? 40 : 58, R = waski ? 30 : 44, T = 20, B = 34;
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxV) * (H - T - B);
@@ -319,7 +321,9 @@ function KosztLag({ h }: { h: Historia }) {
 
   if (zakupy.length < 2 || cogs.length < 3) return null;
 
-  const W = 720, H = 240, L = 52, R = 16, T = 20, B = 34;
+  const waski = useWaskiEkran();
+  const W = waski ? 380 : 720, H = waski ? 200 : 240;
+  const L = waski ? 34 : 52, R = waski ? 10 : 16, T = 20, B = 34;
   const wszystkie = [
     ...zakupy.map((p) => p.koszt_jednostkowy as number),
     ...cogs.map((p) => p.koszt_wlasny as number),
@@ -440,7 +444,9 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
 
   if (dane.length < 3) return null;
 
-  const W = 720, H = 220, L = 56, R = 16, T = 20, B = 34;
+  const waski = useWaskiEkran();
+  const W = waski ? 380 : 720, H = waski ? 190 : 220;
+  const L = waski ? 38 : 56, R = waski ? 10 : 16, T = 20, B = 34;
   const maxL = Math.max(...dane.map((p) => p.logistyka_pln as number), 1) * 1.14;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxL) * (H - T - B);

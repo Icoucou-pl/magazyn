@@ -360,11 +360,18 @@ export default function ProductModal({
              Reguła ma !important, bo miniatura ma display w stylu inline,
              a inline wygrywa ze zwykłą regułą arkusza — bez tego zostawała
              widoczna i wypadała w losowe miejsce siatki. */
-          .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; align-items: center; }
+          .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; }
           .pm-head.is-compact .pm-thumb,
           .pm-head.is-compact .pm-badges,
           .pm-head.is-compact .pm-name { display: none !important; }
           .pm-head.is-compact .pm-sku { font-size: 16px; }
+          /* Po zwinięciu podpis „Dane z firmy" jest zbędny — przełącznik i tak
+             mówi sam za siebie, a bez niego obie linijki wjeżdżają wyżej. */
+          .pm-head.is-compact .pm-firmalabel { display: none; }
+          /* Przyciski trzymają się GÓRNEJ krawędzi. Przy align-items: center
+             opadały na środek dwóch linijek i wyglądały na zgubione. */
+          .pm-head.is-compact { align-items: start; }
+          .pm-head.is-compact .pm-actions { align-self: start; }
         `}</style>
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
@@ -1312,7 +1319,7 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
     }}>
       {wiele ? (
         <>
-          <span style={{ fontSize: 11, color: "var(--text-lo)" }}>Dane z firmy</span>
+          <span className="pm-firmalabel" style={{ fontSize: 11, color: "var(--text-lo)" }}>Dane z firmy</span>
           <div style={{
             display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8,
             overflowX: "auto", maxWidth: "100%", flexShrink: 1,

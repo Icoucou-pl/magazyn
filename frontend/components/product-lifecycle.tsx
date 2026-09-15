@@ -59,6 +59,28 @@ export type Historia = {
 };
 
 // ── Pomocnicze ───────────────────────────────────────────────
+
+/** Czy jesteśmy na wąskim ekranie (telefon).
+ *
+ *  Wykresy rysujemy w stałym układzie współrzędnych (viewBox 700–720 px) i
+ *  skalujemy do szerokości kontenera. Na telefonie daje to skalę około 45%,
+ *  więc razem z wykresem kurczy się WSZYSTKO — grubość linii, podpisy osi i
+ *  kropki dostaw. Kropka o promieniu 4 px robiła się dwupikselową plamką i
+ *  po prostu nie było jej widać. Dlatego na wąskim ekranie zawężamy sam
+ *  viewBox: rysunek jest wtedy w skali bliskiej 1:1 i elementy zachowują
+ *  swoją wielkość. */
+export function useWaskiEkran(prog = 640) {
+  const [waski, setWaski] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(`(max-width: ${prog}px)`);
+    const zmien = () => setWaski(mq.matches);
+    zmien();
+    mq.addEventListener("change", zmien);
+    return () => mq.removeEventListener("change", zmien);
+  }, [prog]);
+  return waski;
+}
 export const fmtD = (s: string) => { const [y, m, d] = s.split("-"); return `${d}.${m}.${y}`; };
 export const fmtM = (s: string) => { const [y, m] = s.split("-"); return `${m}.${y.slice(2)}`; };
 export const fmtC = (n: number, d = 2) =>
@@ -270,7 +292,9 @@ export function KrzywaCeny({ h }: { h: Historia }) {
   const wartosc = (p: Przyjecie) =>
     tryb === "waluta" ? (p.cena_waluta as number) : (p.koszt_jednostkowy as number);
 
-  const W = 700, H = 240, L = 52, R = 16, T = 22, B = 34;
+  const waski = useWaskiEkran();
+  const W = waski ? 380 : 700, H = waski ? 200 : 240;
+  const L = waski ? 34 : 52, R = waski ? 10 : 16, T = 22, B = 34;
   const gorne = dane.map((p) => (tryb === "split" ? (p.koszt_jednostkowy as number) : wartosc(p)));
   const dolne = tryb === "split"
     ? dane.map((p) => p.towar_pln ?? (p.koszt_jednostkowy as number))
@@ -451,7 +475,9 @@ export function KrzywaStanu({ h }: { h: Historia }) {
     [h.miesiace_bez_pokrycia],
   );
 
-  const W = 700, H = 250, L = 50, R = 14, T = 20, B = 34;
+  const waski = useWaskiEkran();
+  const W = waski ? 380 : 700, H = waski ? 210 : 250;
+  const L = waski ? 34 : 50, R = waski ? 10 : 14, T = 20, B = 34;
   const maxS = Math.max(...pkt.map((p) => p.stan), 1) * 1.12;
   const X = (i: number) => L + (i / (pkt.length - 1)) * (W - L - R);
   const Y = (v: number) => T + (1 - v / maxS) * (H - T - B);
