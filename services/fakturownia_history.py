@@ -260,9 +260,17 @@ async def _ensure_schema(session: AsyncSession) -> None:
         " kontrahent VARCHAR,"
         " kontrahent_nip VARCHAR,"
         " is_internal BOOLEAN DEFAULT FALSE,"
+        " w_drodze BOOLEAN DEFAULT FALSE,"
         " updated_at TIMESTAMP DEFAULT now(),"
         " PRIMARY KEY (firma_id, action_id)"
         ")"
+    ))
+    await session.commit()
+
+    # Dokładka dla kont, na których tabela powstała przed tym polem.
+    # CREATE TABLE IF NOT EXISTS nie dodaje kolumn do istniejącej tabeli.
+    await session.execute(text(
+        f"ALTER TABLE {TABELA} ADD COLUMN IF NOT EXISTS w_drodze BOOLEAN DEFAULT FALSE"
     ))
     await session.commit()
 
@@ -323,7 +331,7 @@ def _delta_inwentaryzacji(a: dict) -> Optional[float]:
     return _to_float(nowe) - _to_float(stare)
 
 
-def _normalizuj(a: dict, firma: Firma, mapa: SkuMap,
+def _normalizuj(a: dict, firma: Firma, mapa: SkuMap,  # noqa: C901
                 dokumenty: Dict[str, dict], nipy_klientow: Dict[str, str],
                 nasze_nipy: Set[str], wynik: Wynik) -> Optional[dict]:
     aid = a.get("id")
@@ -370,6 +378,12 @@ def _normalizuj(a: dict, firma: Firma, mapa: SkuMap,
 
     koszt = _to_float(a.get("purchase_price_net"))
 
+    # Czy ruch dotyczy magazynu „Towary w drodze". Potrzebne, żeby dało się
+    # narysować drugą krzywą — tę pokazującą, ile towaru realnie leżało na
+    # półce. Bez rozbicia kontener płynący po oceanie maskuje pusty magazyn.
+    mag = _txt(a.get("warehouse_id"), 32) or ""
+    w_drodze = bool(firma.wh_drodze) and mag == str(firma.wh_drodze)
+
     return {
         "fid": firma.firma_id,
         "aid": int(aid),
@@ -388,15 +402,17 @@ def _normalizuj(a: dict, firma: Firma, mapa: SkuMap,
         "kontrahent": doc.get("kontrahent"),
         "nip": nip or None,
         "wew": wewnetrzny,
+        "drodze": w_drodze,
     }
 
 
 _INSERT = text(
     f"INSERT INTO {TABELA} (firma_id, action_id, product_id, sku, sku_canon, "
     "kind, typ, ilosc, data, magazyn_id, koszt_jednostkowy, waluta, "
-    "dokument_id, numer_dokumentu, kontrahent, kontrahent_nip, is_internal, updated_at) "
+    "dokument_id, numer_dokumentu, kontrahent, kontrahent_nip, is_internal, "
+    "w_drodze, updated_at) "
     "VALUES (:fid, :aid, :pid, :sku, :canon, :kind, :typ, :ilosc, :data, :mag, "
-    ":koszt, :waluta, :doc_id, :numer, :kontrahent, :nip, :wew, :ts) "
+    ":koszt, :waluta, :doc_id, :numer, :kontrahent, :nip, :wew, :drodze, :ts) "
     "ON CONFLICT (firma_id, action_id) DO UPDATE SET "
     "product_id = EXCLUDED.product_id, sku = EXCLUDED.sku, "
     "sku_canon = EXCLUDED.sku_canon, kind = EXCLUDED.kind, typ = EXCLUDED.typ, "
@@ -404,7 +420,8 @@ _INSERT = text(
     "koszt_jednostkowy = EXCLUDED.koszt_jednostkowy, waluta = EXCLUDED.waluta, "
     "dokument_id = EXCLUDED.dokument_id, numer_dokumentu = EXCLUDED.numer_dokumentu, "
     "kontrahent = EXCLUDED.kontrahent, kontrahent_nip = EXCLUDED.kontrahent_nip, "
-    "is_internal = EXCLUDED.is_internal, updated_at = EXCLUDED.updated_at"
+    "is_internal = EXCLUDED.is_internal, w_drodze = EXCLUDED.w_drodze, "
+    "updated_at = EXCLUDED.updated_at"
 )
 
 
