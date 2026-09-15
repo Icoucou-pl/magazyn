@@ -369,7 +369,6 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         if classify_product(p) not in include_set:
             continue
         sku_key = p["sku"].strip().lower() if p["sku"] else ""
-        p_firma = (p.get("firma_slug") or "amh").strip().lower()
         if not shop:
             # TRYB SUMA („Wszyscy" / globalne wyszukiwanie): łączny obraz produktu po
             # wszystkich firmach — realne „ile mam i mogę przerzucić". STAN jest już sumą
@@ -379,20 +378,23 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             inc_lines = incoming_by_sku.get(sku_key, [])
             skip_wbite = True
         else:
-            # TRYB FIRMY (zakładka AMH/Acti/Veluxa): widok jednej firmy.
-            cf = shop
-            if cf == "amh":
-                erp = subiekt_transit.get(sku_key, 0)
-            else:
-                # Każda firma z wpiętą Fakturownią (Acti, Veluxa, …) — jej WŁASNY transit.
-                erp = fakturownia_transit_by_firma.get(cf, {}).get(sku_key, 0)
-            # Kontenery tylko na zakładce firmy produktu — bez przecieku na obcą firmę.
+            # TRYB FIRMY (zakładka AMH/Acti/Veluxa).
+            #
+            # CO SIĘ ZMIENIA Z FIRMĄ: stan, sprzedaż i miesiące zapasu. To są
+            # liczby, które naprawdę należą do jednej spółki.
+            #
+            # CO NIE: towar w drodze, kontenery i najbliższa dostawa. Te są
+            # pokazywane ZAWSZE, niezależnie od wybranej zakładki. Powód jest
+            # praktyczny: wcześniej kontener zniknął z karty, gdy fragmentator
+            # stał na innej spółce, i wyglądało to jak brak jakiejkolwiek
+            # dostawy w drodze. Łatwo wtedy nie zauważyć, że patrzy się na
+            # inną firmę, i zamówić towar, który już płynie. Wolimy pokazać
+            # dostawę siostry niż zataić własną.
+            erp = subiekt_transit.get(sku_key, 0) + fakturownia_transit_all.get(sku_key, 0)
             inc_lines = incoming_by_sku.get(sku_key, [])
-            if p_firma != shop:
-                inc_lines = []
-            # Wbite wykluczamy dla firm z wpiętym ERP „w drodze" (AMH→Subiekt,
-            # Acti/Veluxa→Fakturownia) — zielone loty są już w erp_transit, inaczej dubel.
-            skip_wbite = cf in ("amh", "acti", "veluxa")
+            # `erp` obejmuje teraz tranzyt wszystkich ERP-ów, więc wbite loty
+            # wykluczamy bezwarunkowo — inaczej policzyłyby się dwa razy.
+            skip_wbite = True
         # Tranzyt sióstr (ich „magazyn w drodze" z Fakturowni) — potrzebny tylko na zakładce
         # AMH, do stanu WAIT znacznika transferu. Poza AMH nie liczymy, żeby nie mielić na darmo.
         sibling_transit: Dict[str, int] = {}
