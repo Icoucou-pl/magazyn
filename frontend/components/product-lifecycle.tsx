@@ -34,6 +34,9 @@ export type Przyjecie = {
 // dostawcy: schodzą z magazynu, ale nie mają przychodu.
 export type PunktStanu = {
   miesiac: string; przyjeto: number; wydano: number; sprzedano: number; stan: number;
+  // Stan samego magazynu głównego. `stan` obejmuje też towar w drodze, więc
+  // sam potrafi zamaskować pusty magazyn — pokrycie liczymy z tego pola.
+  stan_polka?: number | null;
   koszt_wlasny: number | null;
 };
 export type Dostawca = {
@@ -442,6 +445,14 @@ export function KrzywaStanu({ h }: { h: Historia }) {
   const linia = pkt.map((p, i) => `${i ? "L" : "M"}${X(i)} ${Y(p.stan)}`).join(" ");
   const najnizszy = pkt.reduce((a, b) => (b.stan < a.stan ? b : a));
 
+  // Druga linia — sam magazyn. Rysujemy ją tylko wtedy, gdy różni się od
+  // łącznej: przy produkcie bez towaru w drodze obie leżałyby na sobie i
+  // zaśmiecały wykres bez żadnej informacji.
+  const maPolke = pkt.some((p) => p.stan_polka != null && p.stan_polka !== p.stan);
+  const liniaPolka = maPolke
+    ? pkt.map((p, i) => `${i ? "L" : "M"}${X(i)} ${Y(Math.max(0, p.stan_polka ?? p.stan))}`).join(" ")
+    : null;
+
   return (
     <div style={sect}>
       <div style={sectHead}>
@@ -475,6 +486,10 @@ export function KrzywaStanu({ h }: { h: Historia }) {
 
             <path d={`${linia} L${X(pkt.length - 1)} ${Y(0)} L${X(0)} ${Y(0)} Z`} fill="var(--accent-soft)" />
             <path d={linia} fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinejoin="round" />
+            {liniaPolka && (
+              <path d={liniaPolka} fill="none" stroke="var(--text-lo)" strokeWidth={1.4}
+                    strokeDasharray="4 3" strokeLinejoin="round" />
+            )}
 
             {pkt.map((p, i) => {
               const q = dostawy.get(p.miesiac.slice(0, 7)) || 0;
@@ -498,17 +513,26 @@ export function KrzywaStanu({ h }: { h: Historia }) {
                           {MIES[Number(m) - 1]} {y}
                         </div>
                         <div><b>stan {fmtNum(p.stan)} szt</b></div>
+                        {p.stan_polka != null && p.stan_polka !== p.stan && (
+                          <div style={{ color: "var(--text-mid)" }}>
+                            na magazynie {fmtNum(p.stan_polka)} · w drodze {fmtNum(p.stan - p.stan_polka)}
+                          </div>
+                        )}
                         {q > 0 && <div style={{ color: "var(--info)", marginTop: 3 }}>dostawa {fmtNum(q)} szt</div>}
                         <div style={{ color: "var(--text-mid)" }}>sprzedaż {fmtNum(p.sprzedano)} szt</div>
                         {p.wydano > p.sprzedano && (
                           <div style={{ color: "var(--text-lo)" }}>rozchód wewn. {fmtNum(p.wydano - p.sprzedano)} szt</div>
                         )}
                         {zwroty > 0 && <div style={{ color: "var(--text-lo)" }}>zwroty {fmtNum(zwroty)} szt</div>}
-                        {p.sprzedano > 0 && (
-                          <div style={{ color: p.stan < p.sprzedano ? "var(--critical)" : "var(--text-lo)", marginTop: 3 }}>
-                            zapas na {fmtC(p.stan / p.sprzedano, 1)} mies.
-                          </div>
-                        )}
+                        {p.sprzedano > 0 && (() => {
+                          // Zapas liczymy z tego, co realnie było na półce.
+                          const dost = p.stan_polka != null ? p.stan_polka : p.stan;
+                          return (
+                            <div style={{ color: dost < p.sprzedano ? "var(--critical)" : "var(--text-lo)", marginTop: 3 }}>
+                              zapas na {fmtC(dost / p.sprzedano, 1)} mies.
+                            </div>
+                          );
+                        })()}
                       </>
                     ),
                   })}
@@ -523,6 +547,11 @@ export function KrzywaStanu({ h }: { h: Historia }) {
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 10, height: 2, background: "var(--accent)" }} />stan na koniec miesiąca
           </span>
+          {liniaPolka && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 10, height: 0, borderTop: "1.4px dashed var(--text-lo)" }} />na magazynie (bez towaru w drodze)
+            </span>
+          )}
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 9, height: 9, borderRadius: 99, background: "var(--info)" }} />dostawa
           </span>

@@ -94,7 +94,12 @@ function UtraconaSprzedaz({ h, showFin }: { h: Historia; showFin: boolean }) {
       const m = p.miesiac.slice(0, 7);
       const rokWcz = `${Number(m.slice(0, 4)) - 1}${m.slice(4)}`;
       const popyt = sprz.get(rokWcz);
-      const naStart = i > 0 ? pkt[i - 1].stan : 0;
+      // Zapas na początek miesiąca liczymy z SAMEJ PÓŁKI, nie z sumy. Towar
+      // płynący jeszcze po oceanie nie mógł zaspokoić popytu w tym miesiącu,
+      // a wliczony do zapasu ukrywał braki (`stan_polka` dochodzi z backendu;
+      // dla starszych odpowiedzi zostaje `stan` i zachowanie sprzed zmiany).
+      const poprz = i > 0 ? pkt[i - 1] : null;
+      const naStart = poprz ? (poprz.stan_polka != null ? poprz.stan_polka : poprz.stan) : 0;
 
       if (popyt == null) {
         if (p.sprzedano > 0 && naStart < p.sprzedano) bezOdniesienia++;
