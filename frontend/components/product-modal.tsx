@@ -115,6 +115,10 @@ export default function ProductModal({
   const { shop, setShop, allowed } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
   const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
+  // Nagłówek zwija się po przewinięciu treści. Dwa różne progi (48 w dół, 12
+  // w górę) to celowa histereza — z jednym progiem nagłówek migotałby przy
+  // przewijaniu dokładnie na granicy.
+  const [compact, setCompact] = useState(false);
 
   const [tab, setTab] = useState<"przeglad" | "zycie2" | "dane">("przeglad");
 
@@ -137,6 +141,9 @@ export default function ProductModal({
   // wyrzucało z „Danych" czy „Historii 2.0" z powrotem na „Przegląd".
   // Zakładka jest wyborem użytkownika, nie funkcją wybranej firmy.
   useEffect(() => { setTab("przeglad"); setHasHistory(false); }, [product.sku]);
+
+  // Zmiana zakładki przewija treść na górę, więc nagłówek ma wrócić rozwinięty.
+  useEffect(() => { setCompact(false); }, [tab, product.sku]);
 
   // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładki znikają i
   // trzeba zejść z nieistniejącej. Bez tego modal pokazałby pustą treść.
@@ -309,20 +316,47 @@ export default function ProductModal({
             rząd pierwszy to miniatura i przyciski, drugi to plakietki statusu,
             a nazwa dostaje całą szerokość karty. */}
         <style>{`
-          .pm-head { display: flex; align-items: flex-start; gap: 16px; }
-          .pm-main { flex: 1; min-width: 0; }
-          .pm-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-          .pm-actions { display: flex; gap: 6px; flex-shrink: 0; }
-          @media (max-width: 640px) {
-            .pm-head { flex-wrap: wrap; gap: 10px; }
-            .pm-thumb { order: 1; }
-            .pm-actions { order: 2; margin-left: auto; }
-            .pm-main { order: 3; flex-basis: 100%; }
+          /* Siatka zamiast rzędu — dzięki temu ten sam układ da się przestawić
+             na telefonie bez dublowania znaczników. */
+          .pm-head {
+            display: grid; gap: 8px 16px; align-items: start;
+            grid-template-columns: auto 1fr auto;
+            grid-template-areas: "thumb badges actions" "thumb main main";
           }
+          .pm-thumb   { grid-area: thumb; }
+          .pm-badges  { grid-area: badges; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+          .pm-actions { grid-area: actions; display: flex; gap: 6px; justify-content: flex-end; }
+          .pm-main    { grid-area: main; min-width: 0; }
+          .pm-sku     { font-size: 20px; font-weight: 700; color: var(--text-hi); letter-spacing: -0.01em; }
+          .pm-name    { font-size: 14px; color: var(--text-mid); margin-top: 2px; }
+
+          @media (max-width: 640px) {
+            /* Przyciski w pierwszym wierszu, plakietki w drugim — oba OBOK
+               miniatury, więc nagłówek nie schodzi poniżej zdjęcia. Nazwa
+               dostaje pełną szerokość pod spodem. */
+            .pm-head { grid-template-columns: auto 1fr; grid-template-areas: "thumb actions" "thumb badges" "main main"; }
+            /* Plakietki w jednym wierszu — zawijanie rozpychało nagłówek na
+               trzy linijki. Nie mieszczą się? Przewijają się w bok. */
+            .pm-badges { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+            .pm-badges > * { flex-shrink: 0; }
+          }
+
+          /* ZWINIĘTY NAGŁÓWEK. Przy przewijaniu treści nagłówek zabierał pół
+             ekranu telefonu, a zdjęcie i nazwa nie są wtedy do niczego
+             potrzebne — wiadomo, na co się patrzy. Zostaje SKU, przełącznik
+             firmy i przyciski, czyli to, czego się używa w trakcie czytania. */
+          .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; align-items: center; }
+          .pm-head.is-compact .pm-thumb,
+          .pm-head.is-compact .pm-badges,
+          .pm-head.is-compact .pm-name { display: none; }
+          .pm-head.is-compact .pm-sku { font-size: 16px; }
+          .pm-headwrap { transition: padding 0.16s ease; }
+          .pm-headwrap.is-compact { padding-top: 10px !important; padding-bottom: 10px !important; }
         `}</style>
-        <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
+        <div className={`pm-headwrap${compact ? " is-compact" : ""}`}
+             style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
-          <div className="pm-head">
+          <div className={`pm-head${compact ? " is-compact" : ""}`}>
             {/* Świadomie BEZ podglądu po najechaniu: w nagłówku zdjęcie pełni rolę
                 identyfikatora, a nie miniatury do rozwijania. Powiększanie jest niżej,
                 w karcie „Dane podstawowe". */}
@@ -331,8 +365,7 @@ export default function ProductModal({
                 <ProductThumb photoId={product.photo_id} photoHash={product.photo_hash} size={104} />
               </div>
             )}
-            <div className="pm-main">
-              <div className="pm-badges">
+            <div className="pm-badges">
                 <StatusPillExt status={statusKey} size="md" />
                 {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
                 {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
@@ -353,9 +386,10 @@ export default function ProductModal({
                     <MfrChip name={product.manufacturer_name} color={product.manufacturer_color ?? "var(--text-lo)"} size="md" />
                   )
                 )}
-              </div>
-              <div className="mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 10, color: "var(--text-hi)", letterSpacing: "-0.01em" }}>{product.sku}</div>
-              <div style={{ fontSize: 14, color: "var(--text-mid)", marginTop: 2 }}>{product.name}</div>
+            </div>
+            <div className="pm-main">
+              <div className="mono pm-sku">{product.sku}</div>
+              <div className="pm-name">{product.name}</div>
               <FirmaBar
                 shop={shop}
                 setShop={setShop}
@@ -405,7 +439,11 @@ export default function ProductModal({
         )}
 
         {/* Body */}
-        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
+        <div onScroll={(e) => {
+               const y = (e.target as HTMLDivElement).scrollTop;
+               setCompact((był) => (był ? y > 12 : y > 48));
+             }}
+             style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
           {!showTabs && (
             <>
               {kpiBlok}
