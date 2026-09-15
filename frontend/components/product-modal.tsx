@@ -218,8 +218,9 @@ export default function ProductModal({
   // sama wartość zawiera towar W DRODZE (stan + tranzyt / sprzedaż), a podpis
   // „Nd do końca" to symulacja dzień po dniu, uwzględniająca datę przypłynięcia.
   // Na Pod_1b w Veluxie dawało to „5.5m" obok „8d do końca" — obie liczby
-  // poprawne, ale razem wyglądały na sprzeczność. Dopisujemy więc zapas SAMEJ
-  // półki, żeby było widać, skąd bierze się ta duża liczba.
+  // poprawne, ale razem wyglądały na sprzeczność. Podpis mówi więc najpierw,
+  // CZEGO dotyczy duża liczba (zawiera towar w drodze), a dopiero potem podaje
+  // zapas samej półki — inaczej czyta się tak, jakby opisywał wartość powyżej.
   const zapasBezTranzytu =
     product.avg_monthly_weighted > 0 ? product.stock / product.avg_monthly_weighted : null;
   const tranzytLiczy =
@@ -253,7 +254,7 @@ export default function ProductModal({
           product.days_until_empty >= 365
             ? "brak ruchu"
             : tranzytLiczy
-              ? `bez towaru w drodze ${monthsDisplay(zapasBezTranzytu as number)}m · pusto za ${product.days_until_empty}d`
+              ? `z towarem w drodze · na półce ${monthsDisplay(zapasBezTranzytu as number)}m, pusto za ${product.days_until_empty}d`
               : `${product.days_until_empty}d do końca`
         }
         tone={monthsTone} />
