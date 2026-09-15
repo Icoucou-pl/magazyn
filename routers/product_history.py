@@ -6,72 +6,78 @@ froncie: ptaszek w formularzu użytkownika mógłby sobie postawić
 każdy z `manageUsers`, a super-admin jest przypięty do adresu
 z ENV i nie da się go nadać z UI.
 
-ŹRÓDŁA
-------
+DWA ŹRÓDŁA, JEDEN KONTRAKT
+--------------------------
+Endpoint przyjmuje `?shop=` — ten sam parametr, którym posługuje się
+globalny fragmentator firm (`lib/shop.tsx`) i reszta widoków. Od niego
+zależy źródło:
+
+    shop = "" albo firma z is_self = true   → Subiekt   (AMH)
+    shop = firma z is_self = false          → Fakturownia (Acti, Veluxa)
+
+Model odpowiedzi jest identyczny w obu przypadkach, więc front nie
+wymaga zmian poza doklejeniem `shop` do adresu.
+
+Bez tego parametru zakładka kłamała: na Veluxie „Przegląd" pokazywał
+71 szt ze stanu Fakturowni, a „Historia produktu" 12 szt z Subiekta —
+bo historia szła na sztywno do tabel AMH, niezależnie od tego, jaką
+firmę ma wybraną użytkownik.
+
+ŹRÓDŁA — SUBIEKT
+----------------
 · subiekt_przyjecia      — wiersz na warstwę przyjęcia, od 07.2023
 · subiekt_rozchody_mies  — SKU × miesiąc × magazyn × typ
 · subiekt_dwa_magazyny   — stan na dziś (punkt zaczepienia krzywej)
 
-Oba pierwsze zasila skrypt `subiekt_historia.py` z maszyny przy
-Subiekcie, raz na dobę.
+Zasila je skrypt `subiekt_historia.py` z maszyny przy Subiekcie.
+
+ŹRÓDŁA — FAKTUROWNIA
+--------------------
+· fakturownia_ruchy   — ledger ruchów (services/fakturownia_history.py)
+· fakturownia_stock   — stan na dziś, stan_podstawowy + in_transit_qty
+
+Kotwicą jest suma obu magazynów, nie sam główny. Na Veluxie magazyn
+główny ma 71 szt Pod_1b, a 1000 szt siedzi w „Towary w drodze" —
+kotwiczenie na samym głównym przesuwałoby całą krzywą o tysiąc sztuk.
 
 KRZYWA STANU — dlaczego wstecz, a nie od zera
 ----------------------------------------------
-Stan liczymy od DZIŚ i cofamy się deltami, tak samo jak robi to
-`/stock-value-history` (routers/calendar.py). Liczenie od zera przez
-trzy lata znaczyłoby, że jeden nieprzewidziany rodzaj ruchu w 2023
-przesuwa całą krzywą aż do dzisiaj. Kotwicząc na dzisiejszym stanie
-mamy „dziś" dokładne z definicji, a ewentualny błąd klasyfikacji
-objawia się dryfem im dalej wstecz — czyli tam, gdzie i tak jest
-najmniej istotny.
-
-Na dzień wdrożenia rekonstrukcja zgadzała się co do sztuki dla
-wszystkich 276 SKU (kontrola w `subiekt_historia.py`).
-
-RUCH WEWNĘTRZNY
----------------
-Przesunięcie między magazynem głównym a „w drodze" nie zmienia
-stanu łącznego i musi zniknąć po OBU stronach. Wykluczamy je, gdy
-`magazyn_zrodlowy` należy do naszej pary I RÓŻNI SIĘ od
-`magazyn_id`. Warunek na różnicę jest kluczowy: zwrot od klienta
-też wskazuje magazyn źródłowy, ale wraca na ten sam magazyn i musi
-się policzyć.
-
-Ruch z magazynu SPOZA pary (zdarzyło się 100002) to realne wejście
-na stan i liczy się normalnie.
+Stan liczymy od DZIŚ i cofamy się deltami. Liczenie od zera przez trzy
+lata znaczyłoby, że jeden nieprzewidziany rodzaj ruchu w 2023 przesuwa
+całą krzywą aż do dzisiaj. Kotwicząc na dzisiejszym stanie mamy „dziś"
+dokładne z definicji, a błąd klasyfikacji objawia się dryfem im dalej
+wstecz — czyli tam, gdzie jest najmniej istotny. `dryf` wystawiamy w
+odpowiedzi zamiast go chować.
 
 ROZCHÓD ≠ SPRZEDAŻ
 ------------------
-`subiekt_rozchody_mies.typ` rozróżnia rodzaj rozchodu po symbolu
-dokumentu w Subiekcie:
-
-    WYDANIE          WZ/KWZ  — sprzedaż
-    WEWNETRZNE       RW      — rozchód wewnętrzny
-    ZWROT_DOSTAWCA   KPZ     — korekta przyjęcia, towar wraca do dostawcy
-    PRZESUNIECIE     MW      — ruch między naszymi magazynami
-    INNE                     — symbol nieznany albo brak dokumentu
-
-Rozróżnienie jest konieczne, bo RW i KPZ ZDEJMUJĄ towar ze stanu,
-ale NIE są sprzedażą. Stąd dwie różne agregacje z tej samej tabeli:
+W obu źródłach rozróżniamy rodzaj rozchodu, bo RW, KPZ i przesunięcia
+zdejmują towar ze stanu, ale nie są sprzedażą. Stąd dwie agregacje:
 
   · krzywa stanu  — wszystko poza PRZESUNIECIE  (pole `wydano`)
-  · marża         — wyłącznie WYDANIE           (pole `sprzedano`)
+  · marża i popyt — wyłącznie WYDANIE           (pole `sprzedano`)
 
-Mieszanie tych dwóch daje ujemne marże w miesiącach z dużym RW:
-koszt własny liczy się od pełnego rozchodu, a przychód tylko od
-sprzedaży. Na D2cz w 07.2026 było to 464 szt rozchodu wobec 134 szt
-sprzedaży — RW 156/07/2026 na 230 szt i KPZ 6/07/2026 na 100 szt.
+Mieszanie ich daje ujemne marże w miesiącach z dużym RW.
 
-Obie reguły są poprawne także dla danych sprzed zmiany skryptu,
-gdzie istniały wyłącznie typy WYDANIE i PRZESUNIECIE — wtedy
-`sprzedano` równa się `wydano`, czyli zachowaniu sprzed zmiany.
-Dzięki temu kolejność wdrożenia backendu i skryptu nie ma znaczenia.
+RÓŻNICE FAKTUROWNI, KTÓRE WIDAĆ NA EKRANIE
+-------------------------------------------
+1. `logistyka_pln` zostaje puste. Fakturownia nie rozbija kosztu na
+   towar i fracht — `purchase_price_net` to cena od dostawcy i nic
+   poza nią. Kwota „Sprowadzono" znaczy więc co innego niż przy AMH
+   i front musi to podpisać, a nie zestawiać wprost.
+2. Korekty WZK netują sprzedaż zamiast wchodzić do przyjęć. Wracają
+   towar na stan, ale są niedoszłą sprzedażą, nie zakupem. Na SZP1 to
+   398 szt wydań wobec 358 szt realnych — 10% różnicy w popycie.
+3. Ruch wewnątrz grupy (`is_internal`) wypada ze „Sprowadzono" i z
+   listy dostawców. AMH jest trzecim „dostawcą" Acti z 543 szt, a
+   4687 z 7865 szt rozchodu Veluxy idzie do AMH — bez tego marża
+   liczyłaby się od ceny transferowej do własnej spółki.
 """
 
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,7 +90,7 @@ from security import get_current_user
 router = APIRouter(prefix="/api", tags=["lifecycle"])
 
 
-# Magazyny, między którymi ruch jest wewnętrzny.
+# Magazyny Subiekta, między którymi ruch jest wewnętrzny.
 MAGAZYN_PODSTAWOWY = 100000
 MAGAZYN_W_DRODZE = 100001
 MAGAZYNY = (MAGAZYN_PODSTAWOWY, MAGAZYN_W_DRODZE)
@@ -95,12 +101,7 @@ MAGAZYNY = (MAGAZYN_PODSTAWOWY, MAGAZYN_W_DRODZE)
 def require_super_admin(
     user: CurrentUser = Depends(get_current_user),
 ) -> CurrentUser:
-    """Wpuszcza wyłącznie adres z SUPER_ADMIN_EMAIL.
-
-    Ta sama logika co `_is_super` w routers/users.py. Świadomie NIE
-    jest to `require_perm(...)` — uprawnienie dałoby się nadać z UI,
-    a to ma pozostać niewidoczne do czasu wypuszczenia funkcji.
-    """
+    """Wpuszcza wyłącznie adres z SUPER_ADMIN_EMAIL."""
     super_email = (settings.SUPER_ADMIN_EMAIL or "").strip().lower()
 
     if not super_email:
@@ -130,17 +131,10 @@ class Przyjecie(BaseModel):
     dokument: Optional[str] = None
     numer_dokumentu: Optional[str] = None
     dostawca: Optional[str] = None
+    wewnetrzne: bool = False                # ruch wewnątrz grupy
 
 
 class PunktStanu(BaseModel):
-    """Miesięczny punkt krzywej stanu.
-
-    `wydano`   — cały rozchód poza przesunięciami; tym cofamy stan.
-    `sprzedano`— wyłącznie sprzedaż; tym liczymy marżę i popyt.
-    Różnica to RW i zwroty do dostawcy — realnie schodzą z magazynu,
-    ale nie mają przychodu po drugiej stronie.
-    """
-
     miesiac: date
     przyjeto: float
     wydano: float
@@ -169,10 +163,14 @@ class Historia(BaseModel):
     stan_miesiecznie: List[PunktStanu]
     dostawcy: List[Dostawca]
     miesiace_bez_pokrycia: List[date]
-    dryf: float  # rekonstrukcja od zera minus stan dzisiejszy
+    dryf: float
+    # Metadane źródła — front pokazuje plakietkę i wie, czego nie rysować.
+    zrodlo: str = "subiekt"          # "subiekt" | "fakturownia"
+    firma: Optional[str] = None      # slug firmy, z której są te dane
+    ma_logistyke: bool = True        # False → moduł narzutu chowamy
 
 
-# ===== ZAPYTANIA =====
+# ===== ZAPYTANIA — SUBIEKT =====
 
 Q_STAN = text("""
     SELECT COALESCE(stan_magazyn_podstawowy, 0)
@@ -199,6 +197,33 @@ Q_ROZCHODY = text("""
 """)
 
 
+# ===== ZAPYTANIA — FAKTUROWNIA =====
+
+Q_FIRMA = text("""
+    SELECT id, slug, COALESCE(is_self, FALSE) AS is_self
+    FROM app_firmy
+    WHERE lower(slug) = lower(:slug)
+    LIMIT 1
+""")
+
+Q_F_RUCHY = text("""
+    SELECT data, kind, typ, ilosc, magazyn_id, koszt_jednostkowy,
+           numer_dokumentu, kontrahent, is_internal
+    FROM fakturownia_ruchy
+    WHERE firma_id = :fid
+      AND sku_canon = lower(:sku)
+      AND data IS NOT NULL
+    ORDER BY data, action_id
+""")
+
+Q_F_STAN = text("""
+    SELECT COALESCE(stan_podstawowy, 0) + COALESCE(in_transit_qty, 0) AS stan
+    FROM fakturownia_stock
+    WHERE firma_id = :fid AND sku_canon = lower(:sku)
+    LIMIT 1
+""")
+
+
 # ===== POMOCNICZE =====
 
 def _kolejny_miesiac(d: date) -> date:
@@ -219,14 +244,130 @@ def _f(v) -> Optional[float]:
     return None if v is None else float(v)
 
 
-# ===== ENDPOINT =====
+def _int(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
-@router.get("/products/{sku}/historia", response_model=Historia)
-async def historia_produktu(
+
+def _zloz(
     sku: str,
-    db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_super_admin),
-):
+    stan_dzis: float,
+    przyjecia: List[Przyjecie],
+    wejscia: Dict[date, float],
+    wyjscia: Dict[date, float],
+    sprzedaz: Dict[date, float],
+    cogs: Dict[date, float],
+    zrodlo: str,
+    firma: Optional[str],
+    ma_logistyke: bool,
+) -> Historia:
+    """Wspólne domknięcie dla obu źródeł: krzywa stanu, dryf, dostawcy.
+
+    Rozdzielenie „skąd dane" od „jak je złożyć" jest tu celowe — dzięki
+    temu zmiana reguły krzywej albo definicji miesiąca bez pokrycia
+    dotyczy obu firm naraz i nie da się ich rozjechać.
+    """
+    if not wejscia and not wyjscia:
+        raise HTTPException(404, f"Brak ruchów dla SKU {sku}")
+
+    od = min(list(wejscia) + list(wyjscia))
+    do = max(list(wejscia) + list(wyjscia))
+
+    miesiace: List[date] = []
+    kursor = od
+    while kursor <= do:
+        miesiace.append(kursor)
+        kursor = _kolejny_miesiac(kursor)
+
+    # Kotwica na dziś, cofanie deltami.
+    stany: Dict[date, float] = {}
+    biezacy = stan_dzis
+    for m in reversed(miesiace):
+        stany[m] = biezacy
+        biezacy -= wejscia.get(m, 0.0) - wyjscia.get(m, 0.0)
+
+    dryf = round(biezacy, 3)
+
+    stan_miesiecznie = [
+        PunktStanu(
+            miesiac=m,
+            przyjeto=round(wejscia.get(m, 0.0), 3),
+            wydano=round(wyjscia.get(m, 0.0), 3),
+            sprzedano=round(sprzedaz.get(m, 0.0), 3),
+            stan=round(stany[m], 3),
+            koszt_wlasny=cogs.get(m),
+        )
+        for m in miesiace
+    ]
+
+    bez_pokrycia = [
+        p.miesiac
+        for p in stan_miesiecznie
+        if p.sprzedano > 0 and p.stan < p.sprzedano
+    ]
+
+    # Dostawcy — wyłącznie realne zakupy z zewnątrz.
+    agg: Dict[str, dict] = {}
+    for p in przyjecia:
+        if p.typ != "ZAKUP" or not p.dostawca:
+            continue
+        a = agg.setdefault(p.dostawca, {
+            "przyjec": 0, "ilosc": 0.0, "wartosc": 0.0,
+            "od": p.data, "do": p.data,
+        })
+        a["przyjec"] += 1
+        a["ilosc"] += p.ilosc
+        a["od"] = min(a["od"], p.data)
+        a["do"] = max(a["do"], p.data)
+        if p.koszt_jednostkowy is not None:
+            a["wartosc"] += p.ilosc * p.koszt_jednostkowy
+
+    dostawcy = [
+        Dostawca(
+            nazwa=nazwa,
+            przyjec=a["przyjec"],
+            ilosc=round(a["ilosc"], 3),
+            od=a["od"],
+            do=a["do"],
+            sredni_koszt=(
+                round(a["wartosc"] / a["ilosc"], 2) if a["ilosc"] else None
+            ),
+        )
+        for nazwa, a in sorted(agg.items(), key=lambda kv: kv[1]["od"])
+    ]
+
+    zakupy = [p for p in przyjecia if p.typ == "ZAKUP"]
+
+    return Historia(
+        sku=sku,
+        stan_dzis=stan_dzis,
+        pierwsze_przyjecie=przyjecia[0].data if przyjecia else None,
+        liczba_zakupow=len(zakupy),
+        sprowadzono_szt=round(sum(p.ilosc for p in zakupy), 3),
+        sprowadzono_pln=round(
+            sum(
+                p.ilosc * p.koszt_jednostkowy
+                for p in zakupy
+                if p.koszt_jednostkowy is not None
+            ),
+            2,
+        ),
+        przyjecia=przyjecia,
+        stan_miesiecznie=stan_miesiecznie,
+        dostawcy=dostawcy,
+        miesiace_bez_pokrycia=bez_pokrycia,
+        dryf=dryf,
+        zrodlo=zrodlo,
+        firma=firma,
+        ma_logistyke=ma_logistyke,
+    )
+
+
+# ===== ŹRÓDŁO: SUBIEKT =====
+
+async def _historia_subiekt(db: AsyncSession, sku: str) -> Historia:
     przyjecia_rows = (
         await db.execute(Q_PRZYJECIA, {"sku": sku})
     ).mappings().all()
@@ -238,15 +379,10 @@ async def historia_produktu(
     if not przyjecia_rows and not rozchody_rows:
         raise HTTPException(404, f"Brak historii dla SKU {sku}")
 
-    stan_row = (
-        await db.execute(Q_STAN, {"sku": sku})
-    ).first()
-
+    stan_row = (await db.execute(Q_STAN, {"sku": sku})).first()
     stan_dzis = float(stan_row[0]) if stan_row else 0.0
 
-    # ── przyjęcia ────────────────────────────────────────────
     przyjecia: List[Przyjecie] = []
-
     for r in przyjecia_rows:
         koszt = _f(r["koszt_jednostkowy"])
         cena = _f(r["cena_waluta"])
@@ -279,39 +415,27 @@ async def historia_produktu(
             dostawca=r["dostawca"],
         ))
 
-    # ── miesięczne delty ─────────────────────────────────────
     wejscia: Dict[date, float] = {}
     wyjscia: Dict[date, float] = {}
     sprzedaz: Dict[date, float] = {}
-
-    # Koszt własny zbieramy jako sumę wartości i sumę ilości, a nie
-    # jako pojedynczą liczbę. Wiersze są per magazyn i per typ, więc
-    # w jednym miesiącu bywa ich kilka — podstawienie ostatniego
-    # dawało koszt przypadkowego wiersza zamiast średniej.
     cogs_wartosc: Dict[date, float] = {}
     cogs_ilosc: Dict[date, float] = {}
 
     for r in przyjecia_rows:
         if _wewnetrzny(r["magazyn_zrodlowy"], r["magazyn_id"]):
             continue
-
         m = r["data"].replace(day=1)
         wejscia[m] = wejscia.get(m, 0.0) + float(r["ilosc"])
 
     for r in rozchody_rows:
         typ = r["typ"]
-
-        # Przesunięcie nie zmienia stanu łącznego — wypada z obu sum.
         if typ == "PRZESUNIECIE":
             continue
 
         m = r["miesiac"]
         ilosc = float(r["ilosc"])
-
-        # Stan: liczy się każdy rozchód, który realnie zdjął towar.
         wyjscia[m] = wyjscia.get(m, 0.0) + ilosc
 
-        # Marża i popyt: tylko sprzedaż.
         if typ != "WYDANIE":
             continue
 
@@ -319,127 +443,185 @@ async def historia_produktu(
 
         if r["koszt_wlasny"] is not None:
             cogs_wartosc[m] = (
-                cogs_wartosc.get(m, 0.0)
-                + ilosc * float(r["koszt_wlasny"])
+                cogs_wartosc.get(m, 0.0) + ilosc * float(r["koszt_wlasny"])
             )
             cogs_ilosc[m] = cogs_ilosc.get(m, 0.0) + ilosc
 
-    if not wejscia and not wyjscia:
-        raise HTTPException(404, f"Brak ruchów dla SKU {sku}")
-
-    od = min(list(wejscia) + list(wyjscia))
-    do = max(list(wejscia) + list(wyjscia))
-
-    miesiace: List[date] = []
-    kursor = od
-
-    while kursor <= do:
-        miesiace.append(kursor)
-        kursor = _kolejny_miesiac(kursor)
-
-    # ── krzywa stanu: kotwica na dziś, cofanie deltami ───────
-    stany: Dict[date, float] = {}
-    biezacy = stan_dzis
-
-    for m in reversed(miesiace):
-        stany[m] = biezacy
-        delta = wejscia.get(m, 0.0) - wyjscia.get(m, 0.0)
-        biezacy = biezacy - delta
-
-    # `biezacy` to teraz stan sprzed pierwszego ruchu — powinien
-    # wynosić 0. Cokolwiek innego jest miarą rozjazdu klasyfikacji
-    # i wystawiamy to na wierzch zamiast chować.
-    dryf = round(biezacy, 3)
-
-    # Średnia ważona ilością — po jednej liczbie na miesiąc.
-    cogs: Dict[date, float] = {
+    cogs = {
         m: round(cogs_wartosc[m] / cogs_ilosc[m], 4)
         for m in cogs_ilosc
         if cogs_ilosc[m]
     }
 
-    stan_miesiecznie = [
-        PunktStanu(
-            miesiac=m,
-            przyjeto=round(wejscia.get(m, 0.0), 3),
-            wydano=round(wyjscia.get(m, 0.0), 3),
-            sprzedano=round(sprzedaz.get(m, 0.0), 3),
-            stan=round(stany[m], 3),
-            koszt_wlasny=cogs.get(m),
-        )
-        for m in miesiace
-    ]
+    return _zloz(
+        sku, stan_dzis, przyjecia, wejscia, wyjscia, sprzedaz, cogs,
+        zrodlo="subiekt", firma="amh", ma_logistyke=True,
+    )
 
-    # Miesiąc bez pokrycia: stan na koniec niższy niż to, co w tym
-    # miesiącu zeszło. Sygnał, że towaru zabrakło albo było o włos.
-    bez_pokrycia = [
-        p.miesiac
-        for p in stan_miesiecznie
-        if p.sprzedano > 0 and p.stan < p.sprzedano
-    ]
 
-    # ── dostawcy ─────────────────────────────────────────────
-    agg: Dict[str, dict] = {}
+# ===== ŹRÓDŁO: FAKTUROWNIA =====
 
-    for r in przyjecia_rows:
-        if r["typ"] != "ZAKUP" or not r["dostawca"]:
+async def _historia_fakturownia(
+    db: AsyncSession, sku: str, firma_id: int, slug: str,
+) -> Historia:
+    rows = (
+        await db.execute(Q_F_RUCHY, {"fid": firma_id, "sku": sku})
+    ).mappings().all()
+
+    if not rows:
+        raise HTTPException(404, f"Brak historii dla SKU {sku}")
+
+    stan_row = (
+        await db.execute(Q_F_STAN, {"fid": firma_id, "sku": sku})
+    ).first()
+    stan_dzis = float(stan_row[0]) if stan_row else 0.0
+
+    przyjecia: List[Przyjecie] = []
+    wejscia: Dict[date, float] = {}
+    wyjscia: Dict[date, float] = {}
+    sprzedaz: Dict[date, float] = {}
+    cogs_wartosc: Dict[date, float] = {}
+    cogs_ilosc: Dict[date, float] = {}
+
+    for r in rows:
+        typ = r["typ"]
+
+        # Przesunięcie między magazynem głównym a „w drodze" ma w ledgerze
+        # dwa wiersze (mm- i mm+) i sumuje się do zera. Wypada z obu stron,
+        # tak samo jak ruch wewnętrzny po stronie Subiekta.
+        if typ == "PRZESUNIECIE":
             continue
 
-        a = agg.setdefault(r["dostawca"], {
-            "przyjec": 0, "ilosc": 0.0, "wartosc": 0.0,
-            "od": r["data"], "do": r["data"],
+        ilosc = float(r["ilosc"])
+        if ilosc == 0:
+            continue                      # inwentaryzacja bez korekty
+
+        m = r["data"].replace(day=1)
+        koszt = _f(r["koszt_jednostkowy"])
+
+        if typ == "WYDANIE":
+            # wz (ujemne) i wzk (dodatnie) do jednego kubełka — netto.
+            wyjscia[m] = wyjscia.get(m, 0.0) - ilosc
+            sprzedaz[m] = sprzedaz.get(m, 0.0) - ilosc
+
+            if koszt is not None and ilosc < 0:
+                cogs_wartosc[m] = cogs_wartosc.get(m, 0.0) + (-ilosc) * koszt
+                cogs_ilosc[m] = cogs_ilosc.get(m, 0.0) + (-ilosc)
+            continue
+
+        if ilosc > 0:
+            wejscia[m] = wejscia.get(m, 0.0) + ilosc
+            przyjecia.append(Przyjecie(
+                data=r["data"],
+                typ=typ,
+                magazyn_id=_int(r["magazyn_id"]),
+                ilosc=ilosc,
+                koszt_jednostkowy=koszt,
+                # Fakturownia nie zna frachtu ani cła — świadomie zostaje
+                # puste zamiast zera, żeby front umiał to odróżnić.
+                logistyka_pln=None,
+                dokument=(r["kind"] or "").upper(),
+                numer_dokumentu=r["numer_dokumentu"],
+                dostawca=r["kontrahent"],
+                wewnetrzne=bool(r["is_internal"]),
+            ))
+        else:
+            # RW, zwrot do dostawcy — schodzi ze stanu, nie jest sprzedażą.
+            wyjscia[m] = wyjscia.get(m, 0.0) - ilosc
+
+    cogs = {
+        m: round(cogs_wartosc[m] / cogs_ilosc[m], 4)
+        for m in cogs_ilosc
+        if cogs_ilosc[m]
+    }
+
+    return _zloz(
+        sku, stan_dzis, przyjecia, wejscia, wyjscia, sprzedaz, cogs,
+        zrodlo="fakturownia", firma=slug, ma_logistyke=False,
+    )
+
+
+# ===== ENDPOINT =====
+
+async def _rozstrzygnij_zrodlo(
+    db: AsyncSession, shop: str,
+) -> Tuple[Optional[int], str]:
+    """(firma_id, slug) dla Fakturowni albo (None, 'amh') dla Subiekta.
+
+    Pusty `shop` (fragmentator na „Wszyscy") daje Subiekta — nie sumujemy
+    dwóch ERP-ów w jedną krzywą. Front pokazuje wtedy plakietkę, z której
+    firmy są dane, i odnośnik do drugiej spółki, jeśli ten SKU tam żyje.
+    """
+    slug = (shop or "").strip().lower()
+    if not slug:
+        return None, "amh"
+
+    row = (await db.execute(Q_FIRMA, {"slug": slug})).mappings().first()
+    if not row or row["is_self"]:
+        return None, slug or "amh"
+
+    return int(row["id"]), slug
+
+
+@router.get("/products/{sku}/historia", response_model=Historia)
+async def historia_produktu(
+    sku: str,
+    shop: str = Query("", description="slug firmy z fragmentatora"),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_super_admin),
+):
+    firma_id, slug = await _rozstrzygnij_zrodlo(db, shop)
+
+    if firma_id is None:
+        return await _historia_subiekt(db, sku)
+
+    return await _historia_fakturownia(db, sku, firma_id, slug)
+
+
+@router.get("/products/{sku}/historia-firmy")
+async def historia_firmy(
+    sku: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_super_admin),
+):
+    """Które spółki mają historię tego SKU — zapala przełącznik we froncie.
+
+    Dopasowanie idzie po symbolu (`sku_canon`), nie po EAN. Przy dziesięciu
+    produktach żyjących w dwóch spółkach to wystarcza i jest sprawdzalne
+    ręcznie; budowanie dopasowywania po EAN byłoby tu przerostem formy.
+    """
+    out: List[dict] = []
+
+    subiekt = (await db.execute(text(
+        "SELECT MIN(data) AS od, MAX(data) AS do, COUNT(*) AS ile "
+        "FROM subiekt_przyjecia WHERE lower(sku) = lower(:sku)"
+    ), {"sku": sku})).mappings().first()
+
+    if subiekt and subiekt["ile"]:
+        out.append({
+            "firma": "amh",
+            "zrodlo": "subiekt",
+            "od": subiekt["od"],
+            "do": subiekt["do"],
+            "przyjec": int(subiekt["ile"]),
         })
 
-        ilosc = float(r["ilosc"])
-        a["przyjec"] += 1
-        a["ilosc"] += ilosc
-        a["od"] = min(a["od"], r["data"])
-        a["do"] = max(a["do"], r["data"])
+    fakturownia = (await db.execute(text(
+        "SELECT f.slug, MIN(r.data) AS od, MAX(r.data) AS do, "
+        "       COUNT(*) FILTER (WHERE r.ilosc > 0) AS przyjec "
+        f"FROM fakturownia_ruchy r "
+        f"JOIN {settings.TABLE_FIRMY} f ON f.id = r.firma_id "
+        "WHERE r.sku_canon = lower(:sku) "
+        "GROUP BY f.slug ORDER BY f.slug"
+    ), {"sku": sku})).mappings().all()
 
-        if r["koszt_jednostkowy"] is not None:
-            a["wartosc"] += ilosc * float(r["koszt_jednostkowy"])
+    for r in fakturownia:
+        out.append({
+            "firma": r["slug"],
+            "zrodlo": "fakturownia",
+            "od": r["od"],
+            "do": r["do"],
+            "przyjec": int(r["przyjec"] or 0),
+        })
 
-    dostawcy = [
-        Dostawca(
-            nazwa=nazwa,
-            przyjec=a["przyjec"],
-            ilosc=round(a["ilosc"], 3),
-            od=a["od"],
-            do=a["do"],
-            sredni_koszt=(
-                round(a["wartosc"] / a["ilosc"], 2)
-                if a["ilosc"] else None
-            ),
-        )
-        for nazwa, a in sorted(
-            agg.items(),
-            key=lambda kv: kv[1]["od"],
-        )
-    ]
-
-    zakupy = [p for p in przyjecia if p.typ == "ZAKUP"]
-
-    return Historia(
-        sku=sku,
-        stan_dzis=stan_dzis,
-        pierwsze_przyjecie=(
-            przyjecia[0].data if przyjecia else None
-        ),
-        liczba_zakupow=len(zakupy),
-        sprowadzono_szt=round(
-            sum(p.ilosc for p in zakupy), 3
-        ),
-        sprowadzono_pln=round(
-            sum(
-                p.ilosc * p.koszt_jednostkowy
-                for p in zakupy
-                if p.koszt_jednostkowy is not None
-            ),
-            2,
-        ),
-        przyjecia=przyjecia,
-        stan_miesiecznie=stan_miesiecznie,
-        dostawcy=dostawcy,
-        miesiace_bez_pokrycia=bez_pokrycia,
-        dryf=dryf,
-    )
+    return {"sku": sku, "firmy": out}
