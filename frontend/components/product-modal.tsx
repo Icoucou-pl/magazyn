@@ -1190,12 +1190,20 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
 
   // Pusty shop = widok „Wszyscy". Historia nie sumuje dwóch ERP-ów w jedną
   // krzywą, więc leci wtedy z AMH — i tak to podpisujemy.
-  const aktywna = shop || "amh";
+  // Przy „Wszyscy" żadna spółka nie jest podświetlona — podświetlony jest
+  // przycisk sumy. Historia i tak leci wtedy z AMH i mówi o tym dopisek.
+  const aktywna = shop;
   const zrodlo = (slug: string) =>
     (firmy.find((f) => f.firma === slug)?.zrodlo === "fakturownia" ? "Fakturownia" : "Subiekt");
 
   const widoczne = firmy.filter((f) => !allowed.length || allowed.includes(f.firma));
   const wiele = isSuper && widoczne.length > 1;
+
+  // „Wszyscy" zostaje w pasku, choć nie jest źródłem historii — to ten sam
+  // widok sumaryczny co w Topbarze i to, co modal pokazywał przed dodaniem
+  // przełącznika: KPI zsumowane po firmach. Bez tego przycisku wejście na
+  // konkretną spółkę byłoby jednokierunkowe, bo pasek ustawia globalny shop.
+  const wszyscyDozwolone = !allowed.length || allowed.includes("");
 
   const opis = (f: FirmaHist) => {
     const od = f.od ? String(f.od).slice(0, 10) : null;
@@ -1237,6 +1245,28 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
                 </button>
               );
             })}
+            {wszyscyDozwolone && (
+              <button
+                onClick={() => setShop("")}
+                title="Suma wszystkich spółek — historia z AMH"
+                style={{
+                  background: !shop ? "var(--accent)" : "transparent",
+                  color: !shop ? "var(--accent-ink, #1a1a1a)" : "var(--text-mid)",
+                  border: "none",
+                  borderLeft: "1px solid var(--border)",
+                  padding: "5px 11px",
+                  font: "inherit",
+                  fontSize: 12,
+                  fontWeight: !shop ? 600 : 400,
+                  cursor: !shop ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}>
+                Wszyscy
+                <span style={{ fontSize: 9.5, opacity: 0.7, letterSpacing: "0.04em" }}>SUMA</span>
+              </button>
+            )}
           </div>
           {busy && (
             <span className="pulse-soft" style={{ fontSize: 11, color: "var(--text-lo)" }}>

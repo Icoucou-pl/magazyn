@@ -58,7 +58,7 @@ export default function ProductsView({
   // Domyślny widok po wejściu w Produkty = Obserwowane (is_favorite), nie Aktywne.
   const [filter, setFilter] = useState("favorites");
   // Firma z globalnego fragmentatora w Topbarze (lib/shop).
-  const { shop } = useShop();
+  const { shop, setShop } = useShop();
   // Start false (SSR-safe: brak window), wczytaj zapamiętaną preferencję po montażu.
   const [showInactive, setShowInactive] = useState(false);
   useEffect(() => { setShowInactive(readShowInactive()); }, []);
@@ -126,7 +126,18 @@ export default function ProductsView({
     (async () => {
       try {
         const p = (await api.get(`/products/${encodeURIComponent(openSku)}`)) as Product;
-        if (!cancelled && p) setSelectedProduct(p);
+        if (!cancelled && p) {
+          // Wejście z wyszukiwarki ustawia firmę WŁAŚCICIELA produktu. Wcześniej
+          // modal otwierał się na tym, co akurat było w fragmentatorze, więc
+          // szukając SKU Acti siedząc na AMH dostawało się KPI z jednej firmy,
+          // a historię z drugiej. Ustawiamy konkretną spółkę, nie „Wszyscy" —
+          // to właśnie setShop("") zostawiał kiedyś całą apkę na sumie.
+          const wlasciciel = p.firma_id
+            ? firmy.find((f) => f.id === p.firma_id)?.slug
+            : "amh";
+          if (wlasciciel && wlasciciel !== shop) setShop(wlasciciel);
+          setSelectedProduct(p);
+        }
         else if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
       } catch {
         if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
@@ -134,7 +145,7 @@ export default function ProductsView({
       if (!cancelled) onOpenedSku?.();
     })();
     return () => { cancelled = true; };
-  }, [openSku, onOpenedSku]);
+  }, [openSku, onOpenedSku, firmy, shop, setShop]);
 
   const toggleRow = (sku: string) => setSelected((prev) => {
     const n = new Set(prev);
