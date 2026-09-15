@@ -302,19 +302,37 @@ export default function ProductModal({
         <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in"
              style={{ ...modalCard, maxWidth: 880, height: "88vh", maxHeight: "88vh" }}>
         {/* Header */}
+        {/* Układ nagłówka. Na szerokim ekranie jeden rząd: miniatura, kolumna z
+            treścią, przyciski po prawej. Na telefonie ten sam rząd ściskał nazwę
+            produktu do jednego słowa na linijkę, bo dzieliła miejsce z miniaturą
+            i trzema przyciskami naraz. Poniżej 640 px zmieniamy więc kolejność:
+            rząd pierwszy to miniatura i przyciski, drugi to plakietki statusu,
+            a nazwa dostaje całą szerokość karty. */}
+        <style>{`
+          .pm-head { display: flex; align-items: flex-start; gap: 16px; }
+          .pm-main { flex: 1; min-width: 0; }
+          .pm-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+          .pm-actions { display: flex; gap: 6px; flex-shrink: 0; }
+          @media (max-width: 640px) {
+            .pm-head { flex-wrap: wrap; gap: 10px; }
+            .pm-thumb { order: 1; }
+            .pm-actions { order: 2; margin-left: auto; }
+            .pm-main { order: 3; flex-basis: 100%; }
+          }
+        `}</style>
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+          <div className="pm-head">
             {/* Świadomie BEZ podglądu po najechaniu: w nagłówku zdjęcie pełni rolę
                 identyfikatora, a nie miniatury do rozwijania. Powiększanie jest niżej,
                 w karcie „Dane podstawowe". */}
             {product.photo_id && product.photo_hash && (
-              <div style={{ display: "flex", flexShrink: 0 }}>
+              <div className="pm-thumb" style={{ display: "flex", flexShrink: 0 }}>
                 <ProductThumb photoId={product.photo_id} photoHash={product.photo_hash} size={104} />
               </div>
             )}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div className="pm-main">
+              <div className="pm-badges">
                 <StatusPillExt status={statusKey} size="md" />
                 {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
                 {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
@@ -347,7 +365,7 @@ export default function ProductModal({
                 busy={busy}
               />
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
+            <div className="pm-actions">
               {canEditProducts && (
                 <button onClick={toggleFav} style={iconBtnHeader} title={product.is_favorite ? "Usuń z obserwowanych" : "Obserwuj"}>
                   {product.is_favorite ? <I.StarFill size={16} /> : <I.Star size={16} />}
