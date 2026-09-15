@@ -115,7 +115,10 @@ export default function ProductModal({
   const { shop, setShop, allowed } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
   const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
-
+  // Zwinięty nagłówek przy przewijaniu: zostaje SKU, trzy przyciski i
+  // przełącznik firmy — dwie wąskie linijki. Progi są różne w obie strony
+  // (48 w dół, 12 w górę), żeby nagłówek nie migotał na granicy.
+  const [compact, setCompact] = useState(false);
 
   const [tab, setTab] = useState<"przeglad" | "zycie2" | "dane">("przeglad");
 
@@ -138,6 +141,9 @@ export default function ProductModal({
   // wyrzucało z „Danych" czy „Historii 2.0" z powrotem na „Przegląd".
   // Zakładka jest wyborem użytkownika, nie funkcją wybranej firmy.
   useEffect(() => { setTab("przeglad"); setHasHistory(false); }, [product.sku]);
+
+  // Zmiana zakładki przewija treść na górę — nagłówek ma wrócić rozwinięty.
+  useEffect(() => { setCompact(false); }, [tab, product.sku]);
 
   // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładki znikają i
   // trzeba zejść z nieistniejącej. Bez tego modal pokazałby pustą treść.
@@ -324,28 +330,45 @@ export default function ProductModal({
           .pm-sku     { font-size: 20px; font-weight: 700; color: var(--text-hi); letter-spacing: -0.01em; }
           .pm-name    { font-size: 14px; color: var(--text-mid); margin-top: 2px; }
 
+          /* Nic nie wystaje poza kartę — inaczej całym modalem dawało się
+             przesuwać w bok palcem, bo przeglądarka przewijała tło. */
+          [data-modal-card] { overflow-x: hidden; }
+          .pm-head, .pm-badges, .pm-main, .pm-actions { max-width: 100%; }
+
           @media (max-width: 640px) {
             /* Przyciski w pierwszym wierszu, plakietki w drugim — oba OBOK
                miniatury, więc nagłówek nie schodzi poniżej zdjęcia. Nazwa
                dostaje pełną szerokość pod spodem. */
-            .pm-head { grid-template-columns: auto 1fr; grid-template-areas: "thumb actions" "thumb badges" "main main"; gap: 6px 12px; }
+            .pm-head { grid-template-columns: auto 1fr; grid-template-areas: "thumb actions" "thumb badges" "main main"; gap: 6px 10px; }
 
             /* Miniatura mniejsza — 104 px zabierało jedną trzecią szerokości
-               telefonu i plakietki nie miały gdzie się zmieścić. Nadpisujemy
-               rozmiar z propsa, bo ten sam komponent na desktopie ma zostać duży. */
-            .pm-thumb > * { width: 76px !important; height: 76px !important; }
+               telefonu i plakietki nie miały gdzie się zmieścić. */
+            .pm-thumb > * { width: 64px !important; height: 64px !important; }
 
-            /* Plakietki ZAWIJAJĄ się (bez przesuwania palcem) i są mniejsze,
-               żeby dwa wiersze zmieściły się na wysokość zdjęcia. Trzecia
-               spada do drugiego wiersza i to jest w porządku — nadal siedzi
-               obok miniatury, a nie pod nią. */
-            .pm-badges { flex-wrap: wrap; gap: 5px; align-content: flex-start; }
-            .pm-badges > * { font-size: 10px !important; padding: 2px 7px !important; }
+            /* Plakietki mają się zmieścić w JEDNYM wierszu, bez przesuwania
+               palcem. Zmniejszamy je wszystkie do wspólnego rozmiaru —
+               selektor łapie też chip producenta, który jest osobnym
+               komponentem w rozmiarze „md" i dlatego odstawał od reszty. */
+            .pm-badges { flex-wrap: wrap; gap: 4px; align-items: center; align-content: flex-start; }
+            .pm-badges, .pm-badges * { font-size: 9.5px !important; letter-spacing: 0 !important; }
+            .pm-badges > *, .pm-badges button > span { padding-left: 6px !important; padding-right: 6px !important; }
           }
+
+          /* ZWINIĘTY NAGŁÓWEK — dwie wąskie linijki: SKU z przyciskami, pod
+             spodem przełącznik firmy. Zdjęcie, plakietki i nazwa znikają, bo
+             przy czytaniu wykresów i tak wiadomo, na co się patrzy.
+             Reguła ma !important, bo miniatura ma display w stylu inline,
+             a inline wygrywa ze zwykłą regułą arkusza — bez tego zostawała
+             widoczna i wypadała w losowe miejsce siatki. */
+          .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; align-items: center; }
+          .pm-head.is-compact .pm-thumb,
+          .pm-head.is-compact .pm-badges,
+          .pm-head.is-compact .pm-name { display: none !important; }
+          .pm-head.is-compact .pm-sku { font-size: 16px; }
         `}</style>
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
-          <div className="pm-head">
+          <div className={`pm-head${compact ? " is-compact" : ""}`}>
             {/* Świadomie BEZ podglądu po najechaniu: w nagłówku zdjęcie pełni rolę
                 identyfikatora, a nie miniatury do rozwijania. Powiększanie jest niżej,
                 w karcie „Dane podstawowe". */}
@@ -428,7 +451,11 @@ export default function ProductModal({
         )}
 
         {/* Body */}
-        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
+        <div onScroll={(e) => {
+               const y = (e.target as HTMLDivElement).scrollTop;
+               setCompact((był) => (był ? y > 12 : y > 48));
+             }}
+             style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
           {!showTabs && (
             <>
               {kpiBlok}
