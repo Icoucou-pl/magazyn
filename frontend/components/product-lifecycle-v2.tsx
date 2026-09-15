@@ -1,6 +1,11 @@
 "use client";
 // ============================================================
-// MAGAZYN — Zakładka „Historia produktu 2.0”.
+// MAGAZYN — Zakładka „Historia produktu”.
+//
+// Dawniej „2.0” — nazwa wzięła się stąd, że przez jakiś czas istniała obok
+// starszej wersji. Ta została usunięta z modala, więc zostaje jedna historia
+// i jedna nazwa. Plik `product-lifecycle.tsx` żyje dalej, bo eksportuje
+// kafelki, krzywe i typy, z których ta zakładka korzysta.
 //
 // Wersja porównawcza, stojąca OBOK v1. Nie kopiuje jej kodu —
 // składa się z tych samych komponentów (product-lifecycle.tsx)

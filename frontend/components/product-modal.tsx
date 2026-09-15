@@ -20,7 +20,6 @@ import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
-import LifecycleTab from "./product-lifecycle";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 
 type ApiProjPoint = { date: string; stock: number; event: string | null };
@@ -117,7 +116,7 @@ export default function ProductModal({
   const [hasHistory, setHasHistory] = useState(false);
   const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
 
-  const [tab, setTab] = useState<"przeglad" | "zycie" | "zycie2" | "dane">("przeglad");
+  const [tab, setTab] = useState<"przeglad" | "zycie2" | "dane">("przeglad");
 
   useEffect(() => {
     if (!isSuper) { setHasHistory(false); return; }
@@ -142,7 +141,7 @@ export default function ProductModal({
   // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładki znikają i
   // trzeba zejść z nieistniejącej. Bez tego modal pokazałby pustą treść.
   useEffect(() => {
-    if (!hasHistory && (tab === "zycie" || tab === "zycie2")) setTab("przeglad");
+    if (!hasHistory && tab === "zycie2") setTab("przeglad");
   }, [hasHistory, tab]);
 
   // Które spółki mają historię tego symbolu. Nie zależy od `shop` — lista jest
@@ -370,7 +369,10 @@ export default function ProductModal({
             więc modal jest bit w bit taki jak przed tą zmianą. */}
         {showTabs && (
           <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto", flexShrink: 0 }}>
-            {([["przeglad", "Przegląd"], ["zycie", "Historia produktu"], ["zycie2", "Historia produktu 2.0"], ["dane", "Dane"]] as const).map(([k, label]) => (
+            {/* Wersja 1 historii usunięta — 2.0 ją zastąpiła w całości i nosi
+                teraz jej nazwę. Komponent `product-lifecycle` zostaje w repo,
+                bo eksportuje kafelki, krzywe i typy używane przez 2.0. */}
+            {([["przeglad", "Przegląd"], ["zycie2", "Historia produktu"], ["dane", "Dane"]] as const).map(([k, label]) => (
               <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
                 style={{
                   background: "none", border: 0, padding: "12px 14px 11px",
@@ -402,7 +404,6 @@ export default function ProductModal({
               {konteneryBlok}
             </>
           )}
-          {showTabs && tab === "zycie" && <LifecycleTab sku={product.sku} shop={shop} showFin={showFin} />}
           {showTabs && tab === "zycie2" && <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />}
           {showTabs && tab === "dane" && kartyBlok}
         </div>
