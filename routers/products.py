@@ -45,8 +45,8 @@ async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), shop: st
 
 
 @router.get("/products/{sku}", response_model=ProductSummary)
-async def get_product_endpoint(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    p = await get_product(db, sku)
+async def get_product_endpoint(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    p = await get_product(db, sku, shop)
     _mask_financials([p], user)
     return p
 
