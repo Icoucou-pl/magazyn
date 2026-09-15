@@ -41,7 +41,11 @@ export type Dostawca = {
   sredni_koszt: number | null;
 };
 export type Historia = {
-  sku: string; stan_dzis: number; pierwsze_przyjecie: string | null;
+  sku: string; stan_dzis: number;
+  // Rozbicie kotwicy: ile leży na półce, a ile jest w drodze. Suma zostaje
+  // podstawą krzywej, ale kafelek musi umieć powiedzieć, co to za sztuki.
+  stan_magazyn?: number | null; stan_w_drodze?: number | null;
+  pierwsze_przyjecie: string | null;
   liczba_zakupow: number; sprowadzono_szt: number; sprowadzono_pln: number;
   przyjecia: Przyjecie[]; stan_miesiecznie: PunktStanu[];
   dostawcy: Dostawca[]; miesiace_bez_pokrycia: string[]; dryf: number;
@@ -197,7 +201,14 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
       <Kafelek
         label="Stan dziś"
         value={fmtNum(h.stan_dzis)}
-        sub="na magazynie"
+        // „na magazynie" przy towarze w drodze było mylące: WP1 ma 0 szt na
+        // półce i 10 na wodzie, a kafelek twierdził, że 10 leży w magazynie.
+        // Sumę zostawiamy (to kotwica krzywej), ale mówimy, z czego się składa.
+        sub={
+          h.stan_w_drodze
+            ? `${fmtNum(h.stan_magazyn ?? 0)} na magazynie · ${fmtNum(h.stan_w_drodze)} w drodze`
+            : "na magazynie"
+        }
         tone={h.stan_dzis === 0 ? "critical" : "neutral"} />
       <Kafelek
         label="Zmiana kosztu"
