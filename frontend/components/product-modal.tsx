@@ -115,10 +115,7 @@ export default function ProductModal({
   const { shop, setShop, allowed } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
   const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
-  // Nagłówek zwija się po przewinięciu treści. Dwa różne progi (48 w dół, 12
-  // w górę) to celowa histereza — z jednym progiem nagłówek migotałby przy
-  // przewijaniu dokładnie na granicy.
-  const [compact, setCompact] = useState(false);
+
 
   const [tab, setTab] = useState<"przeglad" | "zycie2" | "dane">("przeglad");
 
@@ -141,9 +138,6 @@ export default function ProductModal({
   // wyrzucało z „Danych" czy „Historii 2.0" z powrotem na „Przegląd".
   // Zakładka jest wyborem użytkownika, nie funkcją wybranej firmy.
   useEffect(() => { setTab("przeglad"); setHasHistory(false); }, [product.sku]);
-
-  // Zmiana zakładki przewija treść na górę, więc nagłówek ma wrócić rozwinięty.
-  useEffect(() => { setCompact(false); }, [tab, product.sku]);
 
   // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładki znikają i
   // trzeba zejść z nieistniejącej. Bez tego modal pokazałby pustą treść.
@@ -334,29 +328,24 @@ export default function ProductModal({
             /* Przyciski w pierwszym wierszu, plakietki w drugim — oba OBOK
                miniatury, więc nagłówek nie schodzi poniżej zdjęcia. Nazwa
                dostaje pełną szerokość pod spodem. */
-            .pm-head { grid-template-columns: auto 1fr; grid-template-areas: "thumb actions" "thumb badges" "main main"; }
-            /* Plakietki w jednym wierszu — zawijanie rozpychało nagłówek na
-               trzy linijki. Nie mieszczą się? Przewijają się w bok. */
-            .pm-badges { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
-            .pm-badges > * { flex-shrink: 0; }
-          }
+            .pm-head { grid-template-columns: auto 1fr; grid-template-areas: "thumb actions" "thumb badges" "main main"; gap: 6px 12px; }
 
-          /* ZWINIĘTY NAGŁÓWEK. Przy przewijaniu treści nagłówek zabierał pół
-             ekranu telefonu, a zdjęcie i nazwa nie są wtedy do niczego
-             potrzebne — wiadomo, na co się patrzy. Zostaje SKU, przełącznik
-             firmy i przyciski, czyli to, czego się używa w trakcie czytania. */
-          .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; align-items: center; }
-          .pm-head.is-compact .pm-thumb,
-          .pm-head.is-compact .pm-badges,
-          .pm-head.is-compact .pm-name { display: none; }
-          .pm-head.is-compact .pm-sku { font-size: 16px; }
-          .pm-headwrap { transition: padding 0.16s ease; }
-          .pm-headwrap.is-compact { padding-top: 10px !important; padding-bottom: 10px !important; }
+            /* Miniatura mniejsza — 104 px zabierało jedną trzecią szerokości
+               telefonu i plakietki nie miały gdzie się zmieścić. Nadpisujemy
+               rozmiar z propsa, bo ten sam komponent na desktopie ma zostać duży. */
+            .pm-thumb > * { width: 76px !important; height: 76px !important; }
+
+            /* Plakietki ZAWIJAJĄ się (bez przesuwania palcem) i są mniejsze,
+               żeby dwa wiersze zmieściły się na wysokość zdjęcia. Trzecia
+               spada do drugiego wiersza i to jest w porządku — nadal siedzi
+               obok miniatury, a nie pod nią. */
+            .pm-badges { flex-wrap: wrap; gap: 5px; align-content: flex-start; }
+            .pm-badges > * { font-size: 10px !important; padding: 2px 7px !important; }
+          }
         `}</style>
-        <div className={`pm-headwrap${compact ? " is-compact" : ""}`}
-             style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
+        <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
-          <div className={`pm-head${compact ? " is-compact" : ""}`}>
+          <div className="pm-head">
             {/* Świadomie BEZ podglądu po najechaniu: w nagłówku zdjęcie pełni rolę
                 identyfikatora, a nie miniatury do rozwijania. Powiększanie jest niżej,
                 w karcie „Dane podstawowe". */}
@@ -439,11 +428,7 @@ export default function ProductModal({
         )}
 
         {/* Body */}
-        <div onScroll={(e) => {
-               const y = (e.target as HTMLDivElement).scrollTop;
-               setCompact((był) => (był ? y > 12 : y > 48));
-             }}
-             style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
+        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
           {!showTabs && (
             <>
               {kpiBlok}
