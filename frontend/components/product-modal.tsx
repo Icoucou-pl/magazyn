@@ -121,13 +121,28 @@ export default function ProductModal({
   useEffect(() => {
     if (!isSuper) { setHasHistory(false); return; }
     let alive = true;
-    setHasHistory(false);
-    setTab("przeglad");
+    // Świadomie NIE zerujemy `hasHistory` przed odpowiedzią. Zerowanie na czas
+    // sondy powodowało, że przy zmianie firmy zakładki na moment znikały, a
+    // efekt awaryjny niżej zdążył zepchnąć widok na „Przegląd" — wyglądało to
+    // tak, jakby przełącznik firmy resetował zakładkę. Trzymamy poprzednią
+    // odpowiedź do czasu nowej; treść zakładki i tak dociąga się sama.
     api.get(`/products/${encodeURIComponent(product.sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then(() => { if (alive) setHasHistory(true); })
       .catch(() => { if (alive) setHasHistory(false); });
     return () => { alive = false; };
   }, [product.sku, isSuper, shop]);
+
+  // Reset zakładki TYLKO przy zmianie produktu. Dawniej siedział w sondzie
+  // wyżej, a odkąd ta reaguje też na zmianę firmy, przełączenie spółki
+  // wyrzucało z „Danych" czy „Historii 2.0" z powrotem na „Przegląd".
+  // Zakładka jest wyborem użytkownika, nie funkcją wybranej firmy.
+  useEffect(() => { setTab("przeglad"); setHasHistory(false); }, [product.sku]);
+
+  // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładki znikają i
+  // trzeba zejść z nieistniejącej. Bez tego modal pokazałby pustą treść.
+  useEffect(() => {
+    if (!hasHistory && (tab === "zycie" || tab === "zycie2")) setTab("przeglad");
+  }, [hasHistory, tab]);
 
   // Które spółki mają historię tego symbolu. Nie zależy od `shop` — lista jest
   // ta sama niezależnie od wybranej firmy, więc pobieramy ją raz na SKU.
