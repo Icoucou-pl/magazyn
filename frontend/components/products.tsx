@@ -125,7 +125,8 @@ export default function ProductsView({
     let cancelled = false;
     (async () => {
       try {
-        const p = (await api.get(`/products/${encodeURIComponent(openSku)}`)) as Product;
+        // Pierwszy strzał bez firmy — po to, żeby w ogóle poznać właściciela.
+        let p = (await api.get(`/products/${encodeURIComponent(openSku)}`)) as Product;
         if (!cancelled && p) {
           // Wejście z wyszukiwarki ustawia firmę WŁAŚCICIELA produktu. Wcześniej
           // modal otwierał się na tym, co akurat było w fragmentatorze, więc
@@ -136,6 +137,19 @@ export default function ProductsView({
             ? firmy.find((f) => f.id === p.firma_id)?.slug
             : "amh";
           if (wlasciciel && wlasciciel !== shop) setShop(wlasciciel);
+
+          // Drugi strzał, już z firmą właściciela. Bez niego karta pokazywała
+          // SUMĘ po spółkach (get_product domyślnie sumuje), a przełącznik nad
+          // nią twierdził „Veluxa" — stan nie zgadzał się z żadną z zakładek.
+          if (wlasciciel) {
+            try {
+              const scoped = (await api.get(
+                `/products/${encodeURIComponent(openSku)}?shop=${encodeURIComponent(wlasciciel)}`,
+              )) as Product;
+              if (scoped) p = scoped;
+            } catch { /* zostaje wersja zbiorcza — lepsza niż pusty modal */ }
+          }
+          if (cancelled) return;
           setSelectedProduct(p);
         }
         else if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
