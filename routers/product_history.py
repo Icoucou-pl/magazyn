@@ -132,6 +132,12 @@ class Przyjecie(BaseModel):
     numer_dokumentu: Optional[str] = None
     dostawca: Optional[str] = None
     wewnetrzne: bool = False                # ruch wewnątrz grupy
+    # Przyjęcie na magazyn „w drodze" to jeszcze nie dostawa — towar jest
+    # opłacony i wbity do ERP, ale fizycznie płynie. Dostawą jest dopiero
+    # wjazd na magazyn główny. Front musi te dwa zdarzenia nazwać inaczej,
+    # bo „Ostatnia dostawa — 1000 szt" przy towarze na oceanie wygląda jak
+    # pełny magazyn.
+    w_drodze: bool = False
 
 
 class PunktStanu(BaseModel):
@@ -451,6 +457,7 @@ async def _historia_subiekt(db: AsyncSession, sku: str) -> Historia:
                 else None
             ),
             skorygowane=bool(r["skorygowane"]),
+            w_drodze=(r["magazyn_id"] == MAGAZYN_W_DRODZE),
             dokument=r["dokument"],
             numer_dokumentu=r["numer_dokumentu"],
             dostawca=r["dostawca"],
@@ -557,6 +564,21 @@ async def _historia_fakturownia(
         # dwa wiersze (mm- i mm+) i sumuje się do zera. Wypada z obu stron,
         # tak samo jak ruch wewnętrzny po stronie Subiekta.
         if typ == "PRZESUNIECIE":
+            # Nie wchodzi do krzywej łącznej (mm- i mm+ znoszą się), ale wjazd
+            # z „w drodze" na magazyn główny to moment, w którym towar staje
+            # się fizycznie dostępny — i jedyna rzecz, którą uczciwie można
+            # nazwać dostawą. Pokazujemy go na osi zdarzeń.
+            if not r["w_drodze"] and float(r["ilosc"]) > 0:
+                przyjecia.append(Przyjecie(
+                    data=r["data"],
+                    typ="PRZESUNIECIE",
+                    magazyn_id=_int(r["magazyn_id"]),
+                    ilosc=float(r["ilosc"]),
+                    koszt_jednostkowy=_f(r["koszt_jednostkowy"]),
+                    dokument=(r["kind"] or "").upper(),
+                    numer_dokumentu=r["numer_dokumentu"],
+                    w_drodze=False,
+                ))
             continue
 
         ilosc = float(r["ilosc"])
@@ -591,6 +613,7 @@ async def _historia_fakturownia(
                 numer_dokumentu=r["numer_dokumentu"],
                 dostawca=r["kontrahent"],
                 wewnetrzne=bool(r["is_internal"]),
+                w_drodze=bool(r["w_drodze"]),
             ))
         else:
             # RW, zwrot do dostawcy — schodzi ze stanu, nie jest sprzedażą.
