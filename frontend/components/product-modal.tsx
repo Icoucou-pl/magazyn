@@ -73,10 +73,15 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
 
 export default function ProductModal({
   product: initialProduct, manufacturers, firmy, onClose, onUpdated, onContainerClick, onManufacturerClick,
+  busy = false,
 }: {
   product: Product;
   manufacturers: Manufacturer[];
   firmy?: Firma[];
+  /** Lista pod spodem właśnie się przeładowuje (np. po zmianie firmy). Karta
+   *  zostaje otwarta ze starymi liczbami, więc mówimy o tym wprost zamiast
+   *  pozwolić patrzeć na nieaktualne dane bez ostrzeżenia. */
+  busy?: boolean;
   onClose: () => void;
   onUpdated?: (p: Product) => void;
   onContainerClick?: (id: number) => void;
@@ -295,6 +300,7 @@ export default function ProductModal({
                 allowed={allowed}
                 firmy={firmyHist}
                 isSuper={isSuper}
+                busy={busy}
               />
             </div>
             <div style={{ display: "flex", gap: 6 }}>
@@ -1148,12 +1154,13 @@ const btnGhostMini: React.CSSProperties = { display: "inline-flex", alignItems: 
 // stany firmy rozjechałyby się przy pierwszym zamknięciu okna, a lista pod
 // spodem pokazywałaby co innego niż karta.
 // ============================================================
-function FirmaBar({ shop, setShop, allowed, firmy, isSuper }: {
+function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
   shop: string;
   setShop: (v: string) => void;
   allowed: string[];
   firmy: FirmaHist[];
   isSuper: boolean;
+  busy?: boolean;
 }) {
   const etykieta = (slug: string) =>
     SHOP_OPTIONS.find((o) => o.v === slug)?.l || slug.toUpperCase();
@@ -1208,7 +1215,12 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper }: {
               );
             })}
           </div>
-          {!shop && (
+          {busy && (
+            <span className="pulse-soft" style={{ fontSize: 11, color: "var(--text-lo)" }}>
+              wczytuję dane firmy…
+            </span>
+          )}
+          {!busy && !shop && (
             <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
               widok „Wszyscy" — historia z AMH
             </span>

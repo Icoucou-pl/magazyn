@@ -94,6 +94,19 @@ export default function ProductsView({
 
   useEffect(() => { reload(); }, [reload]);
 
+  // Modal dostaje KOPIĘ wiersza z listy, nie referencję do źródła. Po zmianie
+  // firmy lista przyjeżdża nowa (stan, sprzedaż i cena są liczone per firma),
+  // ale otwarta karta zostawała z liczbami poprzedniej spółki — przełącznik
+  // się przełączał, a dane stały w miejscu. Podmieniamy wiersz na świeży,
+  // dopasowany po SKU. Gdy produktu nie ma w nowej liście (nie występuje w tej
+  // firmie), zostawiamy poprzedni — lepsze niż zamknięcie karty pod palcami.
+  useEffect(() => {
+    setSelectedProduct((prev) => {
+      if (!prev) return prev;
+      return products.find((p) => p.sku === prev.sku) || prev;
+    });
+  }, [products]);
+
   // Firmy (sklepy AMH/Acti/Veluxa) — do dropdownu „Firma" na karcie i bulku „Przypisz firmę". Statyczne → raz na mount.
   useEffect(() => {
     (async () => {
@@ -219,7 +232,13 @@ export default function ProductsView({
     exportCsv("produkty", cols, filtered);
   };
 
-  if (loading) {
+  // Szkielet TYLKO przy pierwszym wczytaniu. Wcześniej ten return łapał każde
+  // przeładowanie listy — także to po zmianie firmy w fragmentatorze — i na
+  // ułamek sekundy podmieniał cały widok, przez co otwarty modal produktu był
+  // odmontowywany i montował się od nowa. Przy kolejnych przeładowaniach
+  // zostawiamy poprzednią listę na ekranie; świeżość sygnalizuje `loading`
+  // przekazany do modala.
+  if (loading && products.length === 0) {
     return (
       <div className="pulse-soft" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
         <div style={{ height: 56, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }} />
@@ -292,6 +311,7 @@ export default function ProductsView({
           product={selectedProduct}
           manufacturers={manufacturers}
           firmy={firmy}
+          busy={loading}
           onClose={() => setSelectedProduct(null)}
           onUpdated={onProductUpdated}
           onContainerClick={onContainerClick}
