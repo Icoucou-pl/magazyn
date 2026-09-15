@@ -116,6 +116,13 @@ export default function ProductModal({
   const { shop, setShop, allowed } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
   const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
+  // Okno przestaje „mrugać" przy zmianie zakładki. Nowa zakładka montuje się
+  // pusta i dociąga dane, więc modal na moment kurczył się do wysokości
+  // spinnera i zaraz rozpychał z powrotem. Zapamiętujemy najwyższą zawartość
+  // w tej sesji okna i trzymamy ją jako minimum — okno może jeszcze urosnąć,
+  // ale nigdy nie zmaleje pod palcami.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [minH, setMinH] = useState(0);
   const [tab, setTab] = useState<"przeglad" | "zycie" | "zycie2" | "dane">("przeglad");
 
   useEffect(() => {
@@ -143,6 +150,18 @@ export default function ProductModal({
   useEffect(() => {
     if (!hasHistory && (tab === "zycie" || tab === "zycie2")) setTab("przeglad");
   }, [hasHistory, tab]);
+
+  // Pomiar zawartości. Rośnie tylko w górę, więc pętla sprzężenia zwrotnego
+  // nie ma jak powstać: po ustawieniu minimum kolejny pomiar daje tę samą
+  // liczbę. Reset przy zmianie produktu — inne SKU to inna karta.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const h = el.scrollHeight;
+    if (h > minH) setMinH(h);
+  });
+
+  useEffect(() => { setMinH(0); }, [product.sku]);
 
   // Które spółki mają historię tego symbolu. Nie zależy od `shop` — lista jest
   // ta sama niezależnie od wybranej firmy, więc pobieramy ją raz na SKU.
@@ -355,7 +374,8 @@ export default function ProductModal({
         )}
 
         {/* Body */}
-        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
+        <div ref={bodyRef}
+             style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: minH || 0 }}>
           {!showTabs && (
             <>
               {kpiBlok}
