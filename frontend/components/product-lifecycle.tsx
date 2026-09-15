@@ -78,18 +78,21 @@ export const note: React.CSSProperties = {
 export type Tip = { x: number; y: number; html: React.ReactNode } | null;
 
 // ============================================================
-export default function LifecycleTab({ sku, showFin }: { sku: string; showFin: boolean }) {
+export default function LifecycleTab({ sku, shop, showFin }: { sku: string; shop?: string; showFin: boolean }) {
   const [h, setH] = useState<Historia | null>(null);
   const [err, setErr] = useState(false);
 
   useEffect(() => {
     let alive = true;
     setH(null); setErr(false);
-    api.get(`/products/${encodeURIComponent(sku)}/historia`)
+    // `shop` decyduje o źródle: pusty albo AMH → Subiekt, Acti/Veluxa →
+    // ledger z Fakturowni. Bez niego zakładka pokazywała dane AMH nawet
+    // wtedy, gdy fragmentator stał na innej spółce.
+    api.get(`/products/${encodeURIComponent(sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then((d) => { if (alive) setH(d as Historia); })
       .catch(() => { if (alive) setErr(true); });
     return () => { alive = false; };
-  }, [sku]);
+  }, [sku, shop]);
 
   if (err) {
     return (

@@ -29,7 +29,7 @@ import {
 type SeasonPoint = { year: number; month: number; qty: number; value_net: number; value_gross: number };
 
 // ============================================================
-export default function LifecycleTabV2({ sku, showFin }: { sku: string; showFin: boolean }) {
+export default function LifecycleTabV2({ sku, shop, showFin }: { sku: string; shop?: string; showFin: boolean }) {
   const [h, setH] = useState<Historia | null>(null);
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
   const [err, setErr] = useState(false);
@@ -37,7 +37,8 @@ export default function LifecycleTabV2({ sku, showFin }: { sku: string; showFin:
   useEffect(() => {
     let alive = true;
     setH(null); setSeason(null); setErr(false);
-    api.get(`/products/${encodeURIComponent(sku)}/historia`)
+    // Źródło danych wskazuje `shop` — patrz komentarz w product-lifecycle.tsx.
+    api.get(`/products/${encodeURIComponent(sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then((d) => { if (alive) setH(d as Historia); })
       .catch(() => { if (alive) setErr(true); });
     // Przychód jest opcjonalny — bez niego po prostu nie ma wykresu marży.
@@ -45,7 +46,7 @@ export default function LifecycleTabV2({ sku, showFin }: { sku: string; showFin:
       .then((d) => { if (alive) setSeason(d as SeasonPoint[]); })
       .catch(() => { if (alive) setSeason([]); });
     return () => { alive = false; };
-  }, [sku]);
+  }, [sku, shop]);
 
   if (err) {
     return (

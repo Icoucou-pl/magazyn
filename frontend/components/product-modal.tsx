@@ -19,6 +19,7 @@ import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
+import { useShop } from "@/lib/shop";
 import LifecycleTab from "./product-lifecycle";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 
@@ -102,6 +103,10 @@ export default function ProductModal({
     (user as { is_super_admin?: boolean; isSuper?: boolean } | null)?.is_super_admin
     ?? (user as { isSuper?: boolean } | null)?.isSuper,
   );
+  // Firma z globalnego fragmentatora (lib/shop) — ta sama, którą czyta
+  // lista produktów i Finanse. Bez niej „Przegląd" pokazywał stan Veluxy,
+  // a „Historia produktu" dane AMH, bo historia szła na sztywno do Subiekta.
+  const { shop } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
   const [tab, setTab] = useState<"przeglad" | "zycie" | "zycie2" | "dane">("przeglad");
 
@@ -110,11 +115,11 @@ export default function ProductModal({
     let alive = true;
     setHasHistory(false);
     setTab("przeglad");
-    api.get(`/products/${encodeURIComponent(product.sku)}/historia`)
+    api.get(`/products/${encodeURIComponent(product.sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then(() => { if (alive) setHasHistory(true); })
       .catch(() => { if (alive) setHasHistory(false); });
     return () => { alive = false; };
-  }, [product.sku, isSuper]);
+  }, [product.sku, isSuper, shop]);
 
   const showTabs = isSuper && hasHistory;
 
@@ -326,8 +331,8 @@ export default function ProductModal({
               {konteneryBlok}
             </>
           )}
-          {showTabs && tab === "zycie" && <LifecycleTab sku={product.sku} showFin={showFin} />}
-          {showTabs && tab === "zycie2" && <LifecycleTabV2 sku={product.sku} showFin={showFin} />}
+          {showTabs && tab === "zycie" && <LifecycleTab sku={product.sku} shop={shop} showFin={showFin} />}
+          {showTabs && tab === "zycie2" && <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />}
           {showTabs && tab === "dane" && kartyBlok}
         </div>
 
