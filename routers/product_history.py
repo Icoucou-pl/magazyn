@@ -139,7 +139,8 @@ class PunktStanu(BaseModel):
     przyjeto: float
     wydano: float
     sprzedano: float = 0.0
-    stan: float
+    stan: float                              # oba magazyny razem
+    stan_polka: Optional[float] = None       # sam magazyn główny
     koszt_wlasny: Optional[float] = None
 
 
@@ -214,7 +215,8 @@ Q_FIRMA = text("""
 
 Q_F_RUCHY = text("""
     SELECT data, kind, typ, ilosc, magazyn_id, koszt_jednostkowy,
-           numer_dokumentu, kontrahent, is_internal
+           numer_dokumentu, kontrahent, is_internal,
+           COALESCE(w_drodze, FALSE) AS w_drodze
     FROM fakturownia_ruchy
     WHERE firma_id = :fid
       AND sku_canon = lower(:sku)
@@ -266,6 +268,7 @@ def _zloz(
     wyjscia: Dict[date, float],
     sprzedaz: Dict[date, float],
     cogs: Dict[date, float],
+    polka: Tuple[Dict[date, float], Dict[date, float]],
     zrodlo: str,
     firma: Optional[str],
     ma_logistyke: bool,
@@ -277,6 +280,7 @@ def _zloz(
     dotyczy obu firm naraz i nie da się ich rozjechać.
     """
     stan_dzis, stan_magazyn, stan_w_drodze = stan
+    stan_polka = stan_magazyn
 
     if not wejscia and not wyjscia:
         raise HTTPException(404, f"Brak ruchów dla SKU {sku}")
@@ -299,6 +303,27 @@ def _zloz(
 
     dryf = round(biezacy, 3)
 
+    # DRUGA KRZYWA — sam magazyn główny.
+    #
+    # Pierwsza mówi, ile towaru NALEŻY do firmy, i to ona musi być kotwiczona
+    # na sumie, bo ledger obejmuje oba magazyny, a przyjęcia z zagranicy lądują
+    # wprost na „w drodze" (SZP1 ma tam 288 szt). Gdyby kotwicą była sama półka,
+    # cała historia przesunęłaby się o wielkość towaru na wodzie.
+    #
+    # Ale to znaczy, że kontener płynący przez ocean potrafi zamaskować pusty
+    # magazyn: krzywa rośnie, choć nie ma czym sprzedawać. Dlatego liczymy
+    # równolegle stan samej półki i to na NIM wykrywamy miesiące bez pokrycia.
+    # Tu ruch między magazynami już się nie znosi — wjazd z wody na półkę jest
+    # prawdziwym przyjęciem i dokładnie o ten moment chodzi.
+    wej_p, wyj_p = polka
+    stany_p: Dict[date, float] = {}
+
+    if stan_polka is not None and (wej_p or wyj_p):
+        biezacy_p = stan_polka
+        for m in reversed(miesiace):
+            stany_p[m] = biezacy_p
+            biezacy_p -= wej_p.get(m, 0.0) - wyj_p.get(m, 0.0)
+
     stan_miesiecznie = [
         PunktStanu(
             miesiac=m,
@@ -306,15 +331,19 @@ def _zloz(
             wydano=round(wyjscia.get(m, 0.0), 3),
             sprzedano=round(sprzedaz.get(m, 0.0), 3),
             stan=round(stany[m], 3),
+            stan_polka=(round(stany_p[m], 3) if m in stany_p else None),
             koszt_wlasny=cogs.get(m),
         )
         for m in miesiace
     ]
 
+    # Pokrycie liczymy na półce, jeśli ją mamy — inaczej miesiąc z pustym
+    # magazynem i pełnym kontenerem na wodzie wyglądałby na zaopatrzony.
     bez_pokrycia = [
         p.miesiac
         for p in stan_miesiecznie
-        if p.sprzedano > 0 and p.stan < p.sprzedano
+        if p.sprzedano > 0
+        and (p.stan_polka if p.stan_polka is not None else p.stan) < p.sprzedano
     ]
 
     # Dostawcy — wyłącznie realne zakupy z zewnątrz.
@@ -432,20 +461,32 @@ async def _historia_subiekt(db: AsyncSession, sku: str) -> Historia:
     sprzedaz: Dict[date, float] = {}
     cogs_wartosc: Dict[date, float] = {}
     cogs_ilosc: Dict[date, float] = {}
+    # Ruchy samego magazynu podstawowego — druga krzywa. Przesunięcie z „w
+    # drodze" na półkę JEST tu wejściem, w przeciwieństwie do krzywej łącznej.
+    wej_p: Dict[date, float] = {}
+    wyj_p: Dict[date, float] = {}
 
     for r in przyjecia_rows:
+        m = r["data"].replace(day=1)
+
+        if r["magazyn_id"] == MAGAZYN_PODSTAWOWY:
+            wej_p[m] = wej_p.get(m, 0.0) + float(r["ilosc"])
+
         if _wewnetrzny(r["magazyn_zrodlowy"], r["magazyn_id"]):
             continue
-        m = r["data"].replace(day=1)
         wejscia[m] = wejscia.get(m, 0.0) + float(r["ilosc"])
 
     for r in rozchody_rows:
         typ = r["typ"]
+        m = r["miesiac"]
+        ilosc = float(r["ilosc"])
+
+        if r["magazyn_id"] == MAGAZYN_PODSTAWOWY:
+            wyj_p[m] = wyj_p.get(m, 0.0) + ilosc
+
         if typ == "PRZESUNIECIE":
             continue
 
-        m = r["miesiac"]
-        ilosc = float(r["ilosc"])
         wyjscia[m] = wyjscia.get(m, 0.0) + ilosc
 
         if typ != "WYDANIE":
@@ -467,7 +508,8 @@ async def _historia_subiekt(db: AsyncSession, sku: str) -> Historia:
 
     return _zloz(
         sku, (mag + drodze, mag, drodze), przyjecia, wejscia, wyjscia,
-        sprzedaz, cogs, zrodlo="subiekt", firma="amh", ma_logistyke=True,
+        sprzedaz, cogs, (wej_p, wyj_p),
+        zrodlo="subiekt", firma="amh", ma_logistyke=True,
     )
 
 
@@ -495,9 +537,21 @@ async def _historia_fakturownia(
     sprzedaz: Dict[date, float] = {}
     cogs_wartosc: Dict[date, float] = {}
     cogs_ilosc: Dict[date, float] = {}
+    wej_p: Dict[date, float] = {}
+    wyj_p: Dict[date, float] = {}
 
     for r in rows:
         typ = r["typ"]
+
+        # Półka: liczymy po surowym znaku, bez wyjątków na przesunięcia —
+        # `mm+` to realny wjazd towaru z wody na magazyn i ma się liczyć.
+        if not r["w_drodze"]:
+            q = float(r["ilosc"])
+            m_p = r["data"].replace(day=1)
+            if q > 0:
+                wej_p[m_p] = wej_p.get(m_p, 0.0) + q
+            elif q < 0:
+                wyj_p[m_p] = wyj_p.get(m_p, 0.0) - q
 
         # Przesunięcie między magazynem głównym a „w drodze" ma w ledgerze
         # dwa wiersze (mm- i mm+) i sumuje się do zera. Wypada z obu stron,
@@ -550,7 +604,8 @@ async def _historia_fakturownia(
 
     return _zloz(
         sku, (mag + drodze, mag, drodze), przyjecia, wejscia, wyjscia,
-        sprzedaz, cogs, zrodlo="fakturownia", firma=slug, ma_logistyke=False,
+        sprzedaz, cogs, (wej_p, wyj_p),
+        zrodlo="fakturownia", firma=slug, ma_logistyke=False,
     )
 
 
