@@ -19,12 +19,14 @@ import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
-import { useShop } from "@/lib/shop";
+import { useShop, SHOP_OPTIONS } from "@/lib/shop";
 import LifecycleTab from "./product-lifecycle";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 
 type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
+// Spółka, która ma historię danego symbolu (GET /products/{sku}/historia-firmy).
+type FirmaHist = { firma: string; zrodlo: string; od: string | null; do: string | null; przyjec: number };
 type ProjPoint = { day: number; stock: number; arrivals: Delivery[] };
 type Projection = { points: ProjPoint[]; deliveries: Delivery[]; deliveryMarkers: { day: number; qty: number }[]; stockOutDay: number | null; orderByDay: number | null };
 
@@ -106,8 +108,9 @@ export default function ProductModal({
   // Firma z globalnego fragmentatora (lib/shop) — ta sama, którą czyta
   // lista produktów i Finanse. Bez niej „Przegląd" pokazywał stan Veluxy,
   // a „Historia produktu" dane AMH, bo historia szła na sztywno do Subiekta.
-  const { shop } = useShop();
+  const { shop, setShop, allowed } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
+  const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
   const [tab, setTab] = useState<"przeglad" | "zycie" | "zycie2" | "dane">("przeglad");
 
   useEffect(() => {
@@ -120,6 +123,17 @@ export default function ProductModal({
       .catch(() => { if (alive) setHasHistory(false); });
     return () => { alive = false; };
   }, [product.sku, isSuper, shop]);
+
+  // Które spółki mają historię tego symbolu. Nie zależy od `shop` — lista jest
+  // ta sama niezależnie od wybranej firmy, więc pobieramy ją raz na SKU.
+  useEffect(() => {
+    if (!isSuper) { setFirmyHist([]); return; }
+    let alive = true;
+    api.get(`/products/${encodeURIComponent(product.sku)}/historia-firmy`)
+      .then((d) => { if (alive) setFirmyHist(((d as { firmy?: FirmaHist[] })?.firmy) || []); })
+      .catch(() => { if (alive) setFirmyHist([]); });
+    return () => { alive = false; };
+  }, [product.sku, isSuper]);
 
   const showTabs = isSuper && hasHistory;
 
@@ -275,6 +289,13 @@ export default function ProductModal({
               </div>
               <div className="mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 10, color: "var(--text-hi)", letterSpacing: "-0.01em" }}>{product.sku}</div>
               <div style={{ fontSize: 14, color: "var(--text-mid)", marginTop: 2 }}>{product.name}</div>
+              <FirmaBar
+                shop={shop}
+                setShop={setShop}
+                allowed={allowed}
+                firmy={firmyHist}
+                isSuper={isSuper}
+              />
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               {canEditProducts && (
@@ -1109,3 +1130,95 @@ const attrLabelStyle: React.CSSProperties = { fontSize: 11, color: "var(--text-l
 
 const iconBtnHeader: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 7, color: "var(--text-mid)" };
 const btnGhostMini: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "transparent", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, fontWeight: 500 };
+
+
+// ============================================================
+// FirmaBar — z której spółki są dane w tym modalu.
+//
+// Modal pokazuje dane jednej firmy: stan, sprzedaż i historia lecą z tego,
+// co wybrane w globalnym fragmentatorze (lib/shop). Wcześniej nigdzie nie
+// było tego widać — otwierało się ten sam SKU z listy Veluxy i z listy AMH
+// i dostawało różne liczby bez żadnej wskazówki, dlaczego.
+//
+// Plakietka jest ZAWSZE, także gdy spółka jest jedna. Przełącznik pojawia
+// się dopiero, gdy ten sam symbol ma historię w więcej niż jednej firmie —
+// a to przy Szp1 czy Pod_1b zdarza się, bo spółki handlują między sobą.
+//
+// Przełącznik ustawia GLOBALNY shop, nie lokalny stan modala. Dwa niezależne
+// stany firmy rozjechałyby się przy pierwszym zamknięciu okna, a lista pod
+// spodem pokazywałaby co innego niż karta.
+// ============================================================
+function FirmaBar({ shop, setShop, allowed, firmy, isSuper }: {
+  shop: string;
+  setShop: (v: string) => void;
+  allowed: string[];
+  firmy: FirmaHist[];
+  isSuper: boolean;
+}) {
+  const etykieta = (slug: string) =>
+    SHOP_OPTIONS.find((o) => o.v === slug)?.l || slug.toUpperCase();
+
+  // Pusty shop = widok „Wszyscy". Historia nie sumuje dwóch ERP-ów w jedną
+  // krzywą, więc leci wtedy z AMH — i tak to podpisujemy.
+  const aktywna = shop || "amh";
+  const zrodlo = (slug: string) =>
+    (firmy.find((f) => f.firma === slug)?.zrodlo === "fakturownia" ? "Fakturownia" : "Subiekt");
+
+  const widoczne = firmy.filter((f) => !allowed.length || allowed.includes(f.firma));
+  const wiele = isSuper && widoczne.length > 1;
+
+  const opis = (f: FirmaHist) => {
+    const od = f.od ? String(f.od).slice(0, 10) : null;
+    return [etykieta(f.firma), f.zrodlo === "fakturownia" ? "Fakturownia" : "Subiekt",
+            od ? `od ${od}` : null, `${f.przyjec} przyjęć`].filter(Boolean).join(" · ");
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+      {wiele ? (
+        <>
+          <span style={{ fontSize: 11, color: "var(--text-lo)" }}>Dane z firmy</span>
+          <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            {widoczne.map((f, i) => {
+              const on = f.firma === aktywna;
+              return (
+                <button
+                  key={f.firma}
+                  onClick={() => setShop(f.firma)}
+                  title={opis(f)}
+                  style={{
+                    background: on ? "var(--accent)" : "transparent",
+                    color: on ? "var(--accent-ink, #1a1a1a)" : "var(--text-mid)",
+                    border: "none",
+                    borderLeft: i ? "1px solid var(--border)" : "none",
+                    padding: "5px 11px",
+                    font: "inherit",
+                    fontSize: 12,
+                    fontWeight: on ? 600 : 400,
+                    cursor: on ? "default" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}>
+                  {etykieta(f.firma)}
+                  <span style={{ fontSize: 9.5, opacity: 0.7, letterSpacing: "0.04em" }}>
+                    {f.zrodlo === "fakturownia" ? "FAKT" : "SUBIEKT"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {!shop && (
+            <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
+              widok „Wszyscy" — historia z AMH
+            </span>
+          )}
+        </>
+      ) : (
+        <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm">
+          {shop ? `${etykieta(shop)} · ${zrodlo(shop)}` : "WSZYSCY · suma firm"}
+        </Pill>
+      )}
+    </div>
+  );
+}
