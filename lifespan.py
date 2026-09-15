@@ -76,6 +76,7 @@ async def _sellasist_auto_loop():
     from services.sellasist import is_configured, is_running, mark_started, run_refresh, get_status
     from services import fakturownia as fakt
     from services import fakturownia_sales as fsales
+    from services import fakturownia_history as fhist
     start_h = settings.SELLASIST_AUTO_START_HOUR
     end_h = settings.SELLASIST_AUTO_END_HOUR
     while True:
@@ -116,6 +117,23 @@ async def _sellasist_auto_loop():
                 print(f"[fakturownia_sales] auto: {sst.get('error') or sst.get('message')}")
         except Exception as e:
             print(f"[fakturownia_sales] auto błąd (pomijam, pętla działa dalej): {e}")
+
+        # Dziennik ruchów magazynowych z Fakturowni — źródło zakładki „Historia
+        # produktu" dla Acti i Veluxy (Subiekt obsługuje tylko AMH). Czwarty
+        # niezależny blok, ten sam wzorzec: własny guard, własny try.
+        #
+        # KOLEJNOŚĆ MA ZNACZENIE: leci PO fakturownia_sales, bo korzysta z mapy
+        # SKU (fakturownia_sku_map), którą tamten bieg zapisuje. Przy pustej
+        # mapie ledger i tak się zapisze, ale duża część ruchów zostanie bez
+        # symbolu — `code` na akcji bywa puste (686 z 1886 akcji w Veluxie).
+        try:
+            if fhist.is_configured() and not fhist.is_running():
+                fhist.mark_started()
+                await fhist.run_sync()
+                hst = fhist.get_status()
+                print(f"[fakturownia_history] auto: {hst.get('error') or hst.get('message')}")
+        except Exception as e:
+            print(f"[fakturownia_history] auto błąd (pomijam, pętla działa dalej): {e}")
 
 
 SNAPSHOT_TIMES = ((7, 5, "rano"), (20, 5, "wieczor"))   # (godz, min, nazwa pory) — czas warszawski
