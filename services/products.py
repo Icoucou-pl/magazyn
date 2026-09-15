@@ -411,12 +411,19 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
     return results
 
 
-async def get_product(db: AsyncSession, sku: str) -> ProductSummary:
+async def get_product(db: AsyncSession, sku: str, shop: str = "") -> ProductSummary:
     """Pojedynczy produkt po SKU (szuka we wszystkich statusach). Rzuca 404.
     Dopasowanie po kanonicznym SKU (case-insensitive) — globalne wyszukiwanie i lista
-    mogą renderować różną wielkość liter tego samego SKU."""
+    mogą renderować różną wielkość liter tego samego SKU.
+
+    `shop` domyślnie pusty, czyli suma po firmach — tak działało to od zawsze i
+    tak ma zostać dla „Wszyscy". Ale wejście z globalnej wyszukiwarki ustawia
+    teraz firmę właściciela produktu, więc karta musi umieć pokazać liczby TEJ
+    spółki. Bez tego parametru przełącznik mówił „Veluxa", a stan był sumą
+    wszystkich firm."""
     from fastapi import HTTPException
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"})
+    products = await fetch_products(
+        db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}, shop)
     target = (sku or "").strip().lower()
     for p in products:
         if (p.sku or "").strip().lower() == target:
