@@ -154,7 +154,13 @@ class Dostawca(BaseModel):
 
 class Historia(BaseModel):
     sku: str
+    # Kotwica krzywej = SUMA obu magazynów, bo ledger obejmuje oba. Ale sama
+    # suma na kafelku wprowadzała w błąd: WP1 ma 0 szt na półce i 10 w drodze,
+    # a kafelek pokazywał „10 na magazynie". Rozbicie idzie osobno, żeby front
+    # mógł podpisać to uczciwie, nie zmieniając podstawy obliczeń.
     stan_dzis: float
+    stan_magazyn: Optional[float] = None
+    stan_w_drodze: Optional[float] = None
     pierwsze_przyjecie: Optional[date] = None
     liczba_zakupow: int
     sprowadzono_szt: float
@@ -173,8 +179,8 @@ class Historia(BaseModel):
 # ===== ZAPYTANIA — SUBIEKT =====
 
 Q_STAN = text("""
-    SELECT COALESCE(stan_magazyn_podstawowy, 0)
-         + COALESCE(stan_magazyn_w_drodze, 0) AS stan
+    SELECT COALESCE(stan_magazyn_podstawowy, 0) AS magazyn,
+           COALESCE(stan_magazyn_w_drodze, 0)   AS w_drodze
     FROM subiekt_dwa_magazyny
     WHERE lower(sku) = lower(:sku)
     LIMIT 1
@@ -217,7 +223,8 @@ Q_F_RUCHY = text("""
 """)
 
 Q_F_STAN = text("""
-    SELECT COALESCE(stan_podstawowy, 0) + COALESCE(in_transit_qty, 0) AS stan
+    SELECT COALESCE(stan_podstawowy, 0) AS magazyn,
+           COALESCE(in_transit_qty, 0)  AS w_drodze
     FROM fakturownia_stock
     WHERE firma_id = :fid AND sku_canon = lower(:sku)
     LIMIT 1
@@ -253,7 +260,7 @@ def _int(v) -> int:
 
 def _zloz(
     sku: str,
-    stan_dzis: float,
+    stan: Tuple[float, Optional[float], Optional[float]],
     przyjecia: List[Przyjecie],
     wejscia: Dict[date, float],
     wyjscia: Dict[date, float],
@@ -269,6 +276,8 @@ def _zloz(
     temu zmiana reguły krzywej albo definicji miesiąca bez pokrycia
     dotyczy obu firm naraz i nie da się ich rozjechać.
     """
+    stan_dzis, stan_magazyn, stan_w_drodze = stan
+
     if not wejscia and not wyjscia:
         raise HTTPException(404, f"Brak ruchów dla SKU {sku}")
 
@@ -343,6 +352,8 @@ def _zloz(
     return Historia(
         sku=sku,
         stan_dzis=stan_dzis,
+        stan_magazyn=stan_magazyn,
+        stan_w_drodze=stan_w_drodze,
         pierwsze_przyjecie=przyjecia[0].data if przyjecia else None,
         liczba_zakupow=len(zakupy),
         sprowadzono_szt=round(sum(p.ilosc for p in zakupy), 3),
@@ -380,7 +391,8 @@ async def _historia_subiekt(db: AsyncSession, sku: str) -> Historia:
         raise HTTPException(404, f"Brak historii dla SKU {sku}")
 
     stan_row = (await db.execute(Q_STAN, {"sku": sku})).first()
-    stan_dzis = float(stan_row[0]) if stan_row else 0.0
+    mag = float(stan_row[0]) if stan_row else 0.0
+    drodze = float(stan_row[1]) if stan_row else 0.0
 
     przyjecia: List[Przyjecie] = []
     for r in przyjecia_rows:
@@ -454,8 +466,8 @@ async def _historia_subiekt(db: AsyncSession, sku: str) -> Historia:
     }
 
     return _zloz(
-        sku, stan_dzis, przyjecia, wejscia, wyjscia, sprzedaz, cogs,
-        zrodlo="subiekt", firma="amh", ma_logistyke=True,
+        sku, (mag + drodze, mag, drodze), przyjecia, wejscia, wyjscia,
+        sprzedaz, cogs, zrodlo="subiekt", firma="amh", ma_logistyke=True,
     )
 
 
@@ -474,7 +486,8 @@ async def _historia_fakturownia(
     stan_row = (
         await db.execute(Q_F_STAN, {"fid": firma_id, "sku": sku})
     ).first()
-    stan_dzis = float(stan_row[0]) if stan_row else 0.0
+    mag = float(stan_row[0]) if stan_row else 0.0
+    drodze = float(stan_row[1]) if stan_row else 0.0
 
     przyjecia: List[Przyjecie] = []
     wejscia: Dict[date, float] = {}
@@ -536,8 +549,8 @@ async def _historia_fakturownia(
     }
 
     return _zloz(
-        sku, stan_dzis, przyjecia, wejscia, wyjscia, sprzedaz, cogs,
-        zrodlo="fakturownia", firma=slug, ma_logistyke=False,
+        sku, (mag + drodze, mag, drodze), przyjecia, wejscia, wyjscia,
+        sprzedaz, cogs, zrodlo="fakturownia", firma=slug, ma_logistyke=False,
     )
 
 
