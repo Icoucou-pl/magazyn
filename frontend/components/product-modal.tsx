@@ -214,6 +214,17 @@ export default function ProductModal({
     : { label: statusKey, bg: "var(--surface-3)", fg: "var(--text-lo)", dot: "var(--text-disabled)" });
 
   const monthsStr = monthsDisplay(product.months_of_stock);
+
+  // Kafelek „Mies. zapasu" zestawiał dwie liczby liczone z różnych rzeczy:
+  // sama wartość zawiera towar W DRODZE (stan + tranzyt / sprzedaż), a podpis
+  // „Nd do końca" to symulacja dzień po dniu, uwzględniająca datę przypłynięcia.
+  // Na Pod_1b w Veluxie dawało to „5.5m" obok „8d do końca" — obie liczby
+  // poprawne, ale razem wyglądały na sprzeczność. Dopisujemy więc zapas SAMEJ
+  // półki, żeby było widać, skąd bierze się ta duża liczba.
+  const zapasBezTranzytu =
+    product.avg_monthly_weighted > 0 ? product.stock / product.avg_monthly_weighted : null;
+  const tranzytLiczy =
+    zapasBezTranzytu != null && product.months_of_stock - zapasBezTranzytu >= 0.15;
   const monthsTone = monthsStr === "∞" ? "neutral" : product.months_of_stock < 1 ? "critical" : product.months_of_stock < 2 ? "warning" : "neutral";
 
   // KPI „Najbliższa dostawa" — data wejścia na magazyn + skąd pochodzi.
@@ -236,7 +247,17 @@ export default function ProductModal({
       <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
       <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
       <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
-      <MetricBox label="Mies. zapasu" value={monthsStr === "∞" ? "∞" : monthsStr + "m"} sub={product.days_until_empty < 365 ? `${product.days_until_empty}d do końca` : "brak ruchu"} tone={monthsTone} />
+      <MetricBox
+        label="Mies. zapasu"
+        value={monthsStr === "∞" ? "∞" : monthsStr + "m"}
+        sub={
+          product.days_until_empty >= 365
+            ? "brak ruchu"
+            : tranzytLiczy
+              ? `bez towaru w drodze ${monthsDisplay(zapasBezTranzytu as number)}m · pusto za ${product.days_until_empty}d`
+              : `${product.days_until_empty}d do końca`
+        }
+        tone={monthsTone} />
     </div>
   );
 
