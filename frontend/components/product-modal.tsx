@@ -116,13 +116,7 @@ export default function ProductModal({
   const { shop, setShop, allowed } = useShop();
   const [hasHistory, setHasHistory] = useState(false);
   const [firmyHist, setFirmyHist] = useState<FirmaHist[]>([]);
-  // Okno przestaje „mrugać" przy zmianie zakładki. Nowa zakładka montuje się
-  // pusta i dociąga dane, więc modal na moment kurczył się do wysokości
-  // spinnera i zaraz rozpychał z powrotem. Zapamiętujemy najwyższą zawartość
-  // w tej sesji okna i trzymamy ją jako minimum — okno może jeszcze urosnąć,
-  // ale nigdy nie zmaleje pod palcami.
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  const [minH, setMinH] = useState(0);
+
   const [tab, setTab] = useState<"przeglad" | "zycie" | "zycie2" | "dane">("przeglad");
 
   useEffect(() => {
@@ -150,18 +144,6 @@ export default function ProductModal({
   useEffect(() => {
     if (!hasHistory && (tab === "zycie" || tab === "zycie2")) setTab("przeglad");
   }, [hasHistory, tab]);
-
-  // Pomiar zawartości. Rośnie tylko w górę, więc pętla sprzężenia zwrotnego
-  // nie ma jak powstać: po ustawieniu minimum kolejny pomiar daje tę samą
-  // liczbę. Reset przy zmianie produktu — inne SKU to inna karta.
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const h = el.scrollHeight;
-    if (h > minH) setMinH(h);
-  });
-
-  useEffect(() => { setMinH(0); }, [product.sku]);
 
   // Które spółki mają historię tego symbolu. Nie zależy od `shop` — lista jest
   // ta sama niezależnie od wybranej firmy, więc pobieramy ją raz na SKU.
@@ -290,7 +272,14 @@ export default function ProductModal({
       {/* data-modal-* — bez tych atrybutów mobilne reguły modali z globals.css nie miały
           się do czego przyczepić i nie działały. */}
       <div onClick={onClose} data-modal-backdrop style={modalBackdrop}>
-        <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in" style={{ ...modalCard, maxWidth: 880 }}>
+        {/* Stała wysokość okna. Wcześniej karta dopasowywała się do treści, więc
+            przy każdej zmianie zakładki kurczyła się do wysokości spinnera i po
+            chwili rozpychała z powrotem — przy „Historii 2.0" skok był na pół
+            ekranu. Wysokość bierzemy z okna przeglądarki, a przewija się TYLKO
+            wnętrze (kontener niżej ma overflowY: auto), więc nagłówek z
+            przełącznikiem firmy i pasek zakładek zostają na miejscu. */}
+        <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in"
+             style={{ ...modalCard, maxWidth: 880, height: "88vh", maxHeight: "88vh" }}>
         {/* Header */}
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />
@@ -374,8 +363,7 @@ export default function ProductModal({
         )}
 
         {/* Body */}
-        <div ref={bodyRef}
-             style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: minH || 0 }}>
+        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 22, flex: 1, minHeight: 0 }}>
           {!showTabs && (
             <>
               {kpiBlok}
