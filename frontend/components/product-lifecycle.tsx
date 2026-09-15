@@ -28,6 +28,10 @@ export type Przyjecie = {
   kurs: number | null; towar_pln: number | null; logistyka_pln: number | null;
   skorygowane: boolean; dokument: string | null; numer_dokumentu: string | null;
   dostawca: string | null;
+  // Przyjęcie trafiło na magazyn „w drodze" — towar jest kupiony i wbity do
+  // ERP, ale jeszcze płynie. Dostawą nazywamy dopiero wjazd na magazyn główny.
+  w_drodze?: boolean;
+  wewnetrzne?: boolean;
 };
 // `wydano` — cały rozchód poza przesunięciami (tym cofa się stan).
 // `sprzedano` — wyłącznie sprzedaż. Różnica to RW i zwroty do
@@ -173,12 +177,19 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
 
   // Ostatnia REALNA dostawa — zwroty i przesunięcia nie są dostawą,
   // a potrafią być świeższe i podawałyby fałszywą datę.
+  // Dostawa = towar wjechał na magazyn główny i da się go wydać. Zakup wbity
+  // na „w drodze" nią nie jest, choć w ERP wygląda tak samo. Szukamy więc
+  // najpierw fizycznego przyjazdu, a dopiero gdy takiego nie ma, pokazujemy
+  // ostatni zakup — wyraźnie podpisany, żeby nikt nie wziął płynącego
+  // kontenera za towar na półce.
   const ostatnia = useMemo(() => {
-    const z = h.przyjecia.filter((p) => p.typ === "ZAKUP");
-    if (!z.length) return null;
-    const last = z[z.length - 1];
+    const naMagazyn = h.przyjecia.filter((p) => !p.w_drodze && p.ilosc > 0);
+    const zakupy = h.przyjecia.filter((p) => p.typ === "ZAKUP");
+    const zrodlo = naMagazyn.length ? naMagazyn : zakupy;
+    if (!zrodlo.length) return null;
+    const last = zrodlo[zrodlo.length - 1];
     const dni = Math.round((Date.now() - new Date(last.data).getTime()) / 86400000);
-    return { ...last, dni };
+    return { ...last, dni, doWDrodze: !naMagazyn.length };
   }, [h.przyjecia]);
 
   return (
@@ -188,11 +199,15 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
         value={wiek}
         sub={h.pierwsze_przyjecie ? `od ${fmtD(h.pierwsze_przyjecie)}` : "brak przyjęć"} />
       <Kafelek
-        label="Ostatnia dostawa"
-        dot="var(--ok)"
+        label={ostatnia?.doWDrodze ? "Ostatni zakup" : "Ostatnia dostawa"}
+        dot={ostatnia?.doWDrodze ? "var(--info)" : "var(--ok)"}
         value={ostatnia ? fmtD(ostatnia.data) : "—"}
-        sub={ostatnia ? `+${fmtNum(ostatnia.ilosc)} szt · ${ostatnia.dni} dni temu` : "brak dostaw"}
-        tone={ostatnia ? "ok" : "neutral"} />
+        sub={
+          ostatnia
+            ? `+${fmtNum(ostatnia.ilosc)} szt · ${ostatnia.dni} dni temu${ostatnia.doWDrodze ? " · na magazyn w drodze" : ""}`
+            : "brak dostaw"
+        }
+        tone={ostatnia ? (ostatnia.doWDrodze ? "neutral" : "ok") : "neutral"} />
       <Kafelek
         label="Dostawy"
         value={h.liczba_zakupow}
@@ -607,17 +622,37 @@ export function OsCzasu({ h }: { h: Historia }) {
     };
 
     // Pierwsza i ostatnia dostawa
+    // Nazewnictwo zdarzeń: „zakup" to wbicie na magazyn w drodze, „dostawa" to
+    // wjazd towaru na magazyn główny. Wcześniej jedno i drugie nazywało się
+    // dostawą, więc oś pokazywała „Ostatnia dostawa — 1000 szt" w dniu, w
+    // którym towar dopiero wypłynął z Chin.
+    const slowo = (p: Przyjecie, duze = false) =>
+      p.w_drodze ? (duze ? "Zakup" : "zakup") : (duze ? "Dostawa" : "dostawa");
+
     z.push({
       data: zakupy[0].data, kolor: "var(--text-lo)",
-      tytul: `Pierwsza dostawa — ${fmtNum(zakupy[0].ilosc)} szt`,
-      opis: `${opisDostawy(zakupy[0])} · produkt wchodzi do oferty`,
+      tytul: `Pierwszy ${slowo(zakupy[0])} — ${fmtNum(zakupy[0].ilosc)} szt`,
+      opis: `${opisDostawy(zakupy[0])} · produkt wchodzi do oferty`
+            + (zakupy[0].w_drodze ? " · wbity na magazyn w drodze" : ""),
     });
     if (zakupy.length > 1) {
       const last = zakupy[zakupy.length - 1];
       z.push({
-        data: last.data, kolor: "var(--ok)",
-        tytul: `Ostatnia dostawa — ${fmtNum(last.ilosc)} szt`,
-        opis: opisDostawy(last, zakupy[zakupy.length - 2]),
+        data: last.data, kolor: last.w_drodze ? "var(--info)" : "var(--ok)",
+        tytul: `Ostatni ${slowo(last)} — ${fmtNum(last.ilosc)} szt`,
+        opis: opisDostawy(last, zakupy[zakupy.length - 2])
+              + (last.w_drodze ? " · wbity na magazyn w drodze" : ""),
+      });
+    }
+
+    // Wjazd z „w drodze" na magazyn — moment, w którym towar realnie jest.
+    const przyjazdy = h.przyjecia.filter((p) => p.typ === "PRZESUNIECIE" && !p.w_drodze);
+    const ostatniPrzyjazd = przyjazdy[przyjazdy.length - 1];
+    if (ostatniPrzyjazd) {
+      z.push({
+        data: ostatniPrzyjazd.data, kolor: "var(--ok)",
+        tytul: `Towar wjechał na magazyn — ${fmtNum(ostatniPrzyjazd.ilosc)} szt`,
+        opis: "przesunięcie z magazynu „w drodze\" · od tego dnia jest fizycznie dostępny",
       });
     }
 

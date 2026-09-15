@@ -1235,11 +1235,20 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
   };
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+    // Na wąskim ekranie pasek się nie mieści i był ucinany na krawędzi karty —
+    // widać było „AMH SUBIEKT | Vel…”, a przycisku „Wszyscy” w ogóle. Pozwalamy
+    // się zawijać, a gdy i to nie starcza, przewijać w poziomie.
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8, marginTop: 10,
+      flexWrap: "wrap", maxWidth: "100%", minWidth: 0,
+    }}>
       {wiele ? (
         <>
           <span style={{ fontSize: 11, color: "var(--text-lo)" }}>Dane z firmy</span>
-          <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+          <div style={{
+            display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8,
+            overflowX: "auto", maxWidth: "100%", flexShrink: 1,
+          }}>
             {widoczne.map((f, i) => {
               const on = f.firma === aktywna;
               return (
@@ -1285,6 +1294,8 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 5,
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
                 }}>
                 Wszyscy
                 <span style={{ fontSize: 9.5, opacity: 0.7, letterSpacing: "0.04em" }}>SUMA</span>
