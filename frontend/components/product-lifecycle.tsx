@@ -211,7 +211,14 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
   // ostatni zakup — wyraźnie podpisany, żeby nikt nie wziął płynącego
   // kontenera za towar na półce.
   const ostatnia = useMemo(() => {
-    const naMagazyn = h.przyjecia.filter((p) => !p.w_drodze && p.ilosc > 0);
+    // Co jest „dostawą": towar KUPIONY, który wjechał na magazyn główny.
+    // Zwrot od klienta i przyjęcie wewnętrzne wejściem na stan owszem są, ale
+    // dostawą nie — a wcześniej wpadały tu razem z resztą i kafelek pokazywał
+    // „+1 szt" z dnia zwrotu, podczas gdy w tabeli Przyjęć najnowszy wiersz
+    // miał 20 szt sprzed tygodnia. Tabela pokazuje same zakupy, więc kafelek
+    // musi liczyć to samo, inaczej dwie liczby na jednym ekranie przeczą sobie.
+    const dostawa = (p: Przyjecie) => p.typ === "ZAKUP" || p.typ === "PRZESUNIECIE";
+    const naMagazyn = h.przyjecia.filter((p) => !p.w_drodze && p.ilosc > 0 && dostawa(p));
     const zakupy = h.przyjecia.filter((p) => p.typ === "ZAKUP");
     const zrodlo = naMagazyn.length ? naMagazyn : zakupy;
     if (!zrodlo.length) return null;
