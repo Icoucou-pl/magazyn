@@ -60,27 +60,6 @@ export type Historia = {
 
 // ── Pomocnicze ───────────────────────────────────────────────
 
-/** Czy jesteśmy na wąskim ekranie (telefon).
- *
- *  Wykresy rysujemy w stałym układzie współrzędnych (viewBox 700–720 px) i
- *  skalujemy do szerokości kontenera. Na telefonie daje to skalę około 45%,
- *  więc razem z wykresem kurczy się WSZYSTKO — grubość linii, podpisy osi i
- *  kropki dostaw. Kropka o promieniu 4 px robiła się dwupikselową plamką i
- *  po prostu nie było jej widać. Dlatego na wąskim ekranie zawężamy sam
- *  viewBox: rysunek jest wtedy w skali bliskiej 1:1 i elementy zachowują
- *  swoją wielkość. */
-export function useWaskiEkran(prog = 640) {
-  const [waski, setWaski] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia(`(max-width: ${prog}px)`);
-    const zmien = () => setWaski(mq.matches);
-    zmien();
-    mq.addEventListener("change", zmien);
-    return () => mq.removeEventListener("change", zmien);
-  }, [prog]);
-  return waski;
-}
 export const fmtD = (s: string) => { const [y, m, d] = s.split("-"); return `${d}.${m}.${y}`; };
 export const fmtM = (s: string) => { const [y, m] = s.split("-"); return `${m}.${y.slice(2)}`; };
 export const fmtC = (n: number, d = 2) =>
@@ -159,6 +138,33 @@ export default function LifecycleTab({ sku, shop, showFin }: { sku: string; shop
 // Świadomie ten sam kształt co MetricBox w product-modal.tsx.
 // Nie importuję go, bo tam jest lokalny — ale gdyby kiedyś został
 // wyciągnięty do products-ui, ten komponent powinien zniknąć.
+/** Zmierzona szerokość kontenera wykresu (w pikselach CSS).
+ *
+ *  Wykresy miały stały viewBox (700–720) i `width: 100%` przy stałej
+ *  wysokości. Przeglądarka skaluje wtedy rysunek proporcjonalnie i CENTRUJE
+ *  go: na szerokim ekranie zostawało po kilkadziesiąt pikseli pustki z każdej
+ *  strony, a na telefonie wszystko kurczyło się do ~45% — razem z podpisami
+ *  osi, które robiły się nieczytelne i wchodziły na siebie.
+ *
+ *  Rysujemy więc w układzie równym realnej szerokości kontenera, czyli 1:1.
+ *  Marginesy są dokładnie takie, jakie wpiszemy, a tekst ma zawsze swój
+ *  rozmiar — niezależnie od ekranu. */
+export function useSzerokoscWykresu(fallback = 720) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [w, setW] = useState(fallback);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([wpis]) => {
+      const szer = Math.round(wpis.contentRect.width);
+      if (szer > 0) setW(szer);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, w };
+}
+
 export function Kafelek({ label, value, sub, tone = "neutral", dot }: {
   label: string; value: React.ReactNode; sub?: string;
   tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string;
@@ -292,9 +298,10 @@ export function KrzywaCeny({ h }: { h: Historia }) {
   const wartosc = (p: Przyjecie) =>
     tryb === "waluta" ? (p.cena_waluta as number) : (p.koszt_jednostkowy as number);
 
-  const waski = useWaskiEkran();
-  const W = waski ? 380 : 700, H = waski ? 200 : 240;
-  const L = waski ? 34 : 52, R = waski ? 20 : 16, T = 22, B = 34;
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
+  const H = waski ? 200 : 240;
+  const L = waski ? 46 : 52, R = waski ? 16 : 16, T = 22, B = 34;
   const gorne = dane.map((p) => (tryb === "split" ? (p.koszt_jednostkowy as number) : wartosc(p)));
   const dolne = tryb === "split"
     ? dane.map((p) => p.towar_pln ?? (p.koszt_jednostkowy as number))
@@ -353,7 +360,7 @@ export function KrzywaCeny({ h }: { h: Historia }) {
           </div>
         </div>
 
-        <div style={{ position: "relative" }}>
+        <div ref={refWykresu} style={{ position: "relative" }}>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = lo + ((hi - lo) * i) / 3, y = Y(v);
@@ -475,12 +482,13 @@ export function KrzywaStanu({ h }: { h: Historia }) {
     [h.miesiace_bez_pokrycia],
   );
 
-  const waski = useWaskiEkran();
-  const W = waski ? 380 : 700, H = waski ? 210 : 250;
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
+  const H = waski ? 210 : 250;
   // L na telefonie było za wąskie — czterocyfrowe stany („1 054") nie mieściły
   // się i pierwsza cyfra znikała za krawędzią. R z zapasem, bo na ostatnim
   // miesiącu rysujemy prostokąt braku pokrycia o szerokości pełnego kroku.
-  const L = waski ? 48 : 50, R = waski ? 26 : 14, T = 20, B = 34;
+  const L = waski ? 50 : 54, R = waski ? 18 : 16, T = 20, B = 34;
   const maxS = Math.max(...pkt.map((p) => p.stan), 1) * 1.12;
   const X = (i: number) => L + (i / (pkt.length - 1)) * (W - L - R);
   const Y = (v: number) => T + (1 - v / maxS) * (H - T - B);
@@ -505,14 +513,14 @@ export function KrzywaStanu({ h }: { h: Historia }) {
       </div>
 
       <div style={box}>
-        <div style={{ position: "relative" }}>
+        <div ref={refWykresu} style={{ position: "relative" }}>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxS * i) / 3, y = Y(v);
               return (
                 <g key={i}>
                   <line x1={L} x2={W - R} y1={y} y2={y} stroke="var(--border-soft)" strokeWidth={1} />
-                  <text x={L - 8} y={y + 3.5} textAnchor="end" fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">{fmtNum(v)}</text>
+                  <text x={L - 8} y={y + 3.5} textAnchor="end" fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">{fmtNum(Math.round(v))}</text>
                 </g>
               );
             })}

@@ -27,7 +27,7 @@ import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 import {
   Kafelek, KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip,
-  box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle, useWaskiEkran,
+  box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle, useSzerokoscWykresu,
   type Historia, type Przyjecie, type Tip,
 } from "./product-lifecycle";
 
@@ -203,9 +203,10 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   if (!season) return <div style={{ height: 260, ...box, ...sect }} className="pulse-soft" />;
   if (dane.length < 3) return null;
 
-  const waski = useWaskiEkran();
-  const W = waski ? 380 : 720, H = waski ? 230 : 280;
-  const L = waski ? 40 : 58, R = waski ? 34 : 44, T = 20, B = 34;
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
+  const H = waski ? 230 : 280;
+  const L = waski ? 46 : 58, R = waski ? 34 : 44, T = 20, B = 34;
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxV) * (H - T - B);
@@ -234,7 +235,7 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
           </div>
         </div>
 
-        <div style={{ position: "relative" }}>
+        <div ref={refWykresu} style={{ position: "relative" }}>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxV * i) / 3, y = Y(v);
@@ -321,9 +322,10 @@ function KosztLag({ h }: { h: Historia }) {
 
   if (zakupy.length < 2 || cogs.length < 3) return null;
 
-  const waski = useWaskiEkran();
-  const W = waski ? 380 : 720, H = waski ? 200 : 240;
-  const L = waski ? 34 : 52, R = waski ? 20 : 16, T = 20, B = 34;
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
+  const H = waski ? 200 : 240;
+  const L = waski ? 46 : 52, R = waski ? 18 : 16, T = 20, B = 34;
   const wszystkie = [
     ...zakupy.map((p) => p.koszt_jednostkowy as number),
     ...cogs.map((p) => p.koszt_wlasny as number),
@@ -347,7 +349,7 @@ function KosztLag({ h }: { h: Historia }) {
       </div>
 
       <div style={box}>
-        <div style={{ position: "relative" }}>
+        <div ref={refWykresu} style={{ position: "relative" }}>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = lo + ((hi - lo) * i) / 3, y = Y(v);
@@ -363,8 +365,9 @@ function KosztLag({ h }: { h: Historia }) {
               if (t < t0 || t > t1) return null;
               return (
                 <g key={y}>
+                  {/* Sama kreska. Podpis roku nakładał się na podpisy
+                      miesięcy, które i tak niosą rok („09.26"). */}
                   <line x1={X(t)} x2={X(t)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />
-                  <text x={X(t) + 4} y={H - B + 14} fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">{y}</text>
                 </g>
               );
             })}
@@ -469,9 +472,10 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
 
   if (dane.length < 3) return null;
 
-  const waski = useWaskiEkran();
-  const W = waski ? 380 : 720, H = waski ? 190 : 220;
-  const L = waski ? 38 : 56, R = waski ? 20 : 16, T = 20, B = 34;
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
+  const H = waski ? 190 : 220;
+  const L = waski ? 48 : 56, R = waski ? 18 : 16, T = 20, B = 34;
   const maxL = Math.max(...dane.map((p) => p.logistyka_pln as number), 1) * 1.14;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxL) * (H - T - B);
@@ -485,7 +489,7 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
       </div>
 
       <div style={box}>
-        <div style={{ position: "relative" }}>
+        <div ref={refWykresu} style={{ position: "relative" }}>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxL * i) / 3, y = Y(v);
