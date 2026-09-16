@@ -26,7 +26,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 import {
-  KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip, rowneIndeksy,
+  KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip,
+  podpisyMiesiecy, zakresMiesiecy,
   box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle, useSzerokoscWykresu,
   type Historia, type Przyjecie, type Tip,
 } from "./product-lifecycle";
@@ -218,13 +219,15 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
             {/* Podpisy miesięcy. Wcześniej oś X pokazywała wyłącznie rok, i to
                 tylko na styczniu — przy historii krótszej niż rok nie było na
                 niej nic. */}
-            {rowneIndeksy(osMiesiecy.length, waski ? 3 : 6).map((i, idx, tab) => (
-              <text key={osMiesiecy[i]} x={X(i)} y={H - B + 14}
-                    textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
-                    fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
-                {fmtM(`${osMiesiecy[i]}-01`)}
-              </text>
-            ))}
+            {(() => {
+              const podpisy = podpisyMiesiecy(osMiesiecy, waski ? 4 : 8);
+              return osMiesiecy.map((m, i) => (podpisy.has(m) ? (
+                <text key={m} x={X(i)} y={H - B + 14} textAnchor="middle"
+                      fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                  {fmtM(`${m}-01`)}
+                </text>
+              ) : null));
+            })()}
 
             {dane.map((d) => {
               const yP = Y(d.rev), yK = Y(d.koszt);
@@ -415,21 +418,14 @@ function KosztLag({ h }: { h: Historia }) {
                 (Acti, Veluxa) nie było na niej ANI JEDNEGO podpisu i nie dało
                 się odczytać, czego dotyczą kropki. */}
             {(() => {
-              const ms = h.stan_miesiecznie;
-              const ile = Math.min(waski ? 3 : 5, ms.length);
-              if (ile < 2) return null;
-              return Array.from({ length: ile }, (_, k) => {
-                const p = ms[Math.round((k * (ms.length - 1)) / (ile - 1))];
-                const t = new Date(p.miesiac).getTime();
-                const x = X(t);
-                return (
-                  <text key={p.miesiac} x={x} y={H - B + 14}
-                        textAnchor={k === 0 ? "start" : k === ile - 1 ? "end" : "middle"}
-                        fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
-                    {fmtM(p.miesiac)}
-                  </text>
-                );
-              });
+              const mies = zakresMiesiecy(new Date(t0).toISOString(), new Date(t1).toISOString());
+              const podpisy = podpisyMiesiecy(mies, waski ? 4 : 8);
+              return mies.map((m) => (podpisy.has(m) ? (
+                <text key={m} x={X(new Date(`${m}-01`).getTime())} y={H - B + 14} textAnchor="middle"
+                      fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                  {fmtM(`${m}-01`)}
+                </text>
+              ) : null));
             })()}
 
             <path d={cogs.map((p, i) => {

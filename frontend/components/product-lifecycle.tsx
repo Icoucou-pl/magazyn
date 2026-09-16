@@ -149,6 +149,38 @@ export default function LifecycleTab({ sku, shop, showFin }: { sku: string; shop
  *  Rysujemy więc w układzie równym realnej szerokości kontenera, czyli 1:1.
  *  Marginesy są dokładnie takie, jakie wpiszemy, a tekst ma zawsze swój
  *  rozmiar — niezależnie od ekranu. */
+/** Lista miesięcy „YYYY-MM" od `od` do `do` włącznie, bez dziur. */
+export function zakresMiesiecy(od: string, doDaty: string): string[] {
+  const [r0, m0] = od.slice(0, 7).split("-").map(Number);
+  const [r1, m1] = doDaty.slice(0, 7).split("-").map(Number);
+  const out: string[] = [];
+  for (let r = r0, m = m0; r < r1 || (r === r1 && m <= m1); ) {
+    out.push(`${r}-${String(m).padStart(2, "0")}`);
+    m += 1;
+    if (m > 12) { m = 1; r += 1; }
+  }
+  return out;
+}
+
+/** Które miesiące podpisać na osi X.
+ *
+ *  Wcześniej podpisy szły co równy INDEKS z listy tych miesięcy, które akurat
+ *  miały dane — więc przy siedmiu miesiącach i sześciu podpisach wypadał
+ *  środkowy, a przy osi czasowej podpisy lądowały w równych odstępach
+ *  czasowych i wychodziło „03.26, 05.26, 06.26, 07.26, 09.26": wygląda równo,
+ *  a raz oznacza miesiąc, raz dwa.
+ *
+ *  Teraz wybieramy co N-ty MIESIĄC KALENDARZOWY, zawsze z pierwszym i
+ *  ostatnim. Odstęp między podpisami jest wtedy wszędzie taki sam. */
+export function podpisyMiesiecy(miesiace: string[], maks: number): Set<string> {
+  if (miesiace.length <= maks) return new Set(miesiace);
+  const krok = Math.ceil(miesiace.length / maks);
+  const out = new Set<string>();
+  for (let i = 0; i < miesiace.length; i += krok) out.add(miesiace[i]);
+  out.add(miesiace[miesiace.length - 1]);
+  return out;
+}
+
 /** Indeksy równo rozłożone po osi — do podpisów miesięcy.
  *
  *  Wykresy podpisywały wyłącznie styczeń, więc przy historii mieszczącej się
@@ -437,18 +469,16 @@ export function KrzywaCeny({ h }: { h: Historia }) {
               return <line key={y} x1={X(t)} x2={X(t)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />;
             })}
 
-            {rowneIndeksy(waski ? 3 : 5, waski ? 3 : 5).map((k, idx, tab) => {
-              const t = t0 + ((t1 - t0) * k) / Math.max(tab.length - 1, 1);
-              const d = new Date(t);
-              const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-              return (
-                <text key={k} x={X(t)} y={H - B + 14}
-                      textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
+            {(() => {
+              const mies = zakresMiesiecy(new Date(t0).toISOString(), new Date(t1).toISOString());
+              const podpisy = podpisyMiesiecy(mies, waski ? 4 : 8);
+              return mies.map((m) => (podpisy.has(m) ? (
+                <text key={m} x={X(new Date(`${m}-01`).getTime())} y={H - B + 14} textAnchor="middle"
                       fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
                   {fmtM(m)}
                 </text>
-              );
-            })}
+              ) : null));
+            })()}
 
             {tryb !== "waluta" && granice.map((t, i) => (
               <line key={i} x1={X(t)} x2={X(t)} y1={T} y2={H - B} stroke="var(--anomaly)" strokeWidth={1.5} strokeDasharray="4 3" opacity={0.7} />
@@ -598,13 +628,15 @@ export function KrzywaStanu({ h }: { h: Historia }) {
               <line key={p.miesiac} x1={X(i)} x2={X(i)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />
             ) : null)}
 
-            {rowneIndeksy(pkt.length, waski ? 3 : 6).map((i, idx, tab) => (
-              <text key={pkt[i].miesiac} x={X(i)} y={H - B + 14}
-                    textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
-                    fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
-                {fmtM(pkt[i].miesiac)}
-              </text>
-            ))}
+            {(() => {
+              const podpisy = podpisyMiesiecy(pkt.map((p) => p.miesiac.slice(0, 7)), waski ? 4 : 8);
+              return pkt.map((p, i) => (podpisy.has(p.miesiac.slice(0, 7)) ? (
+                <text key={p.miesiac} x={X(i)} y={H - B + 14} textAnchor="middle"
+                      fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                  {fmtM(p.miesiac)}
+                </text>
+              ) : null));
+            })()}
 
             {pkt.map((p, i) => bezPokrycia.has(p.miesiac.slice(0, 7)) ? (
               // Przycięty do obszaru wykresu: na pierwszym i ostatnim miesiącu
