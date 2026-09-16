@@ -167,12 +167,28 @@ export function useSzerokoscWykresu(fallback = 720) {
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(([wpis]) => {
-      const szer = Math.round(wpis.contentRect.width);
-      if (szer > 0) setW(szer);
+
+    // Pomiar odkładamy do następnej klatki i ignorujemy drgania poniżej piksela.
+    //
+    // Bez tego łatwo o pętlę: obserwator mierzy kontener, pomiar zmienia stan,
+    // stan przerysowuje wykres, przerysowanie zmienia wysokość kontenera —
+    // i obserwator strzela znowu. W modalu takich obserwatorów jest pięć naraz
+    // i wszystkie startują w tej samej chwili przy przełączeniu zakładki albo
+    // firmy. Przeglądarka rzuca wtedy „ResizeObserver loop", a przy uporczywej
+    // pętli potrafi ubić kartę.
+    let klatka = 0;
+    let ostatnia = 0;
+
+    const ro = new ResizeObserver((wpisy) => {
+      const szer = Math.round(wpisy[0]?.contentRect.width ?? 0);
+      if (szer <= 0 || Math.abs(szer - ostatnia) < 1) return;
+      ostatnia = szer;
+      cancelAnimationFrame(klatka);
+      klatka = requestAnimationFrame(() => setW(szer));
     });
+
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => { cancelAnimationFrame(klatka); ro.disconnect(); };
   }, []);
   return { ref, w };
 }
@@ -312,6 +328,8 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
 type TrybCeny = "pln" | "waluta" | "split";
 
 export function KrzywaCeny({ h }: { h: Historia }) {
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
   const [tryb, setTryb] = useState<TrybCeny>("pln");
   const [tip, setTip] = useState<Tip>(null);
 
@@ -341,8 +359,6 @@ export function KrzywaCeny({ h }: { h: Historia }) {
   const wartosc = (p: Przyjecie) =>
     tryb === "waluta" ? (p.cena_waluta as number) : (p.koszt_jednostkowy as number);
 
-  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
-  const waski = W < 520;
   const H = waski ? 200 : 240;
   const L = waski ? 46 : 52, R = waski ? 16 : 16, T = 22, B = 34;
   const gorne = dane.map((p) => (tryb === "split" ? (p.koszt_jednostkowy as number) : wartosc(p)));
@@ -512,6 +528,8 @@ export function KrzywaCeny({ h }: { h: Historia }) {
 
 // ── Krzywa stanu ─────────────────────────────────────────────
 export function KrzywaStanu({ h }: { h: Historia }) {
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
   const [tip, setTip] = useState<Tip>(null);
 
   const pkt = h.stan_miesiecznie;
@@ -534,8 +552,6 @@ export function KrzywaStanu({ h }: { h: Historia }) {
     [h.miesiace_bez_pokrycia],
   );
 
-  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
-  const waski = W < 520;
   const H = waski ? 210 : 250;
   // L na telefonie było za wąskie — czterocyfrowe stany („1 054") nie mieściły
   // się i pierwsza cyfra znikała za krawędzią. R z zapasem, bo na ostatnim

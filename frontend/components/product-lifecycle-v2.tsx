@@ -26,7 +26,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 import {
-  KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip,
+  KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip, rowneIndeksy,
   box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle, useSzerokoscWykresu,
   type Historia, type Przyjecie, type Tip,
 } from "./product-lifecycle";
@@ -83,6 +83,8 @@ export default function LifecycleTabV2({ sku, shop, showFin }: { sku: string; sh
 //
 // ── 2. MARŻA W CZASIE ────────────────────────────────────────
 function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null }) {
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
   const [tip, setTip] = useState<Tip>(null);
 
   const dane = useMemo(() => {
@@ -109,8 +111,6 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   if (!season) return <div style={{ height: 260, ...box, ...sect }} className="pulse-soft" />;
   if (dane.length < 3) return null;
 
-  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
-  const waski = W < 520;
   const H = waski ? 230 : 280;
   const L = waski ? 50 : 58, R = waski ? 34 : 44, T = 20, B = 34;
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
@@ -157,17 +157,24 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
                 </g>
               );
             })}
+            {/* Podpisy miesięcy. Wcześniej oś X pokazywała wyłącznie rok, i to
+                tylko na styczniu — przy historii krótszej niż rok nie było na
+                niej nic. */}
+            {rowneIndeksy(dane.length, waski ? 3 : 6).map((i, idx, tab) => (
+              <text key={dane[i].m} x={X(i)} y={H - B + 14}
+                    textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
+                    fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                {fmtM(`${dane[i].m}-01`)}
+              </text>
+            ))}
+
             {dane.map((d, i) => {
               const yP = Y(d.rev), yK = Y(d.koszt);
               return (
                 <g key={d.m}>
                   <rect x={X(i) - bw / 2} y={yP} width={bw} height={Math.max(0, H - B - yP)} fill="var(--surface-3)" rx={2} />
                   <rect x={X(i) - bw / 2} y={yK} width={bw} height={Math.max(0, H - B - yK)} fill="oklch(0.640 0.190 25 / .55)" rx={2} />
-                  {d.m.endsWith("-01") && (
-                    <text x={X(i)} y={H - B + 14} textAnchor="middle" fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
-                      {d.m.slice(0, 4)}
-                    </text>
-                  )}
+
                   <rect x={X(i) - bw / 2 - 1} y={T} width={bw + 2} height={H - T - B} fill="transparent" style={{ cursor: "pointer" }}
                     onMouseMove={(e) => setTip({
                       x: e.clientX, y: e.clientY,
@@ -218,6 +225,8 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
 
 // ── 3. KOSZT: CO PŁACIMY vs CO SPRZEDAJEMY ───────────────────
 function KosztLag({ h }: { h: Historia }) {
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
   const [tip, setTip] = useState<Tip>(null);
 
   const zakupy = useMemo(
@@ -231,8 +240,6 @@ function KosztLag({ h }: { h: Historia }) {
 
   if (zakupy.length < 2 || cogs.length < 3) return null;
 
-  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
-  const waski = W < 520;
   const H = waski ? 200 : 240;
   const L = waski ? 46 : 52, R = waski ? 18 : 16, T = 20, B = 34;
   const wszystkie = [
@@ -351,6 +358,8 @@ function KosztLag({ h }: { h: Historia }) {
 
 // ── 4. NARZUT LOGISTYCZNY ────────────────────────────────────
 function NarzutLogistyczny({ h }: { h: Historia }) {
+  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
+  const waski = W < 520;
   const [tip, setTip] = useState<Tip>(null);
 
   const dane = useMemo(
@@ -381,8 +390,6 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
 
   if (dane.length < 3) return null;
 
-  const { ref: refWykresu, w: W } = useSzerokoscWykresu();
-  const waski = W < 520;
   const H = waski ? 190 : 220;
   const L = waski ? 48 : 56, R = waski ? 18 : 16, T = 20, B = 34;
   const maxL = Math.max(...dane.map((p) => p.logistyka_pln as number), 1) * 1.14;

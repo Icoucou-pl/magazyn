@@ -6,7 +6,7 @@
 //   Import (2b) i modal szczegółów (2c) podpinamy w kolejnych krokach.
 // ============================================================
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, can } from "@/lib/permissions";
@@ -46,6 +46,8 @@ export default function ProductsView({
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [firmy, setFirmy] = useState<Firma[]>([]);
+  // Ostatnio obsłużone SKU z drill-downu — blokada przed zapętleniem efektu.
+  const obsluzone = useRef<string | null>(null);
   // SKU, którego kartę właśnie otwieramy (null = nic w toku).
   const [otwieranySku, setOtwieranySku] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -123,7 +125,17 @@ export default function ProductsView({
   // pokazuje pełny obraz, a globalny fragmentator zostaje NIETKNIĘTY (dawniej robił
   // tu setShop(""), przez co po zamknięciu modalu cała apka siedziała na „Wszyscy").
   useEffect(() => {
-    if (!openSku) return;
+    if (!openSku) { obsluzone.current = null; return; }
+
+    // Każde SKU obsługujemy DOKŁADNIE RAZ.
+    //
+    // W zależnościach efektu siedzą `products` i `shop`, a efekt sam wywołuje
+    // setShop i doczytuje listę — więc bez tej blokady kręcił się w kółko:
+    // pobranie produktu → zmiana firmy → przeładowanie listy → efekt startuje
+    // od nowa → kolejne pobranie. Stąd te sekundy przy wejściu z wyszukiwarki.
+    if (obsluzone.current === openSku) return;
+    obsluzone.current = openSku;
+
     let cancelled = false;
     // Okno pokazujemy OD RAZU, ze szkieletem. Wejście z dashboardu albo
     // wyszukiwarki najpierw przerzuca na „Produkty", potem czeka na dwa
