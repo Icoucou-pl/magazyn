@@ -177,6 +177,10 @@ class ProductSummary(BaseModel):
     order_date: date
     status: str
     no_reorder: bool = False                      # „nie dozamawiamy" — chowa z pożarów i całego flow zamawiania
+    # Ile sztuk leży na magazynie głównym w Fakturowni, gdy sklep w ogóle nie zna
+    # tego SKU (stan w aplikacji = 0). 0 = brak problemu. Wartość jest wyłącznie
+    # informacyjna — nie wchodzi do prognoz ani statusów.
+    stan_erp_niewystawione: int = 0
     transfer_source_shop: Optional[str] = None   # magazyn siostry mogący pokryć pożar (Acti/Veluxa)
     transfer_source_qty: int = 0                  # ile tam leży na stanie (0 = siostra pusta)
     transfer_source_transit: int = 0              # ile siostrze jedzie (jej „magazyn w drodze")
@@ -673,7 +677,8 @@ class Anomaly(BaseModel):
     sku: str
     name: str
     severity: Literal["high", "medium", "low"]
-    type: Literal["sales_spike", "sales_drop", "stock_drain", "wbite_shortfall"]
+    type: Literal["sales_spike", "sales_drop", "stock_drain", "wbite_shortfall",
+                  "brak_w_sklepie"]
     message: str
     sales_1m: int = 0
     sales_3m_avg: float = 0.0
