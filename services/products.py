@@ -438,6 +438,23 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
     return results
 
 
+async def _firma_produktu(db: AsyncSession, sku: str) -> str:
+    """Slug firmy właściciela SKU — jedno lekkie zapytanie, bez liczenia prognoz.
+
+    Potrzebne do `shop="auto"`: wejście z globalnej wyszukiwarki ma otworzyć
+    kartę na firmie właściciela, a żeby ją poznać, front musiał wcześniej
+    pobrać produkt zbiorczo i dopiero potem drugi raz, już zawężony. Dwa pełne
+    przeliczenia katalogu na jedno kliknięcie — stąd te sekundy czekania.
+    """
+    row = (await db.execute(text(
+        f"SELECT COALESCE(f.slug, 'amh') AS slug "
+        f"FROM {settings.TABLE_PRODUCT_ATTRS} pa "
+        f"LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id "
+        f"WHERE lower(trim(pa.sku)) = lower(trim(:sku)) LIMIT 1"
+    ), {"sku": sku})).first()
+    return (row[0] if row else "amh") or "amh"
+
+
 async def get_product(db: AsyncSession, sku: str, shop: str = "") -> ProductSummary:
     """Pojedynczy produkt po SKU (szuka we wszystkich statusach). Rzuca 404.
     Dopasowanie po kanonicznym SKU (case-insensitive) — globalne wyszukiwanie i lista
@@ -448,6 +465,12 @@ async def get_product(db: AsyncSession, sku: str, shop: str = "") -> ProductSumm
     firmę właściciela produktu, więc karta musi umieć pokazać liczby TEJ spółki.
     Bez tego przełącznik mówił „Veluxa", a stan był sumą wszystkich firm."""
     from fastapi import HTTPException
+
+    # "auto" = sam rozpoznaj firmę właściciela. Jedno dodatkowe, bardzo tanie
+    # zapytanie zamiast drugiego pełnego przeliczenia katalogu.
+    if shop == "auto":
+        shop = await _firma_produktu(db, sku)
+
     products = await fetch_products(
         db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}, shop)
     target = (sku or "").strip().lower()
