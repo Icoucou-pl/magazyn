@@ -206,7 +206,7 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   const { ref: refWykresu, w: W } = useSzerokoscWykresu();
   const waski = W < 520;
   const H = waski ? 230 : 280;
-  const L = waski ? 46 : 58, R = waski ? 34 : 44, T = 20, B = 34;
+  const L = waski ? 50 : 58, R = waski ? 34 : 44, T = 20, B = 34;
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxV) * (H - T - B);
@@ -243,7 +243,10 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
                 <g key={i}>
                   <line x1={L} x2={W - R} y1={y} y2={y} stroke="var(--border-soft)" strokeWidth={1} />
                   <text x={L - 8} y={y + 3.5} textAnchor="end" fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
-                    {fmtNum(v / 1000)}k
+                    {/* Zaokrąglone do pełnych tysięcy. `fmtNum(v / 1000)` dawało
+                        „58,993k" — siedem znaków, które nie mieściły się w
+                        marginesie i traciły pierwszą cyfrę. */}
+                    {fmtNum(Math.round(v / 1000))}k
                   </text>
                 </g>
               );
