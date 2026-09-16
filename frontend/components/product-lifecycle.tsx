@@ -222,12 +222,26 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
   // najpierw fizycznego przyjazdu, a dopiero gdy takiego nie ma, pokazujemy
   // ostatni zakup — wyraźnie podpisany, żeby nikt nie wziął płynącego
   // kontenera za towar na półce.
-  // Przyjazdy na magazyn główny: dla Fakturowni to ruchy `mm+`, dla Subiekta
-  // przesunięcia z magazynu „w drodze". To jedyne zdarzenia, po których towar
-  // da się wydać klientowi.
-  const przyjechalo = useMemo(() => {
-    const p = h.przyjecia.filter((x) => x.typ === "PRZESUNIECIE" && !x.w_drodze && x.ilosc > 0);
-    return { ile: p.length, szt: p.reduce((a, x) => a + x.ilosc, 0) };
+  // Ile z zamówionego jeszcze płynie.
+  //
+  // Sztuki wbite na magazyn „w drodze" minus te, które już z niego zjechały na
+  // magazyn główny. Porównywanie sum historycznych („zamówione 1000, przyjechało
+  // 950") nic nie mówi, bo przy dojrzałym produkcie prawie wszystko już
+  // przyjechało. Interesujące jest to, czego JESZCZE NIE MA — i ta liczba sama
+  // schodzi do zera, gdy kontener dojedzie.
+  //
+  // Uwaga na definicję przyjazdu: to nie tylko przesunięcie `mm+`. Zdarza się
+  // PZ prosto na magazyn główny (YKE1, 18.05, 10 szt) i wtedy towar jest na
+  // miejscu bez żadnego MM. Dlatego „w drodze" liczymy po stronie wbić, a nie
+  // po stronie wjazdów.
+  const wDrodze = useMemo(() => {
+    const wbite = h.przyjecia
+      .filter((x) => x.w_drodze && x.ilosc > 0)
+      .reduce((a, x) => a + x.ilosc, 0);
+    const zjechalo = h.przyjecia
+      .filter((x) => x.typ === "PRZESUNIECIE" && !x.w_drodze && x.ilosc > 0)
+      .reduce((a, x) => a + x.ilosc, 0);
+    return Math.max(0, wbite - zjechalo);
   }, [h.przyjecia]);
 
   const ostatnia = useMemo(() => {
@@ -259,8 +273,10 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
         value={ostatnia ? fmtD(ostatnia.data) : "—"}
         sub={
           ostatnia
-            ? `+${fmtNum(ostatnia.ilosc)} szt · ${ostatnia.dni} dni temu${ostatnia.doWDrodze ? " · na magazyn w drodze" : ""}`
-            : "brak dostaw"
+            ? `+${fmtNum(ostatnia.ilosc)} szt · ${ostatnia.dni} dni temu`
+              + (ostatnia.doWDrodze ? " · na magazyn w drodze" : "")
+              + (wDrodze > 0 ? ` · ${fmtNum(wDrodze)} szt jeszcze płynie` : "")
+            : wDrodze > 0 ? `nic nie dotarło · ${fmtNum(wDrodze)} szt w drodze` : "brak dostaw"
         }
         tone={ostatnia ? (ostatnia.doWDrodze ? "neutral" : "ok") : "neutral"} />
       {/* ZAKUP ≠ DOSTAWA.
@@ -269,21 +285,16 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
           główny. Kafelek „Dostawy 4 · wejść z zewnątrz" przy czterech PZ
           sugerował cztery przypłynięcia, podczas gdy realnie przyjechał jeden
           kontener, a reszta jest na wodzie. */}
+      {/* Liczba ZAMÓWIEŃ, nie „dostaw" — dokument PZ powstaje przy zapłacie i
+          wbiciu towaru na magazyn „w drodze", więc towar wtedy dopiero płynie.
+          Sztuki i kwota schodzą do podpisu: w historii częściej pyta się „ile
+          razy to zamawialiśmy" niż o sumę sztuk od początku świata. */}
       <Kafelek
-        label="Zakupy"
+        label="Zamówienia"
         value={h.liczba_zakupow}
-        sub={`${fmtNum(h.sprowadzono_szt)} szt · dokumenty PZ`} />
-      <Kafelek
-        label="Przyjechało"
-        value={fmtNum(przyjechalo.szt)}
-        sub={przyjechalo.szt > 0
-          ? `${przyjechalo.ile} ${przyjechalo.ile === 1 ? "dostawa" : "dostaw"} na magazyn`
-          : "jeszcze nic nie dotarło"}
-        tone={przyjechalo.szt > 0 ? "ok" : "warning"} />
-      <Kafelek
-        label="Wartość zakupów"
-        value={showFin ? `${fmtNum(h.sprowadzono_pln)} zł` : "•••••"}
-        sub="cena od dostawcy" />
+        sub={showFin
+          ? `${fmtNum(h.sprowadzono_szt)} szt · ${fmtNum(h.sprowadzono_pln)} zł`
+          : `${fmtNum(h.sprowadzono_szt)} szt`} />
       {/* Kafelek „Stan dziś" usunięty — to stan bieżący, a nie historia;
           na Przeglądzie stoi i tak, w rozbiciu na magazyn, towar w drodze
           i kontenery. `stan_dzis` zostaje w danych, bo to on kotwiczy krzywą
