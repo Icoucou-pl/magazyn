@@ -127,55 +127,60 @@ export default function ProductsView({
   useEffect(() => {
     if (!openSku) { obsluzone.current = null; return; }
 
-    // Każde SKU obsługujemy DOKŁADNIE RAZ.
+    // Każde SKU obsługujemy DOKŁADNIE RAZ — i BEZ sprzątania anulującego.
     //
-    // W zależnościach efektu siedzą `products` i `shop`, a efekt sam wywołuje
-    // setShop i doczytuje listę — więc bez tej blokady kręcił się w kółko:
-    // pobranie produktu → zmiana firmy → przeładowanie listy → efekt startuje
-    // od nowa → kolejne pobranie. Stąd te sekundy przy wejściu z wyszukiwarki.
+    // Efekt ma w zależnościach `products` i `shop`, a sam wywołuje setShop i
+    // powoduje przeładowanie listy, więc uruchamia się kilka razy pod rząd.
+    // Poprzednia wersja miała blokadę „już obsłużone" ORAZ `return () =>
+    // { cancelled = true }` — i te dwie rzeczy zabijały się nawzajem: kolejne
+    // wejście w efekt sprzątało poprzednie (anulując trwające zapytanie),
+    // a blokada nie pozwalała wystartować nowemu. Efekt: szkielet karty wisiał
+    // w nieskończoność i nic się nie otwierało.
+    //
+    // Teraz aktualność sprawdzamy referencją: jeśli w międzyczasie użytkownik
+    // otworzył inny produkt, `obsluzone.current` już się nie zgadza i odpowiedź
+    // po prostu odrzucamy.
     if (obsluzone.current === openSku) return;
     obsluzone.current = openSku;
 
-    let cancelled = false;
-    // Okno pokazujemy OD RAZU, ze szkieletem. Wejście z dashboardu albo
-    // wyszukiwarki najpierw przerzuca na „Produkty", potem czeka na dwa
-    // zapytania (produkt zbiorczy, potem zawężony do firmy) i dopiero wtedy
-    // pojawiał się modal. Z boku wyglądało to jak zawieszenie — ekran
-    // podmieniał się na listę i przez chwilę nic się nie działo.
-    setOtwieranySku(openSku);
+    const sku = openSku;
+    const aktualne = () => obsluzone.current === sku;
 
-    // Skrót: gdy lista produktów jest już wczytana i zawiera ten SKU, wstawiamy
-    // wiersz od razu. Karta otwiera się natychmiast, a zapytanie niżej tylko
-    // podmienia dane na zawężone do firmy właściciela.
-    const zListy = products.find(
-      (x) => (x.sku || "").toLowerCase() === openSku.toLowerCase(),
-    );
+    // Okno pokazujemy OD RAZU, ze szkieletem — wejście z dashboardu najpierw
+    // przerzuca na „Produkty" i bez tego przez chwilę nic się nie dzieje.
+    setOtwieranySku(sku);
+
+    // Skrót: gdy lista jest już wczytana i zawiera ten SKU, wstawiamy wiersz
+    // natychmiast, a zapytanie niżej tylko podmienia dane na firmowe.
+    const zListy = products.find((x) => (x.sku || "").toLowerCase() === sku.toLowerCase());
     if (zListy) setSelectedProduct(zListy);
+
     (async () => {
       try {
-        // JEDEN strzał zamiast dwóch. Backend przy shop="auto" sam sprawdza,
-        // czyj jest ten SKU (lekkie zapytanie o firma_id) i od razu liczy
-        // dane tej spółki. Wcześniej front pobierał produkt zbiorczo tylko po
-        // to, żeby poznać właściciela, a potem drugi raz już zawężony — dwa
-        // pełne przeliczenia katalogu na jedno kliknięcie w wyszukiwarce.
+        // Jeden strzał: backend przy shop="auto" sam ustala firmę właściciela.
         const p = (await api.get(
-          `/products/${encodeURIComponent(openSku)}?shop=auto`,
+          `/products/${encodeURIComponent(sku)}?shop=auto`,
         )) as Product;
 
-        if (!cancelled && p) {
+        if (!aktualne()) return;
+
+        if (p) {
           const wlasciciel = p.firma_id
             ? firmy.find((f) => f.id === p.firma_id)?.slug
             : "amh";
           if (wlasciciel && wlasciciel !== shop) setShop(wlasciciel);
           setSelectedProduct(p);
+        } else {
+          toast(`Nie znaleziono produktu ${sku}`, "info");
         }
-        else if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
       } catch {
-        if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
+        if (aktualne()) toast(`Nie znaleziono produktu ${sku}`, "info");
+      } finally {
+        // Szkielet znika ZAWSZE — także gdy zapytanie padło. Inaczej zostaje
+        // na ekranie na zawsze, co właśnie widzieliśmy.
+        if (aktualne()) { setOtwieranySku(null); onOpenedSku?.(); }
       }
-      if (!cancelled) { setOtwieranySku(null); onOpenedSku?.(); }
     })();
-    return () => { cancelled = true; };
   }, [openSku, onOpenedSku, firmy, shop, setShop, products]);
 
   const toggleRow = (sku: string) => setSelected((prev) => {
