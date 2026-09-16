@@ -230,6 +230,61 @@ async def _detect_wbite_shortfall(db: AsyncSession, shop: str = "") -> List[Anom
     return out
 
 
+async def _detect_brak_w_sklepie(db: AsyncSession, shop: str = "") -> List[Anomaly]:
+    """Towar leży na magazynie w Fakturowni, a sklep w ogóle nie zna tego SKU.
+
+    Dla Acti i Veluxy stan w aplikacji pochodzi z Sellasista, nie z Fakturowni.
+    Dopóki ktoś nie wystawi produktu w sklepie, karta pokazuje zero sztuk, zero
+    sprzedaży, zapas „∞" i status OK — więc produkt nie zapala się nigdzie jako
+    pożar, choć fizycznie stoi na magazynie i nikt go nie sprzedaje. Dokładnie
+    ten przypadek: towar zszedł z magazynu „w drodze" na główny, a wystawienie
+    w sklepie się opóźnia.
+
+    Rozróżniamy BRAK WIERSZA od stanu zero. Produkt wystawiony i wyprzedany do
+    zera jest normalny; alarmujemy tylko wtedy, gdy sklep nie zna SKU wcale.
+
+    Wyłączenie: `no_reorder` („nie dozamawiamy"). Stare, wycofane symbole
+    potrafią latami leżeć na resztkach stanu w ERP i bez tego filtra zalałyby
+    listę. Odznaczenie produktu tą flagą jest więc jednocześnie sposobem na
+    wyciszenie tego alertu.
+    """
+    r = await db.execute(text(f"""
+        SELECT LOWER(f.slug)                       AS slug,
+               MAX(fs.sku)                         AS sku,
+               MAX(fs.nazwa)                       AS nazwa,
+               SUM(fs.stan_podstawowy)::int        AS stan
+        FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
+        JOIN {settings.TABLE_FIRMY} f ON f.id = fs.firma_id
+        LEFT JOIN (
+            SELECT sku_canon, shop FROM {settings.TABLE_EXTERNAL_STOCK} GROUP BY sku_canon, shop
+        ) ss ON ss.sku_canon = LOWER(TRIM(fs.sku)) AND ss.shop = LOWER(f.slug)
+        LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(fs.sku))
+        WHERE fs.sku IS NOT NULL
+          AND fs.stan_podstawowy > 0
+          AND ss.sku_canon IS NULL
+          AND COALESCE(pa.no_reorder, FALSE) = FALSE
+          AND (:shop = '' OR LOWER(f.slug) = :shop)
+        GROUP BY LOWER(f.slug), LOWER(TRIM(fs.sku))
+        ORDER BY SUM(fs.stan_podstawowy) DESC
+        LIMIT 30
+    """), {"shop": (shop or "").lower()})
+
+    out: List[Anomaly] = []
+    for m in r.mappings():
+        stan = int(m["stan"] or 0)
+        out.append(Anomaly(
+            sku=m["sku"] or "—",
+            name=(m["nazwa"] or m["sku"] or "—"),
+            severity="high" if stan >= 20 else "medium",
+            type="brak_w_sklepie",
+            message=(f"{stan} szt leży na magazynie {(m['slug'] or '').upper()}, "
+                     f"ale produktu nie ma w sklepie — nie sprzedaje się nigdzie"),
+            firma_slug=m["slug"],
+            actual_qty=stan,
+        ))
+    return out
+
+
 @router.get("/anomalies", response_model=List[Anomaly])
 async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db),
                            user: CurrentUser = Depends(get_current_user)):
@@ -289,7 +344,15 @@ async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: Asy
     except Exception as e:  # noqa: BLE001 — celowo miękko, to dodatek do listy
         print(f"[anomalies] wbite_shortfall pominięte: {e}")
         wbite = []
-    return wbite + anomalies[:20]
+    # Towar na magazynie, którego sklep nie zna — też POZA filtrem ulubionych
+    # i poza limitem: to jest towar, który fizycznie stoi i nie zarabia.
+    try:
+        nieznane = await _detect_brak_w_sklepie(db, shop)
+    except Exception as e:  # noqa: BLE001 — jak wyżej, dodatek nie może zabrać reszty
+        print(f"[anomalies] brak_w_sklepie pominięte: {e}")
+        nieznane = []
+
+    return wbite + nieznane + anomalies[:20]
 
 
 @router.get("/shopping-list", response_model=List[ShoppingListGroup])
