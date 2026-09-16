@@ -7,7 +7,7 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { I, Pill, MfrChip, STATUS_META, ContainerNr } from "./ui";
+import { I, Pill, MfrChip, STATUS_META, ContainerNr, isDraftNumber } from "./ui";
 import {
   StatusPillExt, displayStatus, monthsDisplay,
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
@@ -45,7 +45,18 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
       // nie od surowej ETA — inaczej dostawa znikała w oknie odprawy.
       const arrival = new Date(d.warehouse_delivery_date);
       const day = Math.round((arrival.getTime() - today.getTime()) / 86400000);
-      return { day, qty: d.quantity, container: d.container_number, eta: d.eta_date, status: d.status };
+      // Numer „Draft-<Producent>" to nasz wewnętrzny placeholder nadawany,
+      // gdy kontener jeszcze nie ma numeru z produkcji. Nie ma go w Subiekcie
+      // ani w mailu, więc pokazany w dymku prowadzi donikąd. Reguła jest ta
+      // sama, co w `containerLabel` w ui.tsx i w podpowiedziach anomalii:
+      // prawdziwy numer kontenera → numer zamówienia (PO) → nazwa producenta.
+      const nr = (d.container_number || "").trim();
+      const po = (d.container_order_number || d.lot_order_number || "").trim();
+      const etykieta = nr && !isDraftNumber(nr)
+        ? nr
+        : po || (product.manufacturer_name || "").trim() || "—";
+
+      return { day, qty: d.quantity, container: etykieta, eta: d.eta_date, status: d.status };
     })
     .filter((d) => d.day >= 0 && d.day <= 180)
     .sort((a, b) => a.day - b.day);
