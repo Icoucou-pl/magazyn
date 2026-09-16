@@ -113,8 +113,20 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
 
   const H = waski ? 230 : 280;
   const L = waski ? 50 : 58, R = waski ? 34 : 44, T = 20, B = 34;
+  // OŚ OBEJMUJE WSZYSTKIE MIESIĄCE, także te bez sprzedaży.
+  //
+  // Wcześniej wykres rysował wyłącznie miesiące z obrotem, a resztę po prostu
+  // pomijał — przez co 03.26 i 05.26 stały obok siebie, jakby nic ich nie
+  // dzieliło. Kwiecień w Pod_1b nie zniknął przez błąd: po prostu nic wtedy
+  // nie zeszło, więc nie ma z czego policzyć marży. Ale na osi czasu musi
+  // zostać dziura, bo inaczej wykres kłamie o tempie sprzedaży.
+  const osMiesiecy = h.stan_miesiecznie
+    .map((p) => p.miesiac.slice(0, 7))
+    .filter((m) => m >= dane[0].m && m <= dane[dane.length - 1].m);
+  const poz = new Map(osMiesiecy.map((m, i) => [m, i]));
+
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
-  const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
+  const X = (i: number) => L + (i + 0.5) * (W - L - R) / osMiesiecy.length;
   const Y = (v: number) => T + (1 - v / maxV) * (H - T - B);
   // SKALA ODPORNA NA ABSURDY.
   //
@@ -137,7 +149,8 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
     const przyciete = Math.min(Math.max(p, mLo), mHi);
     return T + (1 - (przyciete - mLo) / (mHi - mLo || 1)) * (H - T - B);
   };
-  const bw = ((W - L - R) / dane.length) * 0.72;
+  const bw = ((W - L - R) / osMiesiecy.length) * 0.72;
+  const xm = (m: string) => X(poz.get(m) ?? 0);
 
   // Średnia ważona obrotem — odporna z natury, bo miesiąc z groszowym
   // przychodem prawie nic w niej nie waży.
@@ -187,22 +200,22 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
             {/* Podpisy miesięcy. Wcześniej oś X pokazywała wyłącznie rok, i to
                 tylko na styczniu — przy historii krótszej niż rok nie było na
                 niej nic. */}
-            {rowneIndeksy(dane.length, waski ? 3 : 6).map((i, idx, tab) => (
-              <text key={dane[i].m} x={X(i)} y={H - B + 14}
+            {rowneIndeksy(osMiesiecy.length, waski ? 3 : 6).map((i, idx, tab) => (
+              <text key={osMiesiecy[i]} x={X(i)} y={H - B + 14}
                     textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
                     fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
-                {fmtM(`${dane[i].m}-01`)}
+                {fmtM(`${osMiesiecy[i]}-01`)}
               </text>
             ))}
 
-            {dane.map((d, i) => {
+            {dane.map((d) => {
               const yP = Y(d.rev), yK = Y(d.koszt);
               return (
                 <g key={d.m}>
-                  <rect x={X(i) - bw / 2} y={yP} width={bw} height={Math.max(0, H - B - yP)} fill="var(--surface-3)" rx={2} />
-                  <rect x={X(i) - bw / 2} y={yK} width={bw} height={Math.max(0, H - B - yK)} fill="oklch(0.640 0.190 25 / .55)" rx={2} />
+                  <rect x={xm(d.m) - bw / 2} y={yP} width={bw} height={Math.max(0, H - B - yP)} fill="var(--surface-3)" rx={2} />
+                  <rect x={xm(d.m) - bw / 2} y={yK} width={bw} height={Math.max(0, H - B - yK)} fill="oklch(0.640 0.190 25 / .55)" rx={2} />
 
-                  <rect x={X(i) - bw / 2 - 1} y={T} width={bw + 2} height={H - T - B} fill="transparent" style={{ cursor: "pointer" }}
+                  <rect x={xm(d.m) - bw / 2 - 1} y={T} width={bw + 2} height={H - T - B} fill="transparent" style={{ cursor: "pointer" }}
                     onMouseMove={(e) => setTip({
                       x: e.clientX, y: e.clientY,
                       html: (
@@ -222,14 +235,20 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
             {/* Miesiące poza skalą dostają czerwoną kropkę na krawędzi — linia
                 jest tam przycięta, więc bez tego znacznika wyglądałaby po
                 prostu na płaską. */}
-            {dane.map((d, i) => (ROZSADNA(d.marza) ? null : (
-              <circle key={`out${d.m}`} cx={X(i)} cy={Ym(d.marza)} r={3.5}
+            {dane.map((d) => (ROZSADNA(d.marza) ? null : (
+              <circle key={`out${d.m}`} cx={xm(d.m)} cy={Ym(d.marza)} r={3.5}
                       fill="var(--critical)" stroke="var(--surface-1)" strokeWidth={1.5}>
                 <title>{`${fmtM(`${d.m}-01`)} — marża ${fmtC(d.marza, 0)}%, poza skalą wykresu`}</title>
               </circle>
             )))}
 
-            <path d={dane.map((d, i) => `${i ? "L" : "M"}${X(i)} ${Ym(d.marza)}`).join(" ")}
+            <path d={dane.map((d, i) => {
+              const poprz = i ? dane[i - 1] : null;
+              // Przerwa w sprzedaży = przerwa w linii. Łączenie przez pusty
+              // miesiąc sugerowałoby ciągłość, której nie było.
+              const ciagle = poprz != null && (poz.get(d.m) ?? 0) - (poz.get(poprz.m) ?? 0) === 1;
+              return `${ciagle ? "L" : "M"}${xm(d.m)} ${Ym(d.marza)}`;
+            }).join(" ")}
                   fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinejoin="round" />
             {[min.marza, max.marza].map((p, i) => (
               <text key={i} x={W - R + 6} y={Ym(p) + 3.5} fill="var(--accent)" fontSize={10} fontFamily="var(--font-mono)" opacity={0.8}>
