@@ -103,7 +103,15 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
         const s = sprzedaz.get(m);
         if (!s || s.net <= 0 || s.qty <= 0 || p.koszt_wlasny == null) return null;
         const koszt = s.qty * p.koszt_wlasny;
-        return { m, rev: s.net, koszt, qty: s.qty, kw: p.koszt_wlasny, marza: ((s.net - koszt) / s.net) * 100 };
+        // Koszt własny zero przy realnej sprzedaży to BRAK DANYCH, nie zysk
+        // stuprocentowy. Subiekt nie przypisał kosztu, bo nie miał z czego:
+        // sprzedaż ze stanu ujemnego (brak warstwy), przyjęcie bez wyceny
+        // albo towar wjechał jako gratis. Marża „100%" byłaby wtedy fikcją.
+        return {
+          m, rev: s.net, koszt, qty: s.qty, kw: p.koszt_wlasny,
+          marza: ((s.net - koszt) / s.net) * 100,
+          brakKosztu: p.koszt_wlasny === 0,
+        };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
   }, [h.stan_miesiecznie, season]);
@@ -140,8 +148,10 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   // tak znaczy tylko „sprzedane poniżej kosztu"), a punkty spoza zakresu
   // przycinamy do krawędzi i oznaczamy na czerwono. Nic nie znika, ale też nic
   // nie psuje odczytu pozostałych miesięcy.
-  const ROZSADNA = (m: number) => m >= -100 && m <= 100;
-  const rozsadne = dane.filter((d) => ROZSADNA(d.marza));
+  // „Rozsądna" znaczy: mieści się w skali ORAZ ma z czego być policzona.
+  const ROZSADNA = (d: { marza: number; brakKosztu: boolean }) =>
+    !d.brakKosztu && d.marza >= -100 && d.marza <= 100;
+  const rozsadne = dane.filter(ROZSADNA);
   const bazowe = rozsadne.length ? rozsadne : dane;
   const mLo = Math.max(-100, Math.min(...bazowe.map((d) => d.marza)) - 5);
   const mHi = Math.min(100, Math.max(...bazowe.map((d) => d.marza)) + 5);
@@ -157,7 +167,8 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   const sr = dane.reduce((s, d) => s + d.rev - d.koszt, 0) / dane.reduce((s, d) => s + d.rev, 0) * 100;
   const min = bazowe.reduce((a, b) => (b.marza < a.marza ? b : a));
   const max = bazowe.reduce((a, b) => (b.marza > a.marza ? b : a));
-  const poza = dane.filter((d) => !ROZSADNA(d.marza));
+  const bezKosztu = dane.filter((d) => d.brakKosztu);
+  const pozaSkala = dane.filter((d) => !d.brakKosztu && !ROZSADNA(d));
 
   return (
     <div style={sect}>
@@ -172,10 +183,17 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
           <div style={{ fontSize: 10.5, color: "var(--text-lo)", marginTop: 2 }}>
             średnio {fmtC(sr, 1)}% · najniżej {fmtC(min.marza, 1)}% ({fmtM(`${min.m}-01`)}),
             najwyżej {fmtC(max.marza, 1)}% ({fmtM(`${max.m}-01`)})
-            {poza.length > 0 && (
+            {pozaSkala.length > 0 && (
               <span style={{ color: "var(--critical)" }}>
-                {" · "}{poza.length} {poza.length === 1 ? "miesiąc" : "miesiące"} poza skalą
-                {" "}({poza.map((d) => fmtM(`${d.m}-01`)).join(", ")}) — przychód bliski zeru przy realnym koszcie
+                {" · "}{pozaSkala.length} {pozaSkala.length === 1 ? "miesiąc" : "miesiące"} poza skalą
+                {" "}({pozaSkala.map((d) => fmtM(`${d.m}-01`)).join(", ")}) — przychód bliski zeru przy realnym koszcie
+              </span>
+            )}
+            {bezKosztu.length > 0 && (
+              <span style={{ color: "var(--text-lo)" }}>
+                {" · "}{bezKosztu.length} bez kosztu własnego
+                {" "}({bezKosztu.map((d) => fmtM(`${d.m}-01`)).join(", ")}) — Subiekt nie przypisał warstwy,
+                {" "}marży tam nie liczymy
               </span>
             )}
           </div>
@@ -221,10 +239,17 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
                       html: (
                         <>
                           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-lo)", marginBottom: 3 }}>{fmtM(`${d.m}-01`)}</div>
-                          <div><b>marża {fmtC(d.marza, 1)}%</b></div>
+                          <div><b>{d.brakKosztu ? "marży nie da się policzyć" : `marża ${fmtC(d.marza, 1)}%`}</b></div>
                           <div style={{ color: "var(--text-mid)", marginTop: 3 }}>sprzedano {fmtNum(d.qty)} szt wg zamówień</div>
                           <div style={{ color: "var(--text-mid)" }}>przychód {fmtNum(d.rev)} zł netto</div>
-                          <div style={{ color: "var(--critical)" }}>koszt własny {fmtC(d.kw)} zł/szt = {fmtNum(d.koszt)} zł</div>
+                          {d.brakKosztu ? (
+                            <div style={{ color: "var(--text-lo)", marginTop: 3 }}>
+                              Subiekt nie przypisał kosztu własnego — sprzedaż ze stanu ujemnego,
+                              przyjęcie bez wyceny albo towar gratis. „100%" byłoby fikcją.
+                            </div>
+                          ) : (
+                            <div style={{ color: "var(--critical)" }}>koszt własny {fmtC(d.kw)} zł/szt = {fmtNum(d.koszt)} zł</div>
+                          )}
                         </>
                       ),
                     })}
@@ -235,15 +260,18 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
             {/* Miesiące poza skalą dostają czerwoną kropkę na krawędzi — linia
                 jest tam przycięta, więc bez tego znacznika wyglądałaby po
                 prostu na płaską. */}
-            {dane.map((d) => (ROZSADNA(d.marza) ? null : (
+            {dane.map((d) => (ROZSADNA(d) ? null : (
               <circle key={`out${d.m}`} cx={xm(d.m)} cy={Ym(d.marza)} r={3.5}
-                      fill="var(--critical)" stroke="var(--surface-1)" strokeWidth={1.5}>
-                <title>{`${fmtM(`${d.m}-01`)} — marża ${fmtC(d.marza, 0)}%, poza skalą wykresu`}</title>
+                      fill={d.brakKosztu ? "var(--text-lo)" : "var(--critical)"}
+                      stroke="var(--surface-1)" strokeWidth={1.5}>
+                <title>{d.brakKosztu
+                  ? `${fmtM(`${d.m}-01`)} — Subiekt nie przypisał kosztu własnego, marży nie da się policzyć`
+                  : `${fmtM(`${d.m}-01`)} — marża ${fmtC(d.marza, 0)}%, poza skalą wykresu`}</title>
               </circle>
             )))}
 
-            <path d={dane.map((d, i) => {
-              const poprz = i ? dane[i - 1] : null;
+            <path d={rozsadne.map((d, i) => {
+              const poprz = i ? rozsadne[i - 1] : null;
               // Przerwa w sprzedaży = przerwa w linii. Łączenie przez pusty
               // miesiąc sugerowałoby ciągłość, której nie było.
               const ciagle = poprz != null && (poz.get(d.m) ?? 0) - (poz.get(poprz.m) ?? 0) === 1;
