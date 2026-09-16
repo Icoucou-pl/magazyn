@@ -270,28 +270,6 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
   // najpierw fizycznego przyjazdu, a dopiero gdy takiego nie ma, pokazujemy
   // ostatni zakup — wyraźnie podpisany, żeby nikt nie wziął płynącego
   // kontenera za towar na półce.
-  // Ile z zamówionego jeszcze płynie.
-  //
-  // Sztuki wbite na magazyn „w drodze" minus te, które już z niego zjechały na
-  // magazyn główny. Porównywanie sum historycznych („zamówione 1000, przyjechało
-  // 950") nic nie mówi, bo przy dojrzałym produkcie prawie wszystko już
-  // przyjechało. Interesujące jest to, czego JESZCZE NIE MA — i ta liczba sama
-  // schodzi do zera, gdy kontener dojedzie.
-  //
-  // Uwaga na definicję przyjazdu: to nie tylko przesunięcie `mm+`. Zdarza się
-  // PZ prosto na magazyn główny (YKE1, 18.05, 10 szt) i wtedy towar jest na
-  // miejscu bez żadnego MM. Dlatego „w drodze" liczymy po stronie wbić, a nie
-  // po stronie wjazdów.
-  const wDrodze = useMemo(() => {
-    const wbite = h.przyjecia
-      .filter((x) => x.w_drodze && x.ilosc > 0)
-      .reduce((a, x) => a + x.ilosc, 0);
-    const zjechalo = h.przyjecia
-      .filter((x) => x.typ === "PRZESUNIECIE" && !x.w_drodze && x.ilosc > 0)
-      .reduce((a, x) => a + x.ilosc, 0);
-    return Math.max(0, wbite - zjechalo);
-  }, [h.przyjecia]);
-
   const ostatnia = useMemo(() => {
     // Co jest „dostawą": towar KUPIONY, który wjechał na magazyn główny.
     // Zwrot od klienta i przyjęcie wewnętrzne wejściem na stan owszem są, ale
@@ -319,12 +297,14 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
         label={ostatnia?.doWDrodze ? "Ostatni zakup" : "Ostatnia dostawa"}
         dot={ostatnia?.doWDrodze ? "var(--info)" : "var(--ok)"}
         value={ostatnia ? fmtD(ostatnia.data) : "—"}
+        // Bez dopisku o towarze w drodze — to zakładka HISTORII, a płynący
+        // kontener jest przyszłością. Stan bieżący i to, co jeszcze przypłynie,
+        // stoi na Przeglądzie, w rozbiciu na magazyn, drogę i kontenery.
         sub={
           ostatnia
             ? `+${fmtNum(ostatnia.ilosc)} szt · ${ostatnia.dni} dni temu`
               + (ostatnia.doWDrodze ? " · na magazyn w drodze" : "")
-              + (wDrodze > 0 ? ` · ${fmtNum(wDrodze)} szt jeszcze płynie` : "")
-            : wDrodze > 0 ? `nic nie dotarło · ${fmtNum(wDrodze)} szt w drodze` : "brak dostaw"
+            : "brak dostaw"
         }
         tone={ostatnia ? (ostatnia.doWDrodze ? "neutral" : "ok") : "neutral"} />
       {/* ZAKUP ≠ DOSTAWA.
@@ -939,7 +919,17 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
   const [wszystkie, setWszystkie] = useState(false);
 
   const wiersze = useMemo(() => {
-    const p = wszystkie ? h.przyjecia : h.przyjecia.filter((x) => x.typ === "ZAKUP");
+    // ZWROTY NIE WCHODZĄ DO TEJ TABELI.
+    //
+    // Zwrot od klienta nie ma dokumentu, dostawcy ani kosztu — w tabeli
+    // zostawia sam wiersz z datą i sztukami. Przy D2cz było ich ponad sto i
+    // zalewały listę, w której szuka się zakupów. Do stanu magazynu wchodzą
+    // normalnie (są w krzywej), a analizę zwrotów robi się w Power BI.
+    //
+    // Przesunięcia zostają pod przyciskiem, bo one niosą konkret: moment,
+    // w którym towar wjechał z magazynu „w drodze" na główny.
+    const p = h.przyjecia.filter((x) =>
+      x.typ === "ZAKUP" || (wszystkie && x.typ === "PRZESUNIECIE"));
     return [...p].reverse();
   }, [h.przyjecia, wszystkie]);
 
@@ -967,7 +957,7 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
         </span>
         <button onClick={() => setWszystkie((v) => !v)}
           style={{ marginLeft: "auto", background: "none", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, padding: "3px 9px", cursor: "pointer" }}>
-          {wszystkie ? "Tylko zakupy" : "Pokaż zwroty i przesunięcia"}
+          {wszystkie ? "Tylko zakupy" : "Pokaż przesunięcia"}
         </button>
       </div>
 
