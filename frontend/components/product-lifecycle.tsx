@@ -251,18 +251,10 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
         label="Sprowadzono"
         value={fmtNum(h.sprowadzono_szt)}
         sub={showFin ? `koszt ${fmtNum(h.sprowadzono_pln)} zł` : "•••••"} />
-      <Kafelek
-        label="Stan dziś"
-        value={fmtNum(h.stan_dzis)}
-        // „na magazynie" przy towarze w drodze było mylące: WP1 ma 0 szt na
-        // półce i 10 na wodzie, a kafelek twierdził, że 10 leży w magazynie.
-        // Sumę zostawiamy (to kotwica krzywej), ale mówimy, z czego się składa.
-        sub={
-          h.stan_w_drodze
-            ? `${fmtNum(h.stan_magazyn ?? 0)} na magazynie · ${fmtNum(h.stan_w_drodze)} w drodze`
-            : "na magazynie"
-        }
-        tone={h.stan_dzis === 0 ? "critical" : "neutral"} />
+      {/* Kafelek „Stan dziś" usunięty — to stan bieżący, a nie historia;
+          na Przeglądzie stoi i tak, w rozbiciu na magazyn, towar w drodze
+          i kontenery. `stan_dzis` zostaje w danych, bo to on kotwiczy krzywą
+          stanu i z niego liczy się dryf. */}
       <Kafelek
         label="Zmiana kosztu"
         value={zmianaKosztu == null ? "—" : `${zmianaKosztu > 0 ? "+" : ""}${fmtC(zmianaKosztu, 1)}%`}
