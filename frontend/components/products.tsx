@@ -392,6 +392,7 @@ export default function ProductsView({
           onUpdated={onProductUpdated}
           onContainerClick={onContainerClick}
           onManufacturerClick={(id) => setMfrModalId(id)}
+          onDeleted={() => { setSelectedProduct(null); void reload(); }}
         />
       )}
       {mfrModalId != null && (

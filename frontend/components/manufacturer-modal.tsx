@@ -123,6 +123,8 @@ export default function ManufacturerModal({
   // Edycje z karty produktu (gwiazdka, producent, klasyfikacja) nakładamy lokalnie —
   // lista producenta dostaje dane od rodzica i sama ich nie przeładowuje.
   const [patches, setPatches] = useState<Record<string, Product>>({});
+  // SKU usunięte z karty produktu (super-admin) — znikają z listy od razu, bez przeładowania.
+  const [removed, setRemoved] = useState<Set<string>>(() => new Set());
   // Karta kontenera — ta sama, którą otwiera lista Kontenerów. Jej zależności
   // (typy kontenerów, pełen katalog SKU) ciągniemy leniwie, dopiero przy pierwszym
   // kliknięciu: modal producenta sam z siebie ich nie potrzebuje.
@@ -208,18 +210,19 @@ export default function ManufacturerModal({
   // odznaczenie ostatniej gwiazdki nie ma przerzucać zakładki pod palcami.
   useEffect(() => {
     if (mfrId == null) return;
-    setTab("fav"); setQ(""); setContAll(false); setContTab("flight"); setPatches({}); setOpenSku(null);
+    setTab("fav"); setQ(""); setContAll(false); setContTab("flight"); setPatches({}); setRemoved(new Set()); setOpenSku(null);
     setOpenContainerId(null); setNestedMfrId(null);
   }, [mfrId]);
 
   // Produkty po nałożeniu lokalnych edycji. SKU przepięte w karcie do innego
   // producenta wypada z listy od razu, zamiast wisieć do przeładowania widoku.
   const effProducts = useMemo(() => {
-    if (Object.keys(patches).length === 0) return listProducts;
-    return listProducts
+    const base = removed.size ? listProducts.filter((p) => !removed.has(p.sku)) : listProducts;
+    if (Object.keys(patches).length === 0) return base;
+    return base
       .map((p) => patches[p.sku] ?? p)
       .filter((p) => patches[p.sku] == null || p.manufacturer_id === mfrId);
-  }, [listProducts, patches, mfrId]);
+  }, [listProducts, patches, removed, mfrId]);
 
   const counts = useMemo(() => {
     const c: Record<MpTab, number> = { fav: 0, all: 0, sample: 0 };
@@ -519,6 +522,7 @@ export default function ManufacturerModal({
         firmy={firmaList}
         onClose={() => setOpenSku(null)}
         onUpdated={(p) => setPatches((prev) => ({ ...prev, [p.sku]: p }))}
+        onDeleted={(sku) => { setOpenSku(null); setRemoved((prev) => new Set(prev).add(sku)); }}
         onContainerClick={(id) => { setOpenSku(null); void openContainer(id); }}
         onManufacturerClick={mfrList.length ? (id) => setNestedMfrId(id) : undefined}
       />

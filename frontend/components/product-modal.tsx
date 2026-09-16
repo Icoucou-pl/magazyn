@@ -83,7 +83,7 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
 
 export default function ProductModal({
   product: initialProduct, manufacturers, firmy, onClose, onUpdated, onContainerClick, onManufacturerClick,
-  busy = false,
+  onDeleted, busy = false,
 }: {
   product: Product;
   manufacturers: Manufacturer[];
@@ -98,6 +98,9 @@ export default function ProductModal({
   /** Klik w chip producenta w nagłówku. Bez tego propa chip zostaje zwykłą etykietą —
    *  żaden istniejący ekran nie zmienia zachowania, dopóki go nie poda. */
   onManufacturerClick?: (id: number) => void;
+  /** Produkt usunięty ręcznie (super-admin). Rodzic zamyka kartę i zdejmuje SKU z listy.
+   *  Bez tego propa karta po prostu się zamyka. */
+  onDeleted?: (sku: string) => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -174,6 +177,20 @@ export default function ProductModal({
   }, [product.sku, isSuper]);
 
   const showTabs = isSuper && hasHistory;
+
+  // ── Usuwanie produktu: WYŁĄCZNIE super-admin ────────────────
+  // Sonda jak przy historii: dla nie-super nie ma zapytania ani bloku w DOM.
+  // Backend odpowiada, czy SKU żyje tylko w aplikacji i czy nie siedzi w kontenerze.
+  const [delChk, setDelChk] = useState<DeleteCheck | null>(null);
+  useEffect(() => {
+    if (!isSuper) { setDelChk(null); return; }
+    let alive = true;
+    setDelChk(null);
+    api.get(`/products/${encodeURIComponent(product.sku)}/delete-check`)
+      .then((d) => { if (alive) setDelChk(d as DeleteCheck); })
+      .catch(() => { if (alive) setDelChk(null); });
+    return () => { alive = false; };
+  }, [product.sku, isSuper]);
 
   useEffect(() => setProduct(initialProduct), [initialProduct]);
 
@@ -310,6 +327,15 @@ export default function ProductModal({
   const konteneryBlok = (
     <ContainersSection product={product} onContainerClick={onContainerClick} onClose={onClose} />
   );
+
+  const usuwanieBlok = delChk ? (
+    <DeleteZone
+      check={delChk}
+      onContainerClick={onContainerClick}
+      onClose={onClose}
+      onDeleted={() => { if (onDeleted) onDeleted(product.sku); else onClose(); }}
+    />
+  ) : null;
 
   const kartyBlok = (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
@@ -493,6 +519,7 @@ export default function ProductModal({
               {prognozaBlok}
               {konteneryBlok}
               {kartyBlok}
+              {usuwanieBlok}
             </>
           )}
           {showTabs && tab === "przeglad" && (
@@ -504,7 +531,7 @@ export default function ProductModal({
             </>
           )}
           {showTabs && tab === "zycie2" && <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />}
-          {showTabs && tab === "dane" && kartyBlok}
+          {showTabs && tab === "dane" && <>{kartyBlok}{usuwanieBlok}</>}
         </div>
 
         {/* Footer */}
@@ -520,6 +547,103 @@ export default function ProductModal({
         </div>
       </div>
     </Portal>
+  );
+}
+
+// ── Usuwanie produktu (super-admin) ──────────────────────────
+type DeleteCheck = {
+  sku: string;
+  external_sources: string[];
+  containers: {
+    id: number; container_number: string | null; order_number: string | null;
+    status: string; eta_date: string | null; manufacturer_name: string | null; quantity: number;
+  }[];
+  attached: Record<string, number>;
+  exists_in_app: boolean;
+  can_delete: boolean;
+};
+
+function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
+  check: DeleteCheck;
+  onContainerClick?: (id: number) => void;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  // SKU z Subiekta/Sellasista/Fakturowni: blok nie istnieje. Usunięcie wyczyściłoby tylko
+  // ręczne dane, a produkt wróciłby od razu — do chowania jest klasyfikacja „Nieaktywny".
+  if (check.external_sources.length > 0 || !check.exists_in_app) return null;
+
+  const blocked = check.containers.length > 0;
+  const photos = check.attached.zdjecia || 0;
+
+  const doDelete = async () => {
+    if (busy || blocked) return;
+    const extra = photos > 0 ? ` Razem z nim znikną zdjęcia (${photos}) i pozostałe dane.` : " Razem z nim znikną wszystkie jego dane.";
+    if (!window.confirm(`Usunąć produkt ${check.sku}?${extra} Tej operacji nie można cofnąć.`)) return;
+    setBusy(true);
+    try {
+      await api.del(`/products/${encodeURIComponent(check.sku)}`);
+      toast(`Usunięto ${check.sku}`, "ok");
+      onDeleted();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się usunąć produktu", "warning");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const label = (c: DeleteCheck["containers"][number]) => {
+    const nr = (c.container_number || "").trim();
+    if (nr && !isDraftNumber(nr)) return nr;
+    return (c.order_number || "").trim() || (c.manufacturer_name || "").trim() || `#${c.id}`;
+  };
+
+  return (
+    <Section title="Usuwanie produktu" hint="tylko super-admin">
+      <div style={{ background: "var(--surface-1)", border: "1px solid var(--critical-soft)", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ fontSize: 12.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
+          Ten SKU istnieje wyłącznie w aplikacji (nie ma go w Subiekcie, Sellasiście ani Fakturowni),
+          więc po usunięciu nie wróci przy synchronizacji.
+        </div>
+
+        {blocked && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--critical)" }}>
+              Nie można usunąć — SKU jest w {check.containers.length === 1 ? "kontenerze" : "kontenerach"}. Najpierw usuń go z {check.containers.length === 1 ? "kontenera" : "kontenerów"}:
+            </div>
+            {check.containers.map((c) => {
+              const meta = CSTATUS[c.status] || CSTATUS.ORDERED;
+              const clickable = Boolean(onContainerClick);
+              return (
+                <div key={c.id} role={clickable ? "button" : undefined}
+                  onClick={clickable ? () => { onContainerClick?.(c.id); onClose(); } : undefined}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "var(--surface-2)", borderRadius: 8, cursor: clickable ? "pointer" : "default", minWidth: 0 }}>
+                  <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label(c)}</span>
+                  <Pill bg={meta.soft} fg={meta.color} dot={meta.color} size="sm">{meta.label}</Pill>
+                  <span className="num" style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-lo)", flexShrink: 0 }}>{c.quantity} szt</span>
+                  {clickable && <span style={{ color: "var(--text-disabled)", flexShrink: 0 }}>›</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={doDelete} disabled={busy || blocked}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 7, fontSize: 12, fontWeight: 600,
+              background: blocked ? "var(--surface-2)" : "var(--critical)",
+              border: `1px solid ${blocked ? "var(--border-soft)" : "var(--critical)"}`,
+              color: blocked ? "var(--text-disabled)" : "#fff",
+              cursor: busy || blocked ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1,
+            }}>
+            <I.Close size={12} /> {busy ? "Usuwam…" : "Usuń produkt"}
+          </button>
+        </div>
+      </div>
+    </Section>
   );
 }
 
