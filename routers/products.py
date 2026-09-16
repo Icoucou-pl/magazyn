@@ -18,6 +18,8 @@ from models import (
 )
 from security import get_current_user, has_perm, require_perm, resolve_shop
 from services.products import fetch_products, get_product
+from audit import log_audit
+from routers.product_history import require_super_admin   # ten sam guard co historia produktu
 
 router = APIRouter(prefix="/api", tags=["products"])
 
@@ -479,3 +481,155 @@ async def create_sample(payload: SampleCreate, db: AsyncSession = Depends(get_db
     )
     await db.commit()
     return _mask_financials([await get_product(db, sku)], user)[0]
+
+
+# ============================================================
+# Ręczne usuwanie produktu — WYŁĄCZNIE super-admin
+# ============================================================
+# Katalog produktów budowany jest na żywo z tabel syncu (Subiekt, Sellasist, Fakturownia).
+# SKU obecnego w którymkolwiek z nich NIE DA SIĘ usunąć: produkt wróciłby od razu (nie przy
+# następnym syncu — przy następnym odczycie listy), tylko bez ręcznych danych (CBM, producent,
+# EAN, zdjęcia, cena). Takie usunięcie niszczy pracę, a produktu nie usuwa. Do chowania
+# prawdziwych SKU służy forced_status = INACTIVE.
+# Usuwać można więc tylko SKU żyjące WYŁĄCZNIE w aplikacji (w praktyce: ręczne sample,
+# np. testowe). Dodatkowa blokada: SKU dopisany do kontenera — usunięcie zmieniłoby kubaturę
+# i wypełnienie kontenera, więc najpierw trzeba go stamtąd zdjąć.
+
+
+# (etykieta, tabela, kolumna z symbolem). Kolumna porównywana po LOWER(TRIM()).
+_DELETE_EXTERNAL_SOURCES = (
+    ("Subiekt", settings.TABLE_SUBIEKT_DWA, "sku"),
+    ("Subiekt (stara tabela)", settings.TABLE_PRODUCTS, settings.COL_PRODUCT_SKU),
+    ("Sellasist — sprzedaż", settings.TABLE_ORDER_ITEMS, settings.COL_ITEM_SKU),
+    ("Sellasist — magazyn", settings.TABLE_EXTERNAL_STOCK, "sku_canon"),
+    ("Fakturownia", settings.TABLE_FAKTUROWNIA_STOCK, "sku_canon"),
+)
+
+# Dane aplikacji podpięte pod SKU — kasowane razem z produktem (klucz, tabela).
+_DELETE_APP_TABLES = (
+    ("atrybuty", settings.TABLE_PRODUCT_ATTRS),
+    ("lead_time", settings.TABLE_LEAD_TIMES),
+    ("zdjecia", settings.TABLE_PRODUCT_PHOTOS),
+    ("cn_sku", settings.TABLE_CN_SKU),
+    ("snapshoty", settings.TABLE_STOCK_SNAPSHOTS),
+)
+
+
+async def _has_column(db: AsyncSession, table: str, column: str) -> bool:
+    """Część tabel (zdjęcia, CN-SKU, Fakturownia) zakładana jest poza lifespanem. Zapytanie do
+    nieistniejącej tabeli zrywa całą transakcję asyncpg, więc sprawdzamy schemat najpierw."""
+    r = await db.execute(
+        text("""
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = :t AND column_name = :c
+             LIMIT 1
+        """),
+        {"t": table, "c": column},
+    )
+    return r.first() is not None
+
+
+async def _delete_check(db: AsyncSession, sku: str) -> dict:
+    sources: list = []
+    for label, table, col in _DELETE_EXTERNAL_SOURCES:
+        if not await _has_column(db, table, col):
+            continue
+        r = await db.execute(
+            text(f"SELECT 1 FROM {table} WHERE LOWER(TRIM({col})) = LOWER(TRIM(:sku)) LIMIT 1"),
+            {"sku": sku},
+        )
+        if r.first():
+            sources.append(label)
+
+    r = await db.execute(
+        text(f"""
+            SELECT c.id, c.container_number, c.order_number, c.status, c.eta_date,
+                   m.name AS manufacturer_name, SUM(i.quantity)::int AS quantity
+              FROM {settings.TABLE_CONTAINER_ITEMS} i
+              JOIN {settings.TABLE_CONTAINERS} c ON c.id = i.container_id
+              LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
+             WHERE LOWER(TRIM(i.sku)) = LOWER(TRIM(:sku))
+             GROUP BY c.id, c.container_number, c.order_number, c.status, c.eta_date, m.name
+             ORDER BY c.eta_date DESC, c.id DESC
+        """),
+        {"sku": sku},
+    )
+    containers = [
+        {
+            "id": row.id,
+            "container_number": row.container_number,
+            "order_number": row.order_number,
+            "status": row.status,
+            "eta_date": row.eta_date.isoformat() if row.eta_date else None,
+            "manufacturer_name": row.manufacturer_name,
+            "quantity": row.quantity,
+        }
+        for row in r
+    ]
+
+    attached: dict = {}
+    for key, table in _DELETE_APP_TABLES:
+        if not await _has_column(db, table, "sku"):
+            continue
+        r = await db.execute(
+            text(f"SELECT COUNT(*) FROM {table} WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:sku))"),
+            {"sku": sku},
+        )
+        attached[key] = int(r.scalar() or 0)
+
+    return {
+        "sku": sku,
+        "external_sources": sources,
+        "containers": containers,
+        "attached": attached,
+        "exists_in_app": any(v > 0 for v in attached.values()),
+        "can_delete": not sources and not containers and any(v > 0 for v in attached.values()),
+    }
+
+
+@router.get("/products/{sku:path}/delete-check")
+async def product_delete_check(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_super_admin)):
+    """Czy SKU da się usunąć i co go blokuje. Karta produktu odpytuje to przy otwarciu
+    (tylko super-admin) i na tej podstawie pokazuje przycisk albo listę kontenerów."""
+    return await _delete_check(db, sku.strip())
+
+
+@router.delete("/products/{sku:path}")
+async def delete_product(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_super_admin)):
+    """Usuwa SKU żyjący wyłącznie w aplikacji razem ze wszystkimi danymi aplikacji.
+    Warunki sprawdzane ponownie po stronie serwera — karta mogła być otwarta długo."""
+    sku = sku.strip()
+    if not sku:
+        raise HTTPException(400, "SKU nie może być puste")
+
+    chk = await _delete_check(db, sku)
+    if chk["external_sources"]:
+        raise HTTPException(
+            409,
+            f"{sku} istnieje w: {', '.join(chk['external_sources'])} — po usunięciu wróciłby bez ręcznych danych. "
+            "Żeby go schować, ustaw klasyfikację na Nieaktywny.",
+        )
+    if chk["containers"]:
+        nr = ", ".join((c["container_number"] or f"#{c['id']}") for c in chk["containers"])
+        raise HTTPException(409, f"{sku} jest w kontenerach: {nr}. Najpierw usuń go z kontenerów.")
+    if not chk["exists_in_app"]:
+        raise HTTPException(404, f"Produkt {sku} nie istnieje")
+
+    deleted: dict = {}
+    for key, table in _DELETE_APP_TABLES:
+        if key not in chk["attached"]:
+            continue
+        r = await db.execute(
+            text(f"DELETE FROM {table} WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:sku))"),
+            {"sku": sku},
+        )
+        deleted[key] = r.rowcount or 0
+
+    await db.commit()
+    # Audyt PO commicie: log_audit łapie własne błędy, ale nieudany INSERT zostawiłby
+    # transakcję zerwaną i usunięcie by przepadło.
+    await log_audit(
+        db, user, "PRODUCT_DELETED", "product", sku,
+        "usunięto: " + ", ".join(f"{k}={v}" for k, v in deleted.items() if v),
+    )
+    return {"sku": sku, "deleted": deleted}
