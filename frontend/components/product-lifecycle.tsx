@@ -149,6 +149,18 @@ export default function LifecycleTab({ sku, shop, showFin }: { sku: string; shop
  *  Rysujemy więc w układzie równym realnej szerokości kontenera, czyli 1:1.
  *  Marginesy są dokładnie takie, jakie wpiszemy, a tekst ma zawsze swój
  *  rozmiar — niezależnie od ekranu. */
+/** Indeksy równo rozłożone po osi — do podpisów miesięcy.
+ *
+ *  Wykresy podpisywały wyłącznie styczeń, więc przy historii mieszczącej się
+ *  w jednym roku (Acti od 10.2025, Veluxa od 12.2024) oś X zostawała zupełnie
+ *  pusta i nie dało się odczytać, czego dotyczy który słupek. */
+export function rowneIndeksy(dlugosc: number, ile: number): number[] {
+  if (dlugosc <= 0) return [];
+  const n = Math.min(ile, dlugosc);
+  if (n < 2) return [0];
+  return Array.from({ length: n }, (_, k) => Math.round((k * (dlugosc - 1)) / (n - 1)));
+}
+
 export function useSzerokoscWykresu(fallback = 720) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState(fallback);
@@ -210,6 +222,14 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
   // najpierw fizycznego przyjazdu, a dopiero gdy takiego nie ma, pokazujemy
   // ostatni zakup — wyraźnie podpisany, żeby nikt nie wziął płynącego
   // kontenera za towar na półce.
+  // Przyjazdy na magazyn główny: dla Fakturowni to ruchy `mm+`, dla Subiekta
+  // przesunięcia z magazynu „w drodze". To jedyne zdarzenia, po których towar
+  // da się wydać klientowi.
+  const przyjechalo = useMemo(() => {
+    const p = h.przyjecia.filter((x) => x.typ === "PRZESUNIECIE" && !x.w_drodze && x.ilosc > 0);
+    return { ile: p.length, szt: p.reduce((a, x) => a + x.ilosc, 0) };
+  }, [h.przyjecia]);
+
   const ostatnia = useMemo(() => {
     // Co jest „dostawą": towar KUPIONY, który wjechał na magazyn główny.
     // Zwrot od klienta i przyjęcie wewnętrzne wejściem na stan owszem są, ale
@@ -243,14 +263,27 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
             : "brak dostaw"
         }
         tone={ostatnia ? (ostatnia.doWDrodze ? "neutral" : "ok") : "neutral"} />
+      {/* ZAKUP ≠ DOSTAWA.
+          PZ powstaje w momencie zapłaty i wbicia towaru na magazyn „w drodze" —
+          towar wtedy dopiero płynie. Dostawą jest przesunięcie na magazyn
+          główny. Kafelek „Dostawy 4 · wejść z zewnątrz" przy czterech PZ
+          sugerował cztery przypłynięcia, podczas gdy realnie przyjechał jeden
+          kontener, a reszta jest na wodzie. */}
       <Kafelek
-        label="Dostawy"
+        label="Zakupy"
         value={h.liczba_zakupow}
-        sub="wejść z zewnątrz" />
+        sub={`${fmtNum(h.sprowadzono_szt)} szt · dokumenty PZ`} />
       <Kafelek
-        label="Sprowadzono"
-        value={fmtNum(h.sprowadzono_szt)}
-        sub={showFin ? `koszt ${fmtNum(h.sprowadzono_pln)} zł` : "•••••"} />
+        label="Przyjechało"
+        value={fmtNum(przyjechalo.szt)}
+        sub={przyjechalo.szt > 0
+          ? `${przyjechalo.ile} ${przyjechalo.ile === 1 ? "dostawa" : "dostaw"} na magazyn`
+          : "jeszcze nic nie dotarło"}
+        tone={przyjechalo.szt > 0 ? "ok" : "warning"} />
+      <Kafelek
+        label="Wartość zakupów"
+        value={showFin ? `${fmtNum(h.sprowadzono_pln)} zł` : "•••••"}
+        sub="cena od dostawcy" />
       {/* Kafelek „Stan dziś" usunięty — to stan bieżący, a nie historia;
           na Przeglądzie stoi i tak, w rozbiciu na magazyn, towar w drodze
           i kontenery. `stan_dzis` zostaje w danych, bo to on kotwiczy krzywą
@@ -373,11 +406,20 @@ export function KrzywaCeny({ h }: { h: Historia }) {
             {[...lata].map((y) => {
               const t = new Date(`${y}-01-01`).getTime();
               if (t < t0 || t > t1) return null;
+              // Sama kreska — rok niosą podpisy miesięcy („09.26").
+              return <line key={y} x1={X(t)} x2={X(t)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />;
+            })}
+
+            {rowneIndeksy(waski ? 3 : 5, waski ? 3 : 5).map((k, idx, tab) => {
+              const t = t0 + ((t1 - t0) * k) / Math.max(tab.length - 1, 1);
+              const d = new Date(t);
+              const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
               return (
-                <g key={y}>
-                  <line x1={X(t)} x2={X(t)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />
-                  <text x={X(t) + 4} y={H - B + 14} fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">{y}</text>
-                </g>
+                <text key={k} x={X(t)} y={H - B + 14}
+                      textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
+                      fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                  {fmtM(m)}
+                </text>
               );
             })}
 
@@ -524,11 +566,18 @@ export function KrzywaStanu({ h }: { h: Historia }) {
               );
             })}
             {pkt.map((p, i) => p.miesiac.slice(5, 7) === "01" ? (
-              <g key={p.miesiac}>
-                <line x1={X(i)} x2={X(i)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />
-                <text x={X(i) + 4} y={H - B + 14} fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">{p.miesiac.slice(0, 4)}</text>
-              </g>
+              // Kreska na styczniu zostaje, podpis roku nie — dublowałby się
+              // z podpisami miesięcy niżej.
+              <line key={p.miesiac} x1={X(i)} x2={X(i)} y1={T} y2={H - B} stroke="var(--border-soft)" strokeWidth={1} strokeDasharray="2 4" />
             ) : null)}
+
+            {rowneIndeksy(pkt.length, waski ? 3 : 6).map((i, idx, tab) => (
+              <text key={pkt[i].miesiac} x={X(i)} y={H - B + 14}
+                    textAnchor={idx === 0 ? "start" : idx === tab.length - 1 ? "end" : "middle"}
+                    fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                {fmtM(pkt[i].miesiac)}
+              </text>
+            ))}
 
             {pkt.map((p, i) => bezPokrycia.has(p.miesiac.slice(0, 7)) ? (
               // Przycięty do obszaru wykresu: na pierwszym i ostatnim miesiącu
@@ -853,8 +902,10 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
   return (
     <div style={sect}>
       <div style={sectHead}>
-        <span style={sectTitle}>Przyjęcia</span>
-        <span style={sectHint}>{wiersze.length} pozycji · od najnowszej</span>
+        <span style={sectTitle}>Zakupy</span>
+        <span style={sectHint}>
+          {wiersze.length} pozycji · dokumenty PZ, czyli moment zapłaty i wbicia towaru
+        </span>
         <button onClick={() => setWszystkie((v) => !v)}
           style={{ marginLeft: "auto", background: "none", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, padding: "3px 9px", cursor: "pointer" }}>
           {wszystkie ? "Tylko zakupy" : "Pokaż zwroty i przesunięcia"}
@@ -886,6 +937,14 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
                       <span className="mono" style={{ fontWeight: 600 }}>{fmtD(p.data)}</span>
                       {p.skorygowane && (
                         <span className="mono" style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "var(--critical-soft)", color: "var(--critical)" }}>kor</span>
+                      )}
+                      {/* Ten dokument wbił towar na magazyn „w drodze" — data
+                          w wierszu to dzień zapłaty, nie dzień przypłynięcia. */}
+                      {p.w_drodze && (
+                        <span className="mono" title="wbite na magazyn w drodze — towar jeszcze płynie"
+                              style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "var(--info-soft, var(--surface-2))", color: "var(--info)" }}>
+                          w drodze
+                        </span>
                       )}
                     </td>
                     {wszystkie && (
