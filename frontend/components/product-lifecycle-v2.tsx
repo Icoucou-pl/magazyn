@@ -116,14 +116,35 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxV) * (H - T - B);
-  const mLo = Math.min(...dane.map((d) => d.marza)) - 5;
-  const mHi = Math.max(...dane.map((d) => d.marza)) + 5;
-  const Ym = (p: number) => T + (1 - (p - mLo) / (mHi - mLo || 1)) * (H - T - B);
+  // SKALA ODPORNA NA ABSURDY.
+  //
+  // Marża to (przychód − koszt) / przychód, więc miesiąc z groszowym przychodem
+  // i normalnym kosztem własnym daje liczby w rodzaju −72 409%. Jedna taka
+  // wartość rozciągała skalę tak, że cała reszta linii kładła się płasko przy
+  // górnej krawędzi i wykres przestawał cokolwiek znaczyć. Widać to było na
+  // cyrkoniach: koszt 680 zł przy przychodzie 0,94 zł.
+  //
+  // Skalę liczymy więc z wartości ROZSĄDNYCH (od −100% wzwyż — niżej marża i
+  // tak znaczy tylko „sprzedane poniżej kosztu"), a punkty spoza zakresu
+  // przycinamy do krawędzi i oznaczamy na czerwono. Nic nie znika, ale też nic
+  // nie psuje odczytu pozostałych miesięcy.
+  const ROZSADNA = (m: number) => m >= -100 && m <= 100;
+  const rozsadne = dane.filter((d) => ROZSADNA(d.marza));
+  const bazowe = rozsadne.length ? rozsadne : dane;
+  const mLo = Math.max(-100, Math.min(...bazowe.map((d) => d.marza)) - 5);
+  const mHi = Math.min(100, Math.max(...bazowe.map((d) => d.marza)) + 5);
+  const Ym = (p: number) => {
+    const przyciete = Math.min(Math.max(p, mLo), mHi);
+    return T + (1 - (przyciete - mLo) / (mHi - mLo || 1)) * (H - T - B);
+  };
   const bw = ((W - L - R) / dane.length) * 0.72;
 
+  // Średnia ważona obrotem — odporna z natury, bo miesiąc z groszowym
+  // przychodem prawie nic w niej nie waży.
   const sr = dane.reduce((s, d) => s + d.rev - d.koszt, 0) / dane.reduce((s, d) => s + d.rev, 0) * 100;
-  const min = dane.reduce((a, b) => (b.marza < a.marza ? b : a));
-  const max = dane.reduce((a, b) => (b.marza > a.marza ? b : a));
+  const min = bazowe.reduce((a, b) => (b.marza < a.marza ? b : a));
+  const max = bazowe.reduce((a, b) => (b.marza > a.marza ? b : a));
+  const poza = dane.filter((d) => !ROZSADNA(d.marza));
 
   return (
     <div style={sect}>
@@ -138,6 +159,12 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
           <div style={{ fontSize: 10.5, color: "var(--text-lo)", marginTop: 2 }}>
             średnio {fmtC(sr, 1)}% · najniżej {fmtC(min.marza, 1)}% ({fmtM(`${min.m}-01`)}),
             najwyżej {fmtC(max.marza, 1)}% ({fmtM(`${max.m}-01`)})
+            {poza.length > 0 && (
+              <span style={{ color: "var(--critical)" }}>
+                {" · "}{poza.length} {poza.length === 1 ? "miesiąc" : "miesiące"} poza skalą
+                {" "}({poza.map((d) => fmtM(`${d.m}-01`)).join(", ")}) — przychód bliski zeru przy realnym koszcie
+              </span>
+            )}
           </div>
         </div>
 
@@ -192,6 +219,16 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
                 </g>
               );
             })}
+            {/* Miesiące poza skalą dostają czerwoną kropkę na krawędzi — linia
+                jest tam przycięta, więc bez tego znacznika wyglądałaby po
+                prostu na płaską. */}
+            {dane.map((d, i) => (ROZSADNA(d.marza) ? null : (
+              <circle key={`out${d.m}`} cx={X(i)} cy={Ym(d.marza)} r={3.5}
+                      fill="var(--critical)" stroke="var(--surface-1)" strokeWidth={1.5}>
+                <title>{`${fmtM(`${d.m}-01`)} — marża ${fmtC(d.marza, 0)}%, poza skalą wykresu`}</title>
+              </circle>
+            )))}
+
             <path d={dane.map((d, i) => `${i ? "L" : "M"}${X(i)} ${Ym(d.marza)}`).join(" ")}
                   fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinejoin="round" />
             {[min.marza, max.marza].map((p, i) => (
