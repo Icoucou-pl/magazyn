@@ -328,7 +328,9 @@ export default function ProductModal({
           .pm-actions { grid-area: actions; display: flex; gap: 6px; justify-content: flex-end; }
           .pm-main    { grid-area: main; min-width: 0; }
           .pm-sku     { font-size: 20px; font-weight: 700; color: var(--text-hi); letter-spacing: -0.01em; }
-          .pm-firmabar { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; max-width: 100%; }
+          .pm-firmabar { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: nowrap; max-width: 100%; }
+          .pm-head.is-compact .pm-main { min-width: 0; }
+          .pm-head.is-compact .pm-firmabar { margin-top: 6px; }
           .pm-name    { font-size: 14px; color: var(--text-mid); margin-top: 2px; }
 
           /* Nic nie wystaje poza kartę — inaczej całym modalem dawało się
@@ -1317,18 +1319,21 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
               robił się z niego przewijak, a źródło danych i tak nikomu nic nie
               mówi w tym miejscu. Zostaje w podpowiedzi po najechaniu. */}
           <div style={{
-            display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)",
-            border: "1px solid var(--border)", borderRadius: 8, maxWidth: "100%", flexWrap: "wrap",
+            display: "inline-flex", gap: 2, padding: 2, background: "var(--surface-1)",
+            border: "1px solid var(--border)", borderRadius: 7,
+            // Bez zawijania: po zwinięciu nagłówka „Wszyscy" spadało do drugiej
+            // linijki, choć miejsca było pół szerokości karty.
+            flexWrap: "nowrap", flexShrink: 0,
           }}>
             {widoczne.map((f) => {
               const on = f.firma === aktywna;
               return (
                 <button key={f.firma} onClick={() => setShop(f.firma)} title={opis(f)}
                   style={{
-                    padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6,
+                    padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 5,
                     cursor: on ? "default" : "pointer", whiteSpace: "nowrap", border: "none",
-                    background: on ? "var(--surface-3)" : "transparent",
-                    color: on ? "var(--text-hi)" : "var(--text-mid)",
+                    background: on ? "var(--accent)" : "transparent",
+                    color: on ? "var(--accent-ink, #1a1a1a)" : "var(--text-mid)",
                   }}>
                   {etykieta(f.firma)}
                 </button>
@@ -1337,10 +1342,10 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
             {wszyscyDozwolone && (
               <button onClick={() => setShop("")} title="Suma wszystkich spółek — historia z AMH"
                 style={{
-                  padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6,
+                  padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 5,
                   cursor: !shop ? "default" : "pointer", whiteSpace: "nowrap", border: "none",
-                  background: !shop ? "var(--surface-3)" : "transparent",
-                  color: !shop ? "var(--text-hi)" : "var(--text-mid)",
+                  background: !shop ? "var(--accent)" : "transparent",
+                  color: !shop ? "var(--accent-ink, #1a1a1a)" : "var(--text-mid)",
                 }}>
                 Wszyscy
               </button>
