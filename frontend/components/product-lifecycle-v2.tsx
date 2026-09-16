@@ -142,7 +142,7 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
         </div>
 
         <div ref={refWykresu} style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxV * i) / 3, y = Y(v);
               return (
@@ -266,7 +266,7 @@ function KosztLag({ h }: { h: Historia }) {
 
       <div style={box}>
         <div ref={refWykresu} style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
             {[0, 1, 2, 3].map((i) => {
               const v = lo + ((hi - lo) * i) / 3, y = Y(v);
               return (
@@ -397,6 +397,31 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
   const Y = (v: number) => T + (1 - v / maxL) * (H - T - B);
   const bw = ((W - L - R) / dane.length) * 0.7;
 
+  // Wszystkie zakupy w PLN, zero frachtu na każdej pozycji — wykres słupkowy
+  // rysowałby wtedy samą pustą siatkę z osią „0 zł, 0 zł, 1 zł, 1 zł", bo skala
+  // nie ma z czego wyjść. Zamiast pustego prostokąta mówimy wprost, dlaczego
+  // nie ma czego pokazać. Tak wygląda Pod_1b w AMH: towar kupowany od Veluxy,
+  // rozliczany w złotówkach, więc fracht siedzi po stronie Veluxy.
+  const maLogistyke = dane.some((p) => (p.logistyka_pln as number) > 0);
+  if (!maLogistyke) {
+    return (
+      <div style={sect}>
+        <div style={sectHead}>
+          <span style={sectTitle}>Narzut logistyczny na dostawę</span>
+          <span style={sectHint}>brak frachtu na tych zakupach</span>
+        </div>
+        <div style={{ ...box, padding: "16px 18px" }}>
+          <p style={{ ...note, margin: 0 }}>
+            Żadna z {dane.length} dostaw nie ma doliczonego frachtu ani cła —
+            wszystkie rozliczone w złotówkach. Przy zakupie krajowym tak ma być:
+            koszt transportu siedzi u dostawcy, nie u nas. Wykres pojawi się,
+            gdy trafi się import z rozrzuconymi kosztami dodatkowymi.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={sect}>
       <div style={sectHead}>
@@ -406,7 +431,7 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
 
       <div style={box}>
         <div ref={refWykresu} style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxL * i) / 3, y = Y(v);
               return (

@@ -420,7 +420,7 @@ export function KrzywaCeny({ h }: { h: Historia }) {
         </div>
 
         <div ref={refWykresu} style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
             {[0, 1, 2, 3].map((i) => {
               const v = lo + ((hi - lo) * i) / 3, y = Y(v);
               return (
@@ -582,7 +582,7 @@ export function KrzywaStanu({ h }: { h: Historia }) {
 
       <div style={box}>
         <div ref={refWykresu} style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxS * i) / 3, y = Y(v);
               return (
@@ -1008,10 +1008,16 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
 export function Tooltip({ tip }: { tip: Tip }) {
   const ref = useRef<HTMLDivElement | null>(null);
   if (!tip) return null;
-  const w = ref.current?.offsetWidth ?? 200;
+  // Przy pierwszym renderze `ref` jest jeszcze pusty, więc szerokość zgadujemy —
+  // i musi to być GÓRNE oszacowanie (maxWidth), nie 200. Przy zaniżonym
+  // szacunku dymek przy prawej krawędzi „nie wiedział", że się nie mieści,
+  // wyjeżdżał poza ekran i był ucinany w połowie nazwy dostawcy.
+  const w = ref.current?.offsetWidth ?? 260;
   const hh = ref.current?.offsetHeight ?? 80;
-  const x = tip.x + 14 + w > window.innerWidth - 8 ? tip.x - w - 14 : tip.x + 14;
-  const y = tip.y - hh - 10 < 8 ? tip.y + 16 : tip.y - hh - 10;
+  const surowy = tip.x + 14 + w > window.innerWidth - 8 ? tip.x - w - 14 : tip.x + 14;
+  // Twarde ograniczenie do ekranu — działa też wtedy, gdy oszacowanie chybi.
+  const x = Math.max(8, Math.min(surowy, window.innerWidth - w - 8));
+  const y = Math.max(8, tip.y - hh - 10 < 8 ? tip.y + 16 : tip.y - hh - 10);
   return (
     <div ref={ref} style={{
       position: "fixed", left: x, top: y, zIndex: 200, pointerEvents: "none",
