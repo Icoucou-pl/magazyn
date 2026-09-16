@@ -247,12 +247,27 @@ function KosztLag({ h }: { h: Historia }) {
     ...cogs.map((p) => p.koszt_wlasny as number),
   ];
   const lo = Math.min(...wszystkie) * 0.92, hi = Math.max(...wszystkie) * 1.06;
-  const t0 = new Date(h.stan_miesiecznie[0].miesiac).getTime();
-  const t1 = new Date(h.stan_miesiecznie[h.stan_miesiecznie.length - 1].miesiac).getTime();
-  // Odstęp z prawej: bez niego linia kosztu dobijała dokładnie do krawędzi
-  // wykresu i wyglądała, jakby była ucięta w połowie miesiąca.
-  const PR = 14;
-  const X = (t: number) => L + ((t - t0) / Math.max(t1 - t0, 1)) * (W - L - R - PR);
+  // Oś czasu musi obejmować TAKŻE dostawy, nie tylko miesiące.
+  //
+  // Miesiące mają datę pierwszego dnia (2026-09-01), a dostawa z 09.09 wypada
+  // PO ostatnim z nich — więc przy skali liczonej na samych miesiącach jej
+  // kropka lądowała poza obszarem wykresu, za osią, w rogu panelu. Dlatego
+  // koniec osi to późniejsza z dwóch dat.
+  const daty = zakupy.map((d) => new Date(d.data).getTime());
+  const t0 = Math.min(new Date(h.stan_miesiecznie[0].miesiac).getTime(), ...daty);
+  const t1 = Math.max(
+    new Date(h.stan_miesiecznie[h.stan_miesiecznie.length - 1].miesiac).getTime(),
+    ...daty,
+  );
+  // Odstęp z prawej, żeby ostatni punkt i czerwona linia nie dobijały do samej
+  // krawędzi — wyglądało to, jakby wykres był ucięty w połowie miesiąca.
+  const PR = waski ? 16 : 24;
+  const X = (t: number) => {
+    const x = L + ((t - t0) / Math.max(t1 - t0, 1)) * (W - L - R - PR);
+    // Siatka bezpieczeństwa: nic nie ma prawa wyjechać poza obszar rysowania,
+    // nawet gdy do danych wpadnie data spoza zakresu.
+    return Math.min(Math.max(x, L), W - R - PR);
+  };
   const Y = (v: number) => T + (1 - (v - lo) / (hi - lo || 1)) * (H - T - B);
 
   const lata = [...new Set(h.stan_miesiecznie.map((p) => p.miesiac.slice(0, 4)))];
