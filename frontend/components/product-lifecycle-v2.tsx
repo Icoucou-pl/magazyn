@@ -26,7 +26,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 import {
-  Kafelek, KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip,
+  KrzywaCeny, KrzywaStanu, OsCzasu, Podsumowanie, TabelaPrzyjec, Tooltip,
   box, fmtC, fmtD, fmtM, note, sect, sectHead, sectHint, sectTitle, useSzerokoscWykresu,
   type Historia, type Przyjecie, type Tip,
 } from "./product-lifecycle";
@@ -65,7 +65,6 @@ export default function LifecycleTabV2({ sku, shop, showFin }: { sku: string; sh
   return (
     <div>
       <Podsumowanie h={h} showFin={showFin} />
-      <UtraconaSprzedaz h={h} showFin={showFin} />
       <KrzywaCeny h={h} />
       {showFin && <MarzaWCzasie h={h} season={season} />}
       <KosztLag h={h} />
@@ -77,104 +76,11 @@ export default function LifecycleTabV2({ sku, shop, showFin }: { sku: string; sh
   );
 }
 
-// ── 1. UTRACONA SPRZEDAŻ ─────────────────────────────────────
-// Miesiąc zapala się przy DWÓCH warunkach naraz:
-//   a) zapas na POCZĄTKU miesiąca nie pokrywał popytu z tego
-//      samego miesiąca rok wcześniej,
-//   b) sprzedaż faktycznie spadła poniżej mediany z trzech
-//      poprzednich miesięcy.
+// Sekcja „Ile kosztowały braki towaru" została usunięta. Był to SZACUNEK
+// utraconej sprzedaży (popyt sprzed roku minus to, co dało się sprzedać), a
+// nie pomiar — przy krótkiej historii Acti i Veluxy nie miał nawet z czym
+// porównywać i pokazywał same zera z dopiskiem „pierwszy rok".
 //
-// Sam warunek (a) zapala miesiąc, którego odpowiednik rok
-// wcześniej był wyjątkowy. Sama miara „stan na koniec < sprzedaż”
-// jest kołowa: brak towaru tłumi sprzedaż, a stłumiona sprzedaż
-// sprawia, że zapas wygląda na wystarczający.
-function UtraconaSprzedaz({ h, showFin }: { h: Historia; showFin: boolean }) {
-  const wynik = useMemo(() => {
-    const pkt = h.stan_miesiecznie;
-    const sprz = new Map(pkt.map((p) => [p.miesiac.slice(0, 7), p.sprzedano]));
-    const szczegoly: { m: string; bylo: number; popyt: number; strata: number }[] = [];
-    let bezOdniesienia = 0;
-
-    pkt.forEach((p, i) => {
-      const m = p.miesiac.slice(0, 7);
-      const rokWcz = `${Number(m.slice(0, 4)) - 1}${m.slice(4)}`;
-      const popyt = sprz.get(rokWcz);
-      // Zapas na początek miesiąca liczymy z SAMEJ PÓŁKI, nie z sumy. Towar
-      // płynący jeszcze po oceanie nie mógł zaspokoić popytu w tym miesiącu,
-      // a wliczony do zapasu ukrywał braki (`stan_polka` dochodzi z backendu;
-      // dla starszych odpowiedzi zostaje `stan` i zachowanie sprzed zmiany).
-      const poprz = i > 0 ? pkt[i - 1] : null;
-      const naStart = poprz ? (poprz.stan_polka != null ? poprz.stan_polka : poprz.stan) : 0;
-
-      if (popyt == null) {
-        if (p.sprzedano > 0 && naStart < p.sprzedano) bezOdniesienia++;
-        return;
-      }
-      if (naStart >= popyt) return;
-
-      const ostatnie = pkt.slice(Math.max(0, i - 3), i)
-        .map((x) => x.sprzedano).filter((v) => v > 0).sort((a, b) => a - b);
-      if (!ostatnie.length) return;
-      const mediana = ostatnie[Math.floor(ostatnie.length / 2)];
-      if (p.sprzedano >= mediana) return;
-
-      const strata = Math.max(0, popyt - p.sprzedano);
-      if (strata > 0) szczegoly.push({ m, bylo: p.sprzedano, popyt, strata });
-    });
-
-    const suma = szczegoly.reduce((s, x) => s + x.strata, 0);
-    return { szczegoly, suma, bezOdniesienia };
-  }, [h.stan_miesiecznie]);
-
-  // Średni koszt własny ostatniego roku — do przeliczenia straty na złotówki
-  // liczymy po koszcie, nie po cenie sprzedaży, bo ceny tu nie znamy.
-  const sredniKoszt = useMemo(() => {
-    const z = h.stan_miesiecznie.filter((p) => p.koszt_wlasny != null && p.sprzedano > 0).slice(-12);
-    if (!z.length) return null;
-    const q = z.reduce((s, p) => s + p.sprzedano, 0);
-    return z.reduce((s, p) => s + p.sprzedano * (p.koszt_wlasny as number), 0) / q;
-  }, [h.stan_miesiecznie]);
-
-  if (!wynik.szczegoly.length && !wynik.bezOdniesienia) return null;
-
-  return (
-    <div style={sect}>
-      <div style={sectHead}>
-        <span style={sectTitle}>Ile kosztowały braki towaru</span>
-        <span style={sectHint}>szacunek, nie pomiar</span>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
-        <Kafelek label="Miesięcy z brakiem" value={wynik.szczegoly.length}
-          sub="pusty magazyn + załamana sprzedaż"
-          tone={wynik.szczegoly.length ? "critical" : "neutral"} />
-        <Kafelek label="Szacowana strata" value={`${fmtNum(wynik.suma)} szt`}
-          sub="sprzedaż, która nie miała z czego wyjść"
-          tone={wynik.suma ? "critical" : "neutral"} />
-        {showFin && sredniKoszt != null && (
-          <Kafelek label="Zamrożony obrót" value={`~${fmtNum(wynik.suma * sredniKoszt / 1000)} tys zł`}
-            sub={`w cenie zakupu (${fmtC(sredniKoszt)} zł/szt)`} tone="warning" />
-        )}
-        <Kafelek label="Bez odniesienia" value={wynik.bezOdniesienia}
-          sub="pierwszy rok — brak porównania" />
-      </div>
-
-      <div style={note}>
-        {wynik.szczegoly.length > 0 && (
-          <>
-            Gdzie zabolało:{" "}
-            {wynik.szczegoly.map((x) => `${fmtM(`${x.m}-01`)} ${fmtNum(x.bylo)} szt zamiast ${fmtNum(x.popyt)} (−${fmtNum(x.strata)})`).join(" · ")}.{" "}
-          </>
-        )}
-        Miesiąc zapala się, gdy zapas <b>na początku miesiąca</b> nie pokrywał popytu z tego samego
-        miesiąca rok wcześniej <b>i</b> sprzedaż spadła poniżej mediany z trzech poprzednich miesięcy.
-        Drugi warunek jest po to, żeby nie zapalać miesiąca tylko dlatego, że jego odpowiednik rok
-        wcześniej był wyjątkowo dobry. Szacunek zakłada, że popyt był taki sam jak rok wcześniej.
-      </div>
-    </div>
-  );
-}
-
 // ── 2. MARŻA W CZASIE ────────────────────────────────────────
 function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null }) {
   const [tip, setTip] = useState<Tip>(null);
