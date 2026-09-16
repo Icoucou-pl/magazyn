@@ -331,7 +331,10 @@ function KosztLag({ h }: { h: Historia }) {
   const lo = Math.min(...wszystkie) * 0.92, hi = Math.max(...wszystkie) * 1.06;
   const t0 = new Date(h.stan_miesiecznie[0].miesiac).getTime();
   const t1 = new Date(h.stan_miesiecznie[h.stan_miesiecznie.length - 1].miesiac).getTime();
-  const X = (t: number) => L + ((t - t0) / Math.max(t1 - t0, 1)) * (W - L - R);
+  // Odstęp z prawej: bez niego linia kosztu dobijała dokładnie do krawędzi
+  // wykresu i wyglądała, jakby była ucięta w połowie miesiąca.
+  const PR = 14;
+  const X = (t: number) => L + ((t - t0) / Math.max(t1 - t0, 1)) * (W - L - R - PR);
   const Y = (v: number) => T + (1 - (v - lo) / (hi - lo || 1)) * (H - T - B);
 
   const lata = [...new Set(h.stan_miesiecznie.map((p) => p.miesiac.slice(0, 4)))];
@@ -365,6 +368,28 @@ function KosztLag({ h }: { h: Historia }) {
                 </g>
               );
             })}
+
+            {/* Podpisy miesięcy. Wcześniej oś X miała wyłącznie kreski na
+                początkach lat — przy historii mieszczącej się w jednym roku
+                (Acti, Veluxa) nie było na niej ANI JEDNEGO podpisu i nie dało
+                się odczytać, czego dotyczą kropki. */}
+            {(() => {
+              const ms = h.stan_miesiecznie;
+              const ile = Math.min(waski ? 3 : 5, ms.length);
+              if (ile < 2) return null;
+              return Array.from({ length: ile }, (_, k) => {
+                const p = ms[Math.round((k * (ms.length - 1)) / (ile - 1))];
+                const t = new Date(p.miesiac).getTime();
+                const x = X(t);
+                return (
+                  <text key={p.miesiac} x={x} y={H - B + 14}
+                        textAnchor={k === 0 ? "start" : k === ile - 1 ? "end" : "middle"}
+                        fill="var(--text-disabled)" fontSize={10} fontFamily="var(--font-mono)">
+                    {fmtM(p.miesiac)}
+                  </text>
+                );
+              });
+            })()}
 
             <path d={cogs.map((p, i) => {
               const t = new Date(p.miesiac).getTime() + 15 * 86400000;

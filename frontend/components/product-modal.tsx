@@ -357,21 +357,21 @@ export default function ProductModal({
             .pm-badges > *, .pm-badges button > span { padding-left: 6px !important; padding-right: 6px !important; }
           }
 
-          /* ZWINIĘTY NAGŁÓWEK — dwie wąskie linijki: SKU z przyciskami, pod
-             spodem przełącznik firmy. Zdjęcie, plakietki i nazwa znikają, bo
-             przy czytaniu wykresów i tak wiadomo, na co się patrzy.
+          /* ZWINIĘTY NAGŁÓWEK — TYLKO NA TELEFONIE. Na desktopie miejsca jest
+             dość i nagłówek ma stać nieruchomo; zwijanie pod kursorem byłoby
+             tam wyłącznie rozpraszające. Dlatego cały zestaw reguł siedzi w
+             zapytaniu medialnym, a nie przy klasie.
              Reguła ma !important, bo miniatura ma display w stylu inline,
              a inline wygrywa ze zwykłą regułą arkusza — bez tego zostawała
              widoczna i wypadała w losowe miejsce siatki. */
-          .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; }
-          .pm-head.is-compact .pm-thumb,
-          .pm-head.is-compact .pm-badges,
-          .pm-head.is-compact .pm-name { display: none !important; }
-          .pm-head.is-compact .pm-sku { font-size: 16px; }
-          /* Przyciski trzymają się GÓRNEJ krawędzi. Przy align-items: center
-             opadały na środek dwóch linijek i wyglądały na zgubione. */
-          .pm-head.is-compact { align-items: start; }
-          .pm-head.is-compact .pm-actions { align-self: start; }
+          @media (max-width: 640px) {
+            .pm-head.is-compact { grid-template-columns: 1fr auto; grid-template-areas: "main actions"; align-items: start; }
+            .pm-head.is-compact .pm-thumb,
+            .pm-head.is-compact .pm-badges,
+            .pm-head.is-compact .pm-name { display: none !important; }
+            .pm-head.is-compact .pm-sku { font-size: 16px; }
+            .pm-head.is-compact .pm-actions { align-self: start; }
+          }
         `}</style>
         <div style={{ padding: "18px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusMeta.dot }} />

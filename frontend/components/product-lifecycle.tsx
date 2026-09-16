@@ -477,7 +477,10 @@ export function KrzywaStanu({ h }: { h: Historia }) {
 
   const waski = useWaskiEkran();
   const W = waski ? 380 : 700, H = waski ? 210 : 250;
-  const L = waski ? 34 : 50, R = waski ? 20 : 14, T = 20, B = 34;
+  // L na telefonie było za wąskie — czterocyfrowe stany („1 054") nie mieściły
+  // się i pierwsza cyfra znikała za krawędzią. R z zapasem, bo na ostatnim
+  // miesiącu rysujemy prostokąt braku pokrycia o szerokości pełnego kroku.
+  const L = waski ? 48 : 50, R = waski ? 26 : 14, T = 20, B = 34;
   const maxS = Math.max(...pkt.map((p) => p.stan), 1) * 1.12;
   const X = (i: number) => L + (i / (pkt.length - 1)) * (W - L - R);
   const Y = (v: number) => T + (1 - v / maxS) * (H - T - B);
@@ -521,7 +524,14 @@ export function KrzywaStanu({ h }: { h: Historia }) {
             ) : null)}
 
             {pkt.map((p, i) => bezPokrycia.has(p.miesiac.slice(0, 7)) ? (
-              <rect key={`r${i}`} x={X(i) - krok / 2} y={T} width={krok} height={H - T - B}
+              // Przycięty do obszaru wykresu: na pierwszym i ostatnim miesiącu
+              // pełna szerokość kroku wychodziła poza oś i bok prostokąta był
+              // obcinany krawędzią SVG.
+              <rect key={`r${i}`}
+                    x={Math.max(L, X(i) - krok / 2)}
+                    y={T}
+                    width={Math.min(X(i) + krok / 2, W - R) - Math.max(L, X(i) - krok / 2)}
+                    height={H - T - B}
                     fill="var(--critical-soft)" stroke="var(--critical)" strokeWidth={1} />
             ) : null)}
 
