@@ -355,6 +355,24 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
         fakturownia_transit_by_firma.setdefault(m["slug"], {})[m["k"]] = q
         fakturownia_transit_all[m["k"]] = fakturownia_transit_all.get(m["k"], 0) + q
 
+    # Stan magazynu GŁÓWNEGO w Fakturowni per firma. Potrzebny do jednej rzeczy:
+    # wykrycia towaru, który leży na magazynie, ale nie istnieje w Sellasiście.
+    # Stan w aplikacji dla Acti i Veluxy pochodzi ze sklepu, więc dopóki ktoś nie
+    # wystawi produktu, karta pokazuje zero, sprzedaż zero i status „OK" — a towar
+    # stoi i nikt go nie sprzedaje. Liczby NIE podmieniamy (byłoby gorzej: problem
+    # zniknąłby z oczu), tylko wystawiamy ją obok jako ostrzeżenie.
+    fakturownia_magazyn: Dict[str, Dict[str, int]] = {}
+    r = await db.execute(text(f"""
+        SELECT LOWER(f.slug) AS slug, LOWER(TRIM(fs.sku)) AS k,
+               COALESCE(SUM(fs.stan_podstawowy), 0) AS q
+        FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
+        JOIN {settings.TABLE_FIRMY} f ON f.id = fs.firma_id
+        WHERE fs.sku IS NOT NULL AND fs.stan_podstawowy > 0
+        GROUP BY LOWER(f.slug), LOWER(TRIM(fs.sku))
+    """))
+    for m in r.mappings():
+        fakturownia_magazyn.setdefault(m["slug"], {})[m["k"]] = int(m["q"] or 0)
+
     # Stan sióstr (Sellasist) per SKU — osobne lekkie zapytanie, mergowane po SKU (jak incoming).
     # Bez parametru :shop — filtr „inny magazyn niż wybrany" robimy w calculate_forecast.
     transfer_result = await db.execute(text(TRANSFER_STOCK_QUERY))
@@ -433,6 +451,15 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
             wynik.nearest_delivery_date = glob.nearest_delivery_date
             wynik.nearest_delivery_source = glob.nearest_delivery_source
             wynik.incoming_deliveries = glob.incoming_deliveries
+
+        # Towar leży w Fakturowni, a sklep go nie zna. Zestawiamy TYLKO wtedy,
+        # gdy stan w aplikacji wynosi zero — przy niezerowym produkt jest w
+        # Sellasiście i drobne rozjazdy stanów to codzienność, nie anomalia.
+        if wynik.stock == 0:
+            wf = (fakturownia_magazyn.get(shop, {}).get(sku_key, 0) if shop
+                  else max((d.get(sku_key, 0) for d in fakturownia_magazyn.values()), default=0))
+            if wf > 0:
+                wynik.stan_erp_niewystawione = wf
 
         results.append(wynik)
     return results
