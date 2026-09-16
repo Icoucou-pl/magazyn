@@ -270,14 +270,37 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
               </circle>
             )))}
 
+            {/* Miesiąc bez sprzedaży: pionowa jasna kolumna zamiast gołej dziury.
+                Sama luka w słupkach wyglądała jak błąd rysowania, a jest
+                informacją — w tym miesiącu nic nie zeszło. */}
+            {osMiesiecy.map((m, i) => (dane.some((d) => d.m === m) ? null : (
+              <g key={`pusty${m}`}>
+                <rect x={X(i) - bw / 2} y={T} width={bw} height={H - T - B}
+                      fill="var(--surface-2)" opacity={0.5} rx={2} />
+                <text x={X(i)} y={(T + H - B) / 2} textAnchor="middle"
+                      fill="var(--text-disabled)" fontSize={9} fontFamily="var(--font-mono)">
+                  brak
+                </text>
+              </g>
+            )))}
+
+            {/* Linia marży: pełna między sąsiednimi miesiącami, PRZERYWANA nad
+                miesiącem bez sprzedaży. Ciągła sugerowałaby, że coś się w tym
+                czasie działo; całkowite urwanie wyglądało z kolei na usterkę. */}
             <path d={rozsadne.map((d, i) => {
               const poprz = i ? rozsadne[i - 1] : null;
-              // Przerwa w sprzedaży = przerwa w linii. Łączenie przez pusty
-              // miesiąc sugerowałoby ciągłość, której nie było.
               const ciagle = poprz != null && (poz.get(d.m) ?? 0) - (poz.get(poprz.m) ?? 0) === 1;
               return `${ciagle ? "L" : "M"}${xm(d.m)} ${Ym(d.marza)}`;
             }).join(" ")}
                   fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinejoin="round" />
+
+            <path d={rozsadne.map((d, i) => {
+              const poprz = i ? rozsadne[i - 1] : null;
+              if (!poprz || (poz.get(d.m) ?? 0) - (poz.get(poprz.m) ?? 0) === 1) return "";
+              return `M${xm(poprz.m)} ${Ym(poprz.marza)} L${xm(d.m)} ${Ym(d.marza)}`;
+            }).join(" ")}
+                  fill="none" stroke="var(--accent)" strokeWidth={1.6}
+                  strokeDasharray="3 4" opacity={0.55} />
             {[min.marza, max.marza].map((p, i) => (
               <text key={i} x={W - R + 6} y={Ym(p) + 3.5} fill="var(--accent)" fontSize={10} fontFamily="var(--font-mono)" opacity={0.8}>
                 {fmtC(p, 0)}%
