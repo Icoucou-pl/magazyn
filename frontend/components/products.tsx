@@ -46,6 +46,8 @@ export default function ProductsView({
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [firmy, setFirmy] = useState<Firma[]>([]);
+  // SKU, którego kartę właśnie otwieramy (null = nic w toku).
+  const [otwieranySku, setOtwieranySku] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   // Producent otwarty z chipa w karcie produktu. Katalogu ani kontenerów mu tu NIE
@@ -123,6 +125,12 @@ export default function ProductsView({
   useEffect(() => {
     if (!openSku) return;
     let cancelled = false;
+    // Okno pokazujemy OD RAZU, ze szkieletem. Wejście z dashboardu albo
+    // wyszukiwarki najpierw przerzuca na „Produkty", potem czeka na dwa
+    // zapytania (produkt zbiorczy, potem zawężony do firmy) i dopiero wtedy
+    // pojawiał się modal. Z boku wyglądało to jak zawieszenie — ekran
+    // podmieniał się na listę i przez chwilę nic się nie działo.
+    setOtwieranySku(openSku);
     (async () => {
       try {
         // Pierwszy strzał bez firmy — po to, żeby w ogóle poznać właściciela.
@@ -156,7 +164,7 @@ export default function ProductsView({
       } catch {
         if (!cancelled) toast(`Nie znaleziono produktu ${openSku}`, "info");
       }
-      if (!cancelled) onOpenedSku?.();
+      if (!cancelled) { setOtwieranySku(null); onOpenedSku?.(); }
     })();
     return () => { cancelled = true; };
   }, [openSku, onOpenedSku, firmy, shop, setShop]);
@@ -330,6 +338,35 @@ export default function ProductsView({
           onClose={() => setShowAddSample(false)}
           onCreated={() => { setFilter("sample"); reload(); }}
         />
+      )}
+      {/* Szkielet karty na czas pobierania. Znika w momencie, w którym
+          prawdziwy modal ma już dane — dzięki temu klik z dashboardu od razu
+          daje sygnał „otwieram", zamiast zostawiać użytkownika na liście. */}
+      {otwieranySku && !selectedProduct && (
+        <div onClick={() => setOtwieranySku(null)}
+             style={{
+               position: "fixed", inset: 0, zIndex: 60, background: "oklch(0 0 0 / 0.5)",
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+             }}>
+          <div className="pulse-soft" onClick={(e) => e.stopPropagation()}
+               style={{
+                 width: "min(880px, 100%)", maxHeight: "88vh", background: "var(--surface-1)",
+                 border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)",
+                 padding: 22, display: "flex", flexDirection: "column", gap: 14,
+               }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 64, height: 64, borderRadius: 10, background: "var(--surface-2)" }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--text-hi)" }}>
+                  {otwieranySku}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 4 }}>wczytuję kartę produktu…</div>
+              </div>
+            </div>
+            <div style={{ height: 70, background: "var(--surface-2)", borderRadius: "var(--r-md)" }} />
+            <div style={{ height: 180, background: "var(--surface-2)", borderRadius: "var(--r-md)" }} />
+          </div>
+        </div>
       )}
       {selectedProduct && (
         <ProductModal

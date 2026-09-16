@@ -205,7 +205,7 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
 
   const waski = useWaskiEkran();
   const W = waski ? 380 : 720, H = waski ? 230 : 280;
-  const L = waski ? 40 : 58, R = waski ? 30 : 44, T = 20, B = 34;
+  const L = waski ? 40 : 58, R = waski ? 34 : 44, T = 20, B = 34;
   const maxV = Math.max(...dane.map((d) => d.rev)) * 1.1;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxV) * (H - T - B);
@@ -235,7 +235,7 @@ function MarzaWCzasie({ h, season }: { h: Historia; season: SeasonPoint[] | null
         </div>
 
         <div style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxV * i) / 3, y = Y(v);
               return (
@@ -323,7 +323,7 @@ function KosztLag({ h }: { h: Historia }) {
 
   const waski = useWaskiEkran();
   const W = waski ? 380 : 720, H = waski ? 200 : 240;
-  const L = waski ? 34 : 52, R = waski ? 10 : 16, T = 20, B = 34;
+  const L = waski ? 34 : 52, R = waski ? 20 : 16, T = 20, B = 34;
   const wszystkie = [
     ...zakupy.map((p) => p.koszt_jednostkowy as number),
     ...cogs.map((p) => p.koszt_wlasny as number),
@@ -345,7 +345,7 @@ function KosztLag({ h }: { h: Historia }) {
 
       <div style={box}>
         <div style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = lo + ((hi - lo) * i) / 3, y = Y(v);
               return (
@@ -446,7 +446,7 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
 
   const waski = useWaskiEkran();
   const W = waski ? 380 : 720, H = waski ? 190 : 220;
-  const L = waski ? 38 : 56, R = waski ? 10 : 16, T = 20, B = 34;
+  const L = waski ? 38 : 56, R = waski ? 20 : 16, T = 20, B = 34;
   const maxL = Math.max(...dane.map((p) => p.logistyka_pln as number), 1) * 1.14;
   const X = (i: number) => L + (i + 0.5) * (W - L - R) / dane.length;
   const Y = (v: number) => T + (1 - v / maxL) * (H - T - B);
@@ -461,7 +461,7 @@ function NarzutLogistyczny({ h }: { h: Historia }) {
 
       <div style={box}>
         <div style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxL * i) / 3, y = Y(v);
               return (

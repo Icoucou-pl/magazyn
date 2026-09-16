@@ -328,6 +328,7 @@ export default function ProductModal({
           .pm-actions { grid-area: actions; display: flex; gap: 6px; justify-content: flex-end; }
           .pm-main    { grid-area: main; min-width: 0; }
           .pm-sku     { font-size: 20px; font-weight: 700; color: var(--text-hi); letter-spacing: -0.01em; }
+          .pm-firmabar { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; max-width: 100%; }
           .pm-name    { font-size: 14px; color: var(--text-mid); margin-top: 2px; }
 
           /* Nic nie wystaje poza kartę — inaczej całym modalem dawało się
@@ -365,9 +366,6 @@ export default function ProductModal({
           .pm-head.is-compact .pm-badges,
           .pm-head.is-compact .pm-name { display: none !important; }
           .pm-head.is-compact .pm-sku { font-size: 16px; }
-          /* Po zwinięciu podpis „Dane z firmy" jest zbędny — przełącznik i tak
-             mówi sam za siebie, a bez niego obie linijki wjeżdżają wyżej. */
-          .pm-head.is-compact .pm-firmalabel { display: none; }
           /* Przyciski trzymają się GÓRNEJ krawędzi. Przy align-items: center
              opadały na środek dwóch linijek i wyglądały na zgubione. */
           .pm-head.is-compact { align-items: start; }
@@ -1310,87 +1308,53 @@ function FirmaBar({ shop, setShop, allowed, firmy, isSuper, busy }: {
   };
 
   return (
-    // Na wąskim ekranie pasek się nie mieści i był ucinany na krawędzi karty —
-    // widać było „AMH SUBIEKT | Vel…”, a przycisku „Wszyscy” w ogóle. Pozwalamy
-    // się zawijać, a gdy i to nie starcza, przewijać w poziomie.
-    <div style={{
-      display: "flex", alignItems: "center", gap: 8, marginTop: 10,
-      flexWrap: "wrap", maxWidth: "100%", minWidth: 0,
-    }}>
+    <div className="pm-firmabar">
       {wiele ? (
         <>
-          <span className="pm-firmalabel" style={{ fontSize: 11, color: "var(--text-lo)" }}>Dane z firmy</span>
+          {/* Ten sam styl co przełącznik firm w pasku produktów: jedna
+              zaokrąglona ramka, aktywna pozycja na jaśniejszym tle. Dopiski
+              „SUBIEKT/FAKT" wyleciały — rozpychały pasek tak, że na telefonie
+              robił się z niego przewijak, a źródło danych i tak nikomu nic nie
+              mówi w tym miejscu. Zostaje w podpowiedzi po najechaniu. */}
           <div style={{
-            display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8,
-            overflowX: "auto", maxWidth: "100%", flexShrink: 1,
+            display: "inline-flex", gap: 2, padding: 3, background: "var(--surface-2)",
+            border: "1px solid var(--border)", borderRadius: 8, maxWidth: "100%", flexWrap: "wrap",
           }}>
-            {widoczne.map((f, i) => {
+            {widoczne.map((f) => {
               const on = f.firma === aktywna;
               return (
-                <button
-                  key={f.firma}
-                  onClick={() => setShop(f.firma)}
-                  title={opis(f)}
+                <button key={f.firma} onClick={() => setShop(f.firma)} title={opis(f)}
                   style={{
-                    background: on ? "var(--accent)" : "transparent",
-                    color: on ? "var(--accent-ink, #1a1a1a)" : "var(--text-mid)",
-                    border: "none",
-                    borderLeft: i ? "1px solid var(--border)" : "none",
-                    padding: "5px 11px",
-                    font: "inherit",
-                    fontSize: 12,
-                    fontWeight: on ? 600 : 400,
-                    cursor: on ? "default" : "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
+                    padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6,
+                    cursor: on ? "default" : "pointer", whiteSpace: "nowrap", border: "none",
+                    background: on ? "var(--surface-3)" : "transparent",
+                    color: on ? "var(--text-hi)" : "var(--text-mid)",
                   }}>
                   {etykieta(f.firma)}
-                  <span style={{ fontSize: 9.5, opacity: 0.7, letterSpacing: "0.04em" }}>
-                    {f.zrodlo === "fakturownia" ? "FAKT" : "SUBIEKT"}
-                  </span>
                 </button>
               );
             })}
             {wszyscyDozwolone && (
-              <button
-                onClick={() => setShop("")}
-                title="Suma wszystkich spółek — historia z AMH"
+              <button onClick={() => setShop("")} title="Suma wszystkich spółek — historia z AMH"
                 style={{
-                  background: !shop ? "var(--accent)" : "transparent",
-                  color: !shop ? "var(--accent-ink, #1a1a1a)" : "var(--text-mid)",
-                  border: "none",
-                  borderLeft: "1px solid var(--border)",
-                  padding: "5px 11px",
-                  font: "inherit",
-                  fontSize: 12,
-                  fontWeight: !shop ? 600 : 400,
-                  cursor: !shop ? "default" : "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 5,
-                  flexShrink: 0,
-                  whiteSpace: "nowrap",
+                  padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6,
+                  cursor: !shop ? "default" : "pointer", whiteSpace: "nowrap", border: "none",
+                  background: !shop ? "var(--surface-3)" : "transparent",
+                  color: !shop ? "var(--text-hi)" : "var(--text-mid)",
                 }}>
                 Wszyscy
-                <span style={{ fontSize: 9.5, opacity: 0.7, letterSpacing: "0.04em" }}>SUMA</span>
               </button>
             )}
           </div>
           {busy && (
             <span className="pulse-soft" style={{ fontSize: 11, color: "var(--text-lo)" }}>
-              wczytuję dane firmy…
-            </span>
-          )}
-          {!busy && !shop && (
-            <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
-              widok „Wszyscy" — historia z AMH
+              wczytuję…
             </span>
           )}
         </>
       ) : (
         <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm">
-          {shop ? `${etykieta(shop)} · ${zrodlo(shop)}` : "WSZYSCY · suma firm"}
+          {shop ? etykieta(shop) : "WSZYSCY"}
         </Pill>
       )}
     </div>

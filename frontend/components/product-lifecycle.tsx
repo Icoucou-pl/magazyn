@@ -294,7 +294,7 @@ export function KrzywaCeny({ h }: { h: Historia }) {
 
   const waski = useWaskiEkran();
   const W = waski ? 380 : 700, H = waski ? 200 : 240;
-  const L = waski ? 34 : 52, R = waski ? 10 : 16, T = 22, B = 34;
+  const L = waski ? 34 : 52, R = waski ? 20 : 16, T = 22, B = 34;
   const gorne = dane.map((p) => (tryb === "split" ? (p.koszt_jednostkowy as number) : wartosc(p)));
   const dolne = tryb === "split"
     ? dane.map((p) => p.towar_pln ?? (p.koszt_jednostkowy as number))
@@ -354,7 +354,7 @@ export function KrzywaCeny({ h }: { h: Historia }) {
         </div>
 
         <div style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = lo + ((hi - lo) * i) / 3, y = Y(v);
               return (
@@ -477,7 +477,7 @@ export function KrzywaStanu({ h }: { h: Historia }) {
 
   const waski = useWaskiEkran();
   const W = waski ? 380 : 700, H = waski ? 210 : 250;
-  const L = waski ? 34 : 50, R = waski ? 10 : 14, T = 20, B = 34;
+  const L = waski ? 34 : 50, R = waski ? 20 : 14, T = 20, B = 34;
   const maxS = Math.max(...pkt.map((p) => p.stan), 1) * 1.12;
   const X = (i: number) => L + (i / (pkt.length - 1)) * (W - L - R);
   const Y = (v: number) => T + (1 - v / maxS) * (H - T - B);
@@ -503,7 +503,7 @@ export function KrzywaStanu({ h }: { h: Historia }) {
 
       <div style={box}>
         <div style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H, overflow: "visible" }}>
             {[0, 1, 2, 3].map((i) => {
               const v = (maxS * i) / 3, y = Y(v);
               return (
