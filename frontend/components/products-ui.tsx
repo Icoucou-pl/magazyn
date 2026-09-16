@@ -62,6 +62,8 @@ export type Product = {
   seasonality_enabled: boolean;
   is_favorite: boolean;
   no_reorder?: boolean;
+  /** Sztuki leżące na magazynie w ERP, gdy sklep nie zna tego SKU (stan = 0). */
+  stan_erp_niewystawione?: number;
   is_sample: boolean;      // etykieta: produkt próbny — poza auto-sugestią, listą zakupów i anomaliami
   sample_stock: number;    // ręczny stan; liczy się tylko dla SKU spoza Subiektu i Sellasista
   ean: string | null;
