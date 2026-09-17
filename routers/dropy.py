@@ -267,6 +267,42 @@ async def set_prices(pid: int, payload: List[PriceIn], db: AsyncSession = Depend
     return {"updated": len(upserts), "deleted": len(deletes)}
 
 
+@router.get("/dropy/partners/{pid}/pricing")
+async def pricing_sheet(
+    pid: int,
+    firma: str = Query(..., description="slug jednej firmy partnera"),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_dropy),
+):
+    """Arkusz do ustawiania cen: WSZYSTKIE produkty firmy + cena partnera, jeśli już jest.
+
+    Cena zakupu leci z kanonicznego łańcucha (PRODUCT_PRICES_CTE przez fetch_products),
+    więc narzut procentowy liczy się od tej samej podstawy co marże w Produktach.
+    """
+    p = await _get_partner(db, pid)
+    firma = (firma or "").strip().lower()
+    if firma not in _firmy_out(p.get("firmy")):
+        raise HTTPException(403, f"Partner {p['code']} nie kupuje od firmy {firma}")
+
+    r = await db.execute(
+        text(f"SELECT LOWER(TRIM(sku)) AS k, price_net FROM {SCHEMA}.prices WHERE partner_id = :p"),
+        {"p": pid},
+    )
+    prices = {x["k"]: float(x["price_net"]) for x in r.mappings()}
+
+    out = []
+    for pr in await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, firma):
+        cena = prices.get(pr.sku.strip().lower())
+        zakup = float(pr.purchase_price or 0)
+        out.append({
+            "sku": pr.sku, "name": pr.name, "stock": int(pr.stock or 0),
+            "purchase_price": zakup, "price_net": cena,
+            "markup": round((cena / zakup - 1) * 100, 1) if cena and zakup else None,
+        })
+    out.sort(key=lambda x: (x["price_net"] is None, x["name"]))
+    return {"firma": firma, "rows": out}
+
+
 # ===== KONTA PORTALU =====
 @router.get("/dropy/partners/{pid}/users")
 async def list_portal_users(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
