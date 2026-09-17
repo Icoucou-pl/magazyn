@@ -23,6 +23,7 @@ export type User = {
   initials?: string;
   role: string; // 'ADMIN' | 'IMPORT' | 'VIEWER'
   isSuper?: boolean;
+  is_super_admin?: boolean;
   perms?: Record<string, boolean>;
   show_onboarding?: boolean;
   // Zakres firmowy: lista slugów z backendu (["acti","veluxa"]).
@@ -32,7 +33,14 @@ export type User = {
 
 type IconCmp = (props: IconProps) => React.ReactElement;
 
-type NavItem = { id: string; label: string; icon: IconCmp; perm?: string };
+type NavItem = { id: string; label: string; icon: IconCmp; perm?: string; superOnly?: boolean };
+
+// Dropy widzi na razie WYŁĄCZNIE super-admin (lustro require_dropy w routers/dropy.py).
+// Backend i tak odmówi reszcie, to tylko chowa pozycję, której i tak nie da się użyć.
+const isSuperUser = (u: User) => !!(u.is_super_admin ?? u.isSuper);
+const visibleNav = (u: User) => NAV_ITEMS.filter(
+  (item) => (!item.perm || can(u, item.perm)) && (!item.superOnly || isSuperUser(u))
+);
 
 export const NAV_ITEMS: NavItem[] = [
   { id: "dashboard",  label: "Dashboard",  icon: I.Dashboard },
@@ -43,6 +51,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "products",   label: "Produkty",   icon: I.Box },
   { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
   { id: "reports",    label: "Raporty",    icon: I.Calendar, perm: "viewReports" },
+  { id: "dropy",      label: "Dropy",      icon: I.Cart, superOnly: true },
 ];
 
 export const SIDEBAR_WIDTH = 224;
@@ -98,7 +107,7 @@ export function Sidebar({
 }: {
   view: string; setView: (v: string) => void; user: User;
 }) {
-  const navItems = NAV_ITEMS.filter((item) => !item.perm || can(user, item.perm));
+  const navItems = visibleNav(user);
   return (
     <aside className="app-sidebar hide-mobile" style={{
       position: "sticky", top: 0, alignSelf: "flex-start",
@@ -156,7 +165,7 @@ export function Topbar({
     return () => document.removeEventListener("click", close);
   }, [userMenuOpen]);
 
-  const navItems = NAV_ITEMS.filter((item) => !item.perm || can(user, item.perm));
+  const navItems = visibleNav(user);
   const displayName = user.name || user.email;
   const initials = user.initials || displayName.slice(0, 2).toUpperCase();
 
