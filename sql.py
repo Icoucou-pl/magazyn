@@ -473,16 +473,18 @@ SELECT UPPER(sku_canon) AS sku, cena FROM prod_prices;
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PIERWSZE WEJŚCIE SAMPLA NA MAGAZYN GŁÓWNY
+# CYKL ŻYCIA SAMPLA: PIERWSZE WEJŚCIE DO MAGAZYNU „W DRODZE" I NA MAGAZYN GŁÓWNY
 # ─────────────────────────────────────────────────────────────────────────────
-# Cykl życia sampla: SAMPLE (do pierwszej dostawy) → NOWOŚĆ (6 mies.) → zwykła klasyfikacja.
-# Osobne lekkie zapytanie mergowane po SKU w Pythonie (wzorzec INCOMING_QUERY) — SALES_QUERY
-# zostaje nietknięte, bez ryzyka fan-outu. Zawężone do SKU z etykietą sample.
-#   z_kontenera — najwcześniejsza POTWIERDZONA dostawa kontenera z tym SKU (delivered_date,
-#                 nie z przyszłości). Główne źródło: rozładunek = przeniesienie na główny.
-#   ze_stanu    — pierwszy snapshot ze stanem magazynu głównego > 0. Zabezpieczenie na
-#                 produkty, które leżą na głównym, a ich kontenera nikt nie domknął.
-#                 Snapshot bierze stan z Subiektu/Sellasista, nie z ręcznego sample_stock.
+# SAMPLE (do wejścia do magazynu w drodze) → NOWOŚĆ (6 mies. od dostawy na główny) → zwykła
+# klasyfikacja. Osobne lekkie zapytanie mergowane po SKU w Pythonie (wzorzec INCOMING_QUERY) —
+# SALES_QUERY zostaje nietknięte, bez ryzyka fan-outu. Zawężone do SKU z etykietą sample.
+#   z_kontenera   — najwcześniejsza POTWIERDZONA dostawa kontenera (delivered_date, nie z przyszłości)
+#   ze_stanu      — pierwszy snapshot ze stanem magazynu głównego > 0 (Subiekt/Sellasist,
+#                   nie ręczny sample_stock) — na produkty z niedomkniętym kontenerem
+#   wbite_od      — najwcześniejsze wbicie lotu/kontenera z tym SKU do ERP „w drodze"
+#   w_drodze_od   — pierwszy snapshot ze stanem magazynu „w drodze" > 0
+#   teraz_w_drodze— bieżący stan „w drodze" w Subiekcie albo Fakturowni (snapshot mógł
+#                   jeszcze nie złapać świeżego wbicia)
 SAMPLE_FIRST_ARRIVAL_QUERY = f"""
 WITH s AS (
     SELECT DISTINCT LOWER(TRIM(sku)) AS k
@@ -499,6 +501,21 @@ SELECT s.k,
        (SELECT MIN(ss.snap_date)
           FROM {settings.TABLE_STOCK_SNAPSHOTS} ss
          WHERE LOWER(TRIM(ss.sku)) = s.k
-           AND COALESCE(ss.stan_glowny, 0) > 0) AS ze_stanu
+           AND COALESCE(ss.stan_glowny, 0) > 0) AS ze_stanu,
+       (SELECT MIN(COALESCE(l.subiekt_wbite_at, c.subiekt_wbite_at))
+          FROM {settings.TABLE_CONTAINER_ITEMS} ci
+          JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+          LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
+         WHERE LOWER(TRIM(ci.sku)) = s.k
+           AND COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE)) AS wbite_od,
+       (SELECT MIN(ss.snap_date)
+          FROM {settings.TABLE_STOCK_SNAPSHOTS} ss
+         WHERE LOWER(TRIM(ss.sku)) = s.k
+           AND COALESCE(ss.stan_w_drodze, 0) > 0) AS w_drodze_od,
+       (EXISTS (SELECT 1 FROM {settings.TABLE_SUBIEKT_DWA} dwa
+                 WHERE LOWER(TRIM(dwa.sku)) = s.k AND COALESCE(dwa.stan_magazyn_w_drodze, 0) > 0)
+        OR EXISTS (SELECT 1 FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
+                    WHERE LOWER(TRIM(fs.sku)) = s.k AND COALESCE(fs.in_transit_qty, 0) > 0)
+       ) AS teraz_w_drodze
 FROM s;
 """
