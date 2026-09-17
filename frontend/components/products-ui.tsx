@@ -106,7 +106,8 @@ export type ColDef = {
 
 export const PRODUCT_COLS: ColDef[] = [
   { id: "fav", label: "", w: 36, align: "center", sortKey: null, alwaysVisible: true },
-  { id: "sku", label: "SKU", w: 168, align: "left", sortKey: "sku", alwaysVisible: true },
+  // 208 px (było 168): znacznik NOWOŚĆ obok SKU ucinał dłuższe symbole. Nazwa jest 1fr, więc oddaje miejsce.
+  { id: "sku", label: "SKU", w: 208, align: "left", sortKey: "sku", alwaysVisible: true },
   { id: "name", label: "Nazwa", w: "minmax(180px, 1fr)", align: "left", sortKey: "name", alwaysVisible: true },
   { id: "firma", label: "Firma", w: 110, align: "left", sortKey: "firma_name" },
   { id: "mfr", label: "Producent", w: 150, align: "left", sortKey: "manufacturer_name" },

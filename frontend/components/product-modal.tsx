@@ -1190,7 +1190,9 @@ function AttributesCard({
               ? "Jeszcze nie dotarł na magazyn główny"
               : product.is_new
                 ? `Dotarł ${fmtDay(product.first_arrival_date || "")} · nowość do ${fmtDay(product.new_until || "")}`
-                : `Dotarł ${fmtDay(product.first_arrival_date || "")} · okres nowości minął`}
+                : product.forced_status === "INACTIVE" || product.forced_status === "DEAD_STOCK"
+                  ? `Dotarł ${fmtDay(product.first_arrival_date || "")} · nowość wyłączona ręczną klasyfikacją`
+                  : `Dotarł ${fmtDay(product.first_arrival_date || "")} · okres nowości minął`}
           </div>
         )}
         {draft.isSample && (
