@@ -608,7 +608,8 @@ const dniMiedzy = (a: string, b: string) =>
 // da się go sprzedać z półki w Pucku. Wcześniej główną linią była suma obu
 // magazynów — przy SZP_W skakała o 50 szt w dniu zapłaty za kontener, choć
 // półka stała pusta do września. Suma zostaje jako przerywana linia, a różnica
-// między nimi to zakreskowany pas „na wodzie".
+// między nimi to zakreskowany pas „na wodzie". Bez podpisu na wykresie —
+// przy dłuższej historii zasłaniał krzywą; ilość w drodze jest w tooltipie.
 //
 // Oś schodzi pod zero: ujemny stan główny (sprzedaż przed dokumentem
 // magazynowym) to informacja, a przycinanie go do 0 udawało pustą półkę.
@@ -668,33 +669,6 @@ export function KrzywaStanu({ h }: { h: Historia }) {
       + " " + pkt.map((p, i) => [X(i), Y(glownyStan(p))] as const).reverse().map(([x, y]) => `L${x} ${y}`).join(" ")
       + " Z"
     : null;
-
-  // Podpisy pasa — jeden na ciąg miesięcy z towarem w drodze, w miejscu
-  // największej ilości. Pomijamy, gdy pas jest za niski albo podpisy by na
-  // siebie wjechały (długa historia z kilkoma kontenerami).
-  const podpisyPasa: { x: number; y: number; txt: string; w: number }[] = [];
-  if (maWDrodze) {
-    let i = 0;
-    let prawaKrawedz = -Infinity;
-    while (i < n) {
-      if (stanWDrodze(pkt[i]) <= 0.5) { i++; continue; }
-      let j = i, best = i;
-      while (j + 1 < n && stanWDrodze(pkt[j + 1]) > 0.5) {
-        j++;
-        if (stanWDrodze(pkt[j]) > stanWDrodze(pkt[best])) best = j;
-      }
-      const p = pkt[best];
-      const txt = `${fmtNum(Math.round(stanWDrodze(p)))} szt na wodzie`;
-      const w = txt.length * 6 + 18;
-      const wys = Y(glownyStan(p)) - Y(p.stan);
-      const x = Math.max(L + w / 2 + 2, Math.min(X(best), W - R - w / 2 - 2));
-      if (wys >= 24 && x - w / 2 > prawaKrawedz + 6) {
-        podpisyPasa.push({ x, y: (Y(glownyStan(p)) + Y(p.stan)) / 2, txt, w });
-        prawaKrawedz = x + w / 2;
-      }
-      i = j + 1;
-    }
-  }
 
   // Najniższy stan główny i ciąg miesięcy, w których się utrzymał.
   let iMin = 0;
@@ -801,14 +775,6 @@ export function KrzywaStanu({ h }: { h: Historia }) {
               );
             })}
             <path d={linia} fill="none" stroke="var(--accent)" strokeWidth={2.2} strokeLinejoin="round" />
-
-            {podpisyPasa.map((s, i) => (
-              <g key={`p${i}`} style={{ pointerEvents: "none" }}>
-                <rect x={s.x - s.w / 2} y={s.y - 11} width={s.w} height={20} rx={5}
-                      fill="var(--bg-elevated)" stroke="var(--info)" strokeOpacity={0.5} />
-                <text x={s.x} y={s.y + 3} textAnchor="middle" fill="var(--info)" fontSize={10.5} fontWeight={600}>{s.txt}</text>
-              </g>
-            ))}
 
             {pkt.map((p, i) => {
               const e = zdarzenia.get(p.miesiac.slice(0, 7));
