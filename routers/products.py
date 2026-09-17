@@ -109,9 +109,18 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     else:
         name_ov = (e.name_override if e else None)
 
-    # Etykieta SAMPLE: produkt wprowadzony próbnie. Do pierwszej dostawy status SAMPLE (poza
-    # auto-sugestią, listą zakupów i anomaliami), potem NOWOŚĆ na 6 mies. — services/products.py.
+    # Etykieta SAMPLE: produkt wprowadzony próbnie. Status SAMPLE (poza
+    # auto-sugestią, listą zakupów i anomaliami) do wejścia do magazynu w drodze, potem NOWOŚĆ
+    # do 6 mies. po dostawie — services/products.py.
     is_sample = payload.is_sample if payload.is_sample is not None else (bool(e.is_sample) if e else False)
+    # Zabezpieczenie: SKU obecny WYŁĄCZNIE dzięki etykiecie (brak w Subiekcie i Sellasiście) po
+    # odznaczeniu wypadłby z katalogu całkowicie — także z nieaktywnych — i nie dałoby się go znaleźć.
+    if e and bool(e.is_sample) and not is_sample and not await _found_in(db, sku, _CATALOG_SOURCES):
+        raise HTTPException(
+            409,
+            f"{sku} nie istnieje w Subiekcie ani Sellasiście — po odznaczeniu etykiety Sample zniknąłby "
+            "z aplikacji. Najpierw załóż go w ERP.",
+        )
     # Ręczny stan sampla — liczy się tylko dla SKU bez innego źródła stanu (patrz SALES_QUERY, src_pri = 4).
     sample_stock = payload.sample_stock if payload.sample_stock is not None else (int(e.sample_stock or 0) if e else 0)
 
@@ -498,11 +507,16 @@ async def create_sample(payload: SampleCreate, db: AsyncSession = Depends(get_db
 
 
 # (etykieta, tabela, kolumna z symbolem). Kolumna porównywana po LOWER(TRIM()).
-_DELETE_EXTERNAL_SOURCES = (
+# _CATALOG_SOURCES = źródła katalogu z SALES_QUERY (src_pri 0–3). SKU spoza nich żyje w katalogu
+# tylko dzięki etykiecie sample (src_pri 4) — pilnuje tego update_attrs przy odznaczaniu etykiety.
+_CATALOG_SOURCES = (
     ("Subiekt", settings.TABLE_SUBIEKT_DWA, "sku"),
     ("Subiekt (stara tabela)", settings.TABLE_PRODUCTS, settings.COL_PRODUCT_SKU),
     ("Sellasist — sprzedaż", settings.TABLE_ORDER_ITEMS, settings.COL_ITEM_SKU),
     ("Sellasist — magazyn", settings.TABLE_EXTERNAL_STOCK, "sku_canon"),
+)
+# Usuwanie jest ostrzejsze: Fakturownia nie buduje katalogu, ale SKU z jej stanami to prawdziwy towar.
+_DELETE_EXTERNAL_SOURCES = _CATALOG_SOURCES + (
     ("Fakturownia", settings.TABLE_FAKTUROWNIA_STOCK, "sku_canon"),
 )
 
@@ -530,9 +544,10 @@ async def _has_column(db: AsyncSession, table: str, column: str) -> bool:
     return r.first() is not None
 
 
-async def _delete_check(db: AsyncSession, sku: str) -> dict:
-    sources: list = []
-    for label, table, col in _DELETE_EXTERNAL_SOURCES:
+async def _found_in(db: AsyncSession, sku: str, sources: tuple) -> list:
+    """Etykiety źródeł z `sources`, w których SKU występuje (pusta lista = nigdzie)."""
+    found: list = []
+    for label, table, col in sources:
         if not await _has_column(db, table, col):
             continue
         r = await db.execute(
@@ -540,7 +555,12 @@ async def _delete_check(db: AsyncSession, sku: str) -> dict:
             {"sku": sku},
         )
         if r.first():
-            sources.append(label)
+            found.append(label)
+    return found
+
+
+async def _delete_check(db: AsyncSession, sku: str) -> dict:
+    sources = await _found_in(db, sku, _DELETE_EXTERNAL_SOURCES)
 
     r = await db.execute(
         text(f"""
