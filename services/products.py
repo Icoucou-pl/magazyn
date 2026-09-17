@@ -3,14 +3,15 @@ Logika produktowa: klasyfikacja statusu, prognoza wyczerpania zapasu,
 pobieranie listy produktów z naliczonymi metrykami.
 """
 
+import calendar
 from datetime import date, timedelta
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from sql import SALES_QUERY, INCOMING_QUERY, TRANSFER_STOCK_QUERY
+from sql import SALES_QUERY, INCOMING_QUERY, TRANSFER_STOCK_QUERY, SAMPLE_FIRST_ARRIVAL_QUERY
 from models import ProductSummary, IncomingDelivery
 from services.containers import compute_effective_status
 
@@ -56,20 +57,84 @@ def _arrival_and_source(inc: dict):
     return inc["eta_date"] + timedelta(days=n), "estimate"
 
 
+# ── Cykl życia sampla ────────────────────────────────────────
+# SAMPLE  → od ręcznego założenia do pierwszego wejścia na magazyn główny (także gdy płynie
+#           albo leży w magazynie „w drodze" — wtedy nie wypada z listy jako INACTIVE).
+# NOWOŚĆ  → przez NEW_PRODUCT_MONTHS od pierwszej dostawy. Status ACTIVE / ACTIVE_NO_STOCK,
+#           więc wchodzi normalnie do listy zakupów, auto-sugestii i anomalii, a zerowa
+#           sprzedaż świeżego produktu nie spycha go do DEAD_STOCK ani INACTIVE.
+# potem   → zwykła klasyfikacja. Etykieta is_sample zostaje jako historia („wszedł jako sampel")
+#           i nikt nie musi jej ręcznie odznaczać.
+NEW_PRODUCT_MONTHS = 6
+
+
+def _add_months(d: date, months: int) -> date:
+    m = d.month - 1 + months
+    y, m = d.year + m // 12, m % 12 + 1
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+async def fetch_sample_arrivals(db: AsyncSession) -> Dict[str, tuple]:
+    """{sku_canon: (z_kontenera, ze_stanu)} dla SKU z etykietą sample."""
+    r = await db.execute(text(SAMPLE_FIRST_ARRIVAL_QUERY))
+    return {m["k"]: (m["z_kontenera"], m["ze_stanu"]) for m in r.mappings() if m["k"]}
+
+
+def attach_first_arrival(row: dict, arrivals: Dict[str, tuple], today: Optional[date] = None) -> None:
+    """Dopisuje do wiersza SALES_QUERY `first_arrival_date` — dzień pierwszego wejścia sampla
+    na magazyn główny (None = jeszcze nie dotarł). Musi się wykonać PRZED classify_product.
+
+    Bierzemy NAJWCZEŚNIEJSZY dowód: dostarczony kontener, a dla SKU znanych Subiektowi /
+    Sellasistowi (src_pri < 4) także pierwszy snapshot ze stanem głównym albo bieżący stan > 0
+    (produkt już leży, ale snapshot jeszcze go nie złapał). Czysty sampel (src_pri 4) ma tylko
+    ręczny sample_stock — tego jako dowodu dostawy nie liczymy."""
+    if not row.get("is_sample", False):
+        row["first_arrival_date"] = None
+        return
+    today = today or date.today()
+    key = (row.get("sku") or "").strip().lower()
+    z_kontenera, ze_stanu = arrivals.get(key, (None, None))
+    kandydaci = [z_kontenera]
+    if int(row.get("src_pri", 4) or 0) < 4:
+        kandydaci.append(ze_stanu)
+        if int(row.get("stock_global", row.get("stock", 0)) or 0) > 0:
+            kandydaci.append(today)
+    znane = [d for d in kandydaci if d is not None]
+    row["first_arrival_date"] = min(znane) if znane else None
+
+
+def new_product_until(row: dict) -> Optional[date]:
+    """Do kiedy trwa NOWOŚĆ (wyłącznie dla sampli, które już dotarły)."""
+    if not row.get("is_sample", False):
+        return None
+    arrival = row.get("first_arrival_date")
+    return _add_months(arrival, NEW_PRODUCT_MONTHS) if arrival else None
+
+
+def is_new_product(row: dict, today: Optional[date] = None) -> bool:
+    until = new_product_until(row)
+    return until is not None and (today or date.today()) < until
+
+
 def classify_product(row: dict) -> str:
     """Status produktu. Ręczne wymuszenie (forced_status) ma najwyższy priorytet.
 
-    SAMPLE to etykieta, nie wynik obliczeń: produkt oznaczony is_sample dostaje status SAMPLE
-    niezależnie od stanu i sprzedaży. Dzięki temu wypada z auto-sugestii, listy zakupów i anomalii
-    (te czytają wyłącznie ACTIVE / ACTIVE_NO_STOCK) i nie zaśmieca dead stocku zerową sprzedażą.
-    Gdy sample się przyjmie — odznaczasz etykietę i produkt wraca do normalnej klasyfikacji.
+    Sample (etykieta is_sample) — patrz „Cykl życia sampla" wyżej:
+      • przed pierwszą dostawą → SAMPLE (poza auto-sugestią, listą zakupów i anomaliami),
+      • NOWOŚĆ → ACTIVE przy stanie, ACTIVE_NO_STOCK bez stanu,
+      • po okresie nowości → zwykła klasyfikacja poniżej.
+    Wymaga `first_arrival_date` w wierszu (attach_first_arrival); bez niego sample zostaje SAMPLE.
     """
     forced = row.get("forced_status")
     if forced and forced in ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"):
         return forced
 
     if row.get("is_sample", False):
-        return "SAMPLE"
+        if not row.get("first_arrival_date"):
+            return "SAMPLE"
+        if is_new_product(row):
+            stock_now = row.get("stock_global", row["stock"])
+            return "ACTIVE" if stock_now > 0 else "ACTIVE_NO_STOCK"
 
     # Status liczony GLOBALNIE (ze wszystkich sklepów), niezależnie od wybranej zakładki:
     # produkt aktywny gdziekolwiek jest aktywny wszędzie. Liczby per-sklep (stock, sales_*)
@@ -279,6 +344,9 @@ def calculate_forecast(row: dict, incoming: List[dict],
         is_favorite=row.get("is_favorite", False),
         is_sample=bool(row.get("is_sample", False)),
         sample_stock=int(row.get("sample_stock") or 0),
+        first_arrival_date=row.get("first_arrival_date"),
+        is_new=is_new_product(row),
+        new_until=new_product_until(row),
         ean=row.get("ean"),
         forced_status=row.get("forced_status"),
         lead_time_days=row["lead_time_days"],
@@ -314,6 +382,12 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
     IN_TRANSIT→DELIVERED w dniu ETA i tym samym zjadał okno odprawy."""
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     products = [dict(r._mapping) for r in products_result]
+
+    # Pierwsze wejście sampli na magazyn główny — przed klasyfikacją (SAMPLE vs NOWOŚĆ).
+    arrivals = await fetch_sample_arrivals(db)
+    today = date.today()
+    for p in products:
+        attach_first_arrival(p, arrivals, today)
 
     incoming_result = await db.execute(text(INCOMING_QUERY))
     incoming_all = [dict(r._mapping) for r in incoming_result]
