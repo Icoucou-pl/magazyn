@@ -9,7 +9,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I, Pill, MfrChip, STATUS_META, ContainerNr, isDraftNumber } from "./ui";
 import {
-  StatusPillExt, displayStatus, monthsDisplay,
+  StatusPillExt, displayStatus, monthsDisplay, NewBadge,
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
@@ -435,6 +435,7 @@ export default function ProductModal({
             )}
             <div className="pm-badges">
                 <StatusPillExt status={statusKey} size="md" />
+                {product.is_new && <NewBadge until={product.new_until} size="sm" />}
                 {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
                 {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
                 {product.manufacturer_id && product.manufacturer_name && (
@@ -1179,9 +1180,19 @@ function AttributesCard({
             const isForced = draft.classification !== "AUTO";
             return <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: isForced ? "var(--accent)" : "var(--text-hi)", fontWeight: 500 }}>{isForced && <span title="Wymuszony status">📌</span>}{opt?.label || draft.classification}</span>;
           }} />
-        {/* SAMPLE: etykieta produktu próbnego. Włączona → status SAMPLE, produkt wypada
-            z auto-sugestii, listy zakupów i anomalii. Wyłączenie = "sample się przyjął". */}
+        {/* SAMPLE: etykieta „wszedł jako sampel". Do pierwszej dostawy status SAMPLE (poza
+            auto-sugestią, listą zakupów i anomaliami), potem NOWOŚĆ na 6 mies., potem zwykła
+            klasyfikacja. Nie trzeba jej odznaczać — odznaczenie kasuje też znacznik nowości. */}
         <AttrToggle label="Sample (produkt próbny)" value={draft.isSample} editing={editing} onChange={(v) => setDraft({ ...draft, isSample: v })} />
+        {product.is_sample && !editing && (
+          <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: -4 }}>
+            {product.product_status === "SAMPLE"
+              ? "Jeszcze nie dotarł na magazyn główny"
+              : product.is_new
+                ? `Dotarł ${fmtDay(product.first_arrival_date || "")} · nowość do ${fmtDay(product.new_until || "")}`
+                : `Dotarł ${fmtDay(product.first_arrival_date || "")} · okres nowości minął`}
+          </div>
+        )}
         {draft.isSample && (
           <AttrInput
             label="Stan sampla (ręczny)"

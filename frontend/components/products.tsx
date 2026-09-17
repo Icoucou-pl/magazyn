@@ -222,7 +222,10 @@ export default function ProductsView({
       if (filter === "favorites") arr = arr.filter((p) => p.is_favorite);
       if (filter === "critical") arr = arr.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
       if (filter === "dead") arr = arr.filter((p) => p.product_status === "DEAD_STOCK");
-      if (filter === "sample") arr = arr.filter((p) => p.is_sample);
+      // „Sample" = jeszcze nie dotarł (status SAMPLE). Sampel po dostawie siedzi w „Nowościach",
+      // a po 6 mies. w zwykłych zakładkach — etykieta is_sample zostaje tylko jako historia.
+      if (filter === "sample") arr = arr.filter((p) => p.product_status === "SAMPLE");
+      if (filter === "nowosc") arr = arr.filter((p) => p.is_new);
     }
     if (sort.key) {
       const key = sort.key;
@@ -242,7 +245,8 @@ export default function ProductsView({
     favorites: products.filter((p) => p.is_favorite).length,
     critical: products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ").length,
     dead: products.filter((p) => p.product_status === "DEAD_STOCK").length,
-    sample: products.filter((p) => p.is_sample).length,
+    sample: products.filter((p) => p.product_status === "SAMPLE").length,
+    nowosc: products.filter((p) => p.is_new).length,
     all: products.length,
   }), [products]);
 

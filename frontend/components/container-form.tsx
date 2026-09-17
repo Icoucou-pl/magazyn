@@ -360,8 +360,9 @@ export default function ContainerFormModal({
 
     const usedSkus = new Set(items.map((i) => i.sku).filter(Boolean));
     const mfrId = !isConsolidated && manufacturerId ? Number(manufacturerId) : null;
-    // Ta sama pula co w rozwijanej liście (obserwowane), ale bez sampli — próbek się nie dozamawia.
-    const pool = selectableProducts.filter((p) => !p.is_sample && !usedSkus.has(p.sku) && (mfrId === null || p.manufacturer_id === mfrId));
+    // Ta sama pula co w rozwijanej liście (obserwowane), ale bez sampli, które jeszcze nie dotarły —
+    // próbek się nie dozamawia. NOWOŚĆ (sampel po dostawie) wchodzi normalnie.
+    const pool = selectableProducts.filter((p) => p.product_status !== "SAMPLE" && !usedSkus.has(p.sku) && (mfrId === null || p.manufacturer_id === mfrId));
 
     if (capacity - totalCbm <= 1e-6) { toast("Kontener już pełny — brak wolnego miejsca na autouzupełnienie", "info"); return; }
 

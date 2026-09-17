@@ -64,7 +64,10 @@ export type Product = {
   no_reorder?: boolean;
   /** Sztuki leżące na magazynie w ERP, gdy sklep nie zna tego SKU (stan = 0). */
   stan_erp_niewystawione?: number;
-  is_sample: boolean;      // etykieta: produkt próbny — poza auto-sugestią, listą zakupów i anomaliami
+  is_sample: boolean;      // etykieta „wszedł jako sampel". Status SAMPLE tylko do pierwszej dostawy
+  first_arrival_date?: string | null;   // sample: pierwsze wejście na magazyn główny (null = jeszcze nie dotarł)
+  is_new?: boolean;                     // NOWOŚĆ: 6 mies. od pierwszej dostawy — status ACTIVE / ACTIVE_NO_STOCK
+  new_until?: string | null;            // do kiedy trwa nowość
   sample_stock: number;    // ręczny stan; liczy się tylko dla SKU spoza Subiektu i Sellasista
   ean: string | null;
   forced_status: string | null;
@@ -135,6 +138,7 @@ const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }>
   { id: "critical", label: "Krytyczne" },
   { id: "dead", label: "Dead stock" },
   { id: "sample", label: "Sample", icon: <I.Flask size={11} /> },
+  { id: "nowosc", label: "Nowości", icon: <I.Sparkles size={11} /> },
   { id: "all", label: "Wszystkie" },
 ];
 
@@ -150,6 +154,7 @@ const SHOPS: Array<{ v: string; l: string; title: string }> = [
 // ── Helpery wyświetlania ─────────────────────────────────────
 // Status w tabeli: SAMPLE i DEAD_STOCK to statusy KATALOGOWE — wygrywają z urgencją zakupową
 // (sample nie jest "krytyczny", bo i tak nie wchodzi do listy zakupów ani auto-sugestii).
+// NOWOŚĆ nie jest tu statusem — ma zwykłą urgencję, a znacznik stoi obok SKU (NewBadge).
 export const displayStatus = (p: Product): string =>
   p.product_status === "SAMPLE" ? "SAMPLE"
     : p.product_status === "DEAD_STOCK" ? "DEAD_STOCK"
@@ -400,6 +405,7 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
             <ProductThumb photoId={p.photo_id} photoHash={p.photo_hash} />
           </PhotoHover>
           <span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.sku}</span>
+          {p.is_new && <NewBadge until={p.new_until} />}
         </div>
       );
     case "name":
@@ -449,6 +455,30 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
     default:
       return <div style={baseStyle} />;
   }
+}
+
+// ── Znacznik NOWOŚĆ ──────────────────────────────────────────
+// Nie jest statusem, tylko znacznikiem obok SKU: nowość ma normalny status (ACTIVE /
+// ACTIVE_NO_STOCK) i normalną urgencję zakupową, więc kolumna „Status" zostaje prawdziwa.
+export function fmtNewUntil(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : d.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+export function NewBadge({ until, size = "xs" }: { until?: string | null; size?: "xs" | "sm" }) {
+  const label = fmtNewUntil(until);
+  return (
+    <span title={label ? `Nowość do ${label}` : "Nowość"}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0,
+        padding: size === "xs" ? "1px 5px" : "2px 7px", borderRadius: 99,
+        background: "var(--ok-soft)", color: "var(--ok)",
+        fontSize: size === "xs" ? 9 : 10, fontWeight: 700, letterSpacing: "0.04em",
+      }}>
+      <I.Sparkles size={size === "xs" ? 9 : 10} />NOWOŚĆ
+    </span>
+  );
 }
 
 // ── StatusPill obsługujący DEAD_STOCK ────────────────────────
@@ -792,7 +822,7 @@ export function AddSampleModal({
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>Dodaj sample</div>
             <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 1 }}>
-              SKU spoza Subiektu i Sellasista — dostanie status SAMPLE i wypadnie z auto-sugestii
+              SKU spoza Subiektu i Sellasista — SAMPLE do pierwszej dostawy, potem NOWOŚĆ przez 6 mies.
             </div>
           </div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-lo)", display: "flex", padding: 4 }}><I.Close size={16} /></button>
