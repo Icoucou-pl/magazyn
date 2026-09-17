@@ -17,7 +17,7 @@
 // (z listy przyjęć typu ZAKUP). Zwroty żyją w tooltipie.
 // ============================================================
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/format";
 
@@ -55,7 +55,9 @@ export type Historia = {
   pierwsze_przyjecie: string | null;
   liczba_zakupow: number; sprowadzono_szt: number; sprowadzono_pln: number;
   przyjecia: Przyjecie[]; stan_miesiecznie: PunktStanu[];
-  dostawcy: Dostawca[]; miesiace_bez_pokrycia: string[]; dryf: number;
+  // `miesiace_bez_pokrycia` — zapas główny nie pokrywał sprzedaży (łącznie z brakiem).
+  // `miesiace_bez_towaru` — podzbiór: półka ≤ 0. Opcjonalne dla starszego backendu.
+  dostawcy: Dostawca[]; miesiace_bez_pokrycia: string[]; miesiace_bez_towaru?: string[]; dryf: number;
 };
 
 // ── Pomocnicze ───────────────────────────────────────────────
@@ -536,63 +538,212 @@ export function KrzywaCeny({ h }: { h: Historia }) {
   );
 }
 
+// ── Podział braków: brak towaru vs niski zapas ───────────────
+// Backend zwraca dwie listy: `miesiace_bez_pokrycia` (wszystko, co nie
+// pokrywało sprzedaży, łącznie z brakiem) i `miesiace_bez_towaru` (sam brak,
+// półka ≤ 0). Tu rozdzielamy je na dwa rozłączne zbiory. Fallback liczy brak
+// z krzywej, gdyby front wyszedł przed backendem bez nowego pola.
+export const glownyStan = (p: PunktStanu) => p.stan_polka ?? p.stan;
+export const stanWDrodze = (p: PunktStanu) => Math.max(0, p.stan - glownyStan(p));
+
+export function podzialBrakow(h: Historia): { brak: Set<string>; nisko: Set<string> } {
+  const pokrycie = new Set(h.miesiace_bez_pokrycia.map((d) => d.slice(0, 7)));
+  const brak = h.miesiace_bez_towaru
+    ? new Set(h.miesiace_bez_towaru.map((d) => d.slice(0, 7)))
+    : new Set(h.stan_miesiecznie
+        .filter((p) => pokrycie.has(p.miesiac.slice(0, 7)) && glownyStan(p) <= 0)
+        .map((p) => p.miesiac.slice(0, 7)));
+  const nisko = new Set([...pokrycie].filter((k) => !brak.has(k)));
+  return { brak, nisko };
+}
+
+/** Sklejone ciągi kolejnych miesięcy: [pierwszy, ostatni, ile]. Klucze „RRRR-MM". */
+export function ciagiMiesiecy(klucze: Iterable<string>): [string, string, number][] {
+  const s = [...klucze].sort();
+  const out: [string, string, number][] = [];
+  const idx = (k: string) => Number(k.slice(0, 4)) * 12 + Number(k.slice(5, 7));
+  let i = 0;
+  while (i < s.length) {
+    let j = i;
+    while (j + 1 < s.length && idx(s[j + 1]) - idx(s[j]) === 1) j++;
+    out.push([s[i], s[j], j - i + 1]);
+    i = j + 1;
+  }
+  return out;
+}
+
+/** Dopasowanie wjazdów na magazyn do zakupów „w drodze" — FIFO po ilości.
+ *
+ *  Przesunięcie nie wskazuje w danych, z którego PZ pochodzi towar, więc
+ *  zdejmujemy ilość z najstarszych niedojechanych zakupów. Zakup „dotarł"
+ *  dopiero wtedy, gdy wjechała cała jego ilość — przy częściowym wjeździe
+ *  zostaje w drodze. */
+export function dopasujWjazdy(przyjecia: Przyjecie[]) {
+  const zakupy = przyjecia
+    .filter((p) => p.typ === "ZAKUP" && p.w_drodze && p.ilosc > 0)
+    .map((p) => ({ p, zostalo: p.ilosc }));
+  const wjazdy = przyjecia.filter((p) => p.typ === "PRZESUNIECIE" && !p.w_drodze && p.ilosc > 0);
+  const dotarl = new Map<Przyjecie, string>();
+  const zakupWjazdu = new Map<Przyjecie, Przyjecie>();
+  let i = 0;
+  for (const w of wjazdy) {
+    let q = w.ilosc;
+    while (q > 1e-9 && i < zakupy.length && zakupy[i].p.data <= w.data) {
+      if (!zakupWjazdu.has(w)) zakupWjazdu.set(w, zakupy[i].p);
+      const ile = Math.min(q, zakupy[i].zostalo);
+      zakupy[i].zostalo -= ile;
+      q -= ile;
+      if (zakupy[i].zostalo <= 1e-9) { dotarl.set(zakupy[i].p, w.data); i++; }
+    }
+  }
+  return { dotarl, zakupWjazdu };
+}
+
+const dm = (s: string) => fmtD(s).slice(0, 5);
+const dniMiedzy = (a: string, b: string) =>
+  Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+
 // ── Krzywa stanu ─────────────────────────────────────────────
+// LINIA GŁÓWNA = MAGAZYN GŁÓWNY. Towar na „w drodze" płynie przez ocean i nie
+// da się go sprzedać z półki w Pucku. Wcześniej główną linią była suma obu
+// magazynów — przy SZP_W skakała o 50 szt w dniu zapłaty za kontener, choć
+// półka stała pusta do września. Suma zostaje jako przerywana linia, a różnica
+// między nimi to zakreskowany pas „na wodzie".
+//
+// Oś schodzi pod zero: ujemny stan główny (sprzedaż przed dokumentem
+// magazynowym) to informacja, a przycinanie go do 0 udawało pustą półkę.
 export function KrzywaStanu({ h }: { h: Historia }) {
   const { ref: refWykresu, w: W } = useSzerokoscWykresu();
   const waski = W < 520;
   const [tip, setTip] = useState<Tip>(null);
+  const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
 
   const pkt = h.stan_miesiecznie;
-  if (pkt.length < 2) return null;
 
-  // Dostawy (typ ZAKUP) w rozbiciu na miesiące — TYLKO one dostają kropkę.
-  // Zwroty siedzą w `przyjeto`, ale rysowane jako dostawa myliłyby.
-  const dostawy = useMemo(() => {
-    const m = new Map<string, number>();
+  // Zdarzenia per miesiąc: zakup na „w drodze" i wjazd na magazyn główny
+  // (zakup prosto na główny albo przesunięcie z „w drodze"). Zwroty i ruchy
+  // wewnętrzne kropek nie dostają — żyją w tooltipie.
+  const zdarzenia = useMemo(() => {
+    const m = new Map<string, { zakupy: Przyjecie[]; wjazdy: Przyjecie[]; zakupySzt: number }>();
+    const wez = (k: string) => {
+      let e = m.get(k);
+      if (!e) { e = { zakupy: [], wjazdy: [], zakupySzt: 0 }; m.set(k, e); }
+      return e;
+    };
     for (const p of h.przyjecia) {
-      if (p.typ !== "ZAKUP") continue;
-      const k = p.data.slice(0, 7);
-      m.set(k, (m.get(k) || 0) + p.ilosc);
+      if (p.ilosc <= 0) continue;
+      const e = wez(p.data.slice(0, 7));
+      if (p.typ === "ZAKUP") e.zakupySzt += p.ilosc;
+      if (p.typ === "ZAKUP" && p.w_drodze) e.zakupy.push(p);
+      else if (!p.w_drodze && (p.typ === "ZAKUP" || p.typ === "PRZESUNIECIE")) e.wjazdy.push(p);
     }
     return m;
   }, [h.przyjecia]);
 
-  const bezPokrycia = useMemo(
-    () => new Set(h.miesiace_bez_pokrycia.map((d) => d.slice(0, 7))),
-    [h.miesiace_bez_pokrycia],
-  );
+  const { brak, nisko } = useMemo(() => podzialBrakow(h), [h]);
 
+  if (pkt.length < 2) return null;
+
+  const n = pkt.length;
   const H = waski ? 210 : 250;
   // L na telefonie było za wąskie — czterocyfrowe stany („1 054") nie mieściły
   // się i pierwsza cyfra znikała za krawędzią. R z zapasem, bo na ostatnim
-  // miesiącu rysujemy prostokąt braku pokrycia o szerokości pełnego kroku.
+  // miesiącu rysujemy prostokąt braku o szerokości pełnego kroku.
   const L = waski ? 50 : 54, R = waski ? 18 : 16, T = 20, B = 34;
-  const maxS = Math.max(...pkt.map((p) => p.stan), 1) * 1.12;
-  const X = (i: number) => L + (i / (pkt.length - 1)) * (W - L - R);
-  const Y = (v: number) => T + (1 - v / maxS) * (H - T - B);
-  const krok = (W - L - R) / (pkt.length - 1);
 
-  const linia = pkt.map((p, i) => `${i ? "L" : "M"}${X(i)} ${Y(p.stan)}`).join(" ");
-  const najnizszy = pkt.reduce((a, b) => (b.stan < a.stan ? b : a));
+  const maWDrodze = pkt.some((p) => stanWDrodze(p) > 0.5);
+  const maxS = Math.max(...pkt.map((p) => Math.max(p.stan, glownyStan(p))), 1) * 1.12;
+  const minRaw = Math.min(0, ...pkt.map(glownyStan));
+  const minS = minRaw < 0 ? Math.min(minRaw * 1.4, -maxS * 0.07) : 0;
+  const X = (i: number) => L + (i / (n - 1)) * (W - L - R);
+  const Y = (v: number) => T + (1 - (v - minS) / (maxS - minS)) * (H - T - B);
+  const krok = (W - L - R) / (n - 1);
+  const y0 = Y(0);
 
-  // Druga linia — sam magazyn. Rysujemy ją tylko wtedy, gdy różni się od
-  // łącznej: przy produkcie bez towaru w drodze obie leżałyby na sobie i
-  // zaśmiecały wykres bez żadnej informacji.
-  const maPolke = pkt.some((p) => p.stan_polka != null && p.stan_polka !== p.stan);
-  const liniaPolka = maPolke
-    ? pkt.map((p, i) => `${i ? "L" : "M"}${X(i)} ${Y(Math.max(0, p.stan_polka ?? p.stan))}`).join(" ")
+  const linia = pkt.map((p, i) => `${i ? "L" : "M"}${X(i)} ${Y(glownyStan(p))}`).join(" ");
+  const obszar = `${linia} L${X(n - 1)} ${y0} L${X(0)} ${y0} Z`;
+
+  const pas = maWDrodze
+    ? pkt.map((p, i) => `${i ? "L" : "M"}${X(i)} ${Y(Math.max(p.stan, glownyStan(p)))}`).join(" ")
+      + " " + pkt.map((p, i) => [X(i), Y(glownyStan(p))] as const).reverse().map(([x, y]) => `L${x} ${y}`).join(" ")
+      + " Z"
     : null;
+
+  // Podpisy pasa — jeden na ciąg miesięcy z towarem w drodze, w miejscu
+  // największej ilości. Pomijamy, gdy pas jest za niski albo podpisy by na
+  // siebie wjechały (długa historia z kilkoma kontenerami).
+  const podpisyPasa: { x: number; y: number; txt: string; w: number }[] = [];
+  if (maWDrodze) {
+    let i = 0;
+    let prawaKrawedz = -Infinity;
+    while (i < n) {
+      if (stanWDrodze(pkt[i]) <= 0.5) { i++; continue; }
+      let j = i, best = i;
+      while (j + 1 < n && stanWDrodze(pkt[j + 1]) > 0.5) {
+        j++;
+        if (stanWDrodze(pkt[j]) > stanWDrodze(pkt[best])) best = j;
+      }
+      const p = pkt[best];
+      const txt = `${fmtNum(Math.round(stanWDrodze(p)))} szt na wodzie`;
+      const w = txt.length * 6 + 18;
+      const wys = Y(glownyStan(p)) - Y(p.stan);
+      const x = Math.max(L + w / 2 + 2, Math.min(X(best), W - R - w / 2 - 2));
+      if (wys >= 24 && x - w / 2 > prawaKrawedz + 6) {
+        podpisyPasa.push({ x, y: (Y(glownyStan(p)) + Y(p.stan)) / 2, txt, w });
+        prawaKrawedz = x + w / 2;
+      }
+      i = j + 1;
+    }
+  }
+
+  // Najniższy stan główny i ciąg miesięcy, w których się utrzymał.
+  let iMin = 0;
+  pkt.forEach((p, i) => { if (glownyStan(p) < glownyStan(pkt[iMin])) iMin = i; });
+  let jMin = iMin;
+  while (jMin + 1 < n && Math.abs(glownyStan(pkt[jMin + 1]) - glownyStan(pkt[iMin])) < 0.5) jMin++;
+  const brakWDrodze = pkt.filter((p) => brak.has(p.miesiac.slice(0, 7)) && stanWDrodze(p) > 0.5).length;
+  const maWjazdy = [...zdarzenia.values()].some((e) => e.wjazdy.length > 0);
+
+  const listaDok = (lista: Przyjecie[], slowo: string, kolor: string) => {
+    if (!lista.length) return null;
+    const szt = lista.reduce((s, p) => s + p.ilosc, 0);
+    const opis = lista.length <= 2
+      ? lista.map((p) => [p.numer_dokumentu, dm(p.data)].filter(Boolean).join(" · ")).join(", ")
+      : `${lista.length} dok.`;
+    return (
+      <div style={{ color: kolor, marginTop: 3 }}>
+        {slowo} {fmtNum(szt)} szt · {opis}
+      </div>
+    );
+  };
 
   return (
     <div style={sect}>
       <div style={sectHead}>
         <span style={sectTitle}>Stan magazynu w czasie</span>
-        <span style={sectHint}>odtworzony z ruchów, zakotwiczony na dzisiejszym stanie</span>
+        <span style={sectHint}>magazyn główny, odtworzony z ruchów</span>
+        {h.stan_magazyn != null && (
+          <span style={{ ...sectHint, marginLeft: "auto" }}>
+            dziś <b style={{ color: "var(--text-hi)", fontWeight: 600 }}>{fmtNum(h.stan_magazyn)} szt</b> na magazynie
+            {h.stan_w_drodze != null && (
+              <> · <b style={{ color: "var(--text-hi)", fontWeight: 600 }}>{fmtNum(h.stan_w_drodze)}</b> w drodze</>
+            )}
+          </span>
+        )}
       </div>
 
       <div style={box}>
         <div ref={refWykresu} style={{ position: "relative" }}>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%", height: H }}>
+            <defs>
+              <clipPath id={`${id}nad`}><rect x={0} y={0} width={W} height={Math.max(0, y0)} /></clipPath>
+              <clipPath id={`${id}pod`}><rect x={0} y={y0} width={W} height={Math.max(0, H - y0)} /></clipPath>
+              <pattern id={`${id}kreski`} width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width={6} height={6} fill="var(--info-soft)" />
+                <line x1={0} y1={0} x2={0} y2={6} stroke="var(--info)" strokeOpacity={0.5} strokeWidth={1.5} />
+              </pattern>
+            </defs>
+
             {[0, 1, 2, 3].map((i) => {
               const v = (maxS * i) / 3, y = Y(v);
               return (
@@ -602,6 +753,9 @@ export function KrzywaStanu({ h }: { h: Historia }) {
                 </g>
               );
             })}
+            {minS < 0 && (
+              <line x1={L} x2={W - R} y1={y0} y2={y0} stroke="var(--border-strong)" strokeWidth={1} />
+            )}
             {pkt.map((p, i) => p.miesiac.slice(5, 7) === "01" ? (
               // Kreska na styczniu zostaje, podpis roku nie — dublowałby się
               // z podpisami miesięcy niżej.
@@ -618,67 +772,98 @@ export function KrzywaStanu({ h }: { h: Historia }) {
               ) : null));
             })()}
 
-            {pkt.map((p, i) => bezPokrycia.has(p.miesiac.slice(0, 7)) ? (
-              // Przycięty do obszaru wykresu: na pierwszym i ostatnim miesiącu
-              // pełna szerokość kroku wychodziła poza oś i bok prostokąta był
-              // obcinany krawędzią SVG.
-              <rect key={`r${i}`}
-                    x={Math.max(L, X(i) - krok / 2)}
-                    y={T}
-                    width={Math.min(X(i) + krok / 2, W - R) - Math.max(L, X(i) - krok / 2)}
-                    height={H - T - B}
-                    fill="var(--critical-soft)" stroke="var(--critical)" strokeWidth={1} />
-            ) : null)}
+            {pkt.map((p, i) => {
+              // Każdy miesiąc osobnym prostokątem z obrysem — kreski na granicach
+              // miesięcy są celowe, bez nich czerwone tło ginęło pod pasem „w drodze".
+              // Przycięte do obszaru wykresu, żeby bok na krańcach nie był obcinany.
+              const k = p.miesiac.slice(0, 7);
+              const kolor = brak.has(k) ? "critical" : nisko.has(k) ? "warning" : null;
+              if (!kolor) return null;
+              const x0 = Math.max(L, X(i) - krok / 2);
+              const x1 = Math.min(X(i) + krok / 2, W - R);
+              return (
+                <rect key={`r${i}`} x={x0} y={T} width={x1 - x0} height={H - T - B}
+                      fill={`var(--${kolor}-soft)`} stroke={`var(--${kolor})`} strokeWidth={1} />
+              );
+            })}
 
-            <path d={`${linia} L${X(pkt.length - 1)} ${Y(0)} L${X(0)} ${Y(0)} Z`} fill="var(--accent-soft)" />
-            <path d={linia} fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinejoin="round" />
-            {liniaPolka && (
-              <path d={liniaPolka} fill="none" stroke="var(--text-lo)" strokeWidth={1.4}
-                    strokeDasharray="4 3" strokeLinejoin="round" />
-            )}
+            <path d={obszar} fill="var(--accent-soft)" clipPath={`url(#${id}nad)`} />
+            {minS < 0 && <path d={obszar} fill="var(--critical-soft)" clipPath={`url(#${id}pod)`} />}
+            {pas && <path d={pas} fill={`url(#${id}kreski)`} />}
+
+            {maWDrodze && pkt.map((p, i) => {
+              if (!i) return null;
+              const a = pkt[i - 1];
+              if (stanWDrodze(a) <= 0.5 && stanWDrodze(p) <= 0.5) return null;
+              return (
+                <line key={`d${i}`} x1={X(i - 1)} y1={Y(Math.max(a.stan, glownyStan(a)))} x2={X(i)} y2={Y(Math.max(p.stan, glownyStan(p)))}
+                      stroke="var(--info)" strokeWidth={1.4} strokeDasharray="4 3" />
+              );
+            })}
+            <path d={linia} fill="none" stroke="var(--accent)" strokeWidth={2.2} strokeLinejoin="round" />
+
+            {podpisyPasa.map((s, i) => (
+              <g key={`p${i}`} style={{ pointerEvents: "none" }}>
+                <rect x={s.x - s.w / 2} y={s.y - 11} width={s.w} height={20} rx={5}
+                      fill="var(--bg-elevated)" stroke="var(--info)" strokeOpacity={0.5} />
+                <text x={s.x} y={s.y + 3} textAnchor="middle" fill="var(--info)" fontSize={10.5} fontWeight={600}>{s.txt}</text>
+              </g>
+            ))}
 
             {pkt.map((p, i) => {
-              const q = dostawy.get(p.miesiac.slice(0, 7)) || 0;
-              return q > 0 ? (
-                <circle key={`d${i}`} cx={X(i)} cy={Y(p.stan)} r={4} fill="var(--info)" stroke="var(--bg)" strokeWidth={1.5} />
-              ) : null;
+              const e = zdarzenia.get(p.miesiac.slice(0, 7));
+              if (!e) return null;
+              return (
+                <g key={`z${i}`}>
+                  {e.zakupy.length > 0 && (
+                    <circle cx={X(i)} cy={Y(Math.max(p.stan, glownyStan(p)))} r={4.5} fill="var(--bg-elevated)" stroke="var(--info)" strokeWidth={2} />
+                  )}
+                  {e.wjazdy.length > 0 && (
+                    <circle cx={X(i)} cy={Y(glownyStan(p))} r={4.5} fill="var(--ok)" stroke="var(--bg)" strokeWidth={1.5} />
+                  )}
+                </g>
+              );
             })}
 
             {pkt.map((p, i) => {
-              const q = dostawy.get(p.miesiac.slice(0, 7)) || 0;
-              const zwroty = Math.max(0, p.przyjeto - q);
+              const k = p.miesiac.slice(0, 7);
+              const e = zdarzenia.get(k);
+              const zwroty = Math.max(0, p.przyjeto - (e?.zakupySzt || 0));
+              const g = glownyStan(p);
+              const wd = stanWDrodze(p);
               const [y, m] = p.miesiac.split("-");
               return (
                 <rect key={`h${i}`} x={X(i) - krok / 2} y={T} width={krok} height={H - T - B} fill="transparent"
                   style={{ cursor: "pointer" }}
-                  onMouseMove={(e) => setTip({
-                    x: e.clientX, y: e.clientY,
+                  onMouseMove={(ev) => setTip({
+                    x: ev.clientX, y: ev.clientY,
                     html: (
                       <>
                         <div className="mono" style={{ fontSize: 10.5, color: "var(--text-lo)", marginBottom: 3 }}>
                           {MIES[Number(m) - 1]} {y}
                         </div>
-                        <div><b>stan {fmtNum(p.stan)} szt</b></div>
-                        {p.stan_polka != null && p.stan_polka !== p.stan && (
-                          <div style={{ color: "var(--text-mid)" }}>
-                            na magazynie {fmtNum(p.stan_polka)} · w drodze {fmtNum(p.stan - p.stan_polka)}
+                        <div style={{ color: g <= 0 ? "var(--critical)" : "var(--text-hi)" }}>
+                          <b>na magazynie {fmtNum(Math.round(g))} szt</b>
+                        </div>
+                        {wd > 0.5 && (
+                          <div style={{ color: "var(--info)" }}>
+                            w drodze {fmtNum(Math.round(wd))} szt · łącznie {fmtNum(Math.round(p.stan))}
                           </div>
                         )}
-                        {q > 0 && <div style={{ color: "var(--info)", marginTop: 3 }}>dostawa {fmtNum(q)} szt</div>}
-                        <div style={{ color: "var(--text-mid)" }}>sprzedaż {fmtNum(p.sprzedano)} szt</div>
+                        {e && listaDok(e.zakupy, "zakup", "var(--info)")}
+                        {e && listaDok(e.wjazdy, "wjazd na magazyn", "var(--ok)")}
+                        <div style={{ color: "var(--text-mid)", marginTop: 3 }}>sprzedaż {fmtNum(p.sprzedano)} szt</div>
                         {p.wydano > p.sprzedano && (
                           <div style={{ color: "var(--text-lo)" }}>rozchód wewn. {fmtNum(p.wydano - p.sprzedano)} szt</div>
                         )}
                         {zwroty > 0 && <div style={{ color: "var(--text-lo)" }}>zwroty {fmtNum(zwroty)} szt</div>}
-                        {p.sprzedano > 0 && (() => {
-                          // Zapas liczymy z tego, co realnie było na półce.
-                          const dost = p.stan_polka != null ? p.stan_polka : p.stan;
-                          return (
-                            <div style={{ color: dost < p.sprzedano ? "var(--critical)" : "var(--text-lo)", marginTop: 3 }}>
-                              zapas na {fmtC(dost / p.sprzedano, 1)} mies.
-                            </div>
-                          );
-                        })()}
+                        {g <= 0 ? (
+                          <div style={{ color: "var(--critical)", marginTop: 3 }}>brak towaru na półce</div>
+                        ) : p.sprzedano > 0 ? (
+                          <div style={{ color: g < p.sprzedano ? "var(--warning)" : "var(--text-lo)", marginTop: 3 }}>
+                            zapas na {fmtC(g / p.sprzedano, 1)} mies.
+                          </div>
+                        ) : null}
                       </>
                     ),
                   })}
@@ -691,27 +876,43 @@ export function KrzywaStanu({ h }: { h: Historia }) {
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 14, padding: "9px 14px", borderTop: "1px solid var(--border-soft)", background: "var(--bg-elevated)", fontSize: 10, color: "var(--text-lo)" }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 10, height: 2, background: "var(--accent)" }} />stan na koniec miesiąca
+            <span style={{ width: 12, height: 2.2, background: "var(--accent)" }} />na magazynie głównym
           </span>
-          {liniaPolka && (
+          {maWDrodze && (
+            <>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 12, height: 0, borderTop: "1.4px dashed var(--info)" }} />łącznie z towarem w drodze
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 99, background: "var(--bg-elevated)", border: "2px solid var(--info)", boxSizing: "border-box" }} />zakup (wbity na w drodze)
+              </span>
+            </>
+          )}
+          {maWjazdy && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 10, height: 0, borderTop: "1.4px dashed var(--text-lo)" }} />na magazynie (bez towaru w drodze)
+              <span style={{ width: 9, height: 9, borderRadius: 99, background: "var(--ok)" }} />wjazd na magazyn
             </span>
           )}
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 9, height: 9, borderRadius: 99, background: "var(--info)" }} />dostawa
-          </span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 10, height: 8, background: "var(--critical-soft)", border: "1px solid var(--critical)" }} />zapas poniżej miesięcznej sprzedaży
-          </span>
+          {brak.size > 0 && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 10, height: 8, background: "var(--critical-soft)", border: "1px solid var(--critical)" }} />brak towaru
+            </span>
+          )}
+          {nisko.size > 0 && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 10, height: 8, background: "var(--warning-soft)", border: "1px solid var(--warning)" }} />zapas poniżej miesięcznej sprzedaży
+            </span>
+          )}
         </div>
       </div>
 
-      {bezPokrycia.size > 0 && (
+      {(brak.size > 0 || nisko.size > 0) && (
         <div style={note}>
-          Najniższy stan: <b style={{ color: "var(--critical)" }}>{fmtNum(najnizszy.stan)} szt</b> na koniec {fmtM(najnizszy.miesiac)}.
-          {" "}Miesięcy z zapasem poniżej własnej sprzedaży: {bezPokrycia.size}. Rozdzielczość jest miesięczna,
-          więc krótsza przerwa w środku miesiąca może tu nie być widoczna.
+          Na magazynie najniżej: <b style={{ color: glownyStan(pkt[iMin]) <= 0 ? "var(--critical)" : "var(--text-mid)" }}>{fmtNum(Math.round(glownyStan(pkt[iMin])))} szt</b>
+          {" "}{jMin > iMin ? `(${fmtM(pkt[iMin].miesiac)}–${fmtM(pkt[jMin].miesiac)})` : `na koniec ${fmtM(pkt[iMin].miesiac)}`}.
+          {brak.size > 0 && <> Bez towaru na półce: {brak.size} mies.{brakWDrodze > 0 && `, z czego ${brakWDrodze} mies. towar płynął`}.</>}
+          {nisko.size > 0 && <> Zapas poniżej sprzedaży: {nisko.size} mies.</>}
+          {" "}Rozdzielczość jest miesięczna, więc krótsza przerwa w środku miesiąca może tu nie być widoczna.
         </div>
       )}
       {Math.abs(h.dryf) > 0.5 && (
@@ -757,12 +958,18 @@ export function OsCzasu({ h }: { h: Historia }) {
     // wjazd towaru na magazyn główny. Wcześniej jedno i drugie nazywało się
     // dostawą, więc oś pokazywała „Ostatnia dostawa — 1000 szt" w dniu, w
     // którym towar dopiero wypłynął z Chin.
-    const slowo = (p: Przyjecie, duze = false) =>
-      p.w_drodze ? (duze ? "Zakup" : "zakup") : (duze ? "Dostawa" : "dostawa");
+    // Rodzaj też się zgadza: „Pierwszy zakup", ale „Pierwsza dostawa".
+    const tytul = (p: Przyjecie, ktory: "pierwszy" | "ostatni") => {
+      const zakup = !!p.w_drodze;
+      const przym = ktory === "pierwszy"
+        ? (zakup ? "Pierwszy" : "Pierwsza")
+        : (zakup ? "Ostatni" : "Ostatnia");
+      return `${przym} ${zakup ? "zakup" : "dostawa"} — ${fmtNum(p.ilosc)} szt`;
+    };
 
     z.push({
       data: zakupy[0].data, kolor: "var(--text-lo)",
-      tytul: `Pierwszy ${slowo(zakupy[0])} — ${fmtNum(zakupy[0].ilosc)} szt`,
+      tytul: tytul(zakupy[0], "pierwszy"),
       opis: `${opisDostawy(zakupy[0])} · produkt wchodzi do oferty`
             + (zakupy[0].w_drodze ? " · wbity na magazyn w drodze" : ""),
     });
@@ -770,7 +977,7 @@ export function OsCzasu({ h }: { h: Historia }) {
       const last = zakupy[zakupy.length - 1];
       z.push({
         data: last.data, kolor: last.w_drodze ? "var(--info)" : "var(--ok)",
-        tytul: `Ostatni ${slowo(last)} — ${fmtNum(last.ilosc)} szt`,
+        tytul: tytul(last, "ostatni"),
         opis: opisDostawy(last, zakupy[zakupy.length - 2])
               + (last.w_drodze ? " · wbity na magazyn w drodze" : ""),
       });
@@ -780,10 +987,19 @@ export function OsCzasu({ h }: { h: Historia }) {
     const przyjazdy = h.przyjecia.filter((p) => p.typ === "PRZESUNIECIE" && !p.w_drodze);
     const ostatniPrzyjazd = przyjazdy[przyjazdy.length - 1];
     if (ostatniPrzyjazd) {
+      // Ile płynął — od zakupu, z którego FIFO zdjęło pierwsze sztuki tego wjazdu.
+      const zakup = dopasujWjazdy(h.przyjecia).zakupWjazdu.get(ostatniPrzyjazd);
+      const dni = zakup ? dniMiedzy(zakup.data, ostatniPrzyjazd.data) : null;
+      const cz: string[] = [];
+      if (ostatniPrzyjazd.numer_dokumentu) cz.push(ostatniPrzyjazd.numer_dokumentu);
+      cz.push("przesunięcie z magazynu „w drodze\"");
+      cz.push(dni != null && dni >= 0
+        ? `płynął ${fmtNum(dni)} ${dni === 1 ? "dzień" : "dni"} od zakupu`
+        : "od tego dnia jest fizycznie dostępny");
       z.push({
         data: ostatniPrzyjazd.data, kolor: "var(--ok)",
         tytul: `Towar wjechał na magazyn — ${fmtNum(ostatniPrzyjazd.ilosc)} szt`,
-        opis: "przesunięcie z magazynu „w drodze\" · od tego dnia jest fizycznie dostępny",
+        opis: cz.join(" · "),
       });
     }
 
@@ -837,27 +1053,47 @@ export function OsCzasu({ h }: { h: Historia }) {
       });
     }
 
-    // Okresy bez pokrycia — sklejone w ciągi
-    const bez = [...h.miesiace_bez_pokrycia].sort();
-    let i = 0;
-    while (i < bez.length) {
-      let j = i;
-      while (j + 1 < bez.length) {
-        const a = new Date(bez[j]); const b = new Date(bez[j + 1]);
-        const roznica = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
-        if (roznica !== 1) break;
-        j++;
-      }
-      const ile = j - i + 1;
-      const stan = h.stan_miesiecznie.find((p) => p.miesiac === bez[j]);
-      z.push({
-        data: bez[j], kolor: "var(--critical)",
-        tytul: ile === 1
-          ? `Zapas poniżej miesięcznej sprzedaży`
-          : `Zapas poniżej sprzedaży przez ${ile} mies.`,
-        opis: `${ile === 1 ? fmtM(bez[i]) : `${fmtM(bez[i])} – ${fmtM(bez[j])}`}${stan ? ` · na koniec ${fmtNum(stan.stan)} szt przy sprzedaży ${fmtNum(stan.sprzedano)}/mies` : ""}`,
+    // Braki — liczone na magazynie głównym, sklejone w ciągi. Dwa rodzaje:
+    // brak towaru (półka ≤ 0) i niski zapas (jest, ale mniej niż sprzedaż).
+    // Wcześniej był tylko drugi, a miesiące z pustą półką i zerową sprzedażą
+    // wypadały — nie było czego sprzedać, więc „pokrycie" wyglądało na OK.
+    const { brak, nisko } = podzialBrakow(h);
+    const punkt = (k: string) => h.stan_miesiecznie.find((p) => p.miesiac.slice(0, 7) === k);
+    const zakres = (od: string, doK: string, ile: number) =>
+      ile === 1 ? fmtM(od) : `${fmtM(od)} – ${fmtM(doK)}`;
+
+    for (const [od, doK, ile] of ciagiMiesiecy(brak)) {
+      const koniec = punkt(doK);
+      const wCiagu = h.stan_miesiecznie.filter((p) => {
+        const k = p.miesiac.slice(0, 7);
+        return k >= od && k <= doK;
       });
-      i = j + 1;
+      const plynelo = Math.max(0, ...wCiagu.map(stanWDrodze));
+      // Zakup, który wtedy płynął: ostatni wbity na „w drodze" do końca ciągu.
+      const zakup = [...zakupy].reverse().find((p) => p.w_drodze && p.data.slice(0, 7) <= doK);
+      const cz = [zakres(od, doK, ile)];
+      if (koniec) cz.push(`na magazynie ${fmtNum(Math.round(glownyStan(koniec)))} szt`);
+      if (plynelo > 0.5) {
+        cz.push(zakup
+          ? `od ${dm(zakup.data)} w drodze ${fmtNum(Math.round(plynelo))} szt`
+          : `w drodze ${fmtNum(Math.round(plynelo))} szt`);
+      }
+      z.push({
+        data: `${doK}-01`, kolor: "var(--critical)",
+        tytul: ile === 1 ? "Brak towaru na magazynie" : `Brak towaru przez ${ile} mies.`,
+        opis: cz.join(" · "),
+      });
+    }
+
+    for (const [od, doK, ile] of ciagiMiesiecy(nisko)) {
+      const koniec = punkt(doK);
+      z.push({
+        data: `${doK}-01`, kolor: "var(--warning)",
+        tytul: ile === 1
+          ? "Zapas poniżej miesięcznej sprzedaży"
+          : `Zapas poniżej sprzedaży przez ${ile} mies.`,
+        opis: `${zakres(od, doK, ile)}${koniec ? ` · na koniec ${fmtNum(Math.round(glownyStan(koniec)))} szt przy sprzedaży ${fmtNum(koniec.sprzedano)}/mies` : ""}`,
+      });
     }
 
     return z.sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0));
@@ -933,6 +1169,14 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
     return [...p].reverse();
   }, [h.przyjecia, wszystkie]);
 
+  // Zakup „w drodze", który już w całości wjechał na magazyn, dostaje datę
+  // wjazdu zamiast plakietki „w drodze" — inaczej tabela twierdzi, że towar
+  // płynie, choć od tygodni leży na półce.
+  const { dotarl } = useMemo(() => dopasujWjazdy(h.przyjecia), [h.przyjecia]);
+  const ile = wiersze.length;
+  const pozycji = ile === 1 ? "pozycja"
+    : ile % 10 >= 2 && ile % 10 <= 4 && (ile % 100 < 12 || ile % 100 > 14) ? "pozycje" : "pozycji";
+
   const th: React.CSSProperties = {
     textAlign: "left", fontSize: 10, fontWeight: 600, letterSpacing: "0.05em",
     textTransform: "uppercase", color: "var(--text-lo)", padding: "9px 12px",
@@ -953,7 +1197,7 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
       <div style={sectHead}>
         <span style={sectTitle}>Zakupy</span>
         <span style={sectHint}>
-          {wiersze.length} pozycji · dokumenty PZ, czyli moment zapłaty i wbicia towaru
+          {ile} {pozycji} · {wszystkie ? "zakupy i przesunięcia" : "dokumenty PZ, czyli moment zapłaty i wbicia towaru"}
         </span>
         <button onClick={() => setWszystkie((v) => !v)}
           style={{ marginLeft: "auto", background: "none", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, padding: "3px 9px", cursor: "pointer" }}>
@@ -989,12 +1233,17 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
                       )}
                       {/* Ten dokument wbił towar na magazyn „w drodze" — data
                           w wierszu to dzień zapłaty, nie dzień przypłynięcia. */}
-                      {p.w_drodze && (
+                      {p.w_drodze && (dotarl.get(p) ? (
+                        <span className="mono" title={`wbite na magazyn w drodze ${fmtD(p.data)}, wjechało na magazyn ${fmtD(dotarl.get(p) as string)}`}
+                              style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "var(--ok-soft)", color: "var(--ok)" }}>
+                          dotarł {dm(dotarl.get(p) as string)}
+                        </span>
+                      ) : (
                         <span className="mono" title="wbite na magazyn w drodze — towar jeszcze płynie"
                               style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "var(--info-soft, var(--surface-2))", color: "var(--info)" }}>
                           w drodze
                         </span>
-                      )}
+                      ))}
                     </td>
                     {wszystkie && (
                       <td style={{ ...td, color: TYP_KOLOR[p.typ] || "var(--text-lo)", fontSize: 11 }}>{p.typ}</td>
