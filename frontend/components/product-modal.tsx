@@ -117,8 +117,10 @@ export default function ProductModal({
   // ── Zakładki: WYŁĄCZNIE super-admin ─────────────────────────
   // Zwykły użytkownik nie dostaje nawet paska — modal wygląda
   // dokładnie tak, jak przed tą zmianą. `hasHistory` jest sondą:
-  // SKU spoza Subiekta (Acti/Veluxa) dostają 404 i wtedy zakładki
-  // też się nie pokazują, bo nie byłoby czego w nich pokazać.
+  // SKU bez ruchów magazynowych w ERP wybranej firmy dostają 404 i wtedy
+  // znika TYLKO zakładka „Historia produktu". Pasek z „Przeglądem" i
+  // „Danymi" zostaje zawsze — wcześniej znikał cały i super-admin dostawał
+  // na takich SKU (np. Acti SZ1) stary, jednostronicowy układ.
   const isSuper = Boolean(
     (user as { is_super_admin?: boolean; isSuper?: boolean } | null)?.is_super_admin
     ?? (user as { isSuper?: boolean } | null)?.isSuper,
@@ -159,8 +161,8 @@ export default function ProductModal({
   // Zmiana zakładki przewija treść na górę — nagłówek ma wrócić rozwinięty.
   useEffect(() => { setCompact(false); }, [tab, product.sku]);
 
-  // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładki znikają i
-  // trzeba zejść z nieistniejącej. Bez tego modal pokazałby pustą treść.
+  // Wyjątek: gdy nowa firma nie ma historii tego SKU, zakładka historii znika
+  // i trzeba z niej zejść. Bez tego modal pokazałby pustą treść.
   useEffect(() => {
     if (!hasHistory && tab === "zycie2") setTab("przeglad");
   }, [hasHistory, tab]);
@@ -176,7 +178,7 @@ export default function ProductModal({
     return () => { alive = false; };
   }, [product.sku, isSuper]);
 
-  const showTabs = isSuper && hasHistory;
+  const showTabs = isSuper;
 
   // ── Usuwanie produktu: WYŁĄCZNIE super-admin ────────────────
   // Sonda jak przy historii: dla nie-super nie ma zapytania ani bloku w DOM.
@@ -486,15 +488,17 @@ export default function ProductModal({
           </div>
         </div>
 
-        {/* Pasek zakładek — renderuje się TYLKO dla super-admina i tylko
-            gdy SKU ma historię. Dla wszystkich innych nie ma go w DOM,
-            więc modal jest bit w bit taki jak przed tą zmianą. */}
+        {/* Pasek zakładek — renderuje się TYLKO dla super-admina (zawsze;
+            „Historia produktu" tylko gdy SKU ma historię). Dla wszystkich
+            innych nie ma go w DOM, więc modal jest bit w bit taki jak dawniej. */}
         {showTabs && (
           <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", overflowX: "auto", flexShrink: 0 }}>
             {/* Wersja 1 historii usunięta — 2.0 ją zastąpiła w całości i nosi
                 teraz jej nazwę. Komponent `product-lifecycle` zostaje w repo,
                 bo eksportuje kafelki, krzywe i typy używane przez 2.0. */}
-            {([["przeglad", "Przegląd"], ["zycie2", "Historia produktu"], ["dane", "Dane"]] as const).map(([k, label]) => (
+            {([["przeglad", "Przegląd"], ["zycie2", "Historia produktu"], ["dane", "Dane"]] as const)
+              .filter(([k]) => k !== "zycie2" || hasHistory)
+              .map(([k, label]) => (
               <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
                 style={{
                   background: "none", border: 0, padding: "12px 14px 11px",
