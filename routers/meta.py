@@ -11,7 +11,7 @@ from database import get_db
 from models import CurrentUser
 from security import get_current_user, resolve_shop
 from sql import SALES_QUERY
-from services.products import classify_product
+from services.products import classify_product, fetch_sample_arrivals, attach_first_arrival
 
 router = APIRouter(prefix="/api", tags=["meta"])
 
@@ -54,12 +54,14 @@ async def classification(shop: str = "", favorites_only: bool = False, db: Async
     """
     shop = resolve_shop(shop, user)
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
+    rows = [dict(r._mapping) for r in products_result]
+    arrivals = await fetch_sample_arrivals(db)   # SAMPLE vs NOWOŚĆ — to samo co fetch_products
     counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0, "SAMPLE": 0}
     dead_stock_value = 0.0
-    for r in products_result:
-        row = dict(r._mapping)
+    for row in rows:
         if favorites_only and not row.get("is_favorite", False):
             continue
+        attach_first_arrival(row, arrivals)
         s = classify_product(row)
         counts[s] = counts.get(s, 0) + 1
         if s == "DEAD_STOCK":
