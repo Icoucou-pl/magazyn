@@ -58,13 +58,13 @@ def _arrival_and_source(inc: dict):
 
 
 # ── Cykl życia sampla ────────────────────────────────────────
-# SAMPLE  → od ręcznego założenia do pierwszego wejścia na magazyn główny (także gdy płynie
-#           albo leży w magazynie „w drodze" — wtedy nie wypada z listy jako INACTIVE).
-# NOWOŚĆ  → przez NEW_PRODUCT_MONTHS od pierwszej dostawy. Status ACTIVE / ACTIVE_NO_STOCK,
-#           więc wchodzi normalnie do listy zakupów, auto-sugestii i anomalii, a zerowa
-#           sprzedaż świeżego produktu nie spycha go do DEAD_STOCK ani INACTIVE.
-# potem   → zwykła klasyfikacja. Etykieta is_sample zostaje jako historia („wszedł jako sampel")
-#           i nikt nie musi jej ręcznie odznaczać.
+# SAMPLE  → od ręcznego założenia do pierwszego pojawienia się w magazynie „w drodze" (albo od
+#           razu na głównym). Sampel dopiero zamówiony / płynący w kontenerze niewbitym zostaje SAMPLE.
+# NOWOŚĆ  → od wejścia do magazynu w drodze. Termin końca liczymy od DOSTAWY na główny
+#           (+NEW_PRODUCT_MONTHS), więc tranzyt nie zjada czasu nowości na półce; dopóki towar
+#           płynie, nowość nie ma daty końca. Status ACTIVE / ACTIVE_NO_STOCK — wchodzi normalnie
+#           do listy zakupów, auto-sugestii i anomalii, nie spada do DEAD_STOCK ani INACTIVE.
+# potem   → zwykła klasyfikacja. Etykieta is_sample zostaje jako historia („wszedł jako sampel").
 NEW_PRODUCT_MONTHS = 6
 
 
@@ -74,37 +74,45 @@ def _add_months(d: date, months: int) -> date:
     return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
 
 
-async def fetch_sample_arrivals(db: AsyncSession) -> Dict[str, tuple]:
-    """{sku_canon: (z_kontenera, ze_stanu)} dla SKU z etykietą sample."""
+async def fetch_sample_arrivals(db: AsyncSession) -> Dict[str, dict]:
+    """{sku_canon: {z_kontenera, ze_stanu, wbite_od, w_drodze_od, teraz_w_drodze}} dla sampli."""
     r = await db.execute(text(SAMPLE_FIRST_ARRIVAL_QUERY))
-    return {m["k"]: (m["z_kontenera"], m["ze_stanu"]) for m in r.mappings() if m["k"]}
+    return {m["k"]: dict(m) for m in r.mappings() if m["k"]}
 
 
-def attach_first_arrival(row: dict, arrivals: Dict[str, tuple], today: Optional[date] = None) -> None:
-    """Dopisuje do wiersza SALES_QUERY `first_arrival_date` — dzień pierwszego wejścia sampla
-    na magazyn główny (None = jeszcze nie dotarł). Musi się wykonać PRZED classify_product.
+def attach_first_arrival(row: dict, arrivals: Dict[str, dict], today: Optional[date] = None) -> None:
+    """Dopisuje do wiersza SALES_QUERY dwie daty (None = jeszcze nie):
+      • first_arrival_date — pierwsze wejście na magazyn GŁÓWNY (od niej liczymy 6 mies. nowości),
+      • first_transit_date — pierwsze pojawienie się w magazynie W DRODZE albo na głównym
+        (od niej produkt przestaje być SAMPLE i staje się NOWOŚCIĄ).
+    Musi się wykonać PRZED classify_product. Z każdej grupy dowodów bierzemy najwcześniejszy.
 
-    Bierzemy NAJWCZEŚNIEJSZY dowód: dostarczony kontener, a dla SKU znanych Subiektowi /
-    Sellasistowi (src_pri < 4) także pierwszy snapshot ze stanem głównym albo bieżący stan > 0
-    (produkt już leży, ale snapshot jeszcze go nie złapał). Czysty sampel (src_pri 4) ma tylko
-    ręczny sample_stock — tego jako dowodu dostawy nie liczymy."""
+    Bieżący stan główny > 0 liczymy tylko dla SKU znanych Subiektowi / Sellasistowi (src_pri < 4):
+    czysty sampel (src_pri 4) ma w `stock` ręczny sample_stock, który nie jest dowodem dostawy."""
     if not row.get("is_sample", False):
         row["first_arrival_date"] = None
+        row["first_transit_date"] = None
         return
     today = today or date.today()
-    key = (row.get("sku") or "").strip().lower()
-    z_kontenera, ze_stanu = arrivals.get(key, (None, None))
-    kandydaci = [z_kontenera]
-    if int(row.get("src_pri", 4) or 0) < 4:
-        kandydaci.append(ze_stanu)
-        if int(row.get("stock_global", row.get("stock", 0)) or 0) > 0:
-            kandydaci.append(today)
-    znane = [d for d in kandydaci if d is not None]
-    row["first_arrival_date"] = min(znane) if znane else None
+    a = arrivals.get((row.get("sku") or "").strip().lower(), {})
+
+    na_glownym = [a.get("z_kontenera"), a.get("ze_stanu")]
+    if int(row.get("src_pri", 4) or 0) < 4 and int(row.get("stock_global", row.get("stock", 0)) or 0) > 0:
+        na_glownym.append(today)
+    na_glownym = [d for d in na_glownym if d is not None]
+    arrival = min(na_glownym) if na_glownym else None
+
+    w_drodze = [arrival, a.get("wbite_od"), a.get("w_drodze_od")]
+    if a.get("teraz_w_drodze"):
+        w_drodze.append(today)
+    w_drodze = [d for d in w_drodze if d is not None]
+
+    row["first_arrival_date"] = arrival
+    row["first_transit_date"] = min(w_drodze) if w_drodze else None
 
 
 def new_product_until(row: dict) -> Optional[date]:
-    """Do kiedy trwa NOWOŚĆ (wyłącznie dla sampli, które już dotarły)."""
+    """Do kiedy trwa NOWOŚĆ: 6 mies. od dostawy na główny. None, gdy jeszcze nie dotarł."""
     if not row.get("is_sample", False):
         return None
     arrival = row.get("first_arrival_date")
@@ -117,25 +125,27 @@ def is_new_product(row: dict, today: Optional[date] = None) -> bool:
     # produkt dalej wisiałby w filtrze „Nowości" przy włączonych nieaktywnych.
     if row.get("forced_status") in ("INACTIVE", "DEAD_STOCK"):
         return False
+    if not row.get("is_sample", False) or not row.get("first_transit_date"):
+        return False
     until = new_product_until(row)
-    return until is not None and (today or date.today()) < until
+    return until is None or (today or date.today()) < until
 
 
 def classify_product(row: dict) -> str:
     """Status produktu. Ręczne wymuszenie (forced_status) ma najwyższy priorytet.
 
     Sample (etykieta is_sample) — patrz „Cykl życia sampla" wyżej:
-      • przed pierwszą dostawą → SAMPLE (poza auto-sugestią, listą zakupów i anomaliami),
+      • zanim pojawi się w magazynie w drodze → SAMPLE (poza auto-sugestią, listą zakupów i anomaliami),
       • NOWOŚĆ → ACTIVE przy stanie, ACTIVE_NO_STOCK bez stanu,
       • po okresie nowości → zwykła klasyfikacja poniżej.
-    Wymaga `first_arrival_date` w wierszu (attach_first_arrival); bez niego sample zostaje SAMPLE.
+    Wymaga dat z attach_first_arrival; bez nich sample zostaje SAMPLE.
     """
     forced = row.get("forced_status")
     if forced and forced in ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE"):
         return forced
 
     if row.get("is_sample", False):
-        if not row.get("first_arrival_date"):
+        if not row.get("first_transit_date"):
             return "SAMPLE"
         if is_new_product(row):
             stock_now = row.get("stock_global", row["stock"])
@@ -350,6 +360,8 @@ def calculate_forecast(row: dict, incoming: List[dict],
         is_sample=bool(row.get("is_sample", False)),
         sample_stock=int(row.get("sample_stock") or 0),
         first_arrival_date=row.get("first_arrival_date"),
+        first_transit_date=row.get("first_transit_date"),
+        app_only=int(row.get("src_pri", 0) or 0) >= 4,
         is_new=is_new_product(row),
         new_until=new_product_until(row),
         ean=row.get("ean"),
@@ -388,7 +400,7 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
     products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
     products = [dict(r._mapping) for r in products_result]
 
-    # Pierwsze wejście sampli na magazyn główny — przed klasyfikacją (SAMPLE vs NOWOŚĆ).
+    # Wejście sampli do magazynu w drodze / na główny — przed klasyfikacją (SAMPLE vs NOWOŚĆ).
     arrivals = await fetch_sample_arrivals(db)
     today = date.today()
     for p in products:
