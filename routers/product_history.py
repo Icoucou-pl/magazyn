@@ -176,6 +176,9 @@ class Historia(BaseModel):
     stan_miesiecznie: List[PunktStanu]
     dostawcy: List[Dostawca]
     miesiace_bez_pokrycia: List[date]
+    # Podzbiór powyższego: półka ≤ 0. Front rysuje go na czerwono jako brak
+    # towaru, resztę pokrycia na pomarańczowo jako niski zapas.
+    miesiace_bez_towaru: List[date] = []
     dryf: float
     # Metadane źródła — front pokazuje plakietkę i wie, czego nie rysować.
     zrodlo: str = "subiekt"          # "subiekt" | "fakturownia"
@@ -345,12 +348,42 @@ def _zloz(
 
     # Pokrycie liczymy na półce, jeśli ją mamy — inaczej miesiąc z pustym
     # magazynem i pełnym kontenerem na wodzie wyglądałby na zaopatrzony.
-    bez_pokrycia = [
-        p.miesiac
-        for p in stan_miesiecznie
-        if p.sprzedano > 0
-        and (p.stan_polka if p.stan_polka is not None else p.stan) < p.sprzedano
-    ]
+    #
+    # BRAK TOWARU (półka ≤ 0) liczymy osobno i niezależnie od sprzedaży.
+    # Sama reguła „zapas < sprzedaż" gubiła miesiące, w których półka stała
+    # pusta, bo nie było czego sprzedać — sprzedaż 0 wyglądała na pokrytą.
+    # SZP_W: czerwiec–sierpień 2026 z −2 szt na półce i 50 szt na wodzie
+    # pokazywał tylko dwa miesiące braku zamiast trzech.
+    #
+    # Żeby wygaszony produkt z zerowym stanem nie świecił brakiem przez lata,
+    # pusta półka bez sprzedaży jest brakiem tylko wtedy, gdy towar później
+    # wrócił na magazyn albo w tym miesiącu płynął.
+    # „Wrócił" = realna dostawa na główny (zakup albo przesunięcie z „w drodze"),
+    # nie pojedynczy zwrot od klienta.
+    miesiace_dostaw = {
+        p.data.replace(day=1)
+        for p in przyjecia
+        if p.ilosc > 0 and not p.w_drodze and p.typ in ("ZAKUP", "PRZESUNIECIE")
+    }
+    pozniej_wjazd: Dict[date, bool] = {}
+    byl_wjazd = False
+    for m in reversed(miesiace):
+        pozniej_wjazd[m] = byl_wjazd
+        if m in miesiace_dostaw:
+            byl_wjazd = True
+
+    bez_pokrycia: List[date] = []
+    bez_towaru: List[date] = []
+    for p in stan_miesiecznie:
+        polka = p.stan_polka if p.stan_polka is not None else p.stan
+        plynie = p.stan - polka > 0.5
+        brak = polka <= 0 and (
+            p.sprzedano > 0 or pozniej_wjazd[p.miesiac] or plynie
+        )
+        if brak:
+            bez_towaru.append(p.miesiac)
+        if brak or (p.sprzedano > 0 and polka < p.sprzedano):
+            bez_pokrycia.append(p.miesiac)
 
     # Dostawcy — wyłącznie realne zakupy z zewnątrz.
     agg: Dict[str, dict] = {}
@@ -404,6 +437,7 @@ def _zloz(
         stan_miesiecznie=stan_miesiecznie,
         dostawcy=dostawcy,
         miesiace_bez_pokrycia=bez_pokrycia,
+        miesiace_bez_towaru=bez_towaru,
         dryf=dryf,
         zrodlo=zrodlo,
         firma=firma,
