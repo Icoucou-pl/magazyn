@@ -112,6 +112,11 @@ def new_product_until(row: dict) -> Optional[date]:
 
 
 def is_new_product(row: dict, today: Optional[date] = None) -> bool:
+    # Ręczne „Nieaktywny" / „Dead stock" to świadoma decyzja, że produkt jest skreślony
+    # (np. sampel, który się nie przyjął) — znacznik NOWOŚĆ znika razem z nim, inaczej
+    # produkt dalej wisiałby w filtrze „Nowości" przy włączonych nieaktywnych.
+    if row.get("forced_status") in ("INACTIVE", "DEAD_STOCK"):
+        return False
     until = new_product_until(row)
     return until is not None and (today or date.today()) < until
 
