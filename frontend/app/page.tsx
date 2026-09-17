@@ -25,6 +25,7 @@ import ForecastView from "@/components/forecast";
 import FinanceView from "@/components/finance";
 import ReportsView from "@/components/reports";
 import SettingsView from "@/components/settings";
+import DropyView from "@/components/dropy";
 import CommandPalette from "@/components/command-palette";
 import EanScanner from "@/components/ean-scanner";
 import Assistant from "@/components/assistant";
@@ -338,6 +339,8 @@ export default function Page() {
           <FinanceView density={t.density} />
         ) : view === "reports" ? (
           <ReportsView />
+        ) : view === "dropy" ? (
+          <DropyView/>
         ) : view === "settings" ? (
           <SettingsView
             initialSection={pendingManufacturerId != null ? "manufacturers" : undefined}
