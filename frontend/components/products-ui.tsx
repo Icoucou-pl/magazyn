@@ -64,10 +64,13 @@ export type Product = {
   no_reorder?: boolean;
   /** Sztuki leżące na magazynie w ERP, gdy sklep nie zna tego SKU (stan = 0). */
   stan_erp_niewystawione?: number;
-  is_sample: boolean;      // etykieta „wszedł jako sampel". Status SAMPLE tylko do pierwszej dostawy
+  is_sample: boolean;      // etykieta „dodany ręcznie jako sampel" — znacznik 🧪 stoi, dopóki jest ptaszek.
+                           // Status SAMPLE (poza zakupami) tylko do wejścia do magazynu w drodze.
+  app_only?: boolean;      // w katalogu tylko dzięki etykiecie (brak w Subiekcie/Sellasiście) — ptaszka nie da się odznaczyć
   first_arrival_date?: string | null;   // sample: pierwsze wejście na magazyn główny (null = jeszcze nie dotarł)
-  is_new?: boolean;                     // NOWOŚĆ: 6 mies. od pierwszej dostawy — status ACTIVE / ACTIVE_NO_STOCK
-  new_until?: string | null;            // do kiedy trwa nowość
+  first_transit_date?: string | null;   // sample: pierwsze pojawienie się w magazynie w drodze (start nowości)
+  is_new?: boolean;                     // NOWOŚĆ: od magazynu w drodze do 6 mies. po dostawie — status ACTIVE / ACTIVE_NO_STOCK
+  new_until?: string | null;            // do kiedy trwa nowość (null = jeszcze płynie)
   sample_stock: number;    // ręczny stan; liczy się tylko dla SKU spoza Subiektu i Sellasista
   ean: string | null;
   forced_status: string | null;
@@ -406,6 +409,7 @@ function Cell({ col, product: p, onToggleFav, showFin }: { col: ColDef; product:
             <ProductThumb photoId={p.photo_id} photoHash={p.photo_hash} />
           </PhotoHover>
           <span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.sku}</span>
+          {p.is_sample && <SampleBadge />}
           {p.is_new && <NewBadge until={p.new_until} />}
         </div>
       );
@@ -470,7 +474,7 @@ export function fmtNewUntil(iso?: string | null): string {
 export function NewBadge({ until, size = "xs" }: { until?: string | null; size?: "xs" | "sm" }) {
   const label = fmtNewUntil(until);
   return (
-    <span title={label ? `Nowość do ${label}` : "Nowość"}
+    <span title={label ? `Nowość do ${label}` : "Nowość · w drodze (6 mies. liczone od dostawy)"}
       style={{
         display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0,
         padding: size === "xs" ? "1px 5px" : "2px 7px", borderRadius: 99,
@@ -478,6 +482,24 @@ export function NewBadge({ until, size = "xs" }: { until?: string | null; size?:
         fontSize: size === "xs" ? 9 : 10, fontWeight: 700, letterSpacing: "0.04em",
       }}>
       <I.Sparkles size={size === "xs" ? 9 : 10} />NOWOŚĆ
+    </span>
+  );
+}
+
+// ── Znacznik SAMPLE ──────────────────────────────────────────
+// Etykieta pochodzenia („dodany ręcznie jako sampel"), niezależna od NOWOŚCI i od statusu.
+// W tabeli sama ikona (kolumna SKU jest ciasna przy dwóch znacznikach), w karcie z tekstem.
+export function SampleBadge({ size = "xs" }: { size?: "xs" | "sm" }) {
+  const xs = size === "xs";
+  return (
+    <span title="Sample — produkt dodany ręcznie"
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 3, flexShrink: 0,
+        padding: xs ? 0 : "2px 7px", width: xs ? 16 : undefined, height: xs ? 16 : undefined,
+        borderRadius: 99, background: "var(--anomaly-soft)", color: "var(--anomaly)",
+        fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
+      }}>
+      <I.Flask size={xs ? 10 : 10} />{!xs && "SAMPLE"}
     </span>
   );
 }
@@ -823,7 +845,7 @@ export function AddSampleModal({
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)" }}>Dodaj sample</div>
             <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 1 }}>
-              SKU spoza Subiektu i Sellasista — SAMPLE do pierwszej dostawy, potem NOWOŚĆ przez 6 mies.
+              SKU spoza Subiektu i Sellasista — SAMPLE do magazynu w drodze, potem NOWOŚĆ do 6 mies. po dostawie
             </div>
           </div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-lo)", display: "flex", padding: 4 }}><I.Close size={16} /></button>

@@ -9,7 +9,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I, Pill, MfrChip, STATUS_META, ContainerNr, isDraftNumber } from "./ui";
 import {
-  StatusPillExt, displayStatus, monthsDisplay, NewBadge,
+  StatusPillExt, displayStatus, monthsDisplay, NewBadge, SampleBadge,
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
@@ -437,6 +437,7 @@ export default function ProductModal({
             )}
             <div className="pm-badges">
                 <StatusPillExt status={statusKey} size="md" />
+                {product.is_sample && <SampleBadge size="sm" />}
                 {product.is_new && <NewBadge until={product.new_until} size="sm" />}
                 {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
                 {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
@@ -1114,8 +1115,9 @@ function AttributesCard({
       })) as Product;
       onSaved(updated);
       setEditing(false);
-    } catch {
-      toast("Nie udało się zapisać atrybutów", "warning");
+    } catch (e) {
+      // 409 z backendu niesie konkretny powód (np. blokada odznaczenia sampla spoza ERP).
+      toast(e instanceof Error && e.message ? e.message : "Nie udało się zapisać atrybutów", "warning");
     } finally { setBusy(false); }
   };
 
@@ -1184,19 +1186,30 @@ function AttributesCard({
             const isForced = draft.classification !== "AUTO";
             return <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: isForced ? "var(--accent)" : "var(--text-hi)", fontWeight: 500 }}>{isForced && <span title="Wymuszony status">📌</span>}{opt?.label || draft.classification}</span>;
           }} />
-        {/* SAMPLE: etykieta „wszedł jako sampel". Do pierwszej dostawy status SAMPLE (poza
-            auto-sugestią, listą zakupów i anomaliami), potem NOWOŚĆ na 6 mies., potem zwykła
-            klasyfikacja. Nie trzeba jej odznaczać — odznaczenie kasuje też znacznik nowości. */}
-        <AttrToggle label="Sample (produkt próbny)" value={draft.isSample} editing={editing} onChange={(v) => setDraft({ ...draft, isSample: v })} />
+        {/* SAMPLE: etykieta „wszedł jako sampel". Status SAMPLE (poza auto-sugestią, listą zakupów
+            i anomaliami) do wejścia do magazynu w drodze, potem NOWOŚĆ do 6 mies. po dostawie na
+            główny, potem zwykła klasyfikacja. Odznaczenie = „produkt się przyjął": znika znacznik
+            i nowość. SKU spoza Subiekta/Sellasista (app_only) wypadłby wtedy z aplikacji, więc
+            ptaszek jest zablokowany — to samo pilnuje backend (409). */}
+        <AttrToggle label="Sample (produkt próbny)" value={draft.isSample} editing={editing}
+          locked={Boolean(product.app_only && product.is_sample)}
+          onChange={(v) => setDraft({ ...draft, isSample: v })} />
+        {product.app_only && product.is_sample && editing && (
+          <div style={{ fontSize: 11, color: "var(--warning)", padding: "0 14px 8px", lineHeight: 1.4 }}>
+            Tego SKU nie ma w Subiekcie ani Sellasiście — po odznaczeniu zniknąłby z aplikacji. Najpierw załóż go w ERP.
+          </div>
+        )}
         {product.is_sample && !editing && (
-          <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: -4 }}>
+          <div style={{ fontSize: 11, color: "var(--text-lo)", padding: "0 14px 8px", lineHeight: 1.4 }}>
             {product.product_status === "SAMPLE"
-              ? "Jeszcze nie dotarł na magazyn główny"
-              : product.is_new
-                ? `Dotarł ${fmtDay(product.first_arrival_date || "")} · nowość do ${fmtDay(product.new_until || "")}`
-                : product.forced_status === "INACTIVE" || product.forced_status === "DEAD_STOCK"
-                  ? `Dotarł ${fmtDay(product.first_arrival_date || "")} · nowość wyłączona ręczną klasyfikacją`
-                  : `Dotarł ${fmtDay(product.first_arrival_date || "")} · okres nowości minął`}
+              ? "Jeszcze nie ma go w magazynie w drodze"
+              : product.forced_status === "INACTIVE" || product.forced_status === "DEAD_STOCK"
+                ? "Nowość wyłączona ręczną klasyfikacją"
+                : !product.first_arrival_date
+                  ? `W drodze od ${fmtDay(product.first_transit_date || "")} · nowość, 6 mies. liczone od dostawy`
+                  : product.is_new
+                    ? `Dotarł ${fmtDay(product.first_arrival_date)} · nowość do ${fmtDay(product.new_until || "")}`
+                    : `Dotarł ${fmtDay(product.first_arrival_date)} · okres nowości minął`}
           </div>
         )}
         {draft.isSample && (
@@ -1405,11 +1418,12 @@ function AttrSelect({ label, value, options, editing, onChange, renderDisplay }:
   );
 }
 
-function AttrToggle({ label, value, editing, onChange }: { label: string; value: boolean; editing: boolean; onChange: (v: boolean) => void }) {
+function AttrToggle({ label, value, editing, onChange, locked = false }: { label: string; value: boolean; editing: boolean; onChange: (v: boolean) => void; locked?: boolean }) {
+  const active = editing && !locked;
   return (
     <div style={attrRowStyle}>
-      <span style={attrLabelStyle}>{label}</span>
-      <button onClick={() => editing && onChange(!value)} disabled={!editing} style={{ width: 34, height: 18, borderRadius: 99, background: value ? "var(--accent)" : "var(--surface-3)", border: "none", padding: 0, position: "relative", cursor: editing ? "pointer" : "default", opacity: editing ? 1 : 0.7, transition: "background 0.16s" }}>
+      <span style={attrLabelStyle}>{label}{locked && editing && <span title="Zablokowane" style={{ marginLeft: 4 }}>🔒</span>}</span>
+      <button onClick={() => active && onChange(!value)} disabled={!active} style={{ width: 34, height: 18, borderRadius: 99, background: value ? "var(--accent)" : "var(--surface-3)", border: "none", padding: 0, position: "relative", cursor: active ? "pointer" : editing ? "not-allowed" : "default", opacity: active ? 1 : 0.7, transition: "background 0.16s" }}>
         <span style={{ position: "absolute", top: 2, left: value ? 18 : 2, width: 14, height: 14, borderRadius: 99, background: value ? "var(--accent-ink)" : "var(--text-mid)", transition: "left 0.16s" }} />
       </button>
     </div>
