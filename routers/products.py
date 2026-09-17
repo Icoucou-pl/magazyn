@@ -109,7 +109,8 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     else:
         name_ov = (e.name_override if e else None)
 
-    # Etykieta SAMPLE: produkt zamawiany próbnie. Wypada z auto-sugestii, listy zakupów i anomalii.
+    # Etykieta SAMPLE: produkt wprowadzony próbnie. Do pierwszej dostawy status SAMPLE (poza
+    # auto-sugestią, listą zakupów i anomaliami), potem NOWOŚĆ na 6 mies. — services/products.py.
     is_sample = payload.is_sample if payload.is_sample is not None else (bool(e.is_sample) if e else False)
     # Ręczny stan sampla — liczy się tylko dla SKU bez innego źródła stanu (patrz SALES_QUERY, src_pri = 4).
     sample_stock = payload.sample_stock if payload.sample_stock is not None else (int(e.sample_stock or 0) if e else 0)
