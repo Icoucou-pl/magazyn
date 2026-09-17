@@ -470,3 +470,35 @@ PRODUCT_PRICES_QUERY = f"""
 WITH {PRODUCT_PRICES_CTE}
 SELECT UPPER(sku_canon) AS sku, cena FROM prod_prices;
 """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIERWSZE WEJŚCIE SAMPLA NA MAGAZYN GŁÓWNY
+# ─────────────────────────────────────────────────────────────────────────────
+# Cykl życia sampla: SAMPLE (do pierwszej dostawy) → NOWOŚĆ (6 mies.) → zwykła klasyfikacja.
+# Osobne lekkie zapytanie mergowane po SKU w Pythonie (wzorzec INCOMING_QUERY) — SALES_QUERY
+# zostaje nietknięte, bez ryzyka fan-outu. Zawężone do SKU z etykietą sample.
+#   z_kontenera — najwcześniejsza POTWIERDZONA dostawa kontenera z tym SKU (delivered_date,
+#                 nie z przyszłości). Główne źródło: rozładunek = przeniesienie na główny.
+#   ze_stanu    — pierwszy snapshot ze stanem magazynu głównego > 0. Zabezpieczenie na
+#                 produkty, które leżą na głównym, a ich kontenera nikt nie domknął.
+#                 Snapshot bierze stan z Subiektu/Sellasista, nie z ręcznego sample_stock.
+SAMPLE_FIRST_ARRIVAL_QUERY = f"""
+WITH s AS (
+    SELECT DISTINCT LOWER(TRIM(sku)) AS k
+    FROM {settings.TABLE_PRODUCT_ATTRS}
+    WHERE COALESCE(is_sample, FALSE) AND sku IS NOT NULL AND TRIM(sku) <> ''
+)
+SELECT s.k,
+       (SELECT MIN(c.delivered_date)
+          FROM {settings.TABLE_CONTAINER_ITEMS} ci
+          JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+         WHERE LOWER(TRIM(ci.sku)) = s.k
+           AND c.delivered_date IS NOT NULL
+           AND c.delivered_date <= CURRENT_DATE) AS z_kontenera,
+       (SELECT MIN(ss.snap_date)
+          FROM {settings.TABLE_STOCK_SNAPSHOTS} ss
+         WHERE LOWER(TRIM(ss.sku)) = s.k
+           AND COALESCE(ss.stan_glowny, 0) > 0) AS ze_stanu
+FROM s;
+"""

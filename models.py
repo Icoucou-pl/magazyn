@@ -158,8 +158,11 @@ class ProductSummary(BaseModel):
     firma_color: Optional[str] = None
     seasonality_enabled: bool
     is_favorite: bool = False
-    is_sample: bool = False            # etykieta: produkt zamawiany próbnie (wypada z auto-sugestii i listy zakupów)
+    is_sample: bool = False            # etykieta: wszedł jako sampel. Status SAMPLE tylko do pierwszej dostawy, potem NOWOŚĆ
     sample_stock: int = 0              # ręczny licznik sztuk — używany tylko gdy SKU nie ma innego źródła stanu
+    first_arrival_date: Optional[date] = None  # sample: pierwsze wejście na magazyn główny (None = jeszcze nie dotarł)
+    is_new: bool = False               # sample w okresie NOWOŚCI (6 mies. od pierwszej dostawy)
+    new_until: Optional[date] = None   # do kiedy trwa nowość
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # gdy ustawione: produkt ma wymuszony status
     lead_time_days: int
