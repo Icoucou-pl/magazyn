@@ -1,9 +1,14 @@
-# Wersje przypięte 1:1 z requirements.txt Magazynu.
-# passlib 1.7.4 NIE działa z bcrypt 4.x/5.x — stąd sztywne 3.2.2. Hashe haseł
-# zakłada Magazyn, weryfikuje portal, więc obie strony muszą mieć tę samą parę.
+# Wersje przypięte 1:1 z requirements.txt Magazynu — hashe haseł zakłada Magazyn,
+# a weryfikuje portal, więc para passlib/bcrypt musi być identyczna.
+# passlib 1.7.4 NIE działa z bcrypt 4.x/5.x, stąd sztywne 3.2.2.
+#
+# greenlet: SQLAlchemy dociąga go sam TYLKO dla Pythona < 3.13. Bez niego tryb async
+# nie działa w ogóle („the greenlet library is required to use this function").
+# Wpisany jawnie, żeby wersja Pythona nigdy nam tego nie wywróciła.
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-sqlalchemy==2.0.36
+sqlalchemy[asyncio]==2.0.36
+greenlet==3.1.1
 asyncpg==0.30.0
 pydantic==2.9.2
 passlib[bcrypt]==1.7.4
