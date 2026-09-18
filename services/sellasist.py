@@ -49,6 +49,14 @@ class Firma:
     base_url: str
     api_key: str
     is_self: bool = False    # AMH (hub) — stan z Subiektu, NIE ciągniemy stanów z jego Sellasista
+    # Mapowanie pod zamówienia dropów. Każdy sklep ma WŁASNE numery statusów,
+    # płatności, dostaw i pól dodatkowych — stąd kolumny na app_firmy, nie stałe w kodzie.
+    drop_status_id: Optional[int] = None      # np. status „Drop"
+    drop_payment_id: Optional[int] = None     # przelew tradycyjny (pobranie idzie do partnera)
+    drop_shipment_own_id: Optional[int] = None   # partner daje SWOJĄ etykietę → metoda BEZ integracji kurierskiej
+    drop_shipment_ours_id: Optional[int] = None  # wysyłamy my → normalna metoda kurierska
+    label_field_id: Optional[int] = None      # pole dodatkowe „Etykieta"
+    invoice_field_id: Optional[int] = None    # pole dodatkowe „Faktura"
 
 
 async def _load_firmy() -> List["Firma"]:
@@ -58,14 +66,21 @@ async def _load_firmy() -> List["Firma"]:
     out: List[Firma] = []
     try:
         async with SessionLocal() as session:
-            r = await session.execute(text(
-                f"SELECT slug, base_url, api_key_env, is_self FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"
-            ))
+            # SELECT * — kolumny dropowe dosypujemy migracją, a stare wdrożenia ich nie mają.
+            r = await session.execute(text(f"SELECT * FROM {settings.TABLE_FIRMY} ORDER BY sort_order, id"))
             for row in r.mappings():
                 base = (row["base_url"] or "").strip()
                 key = os.getenv(row["api_key_env"]) if row["api_key_env"] else None
                 if base and key:
-                    out.append(Firma(slug=row["slug"], base_url=base, api_key=key, is_self=bool(row["is_self"])))
+                    out.append(Firma(
+                        slug=row["slug"], base_url=base, api_key=key, is_self=bool(row["is_self"]),
+                        drop_status_id=_to_int(row.get("sellasist_drop_status_id")),
+                        drop_payment_id=_to_int(row.get("sellasist_drop_payment_id")),
+                        drop_shipment_own_id=_to_int(row.get("sellasist_drop_shipment_own_id")),
+                        drop_shipment_ours_id=_to_int(row.get("sellasist_drop_shipment_ours_id")),
+                        label_field_id=_to_int(row.get("sellasist_label_field_id")),
+                        invoice_field_id=_to_int(row.get("sellasist_invoice_field_id")),
+                    ))
     except Exception as e:
         print(f"[sellasist] _load_firmy błąd (fallback do legacy): {e}")
 
@@ -169,6 +184,143 @@ def _http_get_sync(firma: "Firma", path: str, params: Optional[dict] = None) -> 
 
 async def _http_get(firma: "Firma", path: str, params: Optional[dict] = None) -> Any:
     return await asyncio.to_thread(_http_get_sync, firma, path, params)
+
+
+class SellasistError(Exception):
+    """Błąd zapisu do Sellasista. Trzyma treść odpowiedzi API — bez niej nie da się
+    zgadnąć, którego pola zabrakło, a zapisu nie chcemy testować metodą prób na żywym sklepie."""
+
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self.body = (body or "")[:2000]
+        super().__init__(f"Sellasist HTTP {status}: {self.body}")
+
+
+def _http_post_sync(firma: "Firma", path: str, payload: dict) -> Any:
+    base = firma.base_url.rstrip("/")
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(f"{base}{path}", data=data, method="POST")
+    req.add_header("apiKey", firma.api_key)
+    req.add_header("Accept", "application/json")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=settings.SELLASIST_TIMEOUT, context=_ssl_context()) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            pass
+        raise SellasistError(e.code, body) from None
+    return json.loads(raw) if raw else None
+
+
+async def _http_post(firma: "Firma", path: str, payload: dict) -> Any:
+    return await asyncio.to_thread(_http_post_sync, firma, path, payload)
+
+
+# ============================================================
+# DROPY — zapis zamówienia do Sellasista
+# ============================================================
+_PRODUCT_ID_CACHE: Dict[str, Dict[str, Any]] = {}       # slug → {"ts": float, "map": {sku_canon: product_id}}
+_PRODUCT_ID_TTL = 900                                    # 15 minut
+
+
+async def _product_id_map(firma: "Firma") -> Dict[str, int]:
+    """SKU → product_id w Sellasist danego sklepu. Cache w pamięci procesu:
+    katalog zmienia się rzadko, a przy każdym zamówieniu nie ma po co przechodzić stron."""
+    import time
+    cached = _PRODUCT_ID_CACHE.get(firma.slug)
+    if cached and (time.time() - cached["ts"]) < _PRODUCT_ID_TTL:
+        return cached["map"]
+
+    out: Dict[str, int] = {}
+    for p in await _fetch_stock(firma):
+        sku = str(p.get("symbol") or "").strip().lower()
+        pid = _to_int(p.get("id") or p.get("product_id"))
+        if sku and pid:
+            out[sku] = pid
+    _PRODUCT_ID_CACHE[firma.slug] = {"ts": time.time(), "map": out}
+    return out
+
+
+async def push_drop_order(firma_slug: str, order: dict) -> str:
+    """Wysyła zamówienie dropa do Sellasista właściwej firmy i zwraca jego ID.
+
+    Zasady, które tu pilnujemy:
+      · płatność ZAWSZE jako przelew, cod = 0 — pieniądze z pobrania idą do partnera,
+        więc kurierka Sellasista nie ma prawa wygenerować etykiety z pobraniem,
+      · dostawa to metoda bez integracji kurierskiej (u nas „Etykieta - drop"),
+      · etykietę partnera wkładamy w to samo pole dodatkowe, w którym magazyn już jej szuka.
+    """
+    firmy = {f.slug: f for f in await _load_firmy()}
+    firma = firmy.get((firma_slug or "").strip().lower())
+    if not firma:
+        raise SellasistError(0, f"Firma {firma_slug} nie ma skonfigurowanego Sellasista")
+    own_label = (order.get("shipping_mode") or "wlasna") == "wlasna"
+    shipment_id = firma.drop_shipment_own_id if own_label else firma.drop_shipment_ours_id
+    if not shipment_id or not firma.drop_payment_id:
+        raise SellasistError(
+            0,
+            f"Uzupełnij mapowanie Sellasista dla {firma.slug}: "
+            f"{'metoda dla etykiety partnera' if own_label else 'metoda dla wysyłki przez nas'} i płatność dropów"
+        )
+
+    ids = await _product_id_map(firma)
+    lines = []
+    for it in order.get("items", []):
+        sku = str(it.get("sku") or "").strip()
+        pid = ids.get(sku.lower())
+        if not pid:
+            raise SellasistError(0, f"{sku}: nie ma tego produktu w Sellasist {firma.slug}")
+        lines.append({
+            "product_id": pid,
+            "symbol": sku,
+            "catalog_number": sku,
+            "quantity": int(it.get("qty") or 0),
+            "price": round(float(it.get("price_net") or 0) * 1.23, 2),
+        })
+
+    addr = {
+        "name": order.get("recipient_name") or order.get("partner_name") or "",
+        "surname": order.get("recipient_surname") or "",
+        "street": order.get("recipient_street") or "",
+        "home_number": order.get("recipient_home_number") or "",
+        "postcode": order.get("recipient_zip") or "",
+        "city": order.get("recipient_city") or "",
+        "phone": order.get("recipient_phone") or "",
+        "country": {"id": 170, "code": "PL"},
+    }
+
+    # Etykieta partnera ląduje w osobnym polu („DROP - ETYKIETA"). To jedyny czytelny
+    # sygnał, że plik przyszedł od dropa, a nie powstał u nas.
+    fields = []
+    if own_label and firma.label_field_id and order.get("label_url"):
+        fields.append({"field_id": firma.label_field_id, "field_value": order["label_url"]})
+
+    payload: Dict[str, Any] = {
+        "status_id": firma.drop_status_id or 1,
+        "payment_id": firma.drop_payment_id,
+        "shipment_id": shipment_id,
+        "cod": 0,
+        "currency": "PLN",
+        "email": order.get("email") or "",
+        # Numer u nas + kod partnera — jedyny ślad, po którym rozpoznasz zamówienie w panelu,
+        # jeśli kiedyś zabraknie osobnego klucza API.
+        "comment": f"DROP {order.get('partner_code', '')} {order.get('nr', '')}".strip(),
+        "bill_address": addr,
+        "shipment_address": addr,
+        "products": lines,
+    }
+    if fields:
+        payload["additional_fields"] = fields
+
+    resp = await _http_post(firma, "/orders", payload)
+    oid = (resp or {}).get("id") if isinstance(resp, dict) else None
+    if not oid:
+        raise SellasistError(0, f"Sellasist nie zwrócił ID zamówienia: {resp}")
+    return str(oid)
 
 
 # ============================================================
