@@ -21,6 +21,10 @@ class Settings:
     # Domena portalu partnera (front). Bez gwiazdek.
     ALLOWED_ORIGINS: str = os.getenv("DROPY_ALLOWED_ORIGINS", "")
 
+    # Zdjęcia produktów serwuje Magazyn (te endpointy są publiczne), więc portal
+    # nie musi ich kopiować — podaje tylko adres bazowy API Magazynu.
+    PHOTO_BASE: str = os.getenv("DROPY_PHOTO_BASE", "").rstrip("/")
+
     VAT: float = 1.23
     LOW_STOCK_AT: int = 5          # poniżej tego pokazujemy „ostatnie sztuki"
 

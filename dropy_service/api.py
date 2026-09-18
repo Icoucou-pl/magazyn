@@ -93,7 +93,7 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
         raise HTTPException(403, f"Nie kupujesz od firmy {firma}")
 
     r = await db.execute(text(
-        "SELECT c.sku, c.name, c.stock, c.in_transit, pr.price_net "
+        "SELECT c.sku, c.name, c.stock, c.in_transit, c.photo_id, c.photo_hash, pr.price_net "
         "FROM dropy.prices pr "
         "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
         "WHERE pr.partner_id = :p ORDER BY c.name"
@@ -101,8 +101,13 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
     out = []
     for x in r.mappings():
         stock = int(x["stock"] or 0)
+        photo = None
+        if settings.PHOTO_BASE and x["photo_id"] and x["photo_hash"]:
+            photo = f"{settings.PHOTO_BASE}/product-photos/{x['photo_id']}/{x['photo_hash']}"
         out.append({
             "sku": x["sku"], "name": x["name"], "firma": firma,
+            "photo_thumb": f"{photo}/thumb" if photo else None,
+            "photo_full": f"{photo}/full" if photo else None,
             "price_net": float(x["price_net"]),
             "price_gross": float(round(Decimal(str(x["price_net"])) * VAT, 2)),
             "availability": "ok" if stock > settings.LOW_STOCK_AT else ("low" if stock > 0 else "out"),
