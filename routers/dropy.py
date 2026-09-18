@@ -88,6 +88,29 @@ class PriceIn(BaseModel):
     price_net: Optional[float] = None    # None = usuń z cennika
 
 
+class TemplateIn(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    firma: str
+    note: Optional[str] = None
+    partner_id: Optional[int] = None              # zapisz cennik tego partnera jako szablon
+    with_prices: bool = True                      # False = sam zestaw SKU, bez cen
+    items: Optional[List[PriceIn]] = None         # albo wprost lista pozycji
+
+
+class TemplateRename(BaseModel):
+    name: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ApplyIn(BaseModel):
+    firma: str
+    template_id: Optional[int] = None
+    from_partner_id: Optional[int] = None         # kopiuj cennik innego partnera
+    mode: str = "fill"                            # replace | fill | update
+    adjust_pct: float = 0                         # modyfikator cen z szablonu, np. -3
+    markup_pct: Optional[float] = None            # dla pozycji bez ceny: narzut od ceny zakupu
+
+
 class PortalUserIn(BaseModel):
     email: str = Field(..., min_length=5, max_length=255)
     password: str = Field(..., min_length=8)
@@ -301,6 +324,196 @@ async def pricing_sheet(
         })
     out.sort(key=lambda x: (x["price_net"] is None, x["name"]))
     return {"firma": firma, "rows": out}
+
+
+# ===== SZABLONY CENNIKÓW =====
+# Cennik jest jednocześnie bazą produktów partnera (SKU bez ceny nie istnieje
+# w jego katalogu), więc szablon załatwia i „zapisz bazę", i „wczytaj kolejnemu".
+# Szablon jest PER FIRMA — SKU trzech firm to rozłączne pule.
+@router.get("/dropy/templates")
+async def list_templates(firma: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    r = await db.execute(text(
+        f"SELECT t.*, COUNT(i.id) AS items, COUNT(i.price_net) AS priced "
+        f"FROM {SCHEMA}.price_templates t "
+        f"LEFT JOIN {SCHEMA}.price_template_items i ON i.template_id = t.id "
+        f"WHERE (:f = '' OR t.firma = :f) "
+        f"GROUP BY t.id ORDER BY t.firma, t.name"
+    ), {"f": firma.strip().lower()})
+    return [{**dict(x), "items": int(x["items"]), "priced": int(x["priced"])} for x in r.mappings()]
+
+
+@router.get("/dropy/templates/{tid}")
+async def get_template(tid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    r = await db.execute(text(f"SELECT * FROM {SCHEMA}.price_templates WHERE id = :id"), {"id": tid})
+    t = r.mappings().first()
+    if not t:
+        raise HTTPException(404, "Nie ma takiego szablonu")
+    ri = await db.execute(text(
+        f"SELECT sku, price_net FROM {SCHEMA}.price_template_items WHERE template_id = :id ORDER BY sku"
+    ), {"id": tid})
+    return {**dict(t), "items": [
+        {"sku": x["sku"], "price_net": float(x["price_net"]) if x["price_net"] is not None else None}
+        for x in ri.mappings()
+    ]}
+
+
+@router.post("/dropy/templates", status_code=201)
+async def create_template(payload: TemplateIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Zapisuje szablon z cennika partnera albo z podanej listy pozycji."""
+    firma = payload.firma.strip().lower()
+    if firma not in ALL_SHOPS:
+        raise HTTPException(400, f"firma musi być jedną z: {', '.join(ALL_SHOPS)}")
+
+    rows: List[dict] = []
+    if payload.partner_id:
+        p = await _get_partner(db, payload.partner_id)
+        if firma not in _firmy_out(p.get("firmy")):
+            raise HTTPException(400, f"Partner {p['code']} nie kupuje od firmy {firma}")
+        # Tylko SKU tej firmy — cennik partnera bywa wspólny dla kilku firm.
+        r = await db.execute(text(
+            f"SELECT pr.sku, pr.price_net FROM {SCHEMA}.prices pr "
+            f"JOIN {SCHEMA}.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
+            f"WHERE pr.partner_id = :p"
+        ), {"f": firma, "p": payload.partner_id})
+        rows = [{"sku": x["sku"], "price_net": float(x["price_net"])} for x in r.mappings()]
+    elif payload.items:
+        rows = [{"sku": i.sku.strip(), "price_net": i.price_net} for i in payload.items if i.sku.strip()]
+    if not rows:
+        raise HTTPException(400, "Nie ma czego zapisać — pusty cennik")
+
+    dup = await db.execute(text(
+        f"SELECT id FROM {SCHEMA}.price_templates WHERE firma = :f AND LOWER(name) = LOWER(:n)"
+    ), {"f": firma, "n": payload.name.strip()})
+    if dup.first():
+        raise HTTPException(409, f"Szablon „{payload.name.strip()}” dla firmy {firma} już istnieje")
+
+    r = await db.execute(text(
+        f"INSERT INTO {SCHEMA}.price_templates (name, firma, note) VALUES (:n, :f, :note) RETURNING id"
+    ), {"n": payload.name.strip(), "f": firma, "note": payload.note})
+    tid = r.scalar()
+    for row in rows:
+        await db.execute(text(
+            f"INSERT INTO {SCHEMA}.price_template_items (template_id, sku, price_net) VALUES (:t, :s, :c)"
+        ), {"t": tid, "s": row["sku"], "c": row["price_net"] if payload.with_prices else None})
+    await db.commit()
+    return {"id": tid, "name": payload.name.strip(), "firma": firma, "items": len(rows)}
+
+
+@router.patch("/dropy/templates/{tid}")
+async def rename_template(tid: int, payload: TemplateRename, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    fields, params = [], {"id": tid}
+    for col in ("name", "note"):
+        val = getattr(payload, col)
+        if val is not None:
+            fields.append(f"{col} = :{col}")
+            params[col] = val
+    if not fields:
+        raise HTTPException(400, "Nie ma czego zmienić")
+    fields.append("updated_at = CURRENT_TIMESTAMP")
+    r = await db.execute(text(f"UPDATE {SCHEMA}.price_templates SET {', '.join(fields)} WHERE id = :id RETURNING *"), params)
+    row = r.mappings().first()
+    if not row:
+        raise HTTPException(404, "Nie ma takiego szablonu")
+    await db.commit()
+    return dict(row)
+
+
+@router.delete("/dropy/templates/{tid}")
+async def delete_template(tid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    r = await db.execute(text(f"DELETE FROM {SCHEMA}.price_templates WHERE id = :id RETURNING id"), {"id": tid})
+    if not r.first():
+        raise HTTPException(404, "Nie ma takiego szablonu")
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/dropy/partners/{pid}/prices/apply")
+async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Wczytuje szablon (albo cennik innego partnera) do cennika partnera.
+
+    Tryby — o nie chodzi, żeby nie skasować komuś wynegocjowanych cen:
+      · replace — wyczyść cennik tej firmy i wstaw wszystko z szablonu
+      · fill    — dołóż tylko brakujące SKU, istniejące zostaw bez zmian
+      · update  — zmień tylko te SKU, które partner już ma
+    """
+    p = await _get_partner(db, pid)
+    firma = payload.firma.strip().lower()
+    if firma not in _firmy_out(p.get("firmy")):
+        raise HTTPException(403, f"Partner {p['code']} nie kupuje od firmy {firma}")
+    if payload.mode not in ("replace", "fill", "update"):
+        raise HTTPException(400, "mode musi być jednym z: replace, fill, update")
+
+    if payload.template_id:
+        r = await db.execute(text(f"SELECT firma FROM {SCHEMA}.price_templates WHERE id = :id"), {"id": payload.template_id})
+        t = r.first()
+        if not t:
+            raise HTTPException(404, "Nie ma takiego szablonu")
+        if t[0] != firma:
+            raise HTTPException(400, f"Szablon jest dla firmy {t[0]}, a wczytujesz do {firma}")
+        r = await db.execute(text(
+            f"SELECT sku, price_net FROM {SCHEMA}.price_template_items WHERE template_id = :id"
+        ), {"id": payload.template_id})
+    elif payload.from_partner_id:
+        src = await _get_partner(db, payload.from_partner_id)
+        if firma not in _firmy_out(src.get("firmy")):
+            raise HTTPException(400, f"Partner {src['code']} nie kupuje od firmy {firma}")
+        r = await db.execute(text(
+            f"SELECT pr.sku, pr.price_net FROM {SCHEMA}.prices pr "
+            f"JOIN {SCHEMA}.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
+            f"WHERE pr.partner_id = :p"
+        ), {"f": firma, "p": payload.from_partner_id})
+    else:
+        raise HTTPException(400, "Podaj template_id albo from_partner_id")
+
+    src_rows = [{"sku": x["sku"], "price_net": float(x["price_net"]) if x["price_net"] is not None else None}
+                for x in r.mappings()]
+    if not src_rows:
+        raise HTTPException(400, "Źródło jest puste")
+
+    # Pozycje bez ceny (szablon-baza) wyceniamy narzutem od ceny zakupu.
+    need_cost = any(row["price_net"] is None for row in src_rows)
+    costs: dict = {}
+    if need_cost:
+        if payload.markup_pct is None:
+            raise HTTPException(400, "Szablon nie ma cen — podaj markup_pct, żeby je wyliczyć")
+        for pr in await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, firma):
+            costs[pr.sku.strip().lower()] = float(pr.purchase_price or 0)
+
+    r = await db.execute(text(f"SELECT LOWER(TRIM(sku)) AS k FROM {SCHEMA}.prices WHERE partner_id = :p"), {"p": pid})
+    existing = {x["k"] for x in r.mappings()}
+
+    if payload.mode == "replace":
+        await db.execute(text(
+            f"DELETE FROM {SCHEMA}.prices WHERE partner_id = :p AND LOWER(TRIM(sku)) IN "
+            f"(SELECT LOWER(TRIM(sku)) FROM {SCHEMA}.catalog_cache WHERE firma = :f)"
+        ), {"p": pid, "f": firma})
+        existing = set()
+
+    factor = 1 + (payload.adjust_pct or 0) / 100
+    written, skipped = 0, 0
+    for row in src_rows:
+        key = row["sku"].strip().lower()
+        if payload.mode == "fill" and key in existing:
+            skipped += 1
+            continue
+        if payload.mode == "update" and key not in existing:
+            skipped += 1
+            continue
+        cena = row["price_net"]
+        if cena is None:
+            zakup = costs.get(key, 0)
+            if zakup <= 0:
+                skipped += 1
+                continue
+            cena = zakup * (1 + (payload.markup_pct or 0) / 100)
+        cena = round(cena * factor, 2)
+        await db.execute(text(
+            f"INSERT INTO {SCHEMA}.prices (partner_id, sku, price_net) VALUES (:p, :s, :c) "
+            f"ON CONFLICT (partner_id, sku) DO UPDATE SET price_net = EXCLUDED.price_net, updated_at = CURRENT_TIMESTAMP"
+        ), {"p": pid, "s": row["sku"].strip(), "c": cena})
+        written += 1
+    await db.commit()
+    return {"written": written, "skipped": skipped, "mode": payload.mode, "firma": firma}
 
 
 # ===== KONTA PORTALU =====
