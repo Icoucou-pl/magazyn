@@ -35,6 +35,7 @@ from security import (
     ALL_SHOPS, parse_company_scope, serialize_company_scope,
 )
 from services.products import fetch_products
+from services.sellasist import push_drop_order, SellasistError
 
 router = APIRouter(prefix="/api", tags=["dropy"])
 
@@ -726,7 +727,74 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
     fields.append("updated_at = CURRENT_TIMESTAMP")
     await db.execute(text(f"UPDATE {SCHEMA}.orders SET {', '.join(fields)} WHERE id = :id"), params)
     await db.commit()
+
+    # Odblokowanie (wpłata albo etykieta) samo wypycha zamówienie do Sellasista.
+    # Błąd pusha nie może wywrócić zapisu statusu — ląduje w push_error i czeka na ponowienie.
+    new_status = params.get("status", cur["status"])
+    if new_status in PUSHABLE:
+        try:
+            await _do_push(oid, db)
+        except HTTPException:
+            pass
     return await get_order(oid, db, user)
+
+
+# ===== PUSH DO SELLASISTA =====
+# Zamówienie idzie do Sellasista DOPIERO, gdy nic go nie blokuje: przy przedpłacie
+# po wpłacie, przy pobraniu po wgraniu etykiety. Inaczej magazyn pakowałby coś,
+# za co nie ma pieniędzy ani etykiety.
+PUSHABLE = ("nowe", "przyjete", "spakowane")
+
+
+async def _do_push(oid: int, db: AsyncSession) -> dict:
+    r = await db.execute(text(
+        f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email "
+        f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id WHERE o.id = :id"
+    ), {"id": oid})
+    o = r.mappings().first()
+    if not o:
+        raise HTTPException(404, "Nie ma takiego zamówienia")
+    if o["sellasist_order_id"]:
+        return {"ok": True, "already": True, "sellasist_order_id": o["sellasist_order_id"]}
+    if o["status"] not in PUSHABLE:
+        raise HTTPException(409, f"Zamówienie jest w statusie „{o['status']}” — najpierw je odblokuj")
+
+    ri = await db.execute(text(f"SELECT * FROM {SCHEMA}.order_items WHERE order_id = :id ORDER BY id"), {"id": oid})
+    items = [{"sku": x["sku"], "name": x["name"], "qty": int(x["qty"]), "price_net": float(x["price_net"])}
+             for x in ri.mappings()]
+
+    payload = {
+        "nr": o["nr"], "partner_code": o["partner_code"], "partner_name": o["partner_name"],
+        "email": o["partner_email"] or "",
+        "recipient_name": o["recipient_name"], "recipient_street": o["recipient_street"],
+        "recipient_zip": o["recipient_zip"], "recipient_city": o["recipient_city"],
+        "recipient_phone": o["recipient_phone"], "label_url": o["label_url"],
+        "shipping_mode": o["shipping_mode"],
+        "items": items,
+    }
+    try:
+        sid = await push_drop_order(o["firma"], payload)
+    except SellasistError as e:
+        # Treść odpowiedzi API zostaje na zamówieniu — bez niej nie ma jak poprawić mapowania.
+        await db.execute(text(
+            f"UPDATE {SCHEMA}.orders SET push_error = :err, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+        ), {"err": str(e), "id": oid})
+        await db.commit()
+        raise HTTPException(502, f"Sellasist odrzucił zamówienie: {e}")
+
+    await db.execute(text(
+        f"UPDATE {SCHEMA}.orders SET sellasist_order_id = :sid, pushed_at = CURRENT_TIMESTAMP, "
+        f"push_error = NULL, status = CASE WHEN status = 'nowe' THEN 'przyjete' ELSE status END, "
+        f"updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+    ), {"sid": sid, "id": oid})
+    await db.commit()
+    return {"ok": True, "sellasist_order_id": sid}
+
+
+@router.post("/dropy/orders/{oid}/push")
+async def push_order(oid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Ręczne wysłanie zamówienia do Sellasista (ponowienie po błędzie)."""
+    return await _do_push(oid, db)
 
 
 # ===== PODSUMOWANIE MIESIĄCA =====
