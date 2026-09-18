@@ -136,6 +136,26 @@ class ApiKeyIn(BaseModel):
     label: str = Field(..., min_length=2, max_length=120)
 
 
+class InvoiceIn(BaseModel):
+    partner_id: int
+    firma: str
+    nr: str
+    okres: Optional[str] = None
+    issued_at: Optional[str] = None          # RRRR-MM-DD
+    due_date: Optional[str] = None
+    total_gross: float
+    pdf_url: Optional[str] = None
+    note: Optional[str] = None
+
+
+class PaymentIn(BaseModel):
+    partner_id: int
+    invoice_id: Optional[int] = None
+    paid_date: str
+    amount: float
+    note: Optional[str] = None
+
+
 class OrderPatch(BaseModel):
     status: Optional[str] = None
     tracking: Optional[str] = None
@@ -751,6 +771,119 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
         except HTTPException:
             pass
     return await get_order(oid, db, user)
+
+
+# ===== FINANSE =====
+# Saldo liczymy TYLKO z wpłat potwierdzonych. Zgłoszenie partnera jest sygnałem,
+# nie księgowaniem — inaczej każdy mógłby wyzerować sobie fakturę.
+def _d(v: Optional[str], label: str):
+    if not v:
+        return None
+    try:
+        return datetime.strptime(v, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, f"{label} musi być w formacie RRRR-MM-DD")
+
+
+@router.get("/dropy/invoices")
+async def list_invoices(
+    partner_id: Optional[int] = None,
+    only_open: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_dropy),
+):
+    r = await db.execute(text(
+        f"SELECT i.*, p.code AS partner_code, p.name AS partner_name, "
+        f"  COALESCE((SELECT SUM(amount) FROM {SCHEMA}.payments pm WHERE pm.invoice_id = i.id AND pm.confirmed), 0) AS paid, "
+        f"  COALESCE((SELECT SUM(amount) FROM {SCHEMA}.payments pm WHERE pm.invoice_id = i.id AND NOT pm.confirmed), 0) AS pending "
+        f"FROM {SCHEMA}.invoices i JOIN {SCHEMA}.partners p ON p.id = i.partner_id "
+        f"WHERE NOT i.is_canceled AND (CAST(:pid AS INTEGER) IS NULL OR i.partner_id = CAST(:pid AS INTEGER)) "
+        f"ORDER BY i.due_date DESC NULLS LAST, i.id DESC"
+    ), {"pid": partner_id})
+    out = []
+    for x in r.mappings():
+        left = round(float(x["total_gross"] or 0) - float(x["paid"] or 0), 2)
+        if only_open and left <= 0:
+            continue
+        out.append({**{k: v for k, v in x.items() if k not in ("total_gross", "paid", "pending")},
+                    "total_gross": float(x["total_gross"] or 0), "paid": float(x["paid"] or 0),
+                    "pending": float(x["pending"] or 0), "left": left})
+    return out
+
+
+@router.post("/dropy/invoices", status_code=201)
+async def create_invoice(payload: InvoiceIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    await _get_partner(db, payload.partner_id)
+    firma = payload.firma.strip().lower()
+    if firma not in ALL_SHOPS:
+        raise HTTPException(400, f"firma musi być jedną z: {', '.join(ALL_SHOPS)}")
+    dup = await db.execute(text(f"SELECT id FROM {SCHEMA}.invoices WHERE firma = :f AND nr = :n"),
+                           {"f": firma, "n": payload.nr.strip()})
+    if dup.first():
+        raise HTTPException(409, f"Faktura {payload.nr} dla {firma} już jest")
+    r = await db.execute(text(
+        f"INSERT INTO {SCHEMA}.invoices (partner_id, firma, nr, okres, issued_at, due_date, total_gross, pdf_url, note) "
+        f"VALUES (:p, :f, :nr, :ok, :iss, :due, :tot, :pdf, :note) RETURNING *"
+    ), {"p": payload.partner_id, "f": firma, "nr": payload.nr.strip(), "ok": payload.okres,
+        "iss": _d(payload.issued_at, "Data wystawienia"), "due": _d(payload.due_date, "Termin"),
+        "tot": payload.total_gross, "pdf": payload.pdf_url, "note": payload.note})
+    row = dict(r.mappings().first())
+    await db.commit()
+    return {**row, "total_gross": float(row["total_gross"])}
+
+
+@router.delete("/dropy/invoices/{iid}")
+async def cancel_invoice(iid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    r = await db.execute(text(f"UPDATE {SCHEMA}.invoices SET is_canceled = TRUE WHERE id = :id RETURNING id"), {"id": iid})
+    if not r.first():
+        raise HTTPException(404, "Nie ma takiej faktury")
+    await db.commit()
+    return {"ok": True}
+
+
+@router.get("/dropy/payments")
+async def list_payments(
+    partner_id: Optional[int] = None,
+    only_pending: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_dropy),
+):
+    r = await db.execute(text(
+        f"SELECT pm.*, p.code AS partner_code, p.name AS partner_name, i.nr AS invoice_nr, i.firma "
+        f"FROM {SCHEMA}.payments pm JOIN {SCHEMA}.partners p ON p.id = pm.partner_id "
+        f"LEFT JOIN {SCHEMA}.invoices i ON i.id = pm.invoice_id "
+        f"WHERE (CAST(:pid AS INTEGER) IS NULL OR pm.partner_id = CAST(:pid AS INTEGER)) "
+        f"  AND (:pend = FALSE OR pm.confirmed = FALSE) "
+        f"ORDER BY pm.confirmed, pm.paid_date DESC, pm.id DESC"
+    ), {"pid": partner_id, "pend": only_pending})
+    return [{**dict(x), "amount": float(x["amount"])} for x in r.mappings()]
+
+
+@router.post("/dropy/payments", status_code=201)
+async def add_payment(payload: PaymentIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Wpłata księgowana przez nas — od razu potwierdzona."""
+    await _get_partner(db, payload.partner_id)
+    r = await db.execute(text(
+        f"INSERT INTO {SCHEMA}.payments (partner_id, invoice_id, paid_date, amount, note, source, confirmed, confirmed_at) "
+        f"VALUES (:p, :i, :d, :a, :n, 'my', TRUE, CURRENT_TIMESTAMP) RETURNING id"
+    ), {"p": payload.partner_id, "i": payload.invoice_id, "d": _d(payload.paid_date, "Data wpłaty"),
+        "a": payload.amount, "n": payload.note})
+    pid = r.scalar()
+    await db.commit()
+    return {"id": pid, "ok": True}
+
+
+@router.post("/dropy/payments/{pmid}/confirm")
+async def confirm_payment(pmid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Potwierdzenie wpłaty zgłoszonej przez partnera — dopiero to zmienia saldo."""
+    r = await db.execute(text(
+        f"UPDATE {SCHEMA}.payments SET confirmed = TRUE, confirmed_at = CURRENT_TIMESTAMP "
+        f"WHERE id = :id AND NOT confirmed RETURNING id"
+    ), {"id": pmid})
+    if not r.first():
+        raise HTTPException(404, "Nie ma takiej wpłaty albo jest już potwierdzona")
+    await db.commit()
+    return {"ok": True}
 
 
 # ===== PUSH DO SELLASISTA =====
