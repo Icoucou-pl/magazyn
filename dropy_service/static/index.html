@@ -372,7 +372,7 @@ async function loadFinanse() {
 }
 
 function renderFinanse() {
-  const { summary = {}, invoices = [], payments = [] } = state.finanse || {};
+  const { summary = {}, invoices = [], payments = [], unbilled = [] } = state.finanse || {};
   const invRows = invoices.map(i => {
     const pill = i.status === "zaplacona" ? `<span class="pill ok">Zapłacona</span>`
       : i.status === "po_terminie" ? `<span class="pill bad">Po terminie</span>`
@@ -389,6 +389,8 @@ function renderFinanse() {
         <div><small style="color:var(--muted)">Zostało</small><div><b>${zl(i.left)}</b></div></div>
       </div>
       ${i.pending ? `<p class="hint">Zgłoszona wpłata ${zl(i.pending)} czeka na nasze potwierdzenie.</p>` : ""}
+      ${i.orders?.length ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent);font-size:13px">Zamówienia na tej fakturze (${i.orders.length})</summary>
+        <table style="margin-top:8px"><tbody>${i.orders.map(o => `<tr><td class="mono" style="font-size:12.5px">${o.nr}</td><td>${o.recipient || "—"}</td><td class="r">${zl(o.total_gross)}</td></tr>`).join("")}</tbody></table></details>` : ""}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
         ${i.pdf_url ? `<a class="btn sm" href="${i.pdf_url}" target="_blank" rel="noreferrer">Pobierz fakturę</a>` : ""}
         ${i.left > 0 ? `<button class="btn sm primary" data-pay="${i.id}" data-left="${i.left}" data-nr="${i.nr}">Zgłoś wpłatę</button>` : ""}
@@ -407,8 +409,13 @@ function renderFinanse() {
     <div class="kpis">
       <div class="kpi"><small>Do zapłaty</small><b>${zl(summary.due)}</b></div>
       <div class="kpi ${summary.overdue ? "warn" : ""}"><small>Po terminie</small><b>${zl(summary.overdue)}</b></div>
-      <div class="kpi"><small>Zgłoszone wpłaty</small><b>${zl(summary.pending)}</b></div>
+      <div class="kpi"><small>Bez faktury</small><b>${zl(summary.unbilled)}</b></div>
     </div>
+    ${unbilled.length ? `<div class="card" style="margin-bottom:16px">
+      <h3 style="font-size:14px;margin-bottom:8px">Jeszcze bez faktury</h3>
+      ${unbilled.map(u => `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13.5px">
+        <span>${fl(u.firma)} · ${u.count} zam.</span><b>${zl(u.gross)}</b></div>`).join("")}
+      <p class="hint">Trafi na fakturę zbiorczą na koniec miesiąca.</p></div>` : ""}
     <h3 style="font-size:14px;margin:18px 0 10px">Faktury</h3>
     ${invRows || `<div class="card empty">Nie masz jeszcze żadnych faktur.</div>`}
     <h3 style="font-size:14px;margin:22px 0 10px">Wpłaty</h3>
