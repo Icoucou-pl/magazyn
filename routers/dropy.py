@@ -63,6 +63,10 @@ class PartnerIn(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    bill_street: Optional[str] = None          # adres na fakturę — leci jako płatnik do Sellasista
+    bill_home_number: Optional[str] = None
+    bill_postcode: Optional[str] = None
+    bill_city: Optional[str] = None
     firmy: List[str] = Field(default_factory=list)
     payment_mode: str = "zbiorcza"
     allow_installments: bool = False
@@ -76,6 +80,10 @@ class PartnerUpdate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    bill_street: Optional[str] = None
+    bill_home_number: Optional[str] = None
+    bill_postcode: Optional[str] = None
+    bill_city: Optional[str] = None
     firmy: Optional[List[str]] = None
     payment_mode: Optional[str] = None
     allow_installments: Optional[bool] = None
@@ -217,12 +225,17 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
         raise HTTPException(409, f"Partner o kodzie {code} już istnieje")
 
     r = await db.execute(text(
-        f"INSERT INTO {SCHEMA}.partners (code, name, nip, email, phone, address, firmy, payment_mode, "
+        f"INSERT INTO {SCHEMA}.partners (code, name, nip, email, phone, address, bill_street, "
+        f"                               bill_home_number, bill_postcode, bill_city, firmy, payment_mode, "
         f"                               allow_installments, credit_limit, notes) "
-        f"VALUES (:code, :name, :nip, :email, :phone, :address, :firmy, :mode, :inst, :lim, :notes) RETURNING *"
+        f"VALUES (:code, :name, :nip, :email, :phone, :address, :bstreet, :bhome, :bpost, :bcity, "
+        f"        :firmy, :mode, :inst, :lim, :notes) RETURNING *"
     ), {
         "code": code, "name": payload.name.strip(), "nip": payload.nip, "email": payload.email,
-        "phone": payload.phone, "address": payload.address, "firmy": _firmy_in(payload.firmy),
+        "phone": payload.phone, "address": payload.address,
+        "bstreet": payload.bill_street, "bhome": payload.bill_home_number,
+        "bpost": payload.bill_postcode, "bcity": payload.bill_city,
+        "firmy": _firmy_in(payload.firmy),
         "mode": payload.payment_mode, "inst": payload.allow_installments,
         "lim": payload.credit_limit, "notes": payload.notes,
     })
@@ -235,7 +248,8 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
 async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     await _get_partner(db, pid)
     fields, params = [], {"id": pid}
-    for col in ("name", "nip", "email", "phone", "address", "notes", "is_active", "allow_installments"):
+    for col in ("name", "nip", "email", "phone", "address", "notes", "is_active", "allow_installments",
+                "bill_street", "bill_home_number", "bill_postcode", "bill_city"):
         val = getattr(payload, col)
         if val is not None:
             fields.append(f"{col} = :{col}")
@@ -748,7 +762,9 @@ PUSHABLE = ("nowe", "przyjete", "spakowane")
 
 async def _do_push(oid: int, db: AsyncSession) -> dict:
     r = await db.execute(text(
-        f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email "
+        f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email, "
+        f"       p.nip AS partner_nip, p.phone AS partner_phone, p.bill_street, p.bill_home_number, "
+        f"       p.bill_postcode, p.bill_city, p.payment_mode "
         f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id WHERE o.id = :id"
     ), {"id": oid})
     o = r.mappings().first()
@@ -764,8 +780,13 @@ async def _do_push(oid: int, db: AsyncSession) -> dict:
              for x in ri.mappings()]
 
     payload = {
-        "nr": o["nr"], "partner_code": o["partner_code"], "partner_name": o["partner_name"],
-        "email": o["partner_email"] or "",
+        "nr": o["nr"], "external_id": o["external_id"],
+        "partner_code": o["partner_code"], "partner_name": o["partner_name"],
+        "partner_email": o["partner_email"] or "", "partner_nip": o["partner_nip"] or "",
+        "partner_phone": o["partner_phone"] or "",
+        "partner_street": o["bill_street"] or "", "partner_home_number": o["bill_home_number"] or "",
+        "partner_postcode": o["bill_postcode"] or "", "partner_city": o["bill_city"] or "",
+        "payment_mode": o["payment_mode"],
         "recipient_name": o["recipient_name"], "recipient_street": o["recipient_street"],
         "recipient_zip": o["recipient_zip"], "recipient_city": o["recipient_city"],
         "recipient_phone": o["recipient_phone"], "label_url": o["label_url"],
