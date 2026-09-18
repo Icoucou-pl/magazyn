@@ -347,6 +347,29 @@ async def finanse(
             "status": "zaplacona" if left <= 0 else ("po_terminie" if overdue else "do_zaplaty"),
         })
 
+    # Zamówienia wpięte na każdą fakturę — to jest ten sam widok co linie w arkuszu.
+    ro = await db.execute(text(
+        "SELECT o.invoice_id, o.nr, o.created_at, o.recipient_name, o.total_gross "
+        "FROM dropy.orders o WHERE o.partner_id = :p AND o.invoice_id IS NOT NULL "
+        "ORDER BY o.created_at, o.id"
+    ), {"p": p.id})
+    by_inv: dict = {}
+    for x in ro.mappings():
+        by_inv.setdefault(x["invoice_id"], []).append({
+            "nr": x["nr"], "created_at": x["created_at"],
+            "recipient": x["recipient_name"], "total_gross": float(x["total_gross"] or 0),
+        })
+    for inv in invoices:
+        inv["orders"] = by_inv.get(inv["id"], [])
+
+    # Zamówienia jeszcze bez faktury — u was to dopisek „na koniec miesiąca”.
+    ru = await db.execute(text(
+        "SELECT firma, COUNT(*) AS cnt, SUM(total_gross) AS gross FROM dropy.orders "
+        "WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane' GROUP BY firma"
+    ), {"p": p.id})
+    unbilled = [{"firma": x["firma"], "count": int(x["cnt"]), "gross": float(x["gross"] or 0)}
+                for x in ru.mappings()]
+
     rp = await db.execute(text(
         "SELECT pm.id, pm.paid_date, pm.amount, pm.confirmed, pm.confirmation_url, pm.note, "
         "       i.nr AS invoice_nr "
@@ -365,8 +388,10 @@ async def finanse(
             "overdue": round(overdue_total, 2),
             "pending": round(sum(p_["amount"] for p_ in payments if not p_["confirmed"]), 2),
             "invoices": len(invoices),
+            "unbilled": round(sum(u["gross"] for u in unbilled), 2),
         },
         "invoices": invoices,
+        "unbilled": unbilled,
         "payments": payments,
     }
 
