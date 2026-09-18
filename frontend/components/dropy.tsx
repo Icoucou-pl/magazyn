@@ -39,6 +39,11 @@ type Order = {
   created_at: string; items: OrderItem[];
 };
 
+type Template = {
+  id: number; name: string; firma: string; note: string | null;
+  items: number; priced: number;
+};
+
 type PortalUser = { id: number; email: string; full_name: string | null; is_active: boolean; last_login: string | null };
 type ApiKey = { id: number; label: string; key_hint: string; is_active: boolean; last_used: string | null };
 
@@ -484,6 +489,7 @@ function PricingPanel({ partners }: { partners: Partner[] }) {
   const [bulk, setBulk] = useState<"cena" | "narzut" | null>(null);
   const [bulkVal, setBulkVal] = useState("");
   const [paste, setPaste] = useState<string | null>(null);
+  const [tpl, setTpl] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -586,6 +592,7 @@ function PricingPanel({ partners }: { partners: Partner[] }) {
           tylko z ceną
         </label>
         <button onClick={() => setPaste("")} style={btn("ghost", true)}>Wklej z Excela</button>
+        <button onClick={() => setTpl(true)} style={btn("ghost", true)}>Szablony</button>
         <div style={{ flex: 1 }}/>
         <button onClick={save} disabled={!changed || busy} style={{ ...btn("primary"), opacity: changed ? 1 : 0.5 }}>
           {busy ? "Zapisuję…" : changed ? `Zapisz zmiany (${changed})` : "Brak zmian"}
@@ -689,6 +696,18 @@ function PricingPanel({ partners }: { partners: Partner[] }) {
         Produkt bez ceny nie istnieje w katalogu partnera. Wyczyszczenie pola usuwa go z cennika po zapisie.
       </p>
 
+      {tpl && (
+        <TemplatesModal
+          partnerId={partner.id}
+          partnerName={partner.name}
+          firma={firma}
+          partners={partners}
+          rows={rows || []}
+          onClose={() => setTpl(false)}
+          onApplied={() => { setTpl(false); load(); }}
+        />
+      )}
+
       {paste !== null && (
         <Modal title="Wklej cennik z Excela" onClose={() => setPaste(null)}>
           <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "var(--text-lo)" }}>
@@ -705,6 +724,150 @@ function PricingPanel({ partners }: { partners: Partner[] }) {
         </Modal>
       )}
     </>
+  );
+}
+
+// ── Szablony cenników ────────────────────────────────────────
+// Cennik jest jednocześnie bazą produktów partnera, więc szablon służy do obu
+// rzeczy naraz: „zapisz ten zestaw" i „wczytaj go kolejnemu klientowi".
+function TemplatesModal({ partnerId, partnerName, firma, partners, rows, onClose, onApplied }: {
+  partnerId: number; partnerName: string; firma: string; partners: Partner[];
+  rows: PriceRow[]; onClose: () => void; onApplied: () => void;
+}) {
+  const [list, setList] = useState<Template[] | null>(null);
+  const [pick, setPick] = useState<number | null>(null);
+  const [fromPartner, setFromPartner] = useState<string>("");
+  const [mode, setMode] = useState<"fill" | "update" | "replace">("fill");
+  const [adjust, setAdjust] = useState("");
+  const [markup, setMarkup] = useState("");
+  const [name, setName] = useState("");
+  const [withPrices, setWithPrices] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try { setList((await api.get(`/dropy/templates?firma=${firma}`)) as Template[]); }
+    catch (e) { err(e); setList([]); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [firma]);
+
+  const priced = rows.filter(r => r.price_net != null).length;
+  const chosen = list?.find(t => t.id === pick) || null;
+  const needsMarkup = !!chosen && chosen.priced < chosen.items;
+
+  const save = async () => {
+    if (!name.trim()) { toast("Nazwij szablon", "warning"); return; }
+    setBusy(true);
+    try {
+      const r = await api.post("/dropy/templates", {
+        name: name.trim(), firma, partner_id: partnerId, with_prices: withPrices,
+      }) as { items: number };
+      toast(`Szablon zapisany (${r.items} pozycji)`, "ok");
+      setName(""); load();
+    } catch (e) { err(e); } finally { setBusy(false); }
+  };
+
+  const apply = async () => {
+    if (!pick && !fromPartner) { toast("Wybierz szablon albo partnera do skopiowania", "warning"); return; }
+    if (needsMarkup && !markup.trim()) { toast("Ten szablon nie ma cen — podaj narzut %", "warning"); return; }
+    setBusy(true);
+    try {
+      const r = await api.post(`/dropy/partners/${partnerId}/prices/apply`, {
+        firma, mode,
+        template_id: pick ?? undefined,
+        from_partner_id: fromPartner ? Number(fromPartner) : undefined,
+        adjust_pct: adjust.trim() === "" ? 0 : Number(adjust.replace(",", ".")),
+        markup_pct: markup.trim() === "" ? undefined : Number(markup.replace(",", ".")),
+      }) as { written: number; skipped: number };
+      toast(`Wczytano ${r.written} pozycji${r.skipped ? `, pominięto ${r.skipped}` : ""}`, "ok");
+      onApplied();
+    } catch (e) { err(e); } finally { setBusy(false); }
+  };
+
+  const remove = async (id: number) => {
+    try { await api.del(`/dropy/templates/${id}`); toast("Szablon usunięty", "ok"); setPick(null); load(); }
+    catch (e) { err(e); }
+  };
+
+  return (
+    <Modal title={`Szablony cenników — ${firmaLabel(firma)}`} onClose={onClose} wide>
+      <h4 style={{ margin: "0 0 8px", fontSize: 13.5 }}>Wczytaj do: {partnerName}</h4>
+
+      {list === null ? (
+        <p style={{ fontSize: 12.5, color: "var(--text-lo)" }}>Wczytuję…</p>
+      ) : list.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: "var(--text-lo)", margin: "0 0 10px" }}>
+          Nie ma jeszcze szablonu dla tej firmy. Zapisz pierwszy niżej.
+        </p>
+      ) : list.map(t => (
+        <div key={t.id} onClick={() => { setPick(t.id); setFromPartner(""); }} style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+          padding: "10px 12px", marginBottom: 6, cursor: "pointer", borderRadius: 8,
+          background: pick === t.id ? "var(--surface-3)" : "var(--surface-2)",
+          border: `1px solid ${pick === t.id ? "var(--accent)" : "var(--border-soft)"}`,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{t.name}</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
+              {t.items} SKU · {t.priced === t.items ? "z cenami" : t.priced === 0 ? "sama baza produktów" : `${t.priced} z ceną`}
+              {t.note ? ` · ${t.note}` : ""}
+            </div>
+          </div>
+          <button onClick={(e) => { e.stopPropagation(); remove(t.id); }} style={btn("danger", true)}>Usuń</button>
+        </div>
+      ))}
+
+      <div style={{ marginTop: 10 }}>
+        <Field label="albo skopiuj cennik innego partnera">
+          <select style={inputStyle} value={fromPartner}
+            onChange={e => { setFromPartner(e.target.value); setPick(null); }}>
+            <option value="">—</option>
+            {partners.filter(p => p.id !== partnerId && p.firmy.includes(firma))
+              .map(p => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 120px", gap: 8, marginTop: 12, alignItems: "end" }}>
+        <Field label="Co zrobić z tym, co partner już ma">
+          <select style={inputStyle} value={mode} onChange={e => setMode(e.target.value as typeof mode)}>
+            <option value="fill">Dołóż brakujące, istniejące zostaw</option>
+            <option value="update">Zmień tylko te, które już ma</option>
+            <option value="replace">Zastąp cały cennik tej firmy</option>
+          </select>
+        </Field>
+        <Field label="Korekta cen %"><input style={inputStyle} inputMode="decimal" placeholder="np. -3" value={adjust} onChange={e => setAdjust(e.target.value)}/></Field>
+        <Field label="Narzut % (bez cen)"><input style={inputStyle} inputMode="decimal" placeholder="np. 35" value={markup} onChange={e => setMarkup(e.target.value)}/></Field>
+      </div>
+      {needsMarkup && (
+        <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--warning)" }}>
+          Ten szablon niesie sam zestaw SKU. Ceny policzymy narzutem od ceny zakupu.
+        </p>
+      )}
+      {mode === "replace" && (
+        <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--danger)" }}>
+          Uwaga: wszystkie dotychczasowe ceny tego partnera dla {firmaLabel(firma)} znikną.
+        </p>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button onClick={apply} disabled={busy} style={btn("primary")}>{busy ? "Wczytuję…" : "Wczytaj"}</button>
+      </div>
+
+      <h4 style={{ margin: "24px 0 8px", fontSize: 13.5, paddingTop: 16, borderTop: "1px solid var(--border-soft)" }}>
+        Zapisz cennik {partnerName} jako szablon
+      </h4>
+      <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "var(--text-lo)" }}>
+        Weźmiemy {priced} pozycji z ceną dla firmy {firmaLabel(firma)}.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center" }}>
+        <input style={inputStyle} placeholder="nazwa, np. Standard 2026" value={name} onChange={e => setName(e.target.value)}/>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, color: "var(--text-mid)" }}>
+          <input type="checkbox" checked={withPrices} onChange={e => setWithPrices(e.target.checked)}/>
+          z cenami
+        </label>
+        <button onClick={save} disabled={busy} style={btn("primary", true)}>Zapisz szablon</button>
+      </div>
+    </Modal>
   );
 }
 
