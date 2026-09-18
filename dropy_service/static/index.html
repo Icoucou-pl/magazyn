@@ -123,7 +123,7 @@ label.f>*{margin-top:4px}
 .kpi b{font-size:19px;font-weight:600}
 .kpi.warn b{color:var(--warn)}
 .olist{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.orow{display:grid;grid-template-columns:150px 52px minmax(0,1fr) 100px 150px;gap:12px;align-items:center;width:100%;text-align:left;
+.orow{display:grid;grid-template-columns:minmax(170px,auto) 92px minmax(0,1fr) 110px 150px;gap:14px;align-items:center;width:100%;text-align:left;
   border:0;border-top:1px solid var(--line);background:none;padding:12px 16px;cursor:pointer;color:inherit}
 .orow:first-child{border-top:0}
 .orow:hover{background:var(--sunk)}
@@ -197,7 +197,7 @@ const STATUS = {
 const state = {
   token: localStorage.getItem("drop_token") || "",
   me: null, tab: "katalog", firma: null,
-  carts: {}, catalog: null, orders: null, month: "", q: "", open: null,
+  carts: {}, catalogs: {}, orders: null, od: "", do: "", q: "", finanse: null,
 };
 
 // ── Motyw ────────────────────────────────────────────────────
@@ -267,6 +267,7 @@ function renderLogin() {
 function shell(inner) {
   const cartN = Object.values(state.carts).reduce((s, c) => s + Object.values(c).reduce((a, b) => a + b, 0), 0);
   const waiting = (state.orders?.orders || []).filter(o => ["platnosc", "etykieta"].includes(o.status)).length;
+  const overdue = (state.finanse?.invoices || []).filter(i => i.overdue).length;
   $("#app").innerHTML = `
     <header class="top">
       <div class="who"><b>${state.me.name}</b><span>Portal partnera, kod ${state.me.code}</span></div>
@@ -279,6 +280,7 @@ function shell(inner) {
       <button role="tab" data-tab="katalog" aria-selected="${state.tab === "katalog"}">Katalog</button>
       <button role="tab" data-tab="koszyk" aria-selected="${state.tab === "koszyk"}">Koszyk${cartN ? `<span class="badge">${cartN}</span>` : ""}</button>
       <button role="tab" data-tab="zamowienia" aria-selected="${state.tab === "zamowienia"}">Zamówienia${waiting ? `<span class="badge warn">${waiting}</span>` : ""}</button>
+      <button role="tab" data-tab="finanse" aria-selected="${state.tab === "finanse"}">Finanse${overdue ? `<span class="badge warn">${overdue}</span>` : ""}</button>
     </nav>
     <main>${inner}</main>`;
   $("#out").onclick = logout;
@@ -302,8 +304,9 @@ const cart = () => (state.carts[state.firma] ||= {});
 function renderCartBar() {
   const bar = $("#cartbar"), c = state.carts[state.firma] || {};
   const n = Object.values(c).reduce((a, b) => a + b, 0);
-  if (n && state.tab === "katalog" && state.catalog) {
-    const v = Object.entries(c).reduce((s, [sku, q]) => s + (state.catalog.find(p => p.sku === sku)?.price_net || 0) * q, 0);
+  const cat = state.catalogs[state.firma];
+  if (n && state.tab === "katalog" && cat) {
+    const v = Object.entries(c).reduce((s, [sku, q]) => s + (cat.find(p => p.sku === sku)?.price_net || 0) * q, 0);
     bar.innerHTML = `<span>${fl(state.firma)}: ${n} szt., ${zl(v)} netto</span><button class="btn" data-tab="koszyk">Przejdź do koszyka</button>`;
     bar.hidden = false;
     bar.querySelector("[data-tab]").onclick = () => go("koszyk");
@@ -313,23 +316,128 @@ function renderCartBar() {
 async function go(tab) {
   state.tab = tab; window.scrollTo(0, 0);
   if (tab === "katalog") await loadCatalog();
-  if (tab === "koszyk") { if (!state.catalog) await loadCatalog(); renderCart(); }
+  if (tab === "koszyk") { await ensureCatalog(state.firma); renderCart(); }
   if (tab === "zamowienia") await loadOrders();
+  if (tab === "finanse") await loadFinanse();
+}
+
+// ── Finanse ──────────────────────────────────────────────────
+async function loadFinanse() {
+  shell(`<div class="empty">Wczytuję rozliczenia…</div>`);
+  try { state.finanse = await api("/finanse"); }
+  catch (e) { state.finanse = { summary: {}, invoices: [], payments: [] }; toast(e.message, "bad"); }
+  renderFinanse();
+}
+
+function renderFinanse() {
+  const { summary = {}, invoices = [], payments = [] } = state.finanse || {};
+  const invRows = invoices.map(i => {
+    const pill = i.status === "zaplacona" ? `<span class="pill ok">Zapłacona</span>`
+      : i.status === "po_terminie" ? `<span class="pill bad">Po terminie</span>`
+      : `<span class="pill info">Do zapłaty</span>`;
+    return `<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:start">
+        <div><div class="mono" style="font-weight:500">${i.nr}</div>
+          <div style="font-size:12.5px;color:var(--muted)">${fl(i.firma)}${i.okres ? " · " + i.okres : ""} · termin ${dm(i.due_date)}</div></div>
+        ${pill}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0 4px">
+        <div><small style="color:var(--muted)">Kwota</small><div><b>${zl(i.total_gross)}</b></div></div>
+        <div><small style="color:var(--muted)">Zapłacono</small><div><b>${zl(i.paid)}</b></div></div>
+        <div><small style="color:var(--muted)">Zostało</small><div><b>${zl(i.left)}</b></div></div>
+      </div>
+      ${i.pending ? `<p class="hint">Zgłoszona wpłata ${zl(i.pending)} czeka na nasze potwierdzenie.</p>` : ""}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        ${i.pdf_url ? `<a class="btn sm" href="${i.pdf_url}" target="_blank" rel="noreferrer">Pobierz fakturę</a>` : ""}
+        ${i.left > 0 ? `<button class="btn sm primary" data-pay="${i.id}" data-left="${i.left}" data-nr="${i.nr}">Zgłoś wpłatę</button>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+
+  const payRows = payments.map(p => `<div style="display:grid;grid-template-columns:70px minmax(0,1fr) auto;gap:10px;padding:9px 0;border-top:1px solid var(--line)">
+      <span style="color:var(--muted);font-size:13px">${dm(p.paid_date)}</span>
+      <span style="font-size:13.5px">${p.invoice_nr || "—"}
+        <small style="display:block;color:var(--muted)">${p.confirmed ? "potwierdzona" : "czeka na potwierdzenie"}${p.note ? " · " + p.note : ""}</small></span>
+      <b>${zl(p.amount)}</b></div>`).join("");
+
+  shell(`
+    <div class="sechead"><div><h2>Finanse</h2><p>Faktury zbiorcze i Twoje wpłaty.</p></div></div>
+    <div class="kpis">
+      <div class="kpi"><small>Do zapłaty</small><b>${zl(summary.due)}</b></div>
+      <div class="kpi ${summary.overdue ? "warn" : ""}"><small>Po terminie</small><b>${zl(summary.overdue)}</b></div>
+      <div class="kpi"><small>Zgłoszone wpłaty</small><b>${zl(summary.pending)}</b></div>
+    </div>
+    <h3 style="font-size:14px;margin:18px 0 10px">Faktury</h3>
+    ${invRows || `<div class="card empty">Nie masz jeszcze żadnych faktur.</div>`}
+    <h3 style="font-size:14px;margin:22px 0 10px">Wpłaty</h3>
+    <div class="card">${payRows || `<div class="empty" style="padding:20px">Brak zgłoszonych wpłat.</div>`}</div>`);
+
+  document.querySelectorAll("[data-pay]").forEach(b => b.onclick = () => payForm(b.dataset.pay, b.dataset.left, b.dataset.nr));
+}
+
+function payForm(id, left, nr) {
+  $("#dBody").innerHTML = `
+    <div class="dhead">
+      <div><h2 style="font-size:17px">Zgłoś wpłatę</h2>
+        <p style="margin:2px 0 0;color:var(--muted);font-size:13px" class="mono">${nr}</p></div>
+      <button class="x" data-close aria-label="Zamknij">×</button>
+    </div>
+    <p class="hint" style="margin-bottom:12px">Zgłoszenie trafia do nas do potwierdzenia. Saldo zmieni się po zaksięgowaniu przelewu.</p>
+    <label class="f">Data wpłaty<input type="date" id="pd" value="${iso(new Date())}"></label>
+    <label class="f" style="margin-top:10px">Kwota<input type="text" id="pa" inputmode="decimal" value="${left}"></label>
+    <label class="f" style="margin-top:10px">Link do potwierdzenia (opcjonalnie)<input type="text" id="pu" placeholder="np. link do PDF z banku"></label>
+    <label class="f" style="margin-top:10px">Uwagi<input type="text" id="pn"></label>
+    <button class="btn primary wide" id="psend" style="margin-top:14px">Wyślij zgłoszenie</button>`;
+  $("#scrim").hidden = false; $("#drawer").hidden = false;
+  $("#drawer").querySelector(".x").onclick = closeDrawer;
+  $("#scrim").onclick = closeDrawer;
+  $("#psend").onclick = async () => {
+    const amount = Number(($("#pa").value || "").replace(",", "."));
+    if (!Number.isFinite(amount) || amount <= 0) return toast("Podaj kwotę", "bad");
+    $("#psend").disabled = true;
+    try {
+      await api(`/invoices/${id}/payments`, { method: "POST", body: JSON.stringify({
+        paid_date: $("#pd").value, amount,
+        confirmation_url: $("#pu").value.trim() || null,
+        note: $("#pn").value.trim() || null,
+      }) });
+      toast("Zgłoszenie wysłane"); closeDrawer(); await loadFinanse();
+    } catch (e) { toast(e.message, "bad"); $("#psend").disabled = false; }
+  };
 }
 
 // ── Katalog ──────────────────────────────────────────────────
+// Katalog każdej firmy trzymamy osobno. Bez tego po przeskoczeniu na inną firmę
+// koszyk tracił nazwy i ceny, bo pamiętaliśmy tylko ostatnio wczytaną listę.
+async function ensureCatalog(firma) {
+  if (state.catalogs[firma]) return state.catalogs[firma];
+  try { state.catalogs[firma] = await api(`/catalog?firma=${firma}`); }
+  catch (e) { state.catalogs[firma] = []; toast(e.message, "bad"); }
+  return state.catalogs[firma];
+}
+
 async function loadCatalog() {
   shell(`<div class="empty">Wczytuję katalog…</div>`);
-  try { state.catalog = await api(`/catalog?firma=${state.firma}`); }
-  catch (e) { state.catalog = []; toast(e.message, "bad"); }
+  await ensureCatalog(state.firma);
   renderCatalog();
 }
 
-function renderCatalog() {
+const emptyCatalog = () =>
+  `<div class="empty">${state.q ? "Nic nie pasuje do wyszukiwania." : "Katalog jest pusty — odezwij się do opiekuna."}</div>`;
+
+// Przerysowanie samej listy: input zostaje w DOM, więc kursor nie ucieka na początek.
+function paintProducts() {
+  const el = $("#plist"); if (!el) return renderCatalog();
+  el.innerHTML = productRows() || emptyCatalog();
+  wireProducts();
+  renderCartBar();
+}
+
+function productRows() {
   const q = state.q.toLowerCase();
-  const list = (state.catalog || []).filter(p => !q || (p.name + " " + p.sku).toLowerCase().includes(q));
+  const list = (state.catalogs[state.firma] || []).filter(p => !q || (p.name + " " + p.sku).toLowerCase().includes(q));
   const c = cart();
-  const rows = list.map(p => {
+  const rows2 = list.map(p => {
     const av = p.availability === "ok" ? `<span class="pill ok">Dostępny</span>`
       : p.availability === "low" ? `<span class="pill warn">Ostatnie sztuki</span>`
       : `<span class="pill bad">Brak${p.incoming ? ", w drodze" : ""}</span>`;
@@ -343,29 +451,38 @@ function renderCatalog() {
       <div class="pbuy"><div class="price">${zl(p.price_net)}<small>netto</small></div>${buy}</div>
     </article>`;
   }).join("");
+  return rows2;
+}
 
+function wireProducts() {
+  document.querySelectorAll("[data-add]").forEach(b => b.onclick = () => { cart()[b.dataset.add] = 1; paintProducts(); });
+  document.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => { cart()[b.dataset.inc]++; paintProducts(); });
+  document.querySelectorAll("[data-dec]").forEach(b => b.onclick = () => {
+    if (--cart()[b.dataset.dec] <= 0) delete cart()[b.dataset.dec];
+    paintProducts();
+  });
+}
+
+function renderCatalog() {
+  const rows = productRows();
   shell(`
     <div class="sechead">
       <div><h2>Katalog</h2><p>Ceny netto z Twojego cennika.</p></div>
       <input type="search" id="q" placeholder="Szukaj po nazwie lub SKU" value="${state.q}" style="max-width:280px">
     </div>
     ${firmSwitch()}
-    <div class="plist">${rows || `<div class="empty">${state.q ? "Nic nie pasuje do wyszukiwania." : "Katalog jest pusty — odezwij się do opiekuna."}</div>`}</div>`);
+    <div class="plist" id="plist">${rows || emptyCatalog()}</div>`);
 
-  $("#q").oninput = e => { state.q = e.target.value; renderCatalog(); $("#q").focus(); };
+  $("#q").oninput = e => { state.q = e.target.value; paintProducts(); };
   wireFirms();
-  document.querySelectorAll("[data-add]").forEach(b => b.onclick = () => { cart()[b.dataset.add] = 1; renderCatalog(); });
-  document.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => { cart()[b.dataset.inc]++; renderCatalog(); });
-  document.querySelectorAll("[data-dec]").forEach(b => b.onclick = () => {
-    if (--cart()[b.dataset.dec] <= 0) delete cart()[b.dataset.dec];
-    renderCatalog();
-  });
+  wireProducts();
 }
 
 function wireFirms() {
   document.querySelectorAll("[data-firma]").forEach(b => b.onclick = async () => {
-    state.firma = b.dataset.firma; state.catalog = null;
-    if (state.tab === "katalog") await loadCatalog(); else renderCart();
+    state.firma = b.dataset.firma;
+    await ensureCatalog(state.firma);
+    state.tab === "katalog" ? renderCatalog() : renderCart();
   });
 }
 
@@ -381,7 +498,7 @@ function renderCart() {
     $("[data-tab]").onclick = () => go("katalog");
     return;
   }
-  const P = Object.fromEntries((state.catalog || []).map(p => [p.sku, p]));
+  const P = Object.fromEntries((state.catalogs[state.firma] || []).map(p => [p.sku, p]));
   const lines = items.map(([sku, q]) => `<div class="line">
       <div><div>${P[sku]?.name || sku}</div><div class="sku">${sku}</div></div>
       <div class="step"><button data-dec="${sku}">−</button><span>${q}</span><button data-inc="${sku}">+</button></div>
@@ -488,21 +605,22 @@ function renderCart() {
 }
 
 // ── Zamówienia ───────────────────────────────────────────────
+function thisMonth() {
+  const d = new Date(), f = new Date(d.getFullYear(), d.getMonth(), 1);
+  return [iso(f), iso(d)];
+}
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 async function loadOrders() {
+  if (!state.od && !state.do) [state.od, state.do] = thisMonth();
   shell(`<div class="empty">Wczytuję zamówienia…</div>`);
-  try { state.orders = await api(`/orders${state.month ? "?month=" + state.month : ""}`); }
+  try { state.orders = await api(`/orders?od=${state.od}&do=${state.do}`); }
   catch (e) { state.orders = { orders: [], summary: {} }; toast(e.message, "bad"); }
   renderOrders();
 }
 
-function monthOptions() {
-  const out = []; const d = new Date();
-  for (let i = 0; i < 12; i++) { out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); d.setMonth(d.getMonth() - 1); }
-  return out;
-}
-
 function renderOrders() {
-  const { orders = [], summary = {}, month } = state.orders || {};
+  const { orders = [], summary = {} } = state.orders || {};
   const rows = orders.map(o => {
     const [lbl, cls] = STATUS[o.status] || [o.status, "info"];
     return `<button class="orow" data-open="${o.nr}">
@@ -518,7 +636,14 @@ function renderOrders() {
   shell(`
     <div class="sechead">
       <div><h2>Zamówienia</h2><p>Statusy aktualizują się automatycznie.</p></div>
-      <select id="month" style="width:auto">${monthOptions().map(m => `<option value="${m}" ${m === month ? "selected" : ""}>${m}</option>`).join("")}</select>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <input type="date" id="od" value="${state.od}" style="width:auto">
+        <span style="color:var(--muted)">–</span>
+        <input type="date" id="do" value="${state.do}" style="width:auto">
+        <button class="btn sm" data-range="month">Ten miesiąc</button>
+        <button class="btn sm" data-range="prev">Poprzedni</button>
+        <button class="btn sm" data-range="year">Ten rok</button>
+      </div>
     </div>
     <div class="kpis">
       <div class="kpi"><small>Zamówienia</small><b>${summary.count ?? 0}</b></div>
@@ -527,7 +652,18 @@ function renderOrders() {
     </div>
     <div class="olist">${rows || `<div class="empty">Brak zamówień w tym miesiącu.</div>`}</div>`);
 
-  $("#month").onchange = e => { state.month = e.target.value; loadOrders(); };
+  const apply = () => { state.od = $("#od").value; state.do = $("#do").value; loadOrders(); };
+  $("#od").onchange = apply; $("#do").onchange = apply;
+  document.querySelectorAll("[data-range]").forEach(b => b.onclick = () => {
+    const now = new Date();
+    if (b.dataset.range === "month") [state.od, state.do] = thisMonth();
+    if (b.dataset.range === "prev") {
+      state.od = iso(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      state.do = iso(new Date(now.getFullYear(), now.getMonth(), 0));
+    }
+    if (b.dataset.range === "year") { state.od = `${now.getFullYear()}-01-01`; state.do = iso(now); }
+    loadOrders();
+  });
   document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
 }
 
