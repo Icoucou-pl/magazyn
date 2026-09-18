@@ -53,10 +53,12 @@ class Firma:
     # płatności, dostaw i pól dodatkowych — stąd kolumny na app_firmy, nie stałe w kodzie.
     drop_status_id: Optional[int] = None      # np. status „Drop"
     drop_payment_id: Optional[int] = None     # przelew tradycyjny (pobranie idzie do partnera)
-    drop_shipment_own_id: Optional[int] = None   # partner daje SWOJĄ etykietę → metoda BEZ integracji kurierskiej
-    drop_shipment_ours_id: Optional[int] = None  # wysyłamy my → normalna metoda kurierska
-    label_field_id: Optional[int] = None      # pole dodatkowe „Etykieta"
-    invoice_field_id: Optional[int] = None    # pole dodatkowe „Faktura"
+    drop_shipment_own_id: Optional[int] = None    # partner daje SWOJĄ etykietę
+    drop_shipment_ours_id: Optional[int] = None   # wysyłamy my
+    label_field_id: Optional[int] = None          # pole „DROP - ETYKIETA" (AMH 14, Acti 7)
+    own_label_field_id: Optional[int] = None      # pole „Własna etykieta" = tak (AMH 5)
+    invoice_month_field_id: Optional[int] = None  # pole „Faktura na koniec miesiąca" = tak (AMH 3)
+    invoice_field_id: Optional[int] = None        # pole z dokumentem sprzedaży (AMH 1, Acti 3)
 
 
 async def _load_firmy() -> List["Firma"]:
@@ -79,6 +81,8 @@ async def _load_firmy() -> List["Firma"]:
                         drop_shipment_own_id=_to_int(row.get("sellasist_drop_shipment_own_id")),
                         drop_shipment_ours_id=_to_int(row.get("sellasist_drop_shipment_ours_id")),
                         label_field_id=_to_int(row.get("sellasist_label_field_id")),
+                        own_label_field_id=_to_int(row.get("sellasist_own_label_field_id")),
+                        invoice_month_field_id=_to_int(row.get("sellasist_invoice_month_field_id")),
                         invoice_field_id=_to_int(row.get("sellasist_invoice_field_id")),
                     ))
     except Exception as e:
@@ -274,18 +278,36 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         pid = ids.get(sku.lower())
         if not pid:
             raise SellasistError(0, f"{sku}: nie ma tego produktu w Sellasist {firma.slug}")
+        # Sellasist przyjmuje cenę BRUTTO — tak samo wyglądają zamówienia z Make.
         lines.append({
             "product_id": pid,
             "symbol": sku,
             "catalog_number": sku,
             "quantity": int(it.get("qty") or 0),
             "price": round(float(it.get("price_net") or 0) * 1.23, 2),
+            "tax_rate": 23,
         })
 
-    addr = {
-        "name": order.get("recipient_name") or order.get("partner_name") or "",
+    # Adres płatnika to PARTNER (to on jest naszym klientem i on dostaje fakturę),
+    # a adres wysyłki to klient końcowy. Dokładnie tak robi to dziś scenariusz w Make.
+    bill = {
+        "name": "",
+        "surname": "",
+        "company_name": order.get("partner_name") or "",
+        "company_nip": order.get("partner_nip") or "",
+        "street": order.get("partner_street") or "",
+        "home_number": order.get("partner_home_number") or "",
+        "postcode": order.get("partner_postcode") or "",
+        "city": order.get("partner_city") or "",
+        "phone": order.get("partner_phone") or "",
+        "country": {"id": 170, "code": "PL"},
+    }
+    ship = {
+        "name": order.get("recipient_name") or "",
         "surname": order.get("recipient_surname") or "",
-        "street": order.get("recipient_street") or "",
+        "company_name": "",
+        # Przy własnej etykiecie partner często nie podaje adresu — przesyłkę nadaje sam.
+        "street": order.get("recipient_street") or ("etykieta partnera" if own_label else ""),
         "home_number": order.get("recipient_home_number") or "",
         "postcode": order.get("recipient_zip") or "",
         "city": order.get("recipient_city") or "",
@@ -293,11 +315,16 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         "country": {"id": 170, "code": "PL"},
     }
 
-    # Etykieta partnera ląduje w osobnym polu („DROP - ETYKIETA"). To jedyny czytelny
-    # sygnał, że plik przyszedł od dropa, a nie powstał u nas.
+    # Pola dodatkowe — te same, których używa Make, żeby wasze automatyzacje nie
+    # musiały rozróżniać źródła zamówienia.
     fields = []
-    if own_label and firma.label_field_id and order.get("label_url"):
-        fields.append({"field_id": firma.label_field_id, "field_value": order["label_url"]})
+    if own_label:
+        if firma.own_label_field_id:
+            fields.append({"field_id": firma.own_label_field_id, "field_value": "tak"})
+        if firma.label_field_id and order.get("label_url"):
+            fields.append({"field_id": firma.label_field_id, "field_value": order["label_url"]})
+    if firma.invoice_month_field_id and order.get("payment_mode") == "zbiorcza":
+        fields.append({"field_id": firma.invoice_month_field_id, "field_value": "tak"})
 
     payload: Dict[str, Any] = {
         "status_id": firma.drop_status_id or 1,
@@ -305,12 +332,13 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         "shipment_id": shipment_id,
         "cod": 0,
         "currency": "PLN",
-        "email": order.get("email") or "",
-        # Numer u nas + kod partnera — jedyny ślad, po którym rozpoznasz zamówienie w panelu,
-        # jeśli kiedyś zabraknie osobnego klucza API.
+        "invoice": 1,
+        "email": order.get("partner_email") or "",
         "comment": f"DROP {order.get('partner_code', '')} {order.get('nr', '')}".strip(),
-        "bill_address": addr,
-        "shipment_address": addr,
+        # Numer zamówienia u partnera — w Make ląduje w external_id i po nim rozpoznajecie duble.
+        "external_id": order.get("external_id") or order.get("nr"),
+        "bill_address": bill,
+        "shipment_address": ship,
         "products": lines,
     }
     if fields:
