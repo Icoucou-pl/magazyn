@@ -35,7 +35,7 @@ type Order = {
   firma: string; typ: string; status: string; source: string; external_id: string | null;
   recipient_name: string | null; recipient_city: string | null; recipient_street: string | null;
   recipient_zip: string | null; recipient_phone: string | null;
-  cod: boolean; label_url: string | null; tracking: string | null;
+  cod: boolean; shipping_mode: string; label_url: string | null; tracking: string | null;
   sellasist_order_id: string | null; total_net: number; total_gross: number;
   created_at: string; items: OrderItem[];
 };
@@ -948,6 +948,7 @@ function OrdersPanel({ partners }: { partners: Partner[] }) {
               {o.recipient_name || o.partner_name}
               <small style={{ display: "block", color: "var(--text-lo)", fontSize: 11.5 }}>
                 {firmaLabel(o.firma)} · {o.typ === "klient" ? "do klienta" : "zbiorcze"}
+                {o.shipping_mode === "wlasna" ? " · etykieta partnera" : " · wysyłka nasza"}
                 {o.cod ? " · pobranie" : ""}{o.external_id ? ` · ${o.external_id}` : ""}
                 {o.sellasist_order_id ? ` · Sellasist #${o.sellasist_order_id}` : ""}
               </small>
@@ -983,6 +984,9 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
         <Tag>{firmaLabel(order.firma)}</Tag>
         <Tag>{order.partner_code}</Tag>
         <Tag>{order.source === "api" ? "z API sklepu" : order.source === "portal" ? "z portalu" : "z panelu"}</Tag>
+        <Tag fg={order.shipping_mode === "wlasna" ? "var(--warning)" : undefined}>
+          {order.shipping_mode === "wlasna" ? "etykieta partnera" : "wysyłka nasza"}
+        </Tag>
         {order.cod && <Tag fg="var(--warning)">pobranie</Tag>}
       </div>
 
@@ -996,11 +1000,13 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 11.5, color: "var(--text-lo)", marginBottom: 4 }}>Etykieta partnera</div>
+          <div style={{ fontSize: 11.5, color: "var(--text-lo)", marginBottom: 4 }}>Etykieta</div>
           <div style={{ fontSize: 13 }}>
-            {order.label_url
-              ? <a href={order.label_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Pobierz etykietę</a>
-              : order.cod ? "Brak — zamówienie czeka" : "Nie dotyczy"}
+            {order.shipping_mode !== "wlasna"
+              ? "Wysyłamy my — etykieta powstaje u nas"
+              : order.label_url
+                ? <a href={order.label_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Pobierz etykietę partnera</a>
+                : "Brak — zamówienie czeka na partnera"}
           </div>
         </div>
       </div>
