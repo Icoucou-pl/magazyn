@@ -128,12 +128,17 @@ def _out(o: dict, items: List[dict]) -> dict:
     }
 
 
-@router.get("/orders")
-async def list_orders(
-    month: str = Query("", description="RRRR-MM; puste = bieżący miesiąc"),
-    p: Partner = Depends(current_partner),
-    db: AsyncSession = Depends(get_db),
-):
+def _range(od: str, do: str, month: str):
+    """Zakres dat: od/do mają pierwszeństwo, month zostaje dla zgodności ze starym API."""
+    if od or do:
+        try:
+            start = datetime.strptime(od, "%Y-%m-%d").date() if od else date(2000, 1, 1)
+            end = datetime.strptime(do, "%Y-%m-%d").date() if do else date.today()
+        except ValueError:
+            raise HTTPException(400, "Daty muszą być w formacie RRRR-MM-DD")
+        if end < start:
+            raise HTTPException(400, "Data „do” jest wcześniejsza niż „od”")
+        return start, date.fromordinal(end.toordinal() + 1)      # „do” włącznie
     if month:
         try:
             first = datetime.strptime(month + "-01", "%Y-%m-%d").date()
@@ -142,7 +147,18 @@ async def list_orders(
     else:
         today = date.today()
         first = date(today.year, today.month, 1)
-    nxt = date(first.year + (first.month == 12), (first.month % 12) + 1, 1)
+    return first, date(first.year + (first.month == 12), (first.month % 12) + 1, 1)
+
+
+@router.get("/orders")
+async def list_orders(
+    month: str = Query("", description="RRRR-MM (zgodność wstecz)"),
+    od: str = Query("", description="RRRR-MM-DD"),
+    do: str = Query("", description="RRRR-MM-DD, włącznie"),
+    p: Partner = Depends(current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    first, nxt = _range(od, do, month)
 
     r = await db.execute(text(
         "SELECT * FROM dropy.orders WHERE partner_id = :p AND created_at >= :od AND created_at < :do_ "
@@ -150,7 +166,8 @@ async def list_orders(
     ), {"p": p.id, "od": first, "do_": nxt})
     orders = [dict(x) for x in r.mappings()]
     if not orders:
-        return {"month": first.strftime("%Y-%m"), "orders": [], "summary": {"count": 0, "net": 0, "gross": 0}}
+        return {"od": first.isoformat(), "do": (nxt.toordinal() - 1 and date.fromordinal(nxt.toordinal() - 1)).isoformat(),
+                "orders": [], "summary": {"count": 0, "net": 0, "gross": 0, "waiting": 0}}
 
     ri = await db.execute(
         text("SELECT * FROM dropy.order_items WHERE order_id = ANY(:ids) ORDER BY id"),
@@ -162,7 +179,7 @@ async def list_orders(
 
     live = [o for o in orders if o["status"] != "anulowane"]
     return {
-        "month": first.strftime("%Y-%m"),
+        "od": first.isoformat(), "do": date.fromordinal(nxt.toordinal() - 1).isoformat(),
         "orders": [_out(o, by_order.get(o["id"], [])) for o in orders],
         "summary": {
             "count": len(live),
@@ -277,6 +294,106 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         ), {"o": oid, "s": it["sku"], "n": it["name"], "q": it["qty"], "c": it["price_net"]})
     await db.commit()
     return await get_order(nr, p, db)
+
+
+# ===== FINANSE =====
+class PaymentIn(BaseModel):
+    paid_date: str                     # RRRR-MM-DD
+    amount: float = Field(..., gt=0)
+    confirmation_url: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.get("/finanse")
+async def finanse(
+    year: str = Query("", description="RRRR; puste = wszystko"),
+    p: Partner = Depends(current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Faktury partnera z rozliczeniem wpłat. Saldo liczymy tylko z wpłat POTWIERDZONYCH."""
+    params = {"p": p.id, "y": year}
+    r = await db.execute(text(
+        "SELECT i.*, "
+        "  COALESCE((SELECT SUM(amount) FROM dropy.payments pm "
+        "            WHERE pm.invoice_id = i.id AND pm.confirmed), 0) AS paid, "
+        "  COALESCE((SELECT SUM(amount) FROM dropy.payments pm "
+        "            WHERE pm.invoice_id = i.id AND NOT pm.confirmed), 0) AS pending "
+        "FROM dropy.invoices i "
+        "WHERE i.partner_id = :p AND NOT i.is_canceled "
+        "  AND (:y = '' OR TO_CHAR(i.issued_at, 'YYYY') = :y) "
+        "ORDER BY i.due_date DESC NULLS LAST, i.id DESC"
+    ), params)
+
+    today = date.today()
+    invoices, due_total, overdue_total = [], 0.0, 0.0
+    for x in r.mappings():
+        total = float(x["total_gross"] or 0)
+        paid = float(x["paid"] or 0)
+        left = round(total - paid, 2)
+        overdue = left > 0 and x["due_date"] is not None and x["due_date"] < today
+        due_total += max(left, 0)
+        if overdue:
+            overdue_total += left
+        invoices.append({
+            "id": x["id"], "nr": x["nr"], "firma": x["firma"], "okres": x["okres"],
+            "issued_at": x["issued_at"], "due_date": x["due_date"],
+            "total_gross": total, "paid": paid, "pending": float(x["pending"] or 0),
+            "left": left, "overdue": overdue, "pdf_url": x["pdf_url"],
+            "status": "zaplacona" if left <= 0 else ("po_terminie" if overdue else "do_zaplaty"),
+        })
+
+    rp = await db.execute(text(
+        "SELECT pm.id, pm.paid_date, pm.amount, pm.confirmed, pm.confirmation_url, pm.note, "
+        "       i.nr AS invoice_nr "
+        "FROM dropy.payments pm LEFT JOIN dropy.invoices i ON i.id = pm.invoice_id "
+        "WHERE pm.partner_id = :p ORDER BY pm.paid_date DESC, pm.id DESC LIMIT 100"
+    ), {"p": p.id})
+    payments = [{
+        "id": x["id"], "paid_date": x["paid_date"], "amount": float(x["amount"]),
+        "confirmed": x["confirmed"], "confirmation_url": x["confirmation_url"],
+        "note": x["note"], "invoice_nr": x["invoice_nr"],
+    } for x in rp.mappings()]
+
+    return {
+        "summary": {
+            "due": round(due_total, 2),
+            "overdue": round(overdue_total, 2),
+            "pending": round(sum(p_["amount"] for p_ in payments if not p_["confirmed"]), 2),
+            "invoices": len(invoices),
+        },
+        "invoices": invoices,
+        "payments": payments,
+    }
+
+
+@router.post("/invoices/{iid}/payments", status_code=201)
+async def declare_payment(
+    iid: int, payload: PaymentIn,
+    p: Partner = Depends(current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Partner zgłasza wpłatę. Trafia jako niepotwierdzona — saldo zmienia się dopiero,
+    gdy my ją potwierdzimy. Dzięki temu zgłoszenie niczego nie zeruje na siłę."""
+    r = await db.execute(
+        text("SELECT id FROM dropy.invoices WHERE id = :i AND partner_id = :p AND NOT is_canceled"),
+        {"i": iid, "p": p.id},
+    )
+    if not r.first():
+        raise HTTPException(404, "Nie ma takiej faktury")
+    try:
+        when = datetime.strptime(payload.paid_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "Data wpłaty musi być w formacie RRRR-MM-DD")
+    if when > date.today():
+        raise HTTPException(400, "Data wpłaty nie może być z przyszłości")
+
+    await db.execute(text(
+        "INSERT INTO dropy.payments (partner_id, invoice_id, paid_date, amount, confirmation_url, note, source) "
+        "VALUES (:p, :i, :d, :a, :u, :n, 'partner')"
+    ), {"p": p.id, "i": iid, "d": when, "a": payload.amount,
+        "u": payload.confirmation_url, "n": payload.note})
+    await db.commit()
+    return {"ok": True, "info": "Zgłoszenie przyjęte, potwierdzimy po zaksięgowaniu"}
 
 
 @router.post("/orders/{nr:path}/label")
