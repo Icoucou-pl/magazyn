@@ -148,6 +148,10 @@ class InvoiceIn(BaseModel):
     note: Optional[str] = None
 
 
+class InvoiceAttach(BaseModel):
+    order_ids: List[int]
+
+
 class PaymentIn(BaseModel):
     partner_id: int
     invoice_id: Optional[int] = None
@@ -658,13 +662,15 @@ async def refresh_catalog(db: AsyncSession = Depends(get_db), user: CurrentUser 
         products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, slug)
         for pr in products:
             await db.execute(text(
-                f"INSERT INTO {SCHEMA}.catalog_cache (sku, firma, name, stock, in_transit, updated_at) "
-                f"VALUES (:sku, :firma, :name, :stock, :transit, CURRENT_TIMESTAMP) "
+                f"INSERT INTO {SCHEMA}.catalog_cache (sku, firma, name, stock, in_transit, photo_id, photo_hash, updated_at) "
+                f"VALUES (:sku, :firma, :name, :stock, :transit, :pid, :phash, CURRENT_TIMESTAMP) "
                 f"ON CONFLICT (sku, firma) DO UPDATE SET name = EXCLUDED.name, stock = EXCLUDED.stock, "
-                f"  in_transit = EXCLUDED.in_transit, updated_at = CURRENT_TIMESTAMP"
+                f"  in_transit = EXCLUDED.in_transit, photo_id = EXCLUDED.photo_id, "
+                f"  photo_hash = EXCLUDED.photo_hash, updated_at = CURRENT_TIMESTAMP"
             ), {
                 "sku": pr.sku, "firma": slug, "name": pr.name,
                 "stock": int(pr.stock or 0), "transit": int(pr.stock_in_transit or 0),
+                "pid": pr.photo_id, "phash": pr.photo_hash,
             })
             total += 1
     await db.commit()
@@ -832,11 +838,72 @@ async def create_invoice(payload: InvoiceIn, db: AsyncSession = Depends(get_db),
     return {**row, "total_gross": float(row["total_gross"])}
 
 
+@router.get("/dropy/invoices/{iid}/orders")
+async def invoice_orders(iid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Zamówienia wpięte na fakturę — odpowiednik jednej linii w arkuszu."""
+    r = await db.execute(text(
+        f"SELECT id, nr, firma, created_at, recipient_name, total_net, total_gross, status, sellasist_order_id "
+        f"FROM {SCHEMA}.orders WHERE invoice_id = :i ORDER BY created_at, id"
+    ), {"i": iid})
+    return [{**dict(x), "total_net": float(x["total_net"]), "total_gross": float(x["total_gross"])}
+            for x in r.mappings()]
+
+
+@router.get("/dropy/orders/unbilled")
+async def unbilled_orders(
+    partner_id: Optional[int] = None,
+    firma: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_dropy),
+):
+    """Zamówienia bez faktury — podstawa do wystawienia zbiorczej („na koniec miesiąca”)."""
+    r = await db.execute(text(
+        f"SELECT o.id, o.nr, o.firma, o.created_at, o.recipient_name, o.total_net, o.total_gross, o.status, "
+        f"       p.code AS partner_code, p.name AS partner_name, o.partner_id "
+        f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id "
+        f"WHERE o.invoice_id IS NULL AND o.status NOT IN ('anulowane') "
+        f"  AND (CAST(:pid AS INTEGER) IS NULL OR o.partner_id = CAST(:pid AS INTEGER)) "
+        f"  AND (:firma = '' OR o.firma = :firma) "
+        f"ORDER BY p.name, o.firma, o.created_at"
+    ), {"pid": partner_id, "firma": firma.strip().lower()})
+    return [{**dict(x), "total_net": float(x["total_net"]), "total_gross": float(x["total_gross"])}
+            for x in r.mappings()]
+
+
+@router.post("/dropy/invoices/{iid}/orders")
+async def attach_orders(iid: int, payload: InvoiceAttach, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Wpina zamówienia na fakturę. Pilnujemy, żeby były tego samego partnera i tej samej
+    firmy co faktura — inaczej rozliczenie przestałoby się zgadzać z podmiotem."""
+    r = await db.execute(text(f"SELECT partner_id, firma FROM {SCHEMA}.invoices WHERE id = :i AND NOT is_canceled"), {"i": iid})
+    inv = r.mappings().first()
+    if not inv:
+        raise HTTPException(404, "Nie ma takiej faktury")
+    if not payload.order_ids:
+        raise HTTPException(400, "Nie podano zamówień")
+
+    r = await db.execute(text(
+        f"SELECT id, nr, partner_id, firma, invoice_id FROM {SCHEMA}.orders WHERE id = ANY(:ids)"
+    ), {"ids": payload.order_ids})
+    rows = [dict(x) for x in r.mappings()]
+    for o in rows:
+        if o["partner_id"] != inv["partner_id"] or o["firma"] != inv["firma"]:
+            raise HTTPException(400, f"{o['nr']} jest innego partnera albo innej firmy niż faktura")
+        if o["invoice_id"] and o["invoice_id"] != iid:
+            raise HTTPException(409, f"{o['nr']} jest już na innej fakturze")
+
+    await db.execute(text(f"UPDATE {SCHEMA}.orders SET invoice_id = :i, updated_at = CURRENT_TIMESTAMP WHERE id = ANY(:ids)"),
+                     {"i": iid, "ids": payload.order_ids})
+    await db.commit()
+    return {"attached": len(rows)}
+
+
 @router.delete("/dropy/invoices/{iid}")
 async def cancel_invoice(iid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     r = await db.execute(text(f"UPDATE {SCHEMA}.invoices SET is_canceled = TRUE WHERE id = :id RETURNING id"), {"id": iid})
     if not r.first():
         raise HTTPException(404, "Nie ma takiej faktury")
+    # Zamówienia wracają do puli niezafakturowanych — inaczej zniknęłyby z rozliczeń.
+    await db.execute(text(f"UPDATE {SCHEMA}.orders SET invoice_id = NULL WHERE invoice_id = :id"), {"id": iid})
     await db.commit()
     return {"ok": True}
 
