@@ -115,18 +115,24 @@ function Modal({ title, onClose, children, wide }: {
   }, [onClose]);
   return (
     <div onClick={onClose} style={{
+      // 84px od góry: tyle zajmuje topbar. Bez tego nagłówek okna chowa się pod paskiem.
       position: "fixed", inset: 0, zIndex: 1000, background: "rgba(8,10,16,.55)",
-      display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", overflowY: "auto",
+      display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "84px 16px 24px",
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
         width: "100%", maxWidth: wide ? 900 : 560, background: "var(--surface-1)",
-        border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", padding: 20,
+        border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)",
+        // Przewija się TREŚĆ okna, nie całe tło — pasek z tytułem zostaje na wierzchu.
+        display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 108px)",
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
+          padding: "16px 20px", borderBottom: "1px solid var(--border-soft)", flexShrink: 0,
+        }}>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{title}</h3>
           <button onClick={onClose} style={{ ...btn("ghost", true), padding: 6 }} aria-label="Zamknij"><I.Close size={14}/></button>
         </div>
-        {children}
+        <div style={{ padding: 20, overflowY: "auto", minHeight: 0 }}>{children}</div>
       </div>
     </div>
   );
