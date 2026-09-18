@@ -13,6 +13,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { I, Card } from "./ui";
+import { Portal } from "./products-ui";
 
 // ── Typy ─────────────────────────────────────────────────────
 type Partner = {
@@ -113,9 +114,11 @@ function Modal({ title, onClose, children, wide }: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  // Portal do document.body — bez tego okno siedzi w stacking-context main/.fade-in
+  // i nagłówek chowa się pod topbarem (ten sam wzorzec co modale w Produktach).
   return (
+    <Portal>
     <div onClick={onClose} style={{
-      // 84px od góry: tyle zajmuje topbar. Bez tego nagłówek okna chowa się pod paskiem.
       position: "fixed", inset: 0, zIndex: 1000, background: "rgba(8,10,16,.55)",
       display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "84px 16px 24px",
     }}>
@@ -135,6 +138,7 @@ function Modal({ title, onClose, children, wide }: {
         <div style={{ padding: 20, overflowY: "auto", minHeight: 0 }}>{children}</div>
       </div>
     </div>
+    </Portal>
   );
 }
 
