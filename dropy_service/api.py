@@ -38,6 +38,7 @@ class LineIn(BaseModel):
 class OrderIn(BaseModel):
     firma: str
     typ: str = "klient"                      # klient | zbiorcze
+    shipping_mode: str = "wlasna"            # wlasna = etykieta partnera | nasza = wysyłamy my
     lines: List[LineIn]
     external_id: Optional[str] = None        # numer u partnera — klucz idempotencji
     recipient_name: Optional[str] = None
@@ -115,6 +116,7 @@ def _out(o: dict, items: List[dict]) -> dict:
     return {
         "nr": o["nr"], "firma": o["firma"], "typ": o["typ"], "status": o["status"],
         "external_id": o["external_id"], "cod": o["cod"], "tracking": o["tracking"],
+        "shipping_mode": o["shipping_mode"],
         "recipient": {
             "name": o["recipient_name"], "phone": o["recipient_phone"], "street": o["recipient_street"],
             "zip": o["recipient_zip"], "city": o["recipient_city"],
@@ -191,6 +193,8 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         raise HTTPException(403, f"Nie kupujesz od firmy {firma}")
     if payload.typ not in ("klient", "zbiorcze"):
         raise HTTPException(400, "typ musi być 'klient' albo 'zbiorcze'")
+    if payload.shipping_mode not in ("wlasna", "nasza"):
+        raise HTTPException(400, "shipping_mode musi być 'wlasna' albo 'nasza'")
     if not payload.lines:
         raise HTTPException(400, "Zamówienie bez pozycji")
     if payload.typ == "klient" and not (payload.recipient_name and payload.recipient_city):
@@ -234,9 +238,11 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         if already + gross > Decimal(str(p.credit_limit)):
             raise HTTPException(409, "Limit kupiecki przekroczony. Opłać zaległe faktury albo napisz do opiekuna.")
 
+    # Kolejność blokad: najpierw pieniądze, potem etykieta. Etykiety wymagamy tylko wtedy,
+    # gdy partner deklaruje własną — jeśli wysyłamy my, nadajemy zwykłą przesyłkę.
     if p.payment_mode == "przedplata":
         status = "platnosc"
-    elif payload.cod and not payload.label_url:
+    elif payload.shipping_mode == "wlasna" and not payload.label_url:
         status = "etykieta"
     else:
         status = "nowe"
@@ -253,14 +259,15 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
     r = await db.execute(text(
         "INSERT INTO dropy.orders (nr, partner_id, firma, typ, status, source, external_id, "
         "  recipient_name, recipient_phone, recipient_street, recipient_zip, recipient_city, "
-        "  cod, label_url, note, total_net, total_gross) "
+        "  cod, shipping_mode, label_url, note, total_net, total_gross) "
         "VALUES (:nr, :pid, :firma, :typ, :status, :src, :ext, :rn, :rp, :rs, :rz, :rc, "
-        "        :cod, :label, :note, :net, :gross) RETURNING id"
+        "        :cod, :mode, :label, :note, :net, :gross) RETURNING id"
     ), {
         "nr": nr, "pid": p.id, "firma": firma, "typ": payload.typ, "status": status,
         "src": "api" if p.via == "api" else "portal", "ext": payload.external_id,
         "rn": payload.recipient_name, "rp": payload.recipient_phone, "rs": payload.recipient_street,
         "rz": payload.recipient_zip, "rc": payload.recipient_city, "cod": payload.cod,
+        "mode": payload.shipping_mode,
         "label": payload.label_url, "note": payload.note, "net": float(total), "gross": float(gross),
     })
     oid = r.scalar()
@@ -276,12 +283,14 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
 async def set_label(nr: str, payload: LabelIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
     """Etykieta partnera przy pobraniu. Odblokowuje zamówienie do pakowania."""
     r = await db.execute(
-        text("SELECT id, status FROM dropy.orders WHERE nr = :nr AND partner_id = :p"),
+        text("SELECT id, status, shipping_mode FROM dropy.orders WHERE nr = :nr AND partner_id = :p"),
         {"nr": nr, "p": p.id},
     )
     o = r.mappings().first()
     if not o:
         raise HTTPException(404, "Nie ma takiego zamówienia")
+    if o["shipping_mode"] != "wlasna":
+        raise HTTPException(409, "To zamówienie wysyłamy my — etykieta partnera nie jest potrzebna")
     if o["status"] not in ("etykieta", "platnosc", "nowe"):
         raise HTTPException(409, "Zamówienie jest już w realizacji — etykietę wyślij opiekunowi")
 
