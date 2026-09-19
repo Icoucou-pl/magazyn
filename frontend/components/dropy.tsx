@@ -4,8 +4,8 @@
 //   · Partnerzy — rejestr, firmy na ptaszki, tryb płatności, limit, konta i klucze API
 //   · Cennik    — trzy drogi: ręcznie (z zaznaczaniem i akcją grupową), narzut %, wklejka z Excela
 //   · Zamówienia— podgląd, statusy, przesyłka, numer w Sellasist
-//   · Logi      — okno z historią zmian (partner + my), otwierane ikonką
-//                 w górnym pasku obok słońca (zdarzenie "dropy:open-logs")
+//   · Logi      — okno z historią zmian (partner + my), ikonka obok
+//                 „Odśwież katalog” w pasku zakładek
 //
 // Dane siedzą w schemacie `dropy`. Sam portal partnera to OSOBNY serwis —
 // stąd nic o nim w tym pliku poza tym, co widać w zamówieniach (source).
@@ -89,6 +89,16 @@ function btn(variant: "primary" | "ghost" | "danger" = "ghost", small = false): 
   };
 }
 
+function iconBtnStyle(busy: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    width: 32, height: 32, padding: 0, borderRadius: 8,
+    background: "var(--surface-2)", color: "var(--text-mid)",
+    border: "1px solid var(--border-soft)",
+    cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1,
+  };
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: "block", fontSize: 12, color: "var(--text-lo)" }}>
@@ -161,13 +171,6 @@ export default function DropyView() {
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
 
-  // Ikonka logów siedzi w Topbarze (header.tsx) — tu tylko nasłuchujemy.
-  useEffect(() => {
-    const open = () => setLogsOpen(true);
-    window.addEventListener("dropy:open-logs", open);
-    return () => window.removeEventListener("dropy:open-logs", open);
-  }, []);
-
   // Migawkę katalogu odświeżamy MY, nie partner. Docelowo pójdzie to z crona,
   // a przycisk zostaje na wypadek, gdy trzeba przeliczyć od razu (nowy produkt, zmiana VAT).
   const refreshCatalog = async () => {
@@ -198,17 +201,23 @@ export default function DropyView() {
           }}>{t.label}</button>
         ))}
         <div style={{ flex: 1 }}/>
-        <button
-          onClick={refreshCatalog}
-          disabled={refreshing}
-          title={lastRefresh
-            ? `Przelicza stany, ceny zakupu, zdjęcia i stawki VAT dla katalogu partnerów. Ostatnio: ${lastRefresh}`
-            : "Przelicza stany, ceny zakupu, zdjęcia i stawki VAT dla katalogu partnerów"}
-          style={{ ...btn("ghost", true), display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}
-        >
-          <I.Refresh size={13} style={{ animation: refreshing ? "spin 1s linear infinite" : undefined }}/>
-          {refreshing ? "Odświeżam…" : "Odśwież katalog"}
-        </button>
+        {/* Dwie ikonki obok siebie: odśwież katalog + logi. Opisy w dymkach (title). */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <button
+            onClick={refreshCatalog}
+            disabled={refreshing}
+            aria-label="Odśwież katalog"
+            title={refreshing ? "Odświeżam katalog…" : lastRefresh
+              ? `Odśwież katalog — przelicza stany, ceny zakupu, zdjęcia i stawki VAT. Ostatnio: ${lastRefresh}`
+              : "Odśwież katalog — przelicza stany, ceny zakupu, zdjęcia i stawki VAT"}
+            style={iconBtnStyle(refreshing)}
+          >
+            <I.Refresh size={15} style={{ animation: refreshing ? "spin 1s linear infinite" : undefined }}/>
+          </button>
+          <button onClick={() => setLogsOpen(true)} aria-label="Logi dropów" title="Logi dropów" style={iconBtnStyle(false)}>
+            <I.History size={15}/>
+          </button>
+        </div>
         <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
       </div>
 
