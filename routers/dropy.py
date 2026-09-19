@@ -12,11 +12,15 @@ CO JEST GDZIE:
 Styk z waszymi danymi jest dokładnie jeden: `dropy.catalog_cache`, migawka SKU,
 nazw i stanów, którą odświeża stąd endpoint /api/dropy/catalog/refresh.
 
+Logi: każda zmiana (nasza i partnera) zostawia gotowe zdanie w dropy.activity_log,
+w tej samej transakcji co zmiana. Czytamy je endpointem /api/dropy/activity.
+
 Guard: na razie CAŁA zakładka tylko dla super-admina (SUPER_ADMIN_EMAIL).
 Gdy dojrzeje, podmieniamy samo `require_dropy` na uprawnienie w ROLE_PERMS.
 """
 
 import hashlib
+import json
 import secrets
 from datetime import date, datetime
 from decimal import Decimal
@@ -209,6 +213,78 @@ def _month_range(month: str):
     return first, date(first.year + (first.month == 12), (first.month % 12) + 1, 1)
 
 
+# ===== LOGI =====
+# Zdanie składamy w chwili zdarzenia, podmiot zawsze rodzaju męskiego
+# („Użytkownik …”, „System …”), więc forma czasownika pasuje niezależnie od osoby.
+FIRMA_LABEL = {"amh": "AMH", "acti": "Acti4med", "veluxa": "Veluxa"}
+STATUS_LABEL = {
+    "platnosc": "Czeka na płatność", "etykieta": "Czeka na etykietę", "nowe": "Nowe",
+    "przyjete": "Przyjęte", "spakowane": "Spakowane", "wyslane": "Wysłane", "anulowane": "Anulowane",
+}
+PARTNER_FIELDS = {
+    "name": "nazwa", "nip": "NIP", "email": "e-mail", "phone": "telefon", "address": "adres",
+    "bill_street": "ulica (faktura)", "bill_home_number": "nr domu (faktura)",
+    "bill_postcode": "kod (faktura)", "bill_city": "miasto (faktura)", "firmy": "firmy",
+    "payment_mode": "tryb płatności", "allow_installments": "raty", "credit_limit": "limit kupiecki",
+    "is_active": "aktywny", "notes": "notatki",
+}
+MODE_LABEL = {"replace": "zastąp wszystko", "fill": "dołóż brakujące", "update": "zmień istniejące"}
+
+
+def _zl(v) -> str:
+    s = f"{float(v or 0):,.2f}".replace(",", " ").replace(".", ",")
+    return f"{s} zł"
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    if n == 1:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
+def _actor(user: Optional[CurrentUser]) -> str:
+    if not user:
+        return "System"
+    return (user.full_name or "").strip() or user.email
+
+
+def _kto(user: Optional[CurrentUser]) -> str:
+    return f"Użytkownik {_actor(user)}" if user else "System"
+
+
+def _fmt(col: str, v) -> str:
+    if v is None or v == "":
+        return "—"
+    if col == "credit_limit":
+        return _zl(v)
+    if col == "firmy":
+        return ", ".join(FIRMA_LABEL.get(f, f) for f in _firmy_out(v)) or "—"
+    if isinstance(v, bool):
+        return "tak" if v else "nie"
+    if col == "status":
+        return STATUS_LABEL.get(v, v)
+    return str(v)
+
+
+async def _log(db: AsyncSession, user: Optional[CurrentUser], action: str, message: str, *,
+               partner_id: Optional[int] = None, order_nr: Optional[str] = None,
+               changes: Optional[dict] = None):
+    """Wpis do logów dropów. BEZ commita — idzie razem ze zmianą."""
+    ch = json.dumps(changes, ensure_ascii=False,
+                    default=lambda v: float(v) if isinstance(v, Decimal) else str(v)) if changes else None
+    await db.execute(text(
+        f"INSERT INTO {SCHEMA}.activity_log (partner_id, source, actor, actor_user_id, action, order_nr, message, changes) "
+        f"VALUES (:p, :src, :actor, :uid, :action, :nr, :msg, CAST(:ch AS JSONB))"
+    ), {"p": partner_id, "src": "magazyn" if user else "system", "actor": _actor(user)[:255],
+        "uid": user.id if user else None, "action": action, "nr": order_nr, "msg": message, "ch": ch})
+
+
+def _plabel(p: dict) -> str:
+    return f"{p['code']} ({p['name']})"
+
+
 # ===== PARTNERZY =====
 @router.get("/dropy/partners")
 async def list_partners(
@@ -264,13 +340,14 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
         "lim": payload.credit_limit, "notes": payload.notes,
     })
     row = dict(r.mappings().first())
+    await _log(db, user, "partner_created", f"{_kto(user)} dodał partnera {_plabel(row)}", partner_id=row["id"])
     await db.commit()
     return _partner_out(row)
 
 
 @router.patch("/dropy/partners/{pid}")
 async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
-    await _get_partner(db, pid)
+    before = await _get_partner(db, pid)
     fields, params = [], {"id": pid}
     for col in ("name", "nip", "email", "phone", "address", "notes", "is_active", "allow_installments",
                 "bill_street", "bill_home_number", "bill_postcode", "bill_city"):
@@ -295,6 +372,28 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
     fields.append("updated_at = CURRENT_TIMESTAMP")
     r = await db.execute(text(f"UPDATE {SCHEMA}.partners SET {', '.join(fields)} WHERE id = :id RETURNING *"), params)
     row = dict(r.mappings().first())
+
+    # Tylko to, co faktycznie się zmieniło — zapis tego samego nie robi wpisu.
+    diff = {}
+    for col in PARTNER_FIELDS:
+        old, new = before.get(col), row.get(col)
+        if col == "credit_limit":
+            old = float(old) if old is not None else None
+            new = float(new) if new is not None else None
+        if col == "firmy":
+            old, new = _firmy_out(old), _firmy_out(new)
+        if old != new:
+            diff[col] = [old, new]
+    if diff:
+        if list(diff) == ["is_active"]:
+            tekst = f"{_kto(user)} {'aktywował' if row['is_active'] else 'dezaktywował'} partnera {_plabel(row)}"
+        else:
+            zmiany = "; ".join(f"{PARTNER_FIELDS[c]}: {_fmt(c, o)} → {_fmt(c, n)}"
+                               for c, (o, n) in diff.items() if c != "notes")
+            if "notes" in diff:
+                zmiany = (zmiany + "; " if zmiany else "") + "notatki"
+            tekst = f"{_kto(user)} zmienił dane partnera {_plabel(row)}: {zmiany}"
+        await _log(db, user, "partner_updated", tekst, partner_id=pid, changes=diff)
     await db.commit()
     return _partner_out(row)
 
@@ -312,9 +411,12 @@ async def get_prices(pid: int, db: AsyncSession = Depends(get_db), user: Current
 @router.put("/dropy/partners/{pid}/prices")
 async def set_prices(pid: int, payload: List[PriceIn], db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     """Wsad cennika. price_net = null usuwa pozycję, czyli produkt znika z katalogu partnera."""
-    await _get_partner(db, pid)
+    partner = await _get_partner(db, pid)
     upserts = [p for p in payload if p.price_net is not None]
     deletes = [p.sku.strip() for p in payload if p.price_net is None]
+
+    r = await db.execute(text(f"SELECT sku, price_net FROM {SCHEMA}.prices WHERE partner_id = :p"), {"p": pid})
+    old = {x["sku"]: float(x["price_net"]) for x in r.mappings()}
 
     for p in upserts:
         if p.price_net < 0:
@@ -325,6 +427,28 @@ async def set_prices(pid: int, payload: List[PriceIn], db: AsyncSession = Depend
         ), {"p": pid, "sku": p.sku.strip(), "cena": p.price_net})
     for sku in deletes:
         await db.execute(text(f"DELETE FROM {SCHEMA}.prices WHERE partner_id = :p AND sku = :sku"), {"p": pid, "sku": sku})
+
+    diff = {}
+    for p in upserts:
+        sku = p.sku.strip()
+        if old.get(sku) != round(float(p.price_net), 2):
+            diff[sku] = [old.get(sku), round(float(p.price_net), 2)]
+    for sku in deletes:
+        if sku in old:
+            diff[sku] = [old[sku], None]
+    if diff:
+        n = len(diff)
+        if n <= 3:
+            opis = "; ".join(f"{sku}: {_zl(o) if o is not None else 'brak'} → {_zl(nw) if nw is not None else 'usunięty'}"
+                             for sku, (o, nw) in diff.items())
+        else:
+            dod = sum(1 for o, _ in diff.values() if o is None)
+            usu = sum(1 for _, nw in diff.values() if nw is None)
+            zm = n - dod - usu
+            czesci = [f"{x} {w}" for x, w in ((dod, "nowych"), (zm, "zmienionych"), (usu, "usuniętych")) if x]
+            opis = f"{n} {_plural(n, 'pozycja', 'pozycje', 'pozycji')} ({', '.join(czesci)})"
+        await _log(db, user, "prices_changed", f"{_kto(user)} zmienił cennik partnera {_plabel(partner)}: {opis}",
+                   partner_id=pid, changes=diff)
     await db.commit()
     return {"updated": len(upserts), "deleted": len(deletes)}
 
@@ -434,12 +558,23 @@ async def create_template(payload: TemplateIn, db: AsyncSession = Depends(get_db
         await db.execute(text(
             f"INSERT INTO {SCHEMA}.price_template_items (template_id, sku, price_net) VALUES (:t, :s, :c)"
         ), {"t": tid, "s": row["sku"], "c": row["price_net"] if payload.with_prices else None})
+    zrodlo = ""
+    if payload.partner_id:
+        zrodlo = f" z cennika partnera {_plabel(p)}"
+    await _log(db, user, "template_created",
+               f"{_kto(user)} zapisał szablon cennika „{payload.name.strip()}” ({FIRMA_LABEL.get(firma, firma)}, "
+               f"{len(rows)} {_plural(len(rows), 'pozycja', 'pozycje', 'pozycji')}){zrodlo}",
+               partner_id=payload.partner_id)
     await db.commit()
     return {"id": tid, "name": payload.name.strip(), "firma": firma, "items": len(rows)}
 
 
 @router.patch("/dropy/templates/{tid}")
 async def rename_template(tid: int, payload: TemplateRename, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    r = await db.execute(text(f"SELECT name, note FROM {SCHEMA}.price_templates WHERE id = :id"), {"id": tid})
+    before = r.mappings().first()
+    if not before:
+        raise HTTPException(404, "Nie ma takiego szablonu")
     fields, params = [], {"id": tid}
     for col in ("name", "note"):
         val = getattr(payload, col)
@@ -453,15 +588,25 @@ async def rename_template(tid: int, payload: TemplateRename, db: AsyncSession = 
     row = r.mappings().first()
     if not row:
         raise HTTPException(404, "Nie ma takiego szablonu")
+    if row["name"] != before["name"]:
+        await _log(db, user, "template_updated",
+                   f"{_kto(user)} zmienił nazwę szablonu „{before['name']}” na „{row['name']}”",
+                   changes={"name": [before["name"], row["name"]]})
+    elif row["note"] != before["note"]:
+        await _log(db, user, "template_updated", f"{_kto(user)} zmienił opis szablonu „{row['name']}”",
+                   changes={"note": [before["note"], row["note"]]})
     await db.commit()
     return dict(row)
 
 
 @router.delete("/dropy/templates/{tid}")
 async def delete_template(tid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
-    r = await db.execute(text(f"DELETE FROM {SCHEMA}.price_templates WHERE id = :id RETURNING id"), {"id": tid})
-    if not r.first():
+    r = await db.execute(text(f"DELETE FROM {SCHEMA}.price_templates WHERE id = :id RETURNING name, firma"), {"id": tid})
+    t = r.mappings().first()
+    if not t:
         raise HTTPException(404, "Nie ma takiego szablonu")
+    await _log(db, user, "template_deleted",
+               f"{_kto(user)} usunął szablon cennika „{t['name']}” ({FIRMA_LABEL.get(t['firma'], t['firma'])})")
     await db.commit()
     return {"ok": True}
 
@@ -483,10 +628,11 @@ async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(
         raise HTTPException(400, "mode musi być jednym z: replace, fill, update")
 
     if payload.template_id:
-        r = await db.execute(text(f"SELECT firma FROM {SCHEMA}.price_templates WHERE id = :id"), {"id": payload.template_id})
+        r = await db.execute(text(f"SELECT firma, name FROM {SCHEMA}.price_templates WHERE id = :id"), {"id": payload.template_id})
         t = r.first()
         if not t:
             raise HTTPException(404, "Nie ma takiego szablonu")
+        zrodlo = f"szablon „{t[1]}”"
         if t[0] != firma:
             raise HTTPException(400, f"Szablon jest dla firmy {t[0]}, a wczytujesz do {firma}")
         r = await db.execute(text(
@@ -494,6 +640,7 @@ async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(
         ), {"id": payload.template_id})
     elif payload.from_partner_id:
         src = await _get_partner(db, payload.from_partner_id)
+        zrodlo = f"cennik partnera {_plabel(src)}"
         if firma not in _firmy_out(src.get("firmy")):
             raise HTTPException(400, f"Partner {src['code']} nie kupuje od firmy {firma}")
         r = await db.execute(text(
@@ -551,6 +698,18 @@ async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(
             f"ON CONFLICT (partner_id, sku) DO UPDATE SET price_net = EXCLUDED.price_net, updated_at = CURRENT_TIMESTAMP"
         ), {"p": pid, "s": row["sku"].strip(), "c": cena})
         written += 1
+
+    dodatki = []
+    if payload.adjust_pct:
+        dodatki.append(f"korekta {payload.adjust_pct:+g}%")
+    if need_cost:
+        dodatki.append(f"narzut {payload.markup_pct:g}% dla pozycji bez ceny")
+    await _log(db, user, "prices_applied",
+               f"{_kto(user)} wczytał {zrodlo} do cennika partnera {_plabel(p)} "
+               f"({FIRMA_LABEL.get(firma, firma)}, tryb: {MODE_LABEL[payload.mode]}"
+               f"{', ' + ', '.join(dodatki) if dodatki else ''}): zapisano {written}, pominięto {skipped}",
+               partner_id=pid, changes={"firma": firma, "mode": payload.mode, "written": written, "skipped": skipped,
+                                        "adjust_pct": payload.adjust_pct, "markup_pct": payload.markup_pct})
     await db.commit()
     return {"written": written, "skipped": skipped, "mode": payload.mode, "firma": firma}
 
@@ -569,7 +728,7 @@ async def list_portal_users(pid: int, db: AsyncSession = Depends(get_db), user: 
 @router.post("/dropy/partners/{pid}/users", status_code=201)
 async def create_portal_user(pid: int, payload: PortalUserIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     """Konto dropa do portalu. Osobna tabela, osobny serwis — nie ma wstępu do Magazynu."""
-    await _get_partner(db, pid)
+    partner = await _get_partner(db, pid)
     err = validate_password_strength(payload.password)
     if err:
         raise HTTPException(400, err)
@@ -582,12 +741,21 @@ async def create_portal_user(pid: int, payload: PortalUserIn, db: AsyncSession =
         f"VALUES (:p, :e, :h, :n) RETURNING id, email, full_name, is_active, created_at"
     ), {"p": pid, "e": payload.email.strip().lower(), "h": hash_password(payload.password), "n": payload.full_name})
     row = dict(r.mappings().first())
+    await _log(db, user, "portal_user_created",
+               f"{_kto(user)} założył konto portalu {row['email']} dla partnera {_plabel(partner)}", partner_id=pid)
     await db.commit()
     return row
 
 
 @router.patch("/dropy/users/{uid}")
 async def patch_portal_user(uid: int, payload: PortalUserPatch, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    r = await db.execute(text(
+        f"SELECT u.email, u.full_name, u.is_active, u.partner_id, p.code, p.name "
+        f"FROM {SCHEMA}.users u JOIN {SCHEMA}.partners p ON p.id = u.partner_id WHERE u.id = :id"
+    ), {"id": uid})
+    before = r.mappings().first()
+    if not before:
+        raise HTTPException(404, "Nie ma takiego konta")
     fields, params = [], {"id": uid}
     if payload.password is not None:
         err = validate_password_strength(payload.password)
@@ -609,6 +777,21 @@ async def patch_portal_user(uid: int, payload: PortalUserPatch, db: AsyncSession
     row = r.mappings().first()
     if not row:
         raise HTTPException(404, "Nie ma takiego konta")
+
+    konto = f"konta portalu {before['email']} (partner {before['code']})"
+    zdania = []
+    if payload.password is not None:
+        zdania.append(f"zmienił hasło do {konto}")
+    if payload.is_active is not None and payload.is_active != before["is_active"]:
+        zdania.append(f"{'odblokował' if payload.is_active else 'zablokował'} dostęp do {konto}")
+    if payload.full_name is not None and payload.full_name != before["full_name"]:
+        zdania.append(f"zmienił nazwę {konto}: {before['full_name'] or '—'} → {payload.full_name or '—'}")
+    if zdania:
+        await _log(db, user, "portal_user_updated", f"{_kto(user)} " + ", ".join(zdania),
+                   partner_id=before["partner_id"],
+                   changes={"password_changed": payload.password is not None,
+                            "is_active": [before["is_active"], row["is_active"]],
+                            "full_name": [before["full_name"], row["full_name"]]})
     await db.commit()
     return dict(row)
 
@@ -635,15 +818,25 @@ async def create_key(pid: int, payload: ApiKeyIn, db: AsyncSession = Depends(get
         f"VALUES (:p, :l, :h, :hint) RETURNING id, label, key_hint, created_at"
     ), {"p": pid, "l": payload.label.strip(), "h": digest, "hint": raw[-4:]})
     row = dict(r.mappings().first())
+    await _log(db, user, "api_key_created",
+               f"{_kto(user)} wygenerował klucz API „{row['label']}” (…{row['key_hint']}) dla partnera {_plabel(p)}",
+               partner_id=pid)
     await db.commit()
     return {**row, "key": raw, "uwaga": "Skopiuj teraz — drugi raz tego klucza nie pokażemy"}
 
 
 @router.delete("/dropy/keys/{kid}")
 async def revoke_key(kid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
-    r = await db.execute(text(f"UPDATE {SCHEMA}.api_keys SET is_active = FALSE WHERE id = :id RETURNING id"), {"id": kid})
-    if not r.first():
+    r = await db.execute(text(
+        f"UPDATE {SCHEMA}.api_keys k SET is_active = FALSE FROM {SCHEMA}.partners p "
+        f"WHERE k.id = :id AND p.id = k.partner_id RETURNING k.partner_id, k.label, k.key_hint, p.code, p.name"
+    ), {"id": kid})
+    k = r.mappings().first()
+    if not k:
         raise HTTPException(404, "Nie ma takiego klucza")
+    await _log(db, user, "api_key_revoked",
+               f"{_kto(user)} unieważnił klucz API „{k['label']}” (…{k['key_hint']}) partnera {k['code']} ({k['name']})",
+               partner_id=k["partner_id"])
     await db.commit()
     return {"ok": True}
 
@@ -684,6 +877,8 @@ async def refresh_catalog(db: AsyncSession = Depends(get_db), user: CurrentUser 
                 "vat": vats.get(pr.sku.strip().lower(), 23),
             })
             total += 1
+    await _log(db, user, "catalog_refreshed",
+               f"{_kto(user)} odświeżył katalog partnerów ({total} {_plural(total, 'pozycja', 'pozycje', 'pozycji')})")
     await db.commit()
     return {"refreshed": total, "firmy": list(ALL_SHOPS)}
 
@@ -754,7 +949,9 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
 
     Wgranie etykiety do zamówienia czekającego na etykietę samo je odblokowuje.
     """
-    r = await db.execute(text(f"SELECT status FROM {SCHEMA}.orders WHERE id = :id"), {"id": oid})
+    r = await db.execute(text(
+        f"SELECT nr, partner_id, status, tracking, sellasist_order_id, label_url, note FROM {SCHEMA}.orders WHERE id = :id"
+    ), {"id": oid})
     cur = r.mappings().first()
     if not cur:
         raise HTTPException(404, "Nie ma takiego zamówienia")
@@ -778,6 +975,22 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
 
     fields.append("updated_at = CURRENT_TIMESTAMP")
     await db.execute(text(f"UPDATE {SCHEMA}.orders SET {', '.join(fields)} WHERE id = :id"), params)
+
+    labels = {"status": "status", "tracking": "numer przesyłki", "sellasist_order_id": "ID w Sellasist",
+              "note": "notatka"}
+    diff, zmiany = {}, []
+    for col in ("status", "tracking", "sellasist_order_id", "label_url", "note"):
+        if col in params and params[col] != cur[col]:
+            diff[col] = [cur[col], params[col]]
+            if col == "label_url":
+                zmiany.append("zmienił etykietę" if cur[col] else "dodał etykietę")
+            elif col == "note":
+                zmiany.append("zmienił notatkę")
+            else:
+                zmiany.append(f"{labels[col]}: {_fmt(col, cur[col])} → {_fmt(col, params[col])}")
+    if diff:
+        await _log(db, user, "order_updated", f"{_kto(user)} zmienił zamówienie {cur['nr']}: " + "; ".join(zmiany),
+                   partner_id=cur["partner_id"], order_nr=cur["nr"], changes=diff)
     await db.commit()
 
     # Odblokowanie (wpłata albo etykieta) samo wypycha zamówienie do Sellasista.
@@ -785,7 +998,7 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
     new_status = params.get("status", cur["status"])
     if new_status in PUSHABLE:
         try:
-            await _do_push(oid, db)
+            await _do_push(oid, db, None)
         except HTTPException:
             pass
     return await get_order(oid, db, user)
@@ -831,7 +1044,7 @@ async def list_invoices(
 
 @router.post("/dropy/invoices", status_code=201)
 async def create_invoice(payload: InvoiceIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
-    await _get_partner(db, payload.partner_id)
+    partner = await _get_partner(db, payload.partner_id)
     firma = payload.firma.strip().lower()
     if firma not in ALL_SHOPS:
         raise HTTPException(400, f"firma musi być jedną z: {', '.join(ALL_SHOPS)}")
@@ -846,6 +1059,11 @@ async def create_invoice(payload: InvoiceIn, db: AsyncSession = Depends(get_db),
         "iss": _d(payload.issued_at, "Data wystawienia"), "due": _d(payload.due_date, "Termin"),
         "tot": payload.total_gross, "pdf": payload.pdf_url, "note": payload.note})
     row = dict(r.mappings().first())
+    termin = f", termin {row['due_date'].strftime('%d.%m.%Y')}" if row.get("due_date") else ""
+    await _log(db, user, "invoice_created",
+               f"{_kto(user)} dodał fakturę {row['nr']} dla partnera {_plabel(partner)} "
+               f"({FIRMA_LABEL.get(firma, firma)}, {_zl(row['total_gross'])}{termin})",
+               partner_id=payload.partner_id)
     await db.commit()
     return {**row, "total_gross": float(row["total_gross"])}
 
@@ -886,7 +1104,7 @@ async def unbilled_orders(
 async def attach_orders(iid: int, payload: InvoiceAttach, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     """Wpina zamówienia na fakturę. Pilnujemy, żeby były tego samego partnera i tej samej
     firmy co faktura — inaczej rozliczenie przestałoby się zgadzać z podmiotem."""
-    r = await db.execute(text(f"SELECT partner_id, firma FROM {SCHEMA}.invoices WHERE id = :i AND NOT is_canceled"), {"i": iid})
+    r = await db.execute(text(f"SELECT partner_id, firma, nr FROM {SCHEMA}.invoices WHERE id = :i AND NOT is_canceled"), {"i": iid})
     inv = r.mappings().first()
     if not inv:
         raise HTTPException(404, "Nie ma takiej faktury")
@@ -905,17 +1123,33 @@ async def attach_orders(iid: int, payload: InvoiceAttach, db: AsyncSession = Dep
 
     await db.execute(text(f"UPDATE {SCHEMA}.orders SET invoice_id = :i, updated_at = CURRENT_TIMESTAMP WHERE id = ANY(:ids)"),
                      {"i": iid, "ids": payload.order_ids})
+    nowe = [o["nr"] for o in rows if o["invoice_id"] != iid]
+    if nowe:
+        lista = ", ".join(nowe[:5]) + (f" i {len(nowe) - 5} więcej" if len(nowe) > 5 else "")
+        await _log(db, user, "invoice_orders_attached",
+                   f"{_kto(user)} wpiął {len(nowe)} {_plural(len(nowe), 'zamówienie', 'zamówienia', 'zamówień')} "
+                   f"na fakturę {inv['nr']}: {lista}",
+                   partner_id=inv["partner_id"], changes={"invoice_nr": inv["nr"], "orders": nowe})
     await db.commit()
     return {"attached": len(rows)}
 
 
 @router.delete("/dropy/invoices/{iid}")
 async def cancel_invoice(iid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
-    r = await db.execute(text(f"UPDATE {SCHEMA}.invoices SET is_canceled = TRUE WHERE id = :id RETURNING id"), {"id": iid})
-    if not r.first():
+    r = await db.execute(text(
+        f"UPDATE {SCHEMA}.invoices SET is_canceled = TRUE WHERE id = :id AND NOT is_canceled "
+        f"RETURNING id, nr, partner_id"
+    ), {"id": iid})
+    inv = r.mappings().first()
+    if not inv:
         raise HTTPException(404, "Nie ma takiej faktury")
     # Zamówienia wracają do puli niezafakturowanych — inaczej zniknęłyby z rozliczeń.
-    await db.execute(text(f"UPDATE {SCHEMA}.orders SET invoice_id = NULL WHERE invoice_id = :id"), {"id": iid})
+    r = await db.execute(text(f"UPDATE {SCHEMA}.orders SET invoice_id = NULL WHERE invoice_id = :id RETURNING nr"), {"id": iid})
+    wrocily = [x[0] for x in r.fetchall()]
+    await _log(db, user, "invoice_canceled",
+               f"{_kto(user)} anulował fakturę {inv['nr']}; {len(wrocily)} "
+               f"{_plural(len(wrocily), 'zamówienie wróciło', 'zamówienia wróciły', 'zamówień wróciło')} do niezafakturowanych",
+               partner_id=inv["partner_id"], changes={"orders": wrocily})
     await db.commit()
     return {"ok": True}
 
@@ -941,13 +1175,22 @@ async def list_payments(
 @router.post("/dropy/payments", status_code=201)
 async def add_payment(payload: PaymentIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     """Wpłata księgowana przez nas — od razu potwierdzona."""
-    await _get_partner(db, payload.partner_id)
+    partner = await _get_partner(db, payload.partner_id)
     r = await db.execute(text(
         f"INSERT INTO {SCHEMA}.payments (partner_id, invoice_id, paid_date, amount, note, source, confirmed, confirmed_at) "
         f"VALUES (:p, :i, :d, :a, :n, 'my', TRUE, CURRENT_TIMESTAMP) RETURNING id"
     ), {"p": payload.partner_id, "i": payload.invoice_id, "d": _d(payload.paid_date, "Data wpłaty"),
         "a": payload.amount, "n": payload.note})
     pid = r.scalar()
+    inv_nr = None
+    if payload.invoice_id:
+        ri = await db.execute(text(f"SELECT nr FROM {SCHEMA}.invoices WHERE id = :i"), {"i": payload.invoice_id})
+        inv_nr = ri.scalar()
+    await _log(db, user, "payment_added",
+               f"{_kto(user)} zaksięgował wpłatę {_zl(payload.amount)} od partnera {_plabel(partner)} "
+               f"({'do faktury ' + inv_nr if inv_nr else 'bez faktury'})",
+               partner_id=payload.partner_id,
+               changes={"amount": payload.amount, "paid_date": payload.paid_date, "invoice_nr": inv_nr})
     await db.commit()
     return {"id": pid, "ok": True}
 
@@ -957,10 +1200,20 @@ async def confirm_payment(pmid: int, db: AsyncSession = Depends(get_db), user: C
     """Potwierdzenie wpłaty zgłoszonej przez partnera — dopiero to zmienia saldo."""
     r = await db.execute(text(
         f"UPDATE {SCHEMA}.payments SET confirmed = TRUE, confirmed_at = CURRENT_TIMESTAMP "
-        f"WHERE id = :id AND NOT confirmed RETURNING id"
+        f"WHERE id = :id AND NOT confirmed RETURNING partner_id, invoice_id, amount, paid_date"
     ), {"id": pmid})
-    if not r.first():
+    pm = r.mappings().first()
+    if not pm:
         raise HTTPException(404, "Nie ma takiej wpłaty albo jest już potwierdzona")
+    ri = await db.execute(text(
+        f"SELECT p.code, p.name, i.nr FROM {SCHEMA}.partners p "
+        f"LEFT JOIN {SCHEMA}.invoices i ON i.id = CAST(:i AS INTEGER) WHERE p.id = :p"
+    ), {"p": pm["partner_id"], "i": pm["invoice_id"]})
+    x = ri.mappings().first()
+    await _log(db, user, "payment_confirmed",
+               f"{_kto(user)} potwierdził wpłatę {_zl(pm['amount'])} z {pm['paid_date'].strftime('%d.%m.%Y')} "
+               f"od partnera {x['code']} ({x['name']})" + (f" do faktury {x['nr']}" if x["nr"] else ""),
+               partner_id=pm["partner_id"], changes={"amount": pm["amount"], "invoice_nr": x["nr"]})
     await db.commit()
     return {"ok": True}
 
@@ -972,7 +1225,8 @@ async def confirm_payment(pmid: int, db: AsyncSession = Depends(get_db), user: C
 PUSHABLE = ("nowe", "przyjete", "spakowane")
 
 
-async def _do_push(oid: int, db: AsyncSession) -> dict:
+async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = None) -> dict:
+    """user=None → push automatyczny po odblokowaniu (w logu jako „System”)."""
     r = await db.execute(text(
         f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email, "
         f"       p.nip AS partner_nip, p.phone AS partner_phone, p.bill_street, p.bill_home_number, "
@@ -1013,6 +1267,9 @@ async def _do_push(oid: int, db: AsyncSession) -> dict:
         await db.execute(text(
             f"UPDATE {SCHEMA}.orders SET push_error = :err, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
         ), {"err": str(e), "id": oid})
+        await _log(db, user, "sellasist_push_failed",
+                   f"{_kto(user)} próbował wysłać zamówienie {o['nr']} do Sellasista — odrzucone: {str(e)[:300]}",
+                   partner_id=o["partner_id"], order_nr=o["nr"], changes={"error": str(e)})
         await db.commit()
         raise HTTPException(502, f"Sellasist odrzucił zamówienie: {e}")
 
@@ -1021,6 +1278,9 @@ async def _do_push(oid: int, db: AsyncSession) -> dict:
         f"push_error = NULL, status = CASE WHEN status = 'nowe' THEN 'przyjete' ELSE status END, "
         f"updated_at = CURRENT_TIMESTAMP WHERE id = :id"
     ), {"sid": sid, "id": oid})
+    await _log(db, user, "sellasist_pushed",
+               f"{_kto(user)} wysłał zamówienie {o['nr']} do Sellasista (nr {sid})",
+               partner_id=o["partner_id"], order_nr=o["nr"], changes={"sellasist_order_id": sid})
     await db.commit()
     return {"ok": True, "sellasist_order_id": sid}
 
@@ -1028,7 +1288,7 @@ async def _do_push(oid: int, db: AsyncSession) -> dict:
 @router.post("/dropy/orders/{oid}/push")
 async def push_order(oid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     """Ręczne wysłanie zamówienia do Sellasista (ponowienie po błędzie)."""
-    return await _do_push(oid, db)
+    return await _do_push(oid, db, user)
 
 
 # ===== PODSUMOWANIE MIESIĄCA =====
@@ -1061,3 +1321,50 @@ async def summary(
             "blocked": int(x["blocked"]), "to_push": int(x["to_push"]),
         } for x in r.mappings()],
     }
+
+
+# ===== LOGI (odczyt) =====
+SOURCES = ("portal", "api", "magazyn", "system")
+
+
+@router.get("/dropy/activity")
+async def activity(
+    partner_id: Optional[int] = None,
+    source: str = Query(""),
+    order_nr: str = Query(""),
+    q: str = Query("", description="szukaj w treści wpisu"),
+    od: str = Query("", description="RRRR-MM-DD"),
+    do: str = Query("", description="RRRR-MM-DD, włącznie"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_dropy),
+):
+    """Historia zmian dropów, od najnowszych. Zwraca też `more`, czy jest co doczytać."""
+    src = source.strip().lower()
+    if src and src not in SOURCES:
+        raise HTTPException(400, f"source musi być jednym z: {', '.join(SOURCES)}")
+    start, end = _d(od, "Data od"), _d(do, "Data do")
+    r = await db.execute(text(
+        f"SELECT a.id, a.created_at, a.partner_id, a.source, a.actor, a.action, a.order_nr, a.message, a.changes, "
+        f"       p.code AS partner_code, p.name AS partner_name "
+        f"FROM {SCHEMA}.activity_log a LEFT JOIN {SCHEMA}.partners p ON p.id = a.partner_id "
+        f"WHERE (CAST(:pid AS INTEGER) IS NULL OR a.partner_id = CAST(:pid AS INTEGER)) "
+        f"  AND (:src = '' OR a.source = :src) "
+        f"  AND (:nr = '' OR a.order_nr ILIKE :nr_like) "
+        f"  AND (:q = '' OR a.message ILIKE :q_like) "
+        f"  AND (CAST(:od AS DATE) IS NULL OR a.created_at >= CAST(:od AS DATE)) "
+        f"  AND (CAST(:do_ AS DATE) IS NULL OR a.created_at < CAST(:do_ AS DATE) + 1) "
+        f"ORDER BY a.created_at DESC, a.id DESC LIMIT :lim OFFSET :off"
+    ), {"pid": partner_id, "src": src, "nr": order_nr.strip(), "nr_like": f"%{order_nr.strip()}%",
+        "q": q.strip(), "q_like": f"%{q.strip()}%", "od": start, "do_": end,
+        "lim": limit + 1, "off": offset})
+    rows = [dict(x) for x in r.mappings()]
+    for x in rows:
+        # asyncpg oddaje JSONB jako tekst — front dostaje gotowy obiekt.
+        if isinstance(x["changes"], str):
+            try:
+                x["changes"] = json.loads(x["changes"])
+            except ValueError:
+                pass
+    return {"rows": rows[:limit], "more": len(rows) > limit}
