@@ -659,18 +659,29 @@ async def refresh_catalog(db: AsyncSession = Depends(get_db), user: CurrentUser 
     """
     total = 0
     for slug in ALL_SHOPS:
+        # Stawka VAT per SKU — z najświeższej pozycji zamówienia w tym sklepie.
+        # To jedyne miejsce, gdzie mamy prawdziwy VAT (Acti ma głównie 8%).
+        rv = await db.execute(text(
+            f"SELECT DISTINCT ON (LOWER(TRIM(symbol))) LOWER(TRIM(symbol)) AS k, tax_rate "
+            f"FROM {settings.TABLE_ORDER_ITEMS} "
+            f"WHERE shop = :shop AND symbol IS NOT NULL AND tax_rate IS NOT NULL "
+            f"ORDER BY LOWER(TRIM(symbol)), order_date DESC NULLS LAST"
+        ), {"shop": slug})
+        vats = {x["k"]: float(x["tax_rate"]) for x in rv.mappings()}
+
         products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, slug)
         for pr in products:
             await db.execute(text(
-                f"INSERT INTO {SCHEMA}.catalog_cache (sku, firma, name, stock, in_transit, photo_id, photo_hash, updated_at) "
-                f"VALUES (:sku, :firma, :name, :stock, :transit, :pid, :phash, CURRENT_TIMESTAMP) "
+                f"INSERT INTO {SCHEMA}.catalog_cache (sku, firma, name, stock, in_transit, photo_id, photo_hash, vat, updated_at) "
+                f"VALUES (:sku, :firma, :name, :stock, :transit, :pid, :phash, :vat, CURRENT_TIMESTAMP) "
                 f"ON CONFLICT (sku, firma) DO UPDATE SET name = EXCLUDED.name, stock = EXCLUDED.stock, "
                 f"  in_transit = EXCLUDED.in_transit, photo_id = EXCLUDED.photo_id, "
-                f"  photo_hash = EXCLUDED.photo_hash, updated_at = CURRENT_TIMESTAMP"
+                f"  photo_hash = EXCLUDED.photo_hash, vat = EXCLUDED.vat, updated_at = CURRENT_TIMESTAMP"
             ), {
                 "sku": pr.sku, "firma": slug, "name": pr.name,
                 "stock": int(pr.stock or 0), "transit": int(pr.stock_in_transit or 0),
                 "pid": pr.photo_id, "phash": pr.photo_hash,
+                "vat": vats.get(pr.sku.strip().lower(), 23),
             })
             total += 1
     await db.commit()
@@ -684,7 +695,8 @@ def _order_out(o: dict, items: List[dict]) -> dict:
         "total_net": float(o["total_net"] or 0),
         "total_gross": float(o["total_gross"] or 0),
         "items": [
-            {"sku": i["sku"], "name": i["name"], "qty": int(i["qty"]), "price_net": float(i["price_net"])}
+            {"sku": i["sku"], "name": i["name"], "qty": int(i["qty"]),
+             "price_net": float(i["price_net"]), "vat": float(i["vat"] or 23)}
             for i in items
         ],
     }
@@ -976,7 +988,8 @@ async def _do_push(oid: int, db: AsyncSession) -> dict:
         raise HTTPException(409, f"Zamówienie jest w statusie „{o['status']}” — najpierw je odblokuj")
 
     ri = await db.execute(text(f"SELECT * FROM {SCHEMA}.order_items WHERE order_id = :id ORDER BY id"), {"id": oid})
-    items = [{"sku": x["sku"], "name": x["name"], "qty": int(x["qty"]), "price_net": float(x["price_net"])}
+    items = [{"sku": x["sku"], "name": x["name"], "qty": int(x["qty"]),
+              "price_net": float(x["price_net"]), "vat": float(x["vat"] or 23)}
              for x in ri.mappings()]
 
     payload = {
