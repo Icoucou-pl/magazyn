@@ -680,7 +680,7 @@ function renderOrders() {
       <span class="onr mono" style="font-size:12.5px">${o.nr}</span>
       <span class="odate">${dm(o.created_at)}</span>
       <span class="oodb">${o.recipient?.name || "Na mój adres"}
-        <small>${fl(o.firma)} · ${o.shipping_mode === "wlasna" ? "moja etykieta" : "wysyłka od Was"}${o.cod ? " · pobranie" : ""}${o.external_id ? " · " + o.external_id : ""}</small></span>
+        <small>${fl(o.firma)} · ${o.shipping_mode === "wlasna" ? (o.label_url ? "moja etykieta ✓" : "moja etykieta — brak") : "wysyłka od Was"}${o.cod ? " · pobranie" : ""}${o.external_id ? " · " + o.external_id : ""}</small></span>
       <span class="oval">${zl(o.total_net)}</span>
       <span class="pill ${cls}">${lbl}</span>
     </button>`;
@@ -720,6 +720,10 @@ function renderOrders() {
   document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
 }
 
+// Wartości od partnera wstawiamy w HTML — escapujemy, żeby cudzysłów w linku nie rozwalił widoku.
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const isHttp = u => /^https?:\/\//i.test(u || "");
+
 function openOrder(nr) {
   const o = (state.orders?.orders || []).find(x => x.nr === nr);
   if (!o) return;
@@ -732,10 +736,12 @@ function openOrder(nr) {
       <button class="x" data-close aria-label="Zamknij">×</button>
     </div>
     <div><span class="pill ${cls}">${lbl}</span></div>
+    ${o.shipping_mode === "wlasna" && o.label_url && isHttp(o.label_url) ? `<div class="dsec"><h3>Etykieta</h3>
+      <a href="${esc(o.label_url)}" target="_blank" rel="noopener noreferrer" style="font-size:13.5px">Otwórz przesłaną etykietę ↗</a></div>` : ""}
     ${needLabel ? `<div class="callout warn">
       <p><b>${o.status === "etykieta" ? "Zamówienie czeka na etykietę." : "Możesz jeszcze podmienić etykietę."}</b></p>
-      <label class="f">Link do etykiety (PDF)<input type="text" id="lbl" value="${o.label_url || ""}"></label>
-      <button class="btn primary sm" id="lblSave" style="margin-top:8px">Zapisz etykietę</button></div>` : ""}
+      <label class="f">Link do etykiety (PDF)<input type="text" id="lbl" value="${esc(o.label_url)}"></label>
+      <button class="btn primary sm" id="lblSave" style="margin-top:8px">${o.label_url ? "Podmień etykietę" : "Zapisz etykietę"}</button></div>` : ""}
     <div class="dsec"><h3>Odbiorca</h3>
       <div style="font-size:13.5px">${o.recipient?.name || "—"}<br>${o.recipient?.street || ""} ${o.recipient?.zip || ""} ${o.recipient?.city || ""}<br>${o.recipient?.phone || ""}</div></div>
     ${o.tracking ? `<div class="dsec"><h3>Przesyłka</h3><div class="mono" style="font-size:13px">${o.tracking}</div></div>` : ""}
