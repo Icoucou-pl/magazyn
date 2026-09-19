@@ -161,6 +161,55 @@ td.r{text-align:right}
 .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:50;font-size:14px;max-width:calc(100% - 32px)}
 .toast.bad{background:var(--bad);color:#fff}
 
+/* nagłówek */
+.brand{display:flex;gap:12px;align-items:center;min-width:0}
+.mark{width:36px;height:36px;border-radius:9px;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font-weight:700;flex:none}
+.sync{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:7px;margin-left:auto}
+.sync i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in oklch,var(--ok) 18%,transparent)}
+.sync.old i{background:var(--warn);box-shadow:0 0 0 3px color-mix(in oklch,var(--warn) 18%,transparent)}
+
+/* start */
+.hello{display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.hello h1{font-size:24px;letter-spacing:-.02em}
+.hello p{margin:4px 0 0;color:var(--muted);font-size:13.5px}
+.eyebrow{font-size:11.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent);font-weight:600;margin-bottom:4px}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:6px 11px;font-size:13px;color:var(--muted);white-space:nowrap}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.metric{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.metric small{display:flex;justify-content:space-between;gap:8px;color:var(--muted)}
+.metric b{display:block;font-size:22px;font-weight:600;margin:6px 0 2px;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.metric .sub{font-size:12.5px;color:var(--muted)}
+.metric.warn b{color:var(--warn)}.metric.bad b{color:var(--bad)}
+.up{color:var(--ok)}.down{color:var(--bad)}
+.dgrid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,.85fr);gap:14px;margin-bottom:16px;align-items:start}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.chead{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.chead h2{font-size:15px;font-weight:600}
+.task{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--line)}
+.task:first-child{border-top:0}
+.sig{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-weight:700;color:var(--c);background:color-mix(in oklch,var(--c) 14%,transparent)}
+.sig.warn{--c:var(--warn)}.sig.bad{--c:var(--bad)}.sig.info{--c:var(--info)}.sig.ok{--c:var(--ok)}
+.task b{display:block;font-weight:500;font-size:14px}
+.task small{color:var(--muted);display:block}
+.nrs{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.nrs button{border:1px solid var(--line);background:var(--sunk);border-radius:6px;padding:1px 7px;font-size:11.5px;cursor:pointer;font-family:"JetBrains Mono",monospace}
+.nrs button:hover{border-color:var(--accent);color:var(--accent)}
+.lnk{border:0;background:none;color:var(--accent);cursor:pointer;font-weight:500;padding:4px;white-space:nowrap;font-size:13.5px}
+.side{padding:16px}
+.lim{display:flex;justify-content:space-between;color:var(--muted);font-size:12.5px;margin:10px 0 8px}
+.bar{height:8px;border-radius:8px;background:var(--sunk);overflow:hidden}
+.bar span{display:block;height:100%;background:var(--accent);border-radius:8px}
+.bar.warn span{background:var(--warn)}.bar.bad span{background:var(--bad)}
+.bar.thin{height:6px}
+.fline{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:10px;align-items:center;font-size:13px;padding:6px 0;color:var(--muted)}
+.fline b{color:var(--ink);font-weight:600}
+.box .orow:first-child{border-top:0}
+
+@media (max-width:900px){
+  .metrics{grid-template-columns:1fr 1fr}
+  .dgrid{grid-template-columns:1fr}
+  .sync{display:none}
+}
 @media (max-width:760px){
   main{padding:16px 14px 110px}
   .prod{grid-template-columns:48px minmax(0,1fr)}
@@ -199,6 +248,10 @@ const zl = n => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "P
 const dm = d => d ? `${d.slice(8,10)}.${d.slice(5,7)}.${d.slice(0,4)}` : "—";
 const FN = { amh: "AMH", acti: "Acti4med", veluxa: "Veluxa" };
 const fl = s => FN[s] || s;
+// Wartości od partnera wstawiamy w HTML — escapujemy, żeby cudzysłów w linku nie rozwalił widoku.
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const isHttp = u => /^https?:\/\//i.test(u || "");
+
 const STATUS = {
   platnosc:  ["Czeka na płatność", "warn"],
   etykieta:  ["Czeka na etykietę", "warn"],
@@ -211,7 +264,7 @@ const STATUS = {
 
 const state = {
   token: localStorage.getItem("drop_token") || "",
-  me: null, tab: "katalog", firma: null,
+  me: null, tab: "start", firma: null, dash: null,
   carts: {}, catalogs: {}, orders: null, od: "", do: "", q: "", finanse: null,
 };
 
@@ -308,17 +361,25 @@ function renderLogin() {
 // ── Szkielet ─────────────────────────────────────────────────
 function shell(inner) {
   const cartN = Object.values(state.carts).reduce((s, c) => s + Object.values(c).reduce((a, b) => a + b, 0), 0);
-  const waiting = (state.orders?.orders || []).filter(o => ["platnosc", "etykieta"].includes(o.status)).length;
+  // Licznik „czeka na Ciebie” bierzemy z pulpitu (wszystkie miesiące), a lista zamówień to tylko wybrany zakres.
+  const waiting = state.dash
+    ? state.dash.tasks.filter(t => t.orders).reduce((n, t) => n + t.orders.length, 0)
+    : (state.orders?.orders || []).filter(o => ["platnosc", "etykieta"].includes(o.status)).length;
   const overdue = (state.finanse?.invoices || []).filter(i => i.overdue).length;
   $("#app").innerHTML = `
     <header class="top">
-      <div class="who"><b>${state.me.name}</b><span>Portal partnera, kod ${state.me.code}</span></div>
+      <div class="brand">
+        <div class="mark">${esc((state.me.name || "?").trim().charAt(0).toUpperCase())}</div>
+        <div class="who"><b>${esc(state.me.name)}</b><span>Portal partnera · ${esc(state.me.code)}</span></div>
+      </div>
+      ${syncInfo()}
       <div style="display:flex;gap:8px;align-items:center">
         <button class="icon-btn" id="theme" title="Zmień motyw" aria-label="Zmień motyw">${themeIcon()}</button>
         <button class="btn sm" id="out">Wyloguj</button>
       </div>
     </header>
     <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="start" aria-selected="${state.tab === "start"}">Start</button>
       <button role="tab" data-tab="katalog" aria-selected="${state.tab === "katalog"}">Katalog</button>
       <button role="tab" data-tab="koszyk" aria-selected="${state.tab === "koszyk"}">Koszyk${cartN ? `<span class="badge">${cartN}</span>` : ""}</button>
       <button role="tab" data-tab="zamowienia" aria-selected="${state.tab === "zamowienia"}">Zamówienia${waiting ? `<span class="badge warn">${waiting}</span>` : ""}</button>
@@ -357,10 +418,121 @@ function renderCartBar() {
 
 async function go(tab) {
   state.tab = tab; window.scrollTo(0, 0);
+  if (tab === "start") await loadStart();
   if (tab === "katalog") await loadCatalog();
   if (tab === "koszyk") { await ensureCatalog(state.firma); renderCart(); }
   if (tab === "zamowienia") await loadOrders();
   if (tab === "finanse") await loadFinanse();
+}
+
+// ── Start ────────────────────────────────────────────────────
+const plural = (n, one, few, many) =>
+  n === 1 ? one : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) ? few : many;
+
+function syncInfo() {
+  const m = state.dash?.catalog_age_min;
+  if (m === null || m === undefined) return "";
+  const txt = m < 1 ? "przed chwilą" : m < 60 ? `${m} min temu`
+    : m < 1440 ? `${Math.floor(m / 60)} godz. temu` : `${Math.floor(m / 1440)} ${plural(Math.floor(m / 1440), "dzień", "dni", "dni")} temu`;
+  return `<div class="sync${m > 1440 ? " old" : ""}"><i></i>Katalog zaktualizowany ${txt}</div>`;
+}
+
+async function loadStart() {
+  shell(`<div class="empty">Wczytuję…</div>`);
+  try { state.dash = await api("/dashboard"); }
+  catch (e) { state.dash = null; toast(e.message, "bad"); }
+  renderStart();
+}
+
+function renderStart() {
+  const d = state.dash;
+  if (!d) return shell(`<div class="empty">Nie udało się wczytać pulpitu. Odśwież stronę.</div>`);
+  const now = new Date();
+  const hello = now.getHours() >= 18 ? "Dobry wieczór" : "Dzień dobry";
+  const today = now.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" });
+  const month = new Date(d.month + "-01T12:00:00").toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
+  const o = d.orders, f = d.finance;
+
+  let trend = "";
+  if (o.prev_count > 0) {
+    const pct = Math.round((o.count - o.prev_count) / o.prev_count * 100);
+    if (pct) trend = `<span class="${pct > 0 ? "up" : "down"}">${pct > 0 ? "↑" : "↓"} ${Math.abs(pct)}%</span>`;
+  }
+  const waitingN = d.tasks.filter(t => t.orders).reduce((n, t) => n + t.orders.length, 0);
+
+  const metrics = `
+    <div class="metrics">
+      <div class="metric"><small><span>Zamówienia w miesiącu</span>${trend}</small><b>${o.count}</b>
+        <div class="sub">${o.sent} ${plural(o.sent, "wysłane", "wysłane", "wysłanych")} · ${o.in_progress} w realizacji</div></div>
+      <div class="metric"><small><span>Wartość netto</span><span>PLN</span></small><b>${zl(o.net)}</b>
+        <div class="sub">Średni koszyk ${zl(o.avg_net)}</div></div>
+      <div class="metric ${f.overdue ? "bad" : ""}"><small><span>Do zapłaty</span>${f.open_invoices ? `<span>${f.open_invoices} ${plural(f.open_invoices, "faktura", "faktury", "faktur")}</span>` : ""}</small>
+        <b>${zl(f.due)}</b>
+        <div class="sub">${f.overdue ? `Po terminie ${zl(f.overdue)}` : f.next_due ? `Najbliższy termin: ${dm(f.next_due.date).slice(0, 5)}` : "Wszystko opłacone"}</div></div>
+      <div class="metric ${waitingN ? "warn" : ""}"><small><span>Czeka na Ciebie</span></small><b>${waitingN}</b>
+        <div class="sub">${waitingN ? "zamówienia bez etykiety lub wpłaty" : "Nic nie czeka ✓"}</div></div>
+    </div>`;
+
+  const tasks = d.tasks.length ? d.tasks.map(t => {
+    const nrs = t.orders ? `<div class="nrs">${t.orders.slice(0, 4).map(n => `<button data-open="${esc(n)}">${esc(n)}</button>`).join("")}${t.orders.length > 4 ? `<span class="hint" style="margin:0">+${t.orders.length - 4}</span>` : ""}</div>` : "";
+    const action = t.orders
+      ? (t.orders.length === 1 ? `<button class="lnk" data-open="${esc(t.orders[0])}">Otwórz →</button>` : `<button class="lnk" data-go="zamowienia">Zamówienia →</button>`)
+      : `<button class="lnk" data-go="finanse">Zobacz fakturę →</button>`;
+    return `<div class="task"><div class="sig ${t.level}">${t.kind.startsWith("invoice") ? "zł" : "!"}</div>
+      <div><b>${esc(t.title)}</b><small>${esc(t.text)}</small>${t.orders && t.orders.length > 1 ? nrs : ""}</div>${action}</div>`;
+  }).join("") : `<div class="task"><div class="sig ok">✓</div><div><b>Wszystko załatwione</b><small>Nic nie czeka na Twoją reakcję.</small></div><span></span></div>`;
+
+  let side;
+  if (d.credit) {
+    const pct = d.credit.limit > 0 ? Math.min(100, Math.round(d.credit.used / d.credit.limit * 100)) : 100;
+    side = `<div class="chead"><h2>Limit kupiecki</h2><span class="pill ${pct >= 90 ? "bad" : pct >= 70 ? "warn" : "ok"}">${pct >= 100 ? "wyczerpany" : "aktywny"}</span></div>
+      <div class="side">
+        <div style="font-size:22px;font-weight:600;letter-spacing:-.02em">${zl(d.credit.free)}</div>
+        <div class="lim"><span>dostępne z ${zl(d.credit.limit)}</span><span>wykorzystano ${zl(d.credit.used)}</span></div>
+        <div class="bar ${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}"><span style="width:${pct}%"></span></div>
+        <p class="hint">Limit zwalnia się po zaksięgowaniu wpłat.</p>`;
+  } else {
+    side = `<div class="chead"><h2>Rozliczenie</h2></div><div class="side">
+        <div style="font-size:14px">${state.me.payment_mode === "przedplata" ? "Przedpłata — realizujemy po zaksięgowaniu wpłaty." : "Faktura zbiorcza na koniec miesiąca."}</div>`;
+  }
+  const maxF = Math.max(...d.by_firma.map(x => x.net), 0);
+  if (d.by_firma.length > 1) {
+    side += `<h3 style="font-size:12.5px;color:var(--muted);font-weight:500;margin:18px 0 4px">Obrót według firmy · ${month}</h3>
+      ${d.by_firma.map(x => `<div class="fline"><span>${fl(x.firma)}</span>
+        <div class="bar thin"><span style="width:${maxF ? Math.round(x.net / maxF * 100) : 0}%"></span></div><b>${zl(x.net)}</b></div>`).join("")}`;
+  }
+  side += `</div>`;
+
+  const recent = d.recent.map(o => {
+    const [lbl, cls] = STATUS[o.status] || [o.status, "info"];
+    return `<button class="orow" data-open="${esc(o.nr)}">
+      <span class="onr mono" style="font-size:12.5px">${esc(o.nr)}</span>
+      <span class="odate">${dm(o.created_at)}</span>
+      <span class="oodb">${esc(o.recipient?.name || "Na mój adres")}
+        <small>${fl(o.firma)} · ${o.shipping_mode === "wlasna" ? (o.label_url ? "moja etykieta ✓" : "moja etykieta — brak") : "wysyłka od Was"}</small></span>
+      <span class="oval">${zl(o.total_net)}</span>
+      <span class="pill ${cls}">${lbl}</span>
+    </button>`;
+  }).join("");
+
+  shell(`
+    <div class="hello">
+      <div><div class="eyebrow">${today}</div><h1>${hello}, ${esc(state.me.name)}</h1>
+        <p>Najważniejsze informacje z Twojego konta w jednym miejscu.</p></div>
+      <span class="chip">Okres: ${month}</span>
+    </div>
+    ${metrics}
+    <div class="dgrid">
+      <div class="box"><div class="chead"><h2>Wymaga Twojej uwagi</h2>${d.tasks.length ? `<span class="pill warn">${d.tasks.length} ${plural(d.tasks.length, "zadanie", "zadania", "zadań")}</span>` : ""}</div>${tasks}</div>
+      <div class="box">${side}</div>
+    </div>
+    <div class="box">
+      <div class="chead"><h2>Ostatnie zamówienia</h2><button class="lnk" data-go="zamowienia">Wszystkie zamówienia →</button></div>
+      ${recent || `<div class="empty">Nie masz jeszcze zamówień. <button class="lnk" data-go="katalog">Przejdź do katalogu →</button></div>`}
+    </div>`);
+
+  document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
+  document.querySelectorAll("[data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
 }
 
 // ── Finanse ──────────────────────────────────────────────────
@@ -720,13 +892,17 @@ function renderOrders() {
   document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
 }
 
-// Wartości od partnera wstawiamy w HTML — escapujemy, żeby cudzysłów w linku nie rozwalił widoku.
-const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const isHttp = u => /^https?:\/\//i.test(u || "");
 
-function openOrder(nr) {
-  const o = (state.orders?.orders || []).find(x => x.nr === nr);
-  if (!o) return;
+// Zamówienie może przyjść z listy, ze Startu albo trzeba je dociągnąć (np. starsze niż wybrany zakres).
+async function openOrder(nr) {
+  const known = [...(state.orders?.orders || []), ...(state.dash?.recent || [])].find(x => x.nr === nr);
+  if (known) return showOrder(known);
+  try { showOrder(await api(`/orders/${encodeURIComponent(nr)}`)); }
+  catch (e) { toast(e.message, "bad"); }
+}
+
+function showOrder(o) {
+  const nr = o.nr;
   const [lbl, cls] = STATUS[o.status] || [o.status, "info"];
   const needLabel = o.shipping_mode === "wlasna" && !["wyslane", "spakowane", "anulowane"].includes(o.status);
   $("#dBody").innerHTML = `
@@ -759,7 +935,7 @@ function openOrder(nr) {
     save.disabled = true;
     try {
       await api(`/orders/${encodeURIComponent(nr)}/label`, { method: "POST", body: JSON.stringify({ label_url: url }) });
-      toast("Etykieta zapisana"); closeDrawer(); await loadOrders();
+      toast("Etykieta zapisana"); closeDrawer(); await go(state.tab);
     } catch (e) { toast(e.message, "bad"); save.disabled = false; }
   };
 }
@@ -773,7 +949,7 @@ async function boot() {
     state.me = await api("/me");
     state.firma = state.me.firmy[0];
     state.me.firmy.forEach(f => state.carts[f] ||= {});
-    await go("katalog");
+    await go("start");
   } catch (e) { toast(e.message, "bad"); renderLogin(); }
 }
 
