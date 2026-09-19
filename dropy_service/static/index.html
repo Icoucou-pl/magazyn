@@ -186,6 +186,33 @@ td.r{text-align:right}
 .dbox small{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}
 .ctools #oq{flex:1 1 240px;width:auto}
 
+/* finanse */
+.flay{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start}
+.ftabs{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:0 12px;border-bottom:1px solid var(--line)}
+.ftabs>button{border:0;background:none;padding:12px 6px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;font-weight:500}
+.ftabs>button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.ftabs>button small{opacity:.7}
+.ftabs .chips{padding:8px 0}
+.irow{border-top:1px solid var(--line)}.irow:first-child{border-top:0}
+.ihead{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;width:100%;text-align:left;border:0;background:none;padding:12px 16px;cursor:pointer;color:inherit}
+.ihead:hover,.irow.open .ihead{background:var(--sunk)}
+.ihead small,.ival small{display:block;color:var(--muted);font-size:12.5px;font-weight:400}
+.ival{text-align:right;font-weight:600}
+.ibody{padding:4px 16px 14px;background:var(--sunk)}
+.ibody table td{border-color:color-mix(in oklch,var(--line) 70%,transparent)}
+.prow2{display:grid;grid-template-columns:86px minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--line);font-size:13.5px}
+.prow2:first-child{border-top:0}
+.prow2 small{display:block;color:var(--muted);font-size:12.5px}
+.uline{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line);font-size:13.5px}
+.uline small{display:block;color:var(--muted);font-size:12px}
+.uline.total{font-weight:600;font-size:14.5px}
+.kpi small+b+small{margin-top:1px}
+@media (max-width:900px){.flay{grid-template-columns:1fr}}
+@media (max-width:760px){
+  .ihead{grid-template-columns:minmax(0,1fr) auto;gap:6px 10px}.ihead .pill{grid-column:1/-1;justify-self:start}
+  .prow2{grid-template-columns:minmax(0,1fr) auto}.prow2 .odate{grid-column:1/-1}
+}
+
 /* nagłówek */
 .brand{display:flex;gap:12px;align-items:center;min-width:0}
 .mark{width:36px;height:36px;border-radius:9px;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font-weight:700;flex:none}
@@ -292,6 +319,7 @@ const state = {
   me: null, tab: "start", firma: null, dash: null,
   cf: "all", av: "", sort: "avail",
   og: "", of: "all", oq: "",
+  fy: "", ft: "faktury", fi: "", fopen: null,
   carts: {}, catalogs: {}, orders: null, od: "", do: "", q: "", finanse: null,
 };
 
@@ -514,7 +542,7 @@ function renderStart() {
     const nrs = t.orders ? `<div class="nrs">${t.orders.slice(0, 4).map(n => `<button data-open="${esc(n)}">${esc(n)}</button>`).join("")}${t.orders.length > 4 ? `<span class="hint" style="margin:0">+${t.orders.length - 4}</span>` : ""}</div>` : "";
     const action = t.orders
       ? (t.orders.length === 1 ? `<button class="lnk" data-open="${esc(t.orders[0])}">Otwórz →</button>` : `<button class="lnk" data-go="zamowienia" data-og="action">Zamówienia →</button>`)
-      : `<button class="lnk" data-go="finanse">Zobacz fakturę →</button>`;
+      : `<button class="lnk" data-go="finanse" data-fopen="${t.invoice_id}">Zobacz fakturę →</button>`;
     return `<div class="task"><div class="sig ${t.level}">${t.kind.startsWith("invoice") ? "zł" : "!"}</div>
       <div><b>${esc(t.title)}</b><small>${esc(t.text)}</small>${t.orders && t.orders.length > 1 ? nrs : ""}</div>${action}</div>`;
   }).join("") : `<div class="task"><div class="sig ok">✓</div><div><b>Wszystko załatwione</b><small>Nic nie czeka na Twoją reakcję.</small></div><span></span></div>`;
@@ -571,6 +599,7 @@ function renderStart() {
   document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
   document.querySelectorAll("[data-go]").forEach(b => b.onclick = () => {
     if (b.dataset.og !== undefined) state.og = b.dataset.og;
+    if (b.dataset.fopen) { state.ft = "faktury"; state.fi = ""; state.fopen = Number(b.dataset.fopen); }
     go(b.dataset.go);
   });
 }
@@ -578,62 +607,142 @@ function renderStart() {
 // ── Finanse ──────────────────────────────────────────────────
 async function loadFinanse() {
   shell(`<div class="empty">Wczytuję rozliczenia…</div>`);
-  try { state.finanse = await api("/finanse"); }
-  catch (e) { state.finanse = { summary: {}, invoices: [], payments: [] }; toast(e.message, "bad"); }
+  try { state.finanse = await api(`/finanse${state.fy ? "?year=" + state.fy : ""}`); }
+  catch (e) { state.finanse = { summary: {}, invoices: [], payments: [], unbilled: [] }; toast(e.message, "bad"); }
   renderFinanse();
+}
+
+const IFILTERS = {
+  "":          ["Wszystkie", () => true],
+  do_zaplaty:  ["Do zapłaty", i => i.status !== "zaplacona"],
+  po_terminie: ["Po terminie", i => i.status === "po_terminie"],
+  zaplacona:   ["Zapłacone", i => i.status === "zaplacona"],
+};
+
+function invoicePill(i) {
+  return i.status === "zaplacona" ? `<span class="pill ok">Zapłacona</span>`
+    : i.status === "po_terminie" ? `<span class="pill bad">Po terminie</span>`
+    : i.pending ? `<span class="pill info">Wpłata w weryfikacji</span>`
+    : `<span class="pill warn">Do ${dm(i.due_date).slice(0, 5)}</span>`;
+}
+
+function invoiceRows() {
+  const list = (state.finanse?.invoices || []).filter(IFILTERS[state.fi || ""][1]);
+  if (!list.length) return `<div class="empty">${state.fi ? "Brak faktur w tym filtrze." : "Nie masz jeszcze żadnych faktur."}</div>`;
+  return list.map(i => `
+    <div class="irow${state.fopen === i.id ? " open" : ""}">
+      <button class="ihead" data-inv="${i.id}">
+        <span><b class="mono">${esc(i.nr)}</b>
+          <small>${fl(i.firma)} · ${i.orders?.length || 0} ${plural(i.orders?.length || 0, "zamówienie", "zamówienia", "zamówień")} · wyst. ${dm(i.issued_at)}${i.okres ? " · " + esc(i.okres) : ""}</small></span>
+        <span class="ival">${zl(i.total_gross)}${i.left > 0 && i.paid > 0 ? `<small>zostało ${zl(i.left)}</small>` : ""}</span>
+        ${invoicePill(i)}
+      </button>
+      ${state.fopen === i.id ? `<div class="ibody">
+        <div class="dgrid2" style="margin-top:0">
+          <div class="dbox"><small>Termin</small>${dm(i.due_date)}</div>
+          <div class="dbox"><small>Zapłacono</small>${zl(i.paid)}${i.pending ? `<div class="hint" style="margin:2px 0 0">+ ${zl(i.pending)} w weryfikacji</div>` : ""}</div>
+        </div>
+        ${i.orders?.length ? `<table style="margin-top:10px"><tbody>${i.orders.map(o =>
+          `<tr><td class="mono" style="font-size:12.5px"><a href="#" data-open="${esc(o.nr)}">${esc(o.nr)}</a></td><td>${esc(o.recipient || "—")}</td><td class="r">${zl(o.total_gross)}</td></tr>`).join("")}</tbody></table>` : ""}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          ${i.pdf_url && isHttp(i.pdf_url) ? `<a class="btn sm" href="${esc(i.pdf_url)}" target="_blank" rel="noopener noreferrer">Pobierz PDF</a>` : ""}
+          ${i.left > 0 ? `<button class="btn sm primary" data-pay="${i.id}" data-left="${i.left}" data-nr="${esc(i.nr)}">Zgłoś wpłatę</button>` : ""}
+        </div>
+      </div>` : ""}
+    </div>`).join("");
+}
+
+function paymentRows() {
+  const list = state.finanse?.payments || [];
+  if (!list.length) return `<div class="empty">Brak wpłat.</div>`;
+  return list.map(p => `<div class="prow2">
+      <span class="odate">${dm(p.paid_date)}</span>
+      <span>${p.invoice_nr ? `<span class="mono">${esc(p.invoice_nr)}</span>` : "bez faktury"}
+        <small>${p.note ? esc(p.note) : ""}${p.confirmation_url && isHttp(p.confirmation_url) ? `${p.note ? " · " : ""}<a href="${esc(p.confirmation_url)}" target="_blank" rel="noopener noreferrer">potwierdzenie</a>` : ""}</small></span>
+      <b>${zl(p.amount)}</b>
+      ${p.confirmed ? `<span class="pill ok">Zaksięgowana</span>` : `<span class="pill info">W weryfikacji</span>`}
+    </div>`).join("");
+}
+
+function paintFinanse() {
+  $("#flist").innerHTML = state.ft === "wplaty" ? paymentRows() : invoiceRows();
+  document.querySelectorAll("[data-inv]").forEach(b => b.onclick = () => {
+    const id = Number(b.dataset.inv); state.fopen = state.fopen === id ? null : id; paintFinanse();
+  });
+  document.querySelectorAll("#flist [data-open]").forEach(a => a.onclick = e => { e.preventDefault(); openOrder(a.dataset.open); });
+  document.querySelectorAll("[data-pay]").forEach(b => b.onclick = () => payForm(b.dataset.pay, b.dataset.left, b.dataset.nr));
+}
+
+// Zestawienie do Excela: średniki, przecinek dziesiętny i BOM — tak otwiera się bez kreatora importu.
+function exportFinanse() {
+  const { invoices = [], payments = [] } = state.finanse || {};
+  const n = v => String((Number(v) || 0).toFixed(2)).replace(".", ",");
+  const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [["Typ", "Numer", "Firma", "Data", "Termin", "Kwota brutto", "Zapłacono", "Zostało", "Status"].map(q).join(";")];
+  invoices.forEach(i => lines.push([ "Faktura", i.nr, fl(i.firma), i.issued_at || "", i.due_date || "", n(i.total_gross), n(i.paid), n(i.left),
+    { zaplacona: "zapłacona", po_terminie: "po terminie", do_zaplaty: "do zapłaty" }[i.status] || i.status ].map(q).join(";")));
+  payments.forEach(p => lines.push([ "Wpłata", p.invoice_nr || "", "", p.paid_date || "", "", n(p.amount), "", "",
+    p.confirmed ? "zaksięgowana" : "w weryfikacji" ].map(q).join(";")));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `rozliczenia_${state.me.code}_${state.fy || "wszystko"}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function renderFinanse() {
   const { summary = {}, invoices = [], payments = [], unbilled = [] } = state.finanse || {};
-  const invRows = invoices.map(i => {
-    const pill = i.status === "zaplacona" ? `<span class="pill ok">Zapłacona</span>`
-      : i.status === "po_terminie" ? `<span class="pill bad">Po terminie</span>`
-      : `<span class="pill info">Do zapłaty</span>`;
-    return `<div class="card" style="margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;gap:10px;align-items:start">
-        <div><div class="mono" style="font-weight:500">${i.nr}</div>
-          <div style="font-size:12.5px;color:var(--muted)">${fl(i.firma)}${i.okres ? " · " + i.okres : ""} · termin ${dm(i.due_date)}</div></div>
-        ${pill}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0 4px">
-        <div><small style="color:var(--muted)">Kwota</small><div><b>${zl(i.total_gross)}</b></div></div>
-        <div><small style="color:var(--muted)">Zapłacono</small><div><b>${zl(i.paid)}</b></div></div>
-        <div><small style="color:var(--muted)">Zostało</small><div><b>${zl(i.left)}</b></div></div>
-      </div>
-      ${i.pending ? `<p class="hint">Zgłoszona wpłata ${zl(i.pending)} czeka na nasze potwierdzenie.</p>` : ""}
-      ${i.orders?.length ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent);font-size:13px">Zamówienia na tej fakturze (${i.orders.length})</summary>
-        <table style="margin-top:8px"><tbody>${i.orders.map(o => `<tr><td class="mono" style="font-size:12.5px">${o.nr}</td><td>${o.recipient || "—"}</td><td class="r">${zl(o.total_gross)}</td></tr>`).join("")}</tbody></table></details>` : ""}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-        ${i.pdf_url ? `<a class="btn sm" href="${i.pdf_url}" target="_blank" rel="noreferrer">Pobierz fakturę</a>` : ""}
-        ${i.left > 0 ? `<button class="btn sm primary" data-pay="${i.id}" data-left="${i.left}" data-nr="${i.nr}">Zgłoś wpłatę</button>` : ""}
-      </div>
-    </div>`;
-  }).join("");
-
-  const payRows = payments.map(p => `<div style="display:grid;grid-template-columns:70px minmax(0,1fr) auto;gap:10px;padding:9px 0;border-top:1px solid var(--line)">
-      <span style="color:var(--muted);font-size:13px">${dm(p.paid_date)}</span>
-      <span style="font-size:13.5px">${p.invoice_nr || "—"}
-        <small style="display:block;color:var(--muted)">${p.confirmed ? "potwierdzona" : "czeka na potwierdzenie"}${p.note ? " · " + p.note : ""}</small></span>
-      <b>${zl(p.amount)}</b></div>`).join("");
+  const y = new Date().getFullYear();
+  const pendingN = payments.filter(p => !p.confirmed).length;
+  const overdueN = invoices.filter(i => i.status === "po_terminie").length;
+  const openN = invoices.filter(i => i.status !== "zaplacona").length;
+  const unbilledN = unbilled.reduce((s, u) => s + u.count, 0);
+  const monthName = new Date().toLocaleDateString("pl-PL", { month: "long" });
 
   shell(`
-    <div class="sechead"><div><h2>Finanse</h2><p>Faktury zbiorcze i Twoje wpłaty.</p></div></div>
-    <div class="kpis">
-      <div class="kpi"><small>Do zapłaty</small><b>${zl(summary.due)}</b></div>
-      <div class="kpi ${summary.overdue ? "warn" : ""}"><small>Po terminie</small><b>${zl(summary.overdue)}</b></div>
-      <div class="kpi"><small>Bez faktury</small><b>${zl(summary.unbilled)}</b></div>
+    <div class="sechead">
+      <div><div class="eyebrow">Rozliczenia</div><h2>Finanse</h2><p>Faktury, wpłaty i zamówienia czekające na fakturę.</p></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="fy" style="width:auto">
+          <option value="">Wszystkie lata</option>
+          ${[y, y - 1, y - 2].map(v => `<option value="${v}"${String(state.fy) === String(v) ? " selected" : ""}>${v}</option>`).join("")}
+        </select>
+        <button class="btn sm" id="fexp"${invoices.length || payments.length ? "" : " disabled"}>↓ Pobierz zestawienie</button>
+      </div>
     </div>
-    ${unbilled.length ? `<div class="card" style="margin-bottom:16px">
-      <h3 style="font-size:14px;margin-bottom:8px">Jeszcze bez faktury</h3>
-      ${unbilled.map(u => `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13.5px">
-        <span>${fl(u.firma)} · ${u.count} zam.</span><b>${zl(u.gross)}</b></div>`).join("")}
-      <p class="hint">Trafi na fakturę zbiorczą na koniec miesiąca.</p></div>` : ""}
-    <h3 style="font-size:14px;margin:18px 0 10px">Faktury</h3>
-    ${invRows || `<div class="card empty">Nie masz jeszcze żadnych faktur.</div>`}
-    <h3 style="font-size:14px;margin:22px 0 10px">Wpłaty</h3>
-    <div class="card">${payRows || `<div class="empty" style="padding:20px">Brak zgłoszonych wpłat.</div>`}</div>`);
+    <div class="kpis">
+      <div class="kpi"><small>Do zapłaty</small><b>${zl(summary.due)}</b><small>${openN} ${plural(openN, "faktura", "faktury", "faktur")}</small></div>
+      <div class="kpi ${summary.overdue ? "warn" : ""}"><small>Po terminie</small><b>${zl(summary.overdue)}</b><small>${overdueN ? `${overdueN} ${plural(overdueN, "faktura", "faktury", "faktur")}` : "wszystko w terminie"}</small></div>
+      <div class="kpi"><small>Jeszcze bez faktury</small><b>${zl(summary.unbilled)}</b><small>${unbilledN} ${plural(unbilledN, "zamówienie", "zamówienia", "zamówień")}</small></div>
+    </div>
+    <div class="flay">
+      <div class="box">
+        <div class="ftabs">
+          <button data-ft="faktury" aria-selected="${state.ft !== "wplaty"}">Faktury <small>${invoices.length}</small></button>
+          <button data-ft="wplaty" aria-selected="${state.ft === "wplaty"}">Wpłaty ${pendingN ? `<span class="badge">${pendingN}</span>` : `<small>${payments.length}</small>`}</button>
+          ${state.ft !== "wplaty" ? `<div class="chips" style="margin-left:auto">${Object.entries(IFILTERS).map(([k, [v]]) =>
+            `<button data-fi="${k}" aria-pressed="${(state.fi || "") === k}">${v}</button>`).join("")}</div>` : ""}
+        </div>
+        <div id="flist"></div>
+      </div>
+      <div class="box">
+        <div class="chead"><h2>Następna faktura zbiorcza</h2></div>
+        <div class="side">
+          ${unbilled.length ? `<p class="hint" style="margin:0 0 6px">Zamówienia bez faktury — trafią na fakturę zbiorczą za ${monthName}.</p>
+            ${unbilled.map(u => `<div class="uline"><span>${fl(u.firma)}<small>${u.count} ${plural(u.count, "zamówienie", "zamówienia", "zamówień")}</small></span><b>${zl(u.gross)}</b></div>`).join("")}
+            <div class="uline total"><span>Łącznie</span><b>${zl(summary.unbilled)}</b></div>`
+          : `<p class="hint" style="margin:0">Wszystkie zamówienia są już zafakturowane.</p>`}
+          ${state.me.payment_mode === "przedplata" ? `<p class="hint">Rozliczasz się przedpłatą — zamówienie ruszy po zaksięgowaniu przelewu.</p>` : ""}
+        </div>
+      </div>
+    </div>`);
 
-  document.querySelectorAll("[data-pay]").forEach(b => b.onclick = () => payForm(b.dataset.pay, b.dataset.left, b.dataset.nr));
+  $("#fy").onchange = e => { state.fy = e.target.value; state.fopen = null; loadFinanse(); };
+  $("#fexp").onclick = exportFinanse;
+  document.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { state.ft = b.dataset.ft; renderFinanse(); });
+  document.querySelectorAll("[data-fi]").forEach(b => b.onclick = () => { state.fi = b.dataset.fi; renderFinanse(); });
+  paintFinanse();
 }
 
 function payForm(id, left, nr) {
