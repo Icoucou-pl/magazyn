@@ -169,6 +169,7 @@ class OrderPatch(BaseModel):
     tracking: Optional[str] = None
     sellasist_order_id: Optional[str] = None
     label_url: Optional[str] = None
+    remove_label: bool = False                # True = usuń etykietę partnera
     note: Optional[str] = None
 
 
@@ -956,6 +957,13 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
     if not cur:
         raise HTTPException(404, "Nie ma takiego zamówienia")
 
+    if payload.label_url is not None:
+        payload.label_url = payload.label_url.strip() or None
+        if payload.label_url and not payload.label_url.lower().startswith(("http://", "https://")):
+            raise HTTPException(400, "Etykieta musi być linkiem zaczynającym się od http:// albo https://")
+    if payload.remove_label and payload.label_url:
+        raise HTTPException(400, "Albo usuń etykietę, albo podaj nową — nie oba naraz")
+
     fields, params = [], {"id": oid}
     if payload.status is not None:
         if payload.status not in STATUSES:
@@ -970,6 +978,15 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
     if payload.label_url and payload.status is None and cur["status"] == "etykieta":
         fields.append("status = :status")
         params["status"] = "nowe"
+    # Usunięcie etykiety: zamówienie jeszcze niewysłane do Sellasista wraca do
+    # „czeka na etykietę”, żeby magazyn nie pakował czegoś bez dokumentu przewozowego.
+    # Po wysłaniu do Sellasista status zostaje — tam trzeba poprawić ręcznie.
+    if payload.remove_label and cur["label_url"]:
+        fields.append("label_url = :label_url")
+        params["label_url"] = None
+        if payload.status is None and cur["status"] == "nowe" and not cur["sellasist_order_id"]:
+            fields.append("status = :status")
+            params["status"] = "etykieta"
     if not fields:
         return await get_order(oid, db, user)
 
@@ -983,7 +1000,10 @@ async def patch_order(oid: int, payload: OrderPatch, db: AsyncSession = Depends(
         if col in params and params[col] != cur[col]:
             diff[col] = [cur[col], params[col]]
             if col == "label_url":
-                zmiany.append("zmienił etykietę" if cur[col] else "dodał etykietę")
+                if params[col] is None:
+                    zmiany.append("usunął etykietę")
+                else:
+                    zmiany.append("zmienił etykietę" if cur[col] else "dodał etykietę")
             elif col == "note":
                 zmiany.append("zmienił notatkę")
             else:
