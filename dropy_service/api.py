@@ -202,15 +202,18 @@ async def list_orders(
     month: str = Query("", description="RRRR-MM (zgodność wstecz)"),
     od: str = Query("", description="RRRR-MM-DD"),
     do: str = Query("", description="RRRR-MM-DD, włącznie"),
+    status: str = Query("", description="statusy po przecinku, np. platnosc,etykieta"),
     p: Partner = Depends(current_partner),
     db: AsyncSession = Depends(get_db),
 ):
     first, nxt = _range(od, do, month)
+    statuses = [x.strip() for x in status.split(",") if x.strip()]
 
     r = await db.execute(text(
         "SELECT * FROM dropy.orders WHERE partner_id = :p AND created_at >= :od AND created_at < :do_ "
+        "  AND (CARDINALITY(CAST(:st AS TEXT[])) = 0 OR status = ANY(CAST(:st AS TEXT[]))) "
         "ORDER BY created_at DESC, id DESC"
-    ), {"p": p.id, "od": first, "do_": nxt})
+    ), {"p": p.id, "od": first, "do_": nxt, "st": statuses})
     orders = [dict(x) for x in r.mappings()]
     if not orders:
         return {"od": first.isoformat(), "do": (nxt.toordinal() - 1 and date.fromordinal(nxt.toordinal() - 1)).isoformat(),
