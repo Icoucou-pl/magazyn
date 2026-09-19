@@ -1016,7 +1016,19 @@ function OrdersPanel({ partners }: { partners: Partner[] }) {
 function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () => void; onChanged: () => void }) {
   const [tracking, setTracking] = useState(order.tracking ?? "");
   const [sellasist, setSellasist] = useState(order.sellasist_order_id ?? "");
+  const [label, setLabel] = useState(order.label_url ?? "");
   const [busy, setBusy] = useState(false);
+
+  const removeLabel = () => {
+    const back = order.status === "nowe" && !order.sellasist_order_id;
+    const msg = back
+      ? "Usunąć etykietę? Zamówienie wróci do statusu „Czeka na etykietę”."
+      : order.sellasist_order_id
+        ? "Usunąć etykietę? Zamówienie jest już w Sellasist — tam etykietę trzeba poprawić ręcznie."
+        : "Usunąć etykietę z tego zamówienia?";
+    if (!window.confirm(msg)) return;
+    patch({ remove_label: true }, "Etykieta usunięta");
+  };
 
   const patch = async (body: Record<string, unknown>, msg: string) => {
     setBusy(true);
@@ -1048,13 +1060,30 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
         </div>
         <div>
           <div style={{ fontSize: 11.5, color: "var(--text-lo)", marginBottom: 4 }}>Etykieta</div>
-          <div style={{ fontSize: 13 }}>
-            {order.shipping_mode !== "wlasna"
-              ? "Wysyłamy my — etykieta powstaje u nas"
-              : order.label_url
-                ? <a href={order.label_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Pobierz etykietę partnera</a>
-                : "Brak — zamówienie czeka na partnera"}
-          </div>
+          {order.shipping_mode !== "wlasna" ? (
+            <div style={{ fontSize: 13 }}>Wysyłamy my — etykieta powstaje u nas</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, marginBottom: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                {order.label_url ? (
+                  <>
+                    <a href={order.label_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                      Otwórz etykietę partnera
+                    </a>
+                    <button disabled={busy} style={btn("danger", true)} onClick={removeLabel}>Usuń etykietę</button>
+                  </>
+                ) : "Brak — zamówienie czeka na etykietę"}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input style={inputStyle} value={label} onChange={e => setLabel(e.target.value)}
+                       placeholder="https://… link do PDF z etykietą"/>
+                <button disabled={busy || !label.trim() || label.trim() === (order.label_url ?? "")} style={btn("ghost", true)}
+                  onClick={() => patch({ label_url: label.trim() }, order.label_url ? "Etykieta podmieniona" : "Etykieta dodana")}>
+                  {order.label_url ? "Podmień" : "Dodaj"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
