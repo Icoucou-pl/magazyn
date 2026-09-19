@@ -93,7 +93,7 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
         raise HTTPException(403, f"Nie kupujesz od firmy {firma}")
 
     r = await db.execute(text(
-        "SELECT c.sku, c.name, c.stock, c.in_transit, c.photo_id, c.photo_hash, pr.price_net "
+        "SELECT c.sku, c.name, c.stock, c.in_transit, c.photo_id, c.photo_hash, c.vat, pr.price_net "
         "FROM dropy.prices pr "
         "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
         "WHERE pr.partner_id = :p ORDER BY c.name"
@@ -104,12 +104,13 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
         photo = None
         if settings.PHOTO_BASE and x["photo_id"] and x["photo_hash"]:
             photo = f"{settings.PHOTO_BASE}/product-photos/{x['photo_id']}/{x['photo_hash']}"
+        vat = float(x["vat"] or 23)
         out.append({
             "sku": x["sku"], "name": x["name"], "firma": firma,
             "photo_thumb": f"{photo}/thumb" if photo else None,
             "photo_full": f"{photo}/full" if photo else None,
-            "price_net": float(x["price_net"]),
-            "price_gross": float(round(Decimal(str(x["price_net"])) * VAT, 2)),
+            "price_net": float(x["price_net"]), "vat": vat,
+            "price_gross": float(round(Decimal(str(x["price_net"])) * (1 + Decimal(str(vat)) / 100), 2)),
             "availability": "ok" if stock > settings.LOW_STOCK_AT else ("low" if stock > 0 else "out"),
             "incoming": int(x["in_transit"] or 0) > 0,
         })
@@ -128,8 +129,9 @@ def _out(o: dict, items: List[dict]) -> dict:
         },
         "total_net": float(o["total_net"] or 0), "total_gross": float(o["total_gross"] or 0),
         "created_at": o["created_at"],
-        "items": [{"sku": i["sku"], "name": i["name"], "qty": int(i["qty"]), "price_net": float(i["price_net"])}
-                  for i in items],
+        "items": [{"sku": i["sku"], "name": i["name"], "qty": int(i["qty"]),
+                    "price_net": float(i["price_net"]), "vat": float(i["vat"] or 23)}
+                   for i in items],
     }
 
 
@@ -234,22 +236,28 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
             return await get_order(dup[0], p, db)
 
     r = await db.execute(text(
-        "SELECT LOWER(TRIM(c.sku)) AS key, c.sku, c.name, pr.price_net "
+        "SELECT LOWER(TRIM(c.sku)) AS key, c.sku, c.name, c.vat, pr.price_net "
         "FROM dropy.prices pr "
         "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
         "WHERE pr.partner_id = :p"
     ), {"f": firma, "p": p.id})
     available = {x["key"]: dict(x) for x in r.mappings()}
 
-    items, total = [], Decimal("0")
+    # Brutto liczymy per pozycja, bo stawki bywają różne w jednym koszyku
+    # (Acti: łóżko 8%, akcesoria 23%).
+    items, total, gross = [], Decimal("0"), Decimal("0")
     for ln in payload.lines:
         row = available.get(ln.sku.strip().lower())
         if not row:
             raise HTTPException(400, f"{ln.sku}: nie ma tego produktu w Twoim katalogu dla firmy {firma}")
         cena = Decimal(str(row["price_net"]))
-        total += cena * ln.qty
-        items.append({"sku": row["sku"], "name": row["name"], "qty": ln.qty, "price_net": float(cena)})
-    gross = (total * VAT).quantize(Decimal("0.01"))
+        vat = Decimal(str(row["vat"] or 23))
+        net_line = cena * ln.qty
+        total += net_line
+        gross += (net_line * (1 + vat / 100)).quantize(Decimal("0.01"))
+        items.append({"sku": row["sku"], "name": row["name"], "qty": ln.qty,
+                      "price_net": float(cena), "vat": float(vat)})
+    gross = gross.quantize(Decimal("0.01"))
 
     if p.credit_limit is not None and p.payment_mode == "zbiorcza":
         r = await db.execute(text(
@@ -295,8 +303,10 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
     oid = r.scalar()
     for it in items:
         await db.execute(text(
-            "INSERT INTO dropy.order_items (order_id, sku, name, qty, price_net) VALUES (:o, :s, :n, :q, :c)"
-        ), {"o": oid, "s": it["sku"], "n": it["name"], "q": it["qty"], "c": it["price_net"]})
+            "INSERT INTO dropy.order_items (order_id, sku, name, qty, price_net, vat) "
+            "VALUES (:o, :s, :n, :q, :c, :v)"
+        ), {"o": oid, "s": it["sku"], "n": it["name"], "q": it["qty"],
+            "c": it["price_net"], "v": it["vat"]})
     await db.commit()
     return await get_order(nr, p, db)
 
