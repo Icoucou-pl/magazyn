@@ -61,6 +61,19 @@ class LabelIn(BaseModel):
     label_url: str
 
 
+def _clean_label(url: Optional[str]) -> Optional[str]:
+    """Etykieta to link do pliku — przyjmujemy tylko http(s), żeby nikt nie wkleił
+    czegoś, co po kliknięciu w Magazynie odpali skrypt zamiast pobrać PDF."""
+    if url is None:
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "Etykieta musi być linkiem zaczynającym się od http:// albo https://")
+    return url
+
+
 # ===== LOGOWANIE =====
 @router.post("/auth/login")
 async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
@@ -128,7 +141,7 @@ def _out(o: dict, items: List[dict]) -> dict:
     return {
         "nr": o["nr"], "firma": o["firma"], "typ": o["typ"], "status": o["status"],
         "external_id": o["external_id"], "cod": o["cod"], "tracking": o["tracking"],
-        "shipping_mode": o["shipping_mode"],
+        "shipping_mode": o["shipping_mode"], "label_url": o["label_url"],
         "recipient": {
             "name": o["recipient_name"], "phone": o["recipient_phone"], "street": o["recipient_street"],
             "zip": o["recipient_zip"], "city": o["recipient_city"],
@@ -227,6 +240,7 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         raise HTTPException(400, "shipping_mode musi być 'wlasna' albo 'nasza'")
     if not payload.lines:
         raise HTTPException(400, "Zamówienie bez pozycji")
+    payload.label_url = _clean_label(payload.label_url)
     if payload.typ == "klient" and not (payload.recipient_name and payload.recipient_city):
         raise HTTPException(400, "Wysyłka do klienta wymaga nazwiska i miasta odbiorcy")
 
@@ -465,6 +479,9 @@ async def declare_payment(
 @router.post("/orders/{nr:path}/label")
 async def set_label(nr: str, payload: LabelIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
     """Etykieta partnera przy pobraniu. Odblokowuje zamówienie do pakowania."""
+    payload.label_url = _clean_label(payload.label_url)
+    if not payload.label_url:
+        raise HTTPException(400, "Wklej link do pliku z etykietą")
     r = await db.execute(
         text("SELECT id, status, shipping_mode, label_url FROM dropy.orders WHERE nr = :nr AND partner_id = :p"),
         {"nr": nr, "p": p.id},
