@@ -4,6 +4,8 @@
 //   · Partnerzy — rejestr, firmy na ptaszki, tryb płatności, limit, konta i klucze API
 //   · Cennik    — trzy drogi: ręcznie (z zaznaczaniem i akcją grupową), narzut %, wklejka z Excela
 //   · Zamówienia— podgląd, statusy, przesyłka, numer w Sellasist
+//   · Logi      — okno z historią zmian (partner + my), otwierane ikonką
+//                 w górnym pasku obok słońca (zdarzenie "dropy:open-logs")
 //
 // Dane siedzą w schemacie `dropy`. Sam portal partnera to OSOBNY serwis —
 // stąd nic o nim w tym pliku poza tym, co widać w zamówieniach (source).
@@ -157,6 +159,14 @@ export default function DropyView() {
   const [partners, setPartners] = useState<Partner[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+
+  // Ikonka logów siedzi w Topbarze (header.tsx) — tu tylko nasłuchujemy.
+  useEffect(() => {
+    const open = () => setLogsOpen(true);
+    window.addEventListener("dropy:open-logs", open);
+    return () => window.removeEventListener("dropy:open-logs", open);
+  }, []);
 
   // Migawkę katalogu odświeżamy MY, nie partner. Docelowo pójdzie to z crona,
   // a przycisk zostaje na wypadek, gdy trzeba przeliczyć od razu (nowy produkt, zmiana VAT).
@@ -211,6 +221,8 @@ export default function DropyView() {
       ) : (
         <OrdersPanel partners={partners}/>
       )}
+
+      {logsOpen && <LogsModal partners={partners || []} onClose={() => setLogsOpen(false)}/>}
     </div>
   );
 }
@@ -1074,6 +1086,193 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
             onClick={() => patch({ status: s }, `Status: ${STATUS[s].label}`)}>{STATUS[s].label}</button>
         ))}
       </div>
+    </Modal>
+  );
+}
+
+
+// ============================================================
+// LOGI — historia zmian dropów (portal, API, Magazyn, System)
+// ============================================================
+type LogRow = {
+  id: number; created_at: string; partner_id: number | null; partner_code: string | null;
+  partner_name: string | null; source: "portal" | "api" | "magazyn" | "system"; actor: string;
+  action: string; order_nr: string | null; message: string; changes: Record<string, unknown> | null;
+};
+
+const SOURCE: Record<LogRow["source"], { label: string; fg: string }> = {
+  portal:  { label: "Portal",  fg: "var(--accent)" },
+  api:     { label: "API",     fg: "var(--warning)" },
+  magazyn: { label: "Magazyn", fg: "var(--success)" },
+  system:  { label: "System",  fg: "var(--text-mid)" },
+};
+
+const WAW: Intl.DateTimeFormatOptions = { timeZone: "Europe/Warsaw" };
+const logDay = (iso: string) =>
+  new Date(iso).toLocaleDateString("pl-PL", { ...WAW, weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const logTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString("pl-PL", { ...WAW, hour: "2-digit", minute: "2-digit" });
+
+const showVal = (v: unknown): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  if (typeof v === "boolean") return v ? "tak" : "nie";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+};
+
+function LogChanges({ changes }: { changes: Record<string, unknown> }) {
+  return (
+    <div style={{
+      marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "var(--surface-2)",
+      border: "1px solid var(--border-soft)", fontSize: 12, display: "grid", gap: 4,
+    }}>
+      {Object.entries(changes).map(([k, v]) => {
+        const pair = Array.isArray(v) && v.length === 2 && !(k === "items" || k === "orders");
+        return (
+          <div key={k} style={{ display: "grid", gridTemplateColumns: "150px minmax(0,1fr)", gap: 8 }}>
+            <span className="mono" style={{ color: "var(--text-lo)" }}>{k}</span>
+            <span style={{ wordBreak: "break-word" }}>
+              {pair ? <>{showVal(v[0])} <span style={{ color: "var(--text-lo)" }}>→</span> {showVal(v[1])}</> : showVal(v)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LogsModal({ partners, onClose }: { partners: Partner[]; onClose: () => void }) {
+  const [pid, setPid] = useState("");
+  const [source, setSource] = useState("");
+  const [od, setOd] = useState("");
+  const [doo, setDo] = useState("");
+  const [q, setQ] = useState("");
+  const [qDeb, setQDeb] = useState("");
+  const [rows, setRows] = useState<LogRow[] | null>(null);
+  const [more, setMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [openId, setOpenId] = useState<number | null>(null);
+
+  // Szukajka strzela dopiero po chwili bez pisania, a nie na każdą literę.
+  useEffect(() => {
+    const t = setTimeout(() => setQDeb(q.trim()), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const fetchPage = async (offset: number) => {
+    const qs = new URLSearchParams({ limit: "100", offset: String(offset) });
+    if (pid) qs.set("partner_id", pid);
+    if (source) qs.set("source", source);
+    if (od) qs.set("od", od);
+    if (doo) qs.set("do", doo);
+    if (qDeb) qs.set("q", qDeb);
+    return (await api.get(`/dropy/activity?${qs}`)) as { rows: LogRow[]; more: boolean };
+  };
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    fetchPage(0)
+      .then(r => { if (alive) { setRows(r.rows); setMore(r.more); } })
+      .catch(e => { if (alive) { err(e); setRows([]); } });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, source, od, doo, qDeb]);
+
+  const loadMore = async () => {
+    if (!rows) return;
+    setLoadingMore(true);
+    try {
+      const r = await fetchPage(rows.length);
+      setRows([...rows, ...r.rows]);
+      setMore(r.more);
+    } catch (e) { err(e); } finally { setLoadingMore(false); }
+  };
+
+  const filtered = !!(pid || source || od || doo || qDeb);
+
+  return (
+    <Modal title="Logi dropów" onClose={onClose} wide>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <input style={{ ...inputStyle, flex: "1 1 220px", width: "auto" }} value={q} onChange={e => setQ(e.target.value)}
+               placeholder="Szukaj: nr zamówienia, login, faktura…"/>
+        <select style={{ ...inputStyle, width: "auto" }} value={pid} onChange={e => setPid(e.target.value)}>
+          <option value="">Wszyscy partnerzy</option>
+          {partners.map(p => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+        </select>
+        <select style={{ ...inputStyle, width: "auto" }} value={source} onChange={e => setSource(e.target.value)}>
+          <option value="">Wszystkie źródła</option>
+          {Object.entries(SOURCE).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <input type="date" style={{ ...inputStyle, width: "auto" }} value={od} onChange={e => setOd(e.target.value)} title="Od"/>
+        <input type="date" style={{ ...inputStyle, width: "auto" }} value={doo} onChange={e => setDo(e.target.value)} title="Do"/>
+        {filtered && (
+          <button style={btn("ghost", true)} onClick={() => { setPid(""); setSource(""); setOd(""); setDo(""); setQ(""); }}>
+            Wyczyść
+          </button>
+        )}
+      </div>
+
+      {rows === null ? (
+        <p style={{ fontSize: 13, color: "var(--text-lo)", margin: 0 }}>Wczytuję…</p>
+      ) : rows.length === 0 ? (
+        <p style={{ fontSize: 13, color: "var(--text-lo)", margin: 0 }}>
+          {filtered ? "Nic nie pasuje do filtrów." : "Jeszcze nie ma żadnych wpisów."}
+        </p>
+      ) : (
+        <div>
+          {rows.map((r, i) => {
+            const day = logDay(r.created_at);
+            const newDay = i === 0 || logDay(rows[i - 1].created_at) !== day;
+            const expandable = !!(r.changes && Object.keys(r.changes).length);
+            const isOpen = openId === r.id;
+            return (
+              <React.Fragment key={r.id}>
+                {newDay && (
+                  <div style={{
+                    fontSize: 11.5, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase",
+                    letterSpacing: ".06em", padding: i === 0 ? "0 0 6px" : "16px 0 6px",
+                  }}>{day}</div>
+                )}
+                <div
+                  onClick={() => expandable && setOpenId(isOpen ? null : r.id)}
+                  style={{
+                    display: "grid", gridTemplateColumns: "48px 78px minmax(0,1fr)", gap: 10, alignItems: "start",
+                    padding: "9px 0", borderTop: newDay ? "none" : "1px solid var(--border-soft)",
+                    cursor: expandable ? "pointer" : "default",
+                  }}
+                >
+                  <span className="mono" style={{ fontSize: 12, color: "var(--text-lo)", paddingTop: 2 }}>{logTime(r.created_at)}</span>
+                  <span><Tag fg={SOURCE[r.source]?.fg}>{SOURCE[r.source]?.label ?? r.source}</Tag></span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, lineHeight: 1.45 }}>
+                      {r.message}
+                      {expandable && (
+                        <span style={{ marginLeft: 6, fontSize: 11.5, color: "var(--text-lo)" }}>
+                          {isOpen ? "▾ szczegóły" : "▸ szczegóły"}
+                        </span>
+                      )}
+                    </div>
+                    {r.partner_code && (
+                      <small style={{ fontSize: 11.5, color: "var(--text-lo)" }}>
+                        {r.partner_code} · {r.partner_name}
+                      </small>
+                    )}
+                    {isOpen && r.changes && <LogChanges changes={r.changes}/>}
+                  </div>
+                </div>
+              </React.Fragment>
+            );
+          })}
+          {more && (
+            <div style={{ textAlign: "center", marginTop: 14 }}>
+              <button style={btn("ghost", true)} onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? "Wczytuję…" : "Wczytaj starsze"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }

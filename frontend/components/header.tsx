@@ -6,6 +6,7 @@
 //   - fragmentator AMH/Acti/Veluxa/Wszyscy: globalny (lib/shop), widoczny na każdym widoku
 //   - nawigacja gate'owana can(user, perm) z lib/permissions
 //   - Sun/Moon → onToggleTheme (shell zmienia t.theme)
+//   - w widoku Dropy obok słońca ikonka Logi → zdarzenie "dropy:open-logs"
 //   - menu usera: Zmień hasło / Dziennik audytu (super) / Wyloguj
 //   - mobile: sidebar chowany, hamburger w Topbarze otwiera drawer
 //   - logo z /public/assets (logo-white.png / logo-black.png)
@@ -232,6 +233,15 @@ export function Topbar({
               <button onClick={onToggleTheme} className="icon-btn" style={iconBtn} title={theme === "light" ? "Tryb ciemny" : "Tryb jasny"}>
                 {theme === "light" ? <I.Moon size={16}/> : <I.Sun size={16}/>}
               </button>
+              {/* Logi dropów — tylko w zakładce Dropy. Okno otwiera sam widok Dropów (zdarzenie). */}
+              {view === "dropy" && (
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent("dropy:open-logs"))}
+                  className="icon-btn" style={iconBtn} title="Logi dropów"
+                >
+                  <I.History size={16}/>
+                </button>
+              )}
               <button
                 onClick={onRefresh}
                 disabled={refreshing}
