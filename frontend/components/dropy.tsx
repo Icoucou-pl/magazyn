@@ -155,6 +155,19 @@ type TabId = typeof TABS[number]["id"];
 export default function DropyView() {
   const [tab, setTab] = useState<TabId>("partnerzy");
   const [partners, setPartners] = useState<Partner[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+
+  // Migawkę katalogu odświeżamy MY, nie partner. Docelowo pójdzie to z crona,
+  // a przycisk zostaje na wypadek, gdy trzeba przeliczyć od razu (nowy produkt, zmiana VAT).
+  const refreshCatalog = async () => {
+    setRefreshing(true);
+    try {
+      const r = await api.post("/dropy/catalog/refresh", {}) as { refreshed: number };
+      setLastRefresh(new Date().toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }));
+      toast(`Katalog odświeżony: ${r.refreshed} pozycji`, "ok");
+    } catch (e) { err(e); } finally { setRefreshing(false); }
+  };
 
   const load = async () => {
     try {
@@ -165,7 +178,7 @@ export default function DropyView() {
 
   return (
     <div className="fade-in" style={{ paddingBottom: 80 }}>
-      <div style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
             padding: "10px 14px", fontSize: 13.5, fontWeight: tab === t.id ? 600 : 500,
@@ -174,6 +187,19 @@ export default function DropyView() {
             borderBottom: `2px solid ${tab === t.id ? "var(--accent)" : "transparent"}`,
           }}>{t.label}</button>
         ))}
+        <div style={{ flex: 1 }}/>
+        <button
+          onClick={refreshCatalog}
+          disabled={refreshing}
+          title={lastRefresh
+            ? `Przelicza stany, ceny zakupu, zdjęcia i stawki VAT dla katalogu partnerów. Ostatnio: ${lastRefresh}`
+            : "Przelicza stany, ceny zakupu, zdjęcia i stawki VAT dla katalogu partnerów"}
+          style={{ ...btn("ghost", true), display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}
+        >
+          <I.Refresh size={13} style={{ animation: refreshing ? "spin 1s linear infinite" : undefined }}/>
+          {refreshing ? "Odświeżam…" : "Odśwież katalog"}
+        </button>
+        <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
       </div>
 
       {partners === null ? (
