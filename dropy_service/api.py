@@ -136,6 +136,27 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
     return out
 
 
+# ===== LIMIT KUPIECKI =====
+async def _credit_used(db: AsyncSession, pid: int) -> Decimal:
+    """Ile limitu jest zajęte = zamówienia jeszcze bez faktury + niezapłacona część faktur.
+
+    Wcześniej liczyliśmy sumę WSZYSTKICH zamówień od początku, więc limit tylko rósł
+    i po kilku miesiącach blokowałby partnera, który płaci w terminie.
+    Liczymy tylko wpłaty potwierdzone — zgłoszenie partnera limitu nie zwalnia.
+    """
+    r = await db.execute(text(
+        "SELECT "
+        "  COALESCE((SELECT SUM(total_gross) FROM dropy.orders "
+        "            WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane'), 0) "
+        "+ COALESCE((SELECT SUM(GREATEST(i.total_gross - COALESCE(pm.paid, 0), 0)) "
+        "            FROM dropy.invoices i "
+        "            LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM dropy.payments "
+        "                       WHERE confirmed GROUP BY invoice_id) pm ON pm.invoice_id = i.id "
+        "            WHERE i.partner_id = :p AND NOT i.is_canceled), 0)"
+    ), {"p": pid})
+    return Decimal(str(r.scalar() or 0))
+
+
 # ===== ZAMÓWIENIA =====
 def _out(o: dict, items: List[dict]) -> dict:
     return {
@@ -280,11 +301,7 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
     gross = gross.quantize(Decimal("0.01"))
 
     if p.credit_limit is not None and p.payment_mode == "zbiorcza":
-        r = await db.execute(text(
-            "SELECT COALESCE(SUM(total_gross), 0) FROM dropy.orders "
-            "WHERE partner_id = :p AND status <> 'anulowane'"
-        ), {"p": p.id})
-        already = Decimal(str(r.scalar() or 0))
+        already = await _credit_used(db, p.id)
         if already + gross > Decimal(str(p.credit_limit)):
             raise HTTPException(409, "Limit kupiecki przekroczony. Opłać zaległe faktury albo napisz do opiekuna.")
 
@@ -512,3 +529,137 @@ async def set_label(nr: str, payload: LabelIn, p: Partner = Depends(current_part
     await log(db, p, "label_changed" if o["label_url"] else "label_added", tekst, order_nr=nr, changes=changes)
     await db.commit()
     return await get_order(nr, p, db)
+
+
+# ===== START (pulpit partnera) =====
+@router.get("/dashboard")
+async def dashboard(p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
+    """Wszystko na ekran Start jednym strzałem: miesiąc, zadania, limit, firmy, ostatnie zamówienia."""
+    today = date.today()
+    first = date(today.year, today.month, 1)
+    nxt = date(first.year + (first.month == 12), (first.month % 12) + 1, 1)
+    prev = date(first.year - (first.month == 1), ((first.month - 2) % 12) + 1, 1)
+
+    # Ten miesiąc per status i firma — z tego liczymy kafelki i obrót.
+    r = await db.execute(text(
+        "SELECT firma, status, COUNT(*) AS cnt, SUM(total_net) AS net, SUM(total_gross) AS gross "
+        "FROM dropy.orders WHERE partner_id = :p AND created_at >= :od AND created_at < :do_ "
+        "  AND status <> 'anulowane' GROUP BY firma, status"
+    ), {"p": p.id, "od": first, "do_": nxt})
+    rows = [dict(x) for x in r.mappings()]
+    count = sum(int(x["cnt"]) for x in rows)
+    net = sum(float(x["net"] or 0) for x in rows)
+    by_status: dict = {}
+    by_firma: dict = {}
+    for x in rows:
+        by_status[x["status"]] = by_status.get(x["status"], 0) + int(x["cnt"])
+        by_firma[x["firma"]] = by_firma.get(x["firma"], 0) + float(x["net"] or 0)
+
+    # Poprzedni miesiąc do tej samej daty — żeby trend nie straszył na początku miesiąca.
+    same_day = date.fromordinal(min(prev.toordinal() + (today - first).days + 1, first.toordinal()))
+    r = await db.execute(text(
+        "SELECT COUNT(*) FROM dropy.orders WHERE partner_id = :p AND created_at >= :od AND created_at < :do_ "
+        "  AND status <> 'anulowane'"
+    ), {"p": p.id, "od": prev, "do_": same_day})
+    prev_count = int(r.scalar() or 0)
+
+    # Zamówienia czekające na partnera — niezależnie od miesiąca.
+    r = await db.execute(text(
+        "SELECT nr, status FROM dropy.orders WHERE partner_id = :p AND status IN ('platnosc', 'etykieta') "
+        "ORDER BY created_at"
+    ), {"p": p.id})
+    waiting = [dict(x) for x in r.mappings()]
+    need_label = [w["nr"] for w in waiting if w["status"] == "etykieta"]
+    need_pay = [w["nr"] for w in waiting if w["status"] == "platnosc"]
+
+    # Faktury otwarte.
+    r = await db.execute(text(
+        "SELECT i.id, i.nr, i.firma, i.due_date, i.total_gross, "
+        "  COALESCE((SELECT SUM(amount) FROM dropy.payments pm WHERE pm.invoice_id = i.id AND pm.confirmed), 0) AS paid, "
+        "  COALESCE((SELECT SUM(amount) FROM dropy.payments pm WHERE pm.invoice_id = i.id AND NOT pm.confirmed), 0) AS pending "
+        "FROM dropy.invoices i WHERE i.partner_id = :p AND NOT i.is_canceled ORDER BY i.due_date NULLS LAST, i.id"
+    ), {"p": p.id})
+    open_inv = []
+    for x in r.mappings():
+        left = round(float(x["total_gross"] or 0) - float(x["paid"] or 0), 2)
+        if left <= 0:
+            continue
+        open_inv.append({
+            "id": x["id"], "nr": x["nr"], "firma": x["firma"], "due_date": x["due_date"], "left": left,
+            "pending": float(x["pending"] or 0),
+            "overdue": x["due_date"] is not None and x["due_date"] < today,
+            "days": (x["due_date"] - today).days if x["due_date"] else None,
+        })
+    due = round(sum(i["left"] for i in open_inv), 2)
+    overdue = round(sum(i["left"] for i in open_inv if i["overdue"]), 2)
+    upcoming = next((i for i in open_inv if not i["overdue"] and i["due_date"]), None)
+
+    # Zadania dla partnera — kolejność = ważność.
+    tasks = []
+    for i in open_inv:
+        if i["overdue"] and not i["pending"]:
+            tasks.append({"kind": "invoice_overdue", "level": "bad", "invoice_id": i["id"],
+                          "title": f"Faktura {i['nr']} jest po terminie",
+                          "text": f"{float(i['left']):,.2f} zł".replace(",", " ").replace(".", ",")
+                                  + f" · termin minął {i['due_date'].strftime('%d.%m')}"})
+    if need_label:
+        n = len(need_label)
+        tasks.append({"kind": "need_label", "level": "warn", "orders": need_label,
+                      "title": f"{n} {'zamówienie czeka' if n == 1 else ('zamówienia czekają' if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else 'zamówień czeka')} na etykietę",
+                      "text": "Bez etykiety magazyn nie rozpocznie realizacji."})
+    if need_pay:
+        n = len(need_pay)
+        tasks.append({"kind": "need_payment", "level": "warn", "orders": need_pay,
+                      "title": f"{n} {'zamówienie czeka' if n == 1 else ('zamówienia czekają' if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else 'zamówień czeka')} na wpłatę",
+                      "text": "Realizację zaczniemy po zaksięgowaniu przelewu."})
+    for i in open_inv:
+        if not i["overdue"] and i["days"] is not None and i["days"] <= 7 and not i["pending"]:
+            kiedy = "dziś" if i["days"] == 0 else ("jutro" if i["days"] == 1 else f"za {i['days']} dni")
+            tasks.append({"kind": "invoice_due", "level": "info", "invoice_id": i["id"],
+                          "title": f"Faktura {i['nr']} do zapłaty",
+                          "text": f"{float(i['left']):,.2f} zł".replace(",", " ").replace(".", ",") + f" · termin {kiedy}"})
+
+    credit = None
+    if p.credit_limit is not None and p.payment_mode == "zbiorcza":
+        used = float(await _credit_used(db, p.id))
+        credit = {"limit": p.credit_limit, "used": round(used, 2), "free": round(p.credit_limit - used, 2)}
+
+    # Wiek liczymy w bazie: updated_at jest bez strefy, więc w przeglądarce łatwo o 2 h różnicy.
+    r = await db.execute(text(
+        "SELECT FLOOR(EXTRACT(EPOCH FROM (LOCALTIMESTAMP - MAX(updated_at))) / 60) "
+        "FROM dropy.catalog_cache WHERE firma = ANY(:f)"
+    ), {"f": p.firmy})
+    age = r.scalar()
+    catalog_age_min = int(age) if age is not None else None
+
+    # Ostatnie zamówienia w pełnym kształcie — z Startu otwierają się te same szczegóły co z listy.
+    r = await db.execute(text(
+        "SELECT * FROM dropy.orders WHERE partner_id = :p ORDER BY created_at DESC, id DESC LIMIT 5"
+    ), {"p": p.id})
+    recent = [dict(x) for x in r.mappings()]
+    items: dict = {}
+    if recent:
+        ri = await db.execute(text("SELECT * FROM dropy.order_items WHERE order_id = ANY(:ids) ORDER BY id"),
+                              {"ids": [o["id"] for o in recent]})
+        for it in ri.mappings():
+            items.setdefault(it["order_id"], []).append(dict(it))
+
+    return {
+        "month": first.strftime("%Y-%m"),
+        "orders": {
+            "count": count, "prev_count": prev_count, "net": round(net, 2),
+            "avg_net": round(net / count, 2) if count else 0,
+            "sent": by_status.get("wyslane", 0),
+            "in_progress": sum(by_status.get(s_, 0) for s_ in ("nowe", "przyjete", "spakowane")),
+            "waiting": sum(by_status.get(s_, 0) for s_ in ("platnosc", "etykieta")),
+        },
+        "finance": {
+            "due": due, "overdue": overdue, "open_invoices": len(open_inv),
+            "next_due": {"nr": upcoming["nr"], "date": upcoming["due_date"]} if upcoming else None,
+        },
+        "credit": credit,
+        "by_firma": [{"firma": f, "net": round(by_firma.get(f, 0.0), 2)} for f in p.firmy],
+        "tasks": tasks,
+        "recent": [_out(o, items.get(o["id"], [])) for o in recent],
+        "catalog_age_min": catalog_age_min,
+    }
