@@ -161,6 +161,15 @@ td.r{text-align:right}
 .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:50;font-size:14px;max-width:calc(100% - 32px)}
 .toast.bad{background:var(--bad);color:#fff}
 
+/* katalog: pasek narzędzi */
+.ctools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+.ctools #q{flex:1 1 240px;width:auto}
+.ctools2{margin-bottom:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer;color:var(--muted)}
+.chips button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:color-mix(in oklch,var(--accent) 9%,transparent)}
+.pill.fpill{--c:var(--muted)}
+
 /* nagłówek */
 .brand{display:flex;gap:12px;align-items:center;min-width:0}
 .mark{width:36px;height:36px;border-radius:9px;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font-weight:700;flex:none}
@@ -265,6 +274,7 @@ const STATUS = {
 const state = {
   token: localStorage.getItem("drop_token") || "",
   me: null, tab: "start", firma: null, dash: null,
+  cf: "all", av: "", sort: "avail",
   carts: {}, catalogs: {}, orders: null, od: "", do: "", q: "", finanse: null,
 };
 
@@ -405,15 +415,25 @@ function firmSwitch() {
 const cart = () => (state.carts[state.firma] ||= {});
 
 function renderCartBar() {
-  const bar = $("#cartbar"), c = state.carts[state.firma] || {};
-  const n = Object.values(c).reduce((a, b) => a + b, 0);
-  const cat = state.catalogs[state.firma];
-  if (n && state.tab === "katalog" && cat) {
-    const v = Object.entries(c).reduce((s, [sku, q]) => s + (cat.find(p => p.sku === sku)?.price_net || 0) * q, 0);
-    bar.innerHTML = `<span>${fl(state.firma)}: ${n} szt., ${zl(v)} netto</span><button class="btn" data-tab="koszyk">Przejdź do koszyka</button>`;
-    bar.hidden = false;
-    bar.querySelector("[data-tab]").onclick = () => go("koszyk");
-  } else bar.hidden = true;
+  const bar = $("#cartbar");
+  if (state.tab !== "katalog") { bar.hidden = true; return; }
+  let n = 0, v = 0; const firms = [];
+  for (const f of state.me.firmy) {
+    const c = state.carts[f] || {}, cat = state.catalogs[f] || [];
+    const q = Object.values(c).reduce((a, b) => a + b, 0);
+    if (!q) continue;
+    firms.push(f); n += q;
+    v += Object.entries(c).reduce((s, [sku, k]) => s + (cat.find(p => p.sku === sku)?.price_net || 0) * k, 0);
+  }
+  if (!n) { bar.hidden = true; return; }
+  const who = firms.length === 1 ? fl(firms[0]) : `${firms.length} firmy`;
+  bar.innerHTML = `<span>${who}: ${n} szt., ${zl(v)} netto</span><button class="btn">Przejdź do koszyka</button>`;
+  bar.hidden = false;
+  // Koszyk jest (na razie) per firma — otwieramy pierwszą, w której coś leży.
+  bar.querySelector("button").onclick = () => {
+    if (!firms.includes(state.firma)) state.firma = firms[0];
+    go("koszyk");
+  };
 }
 
 async function go(tab) {
@@ -639,65 +659,135 @@ async function ensureCatalog(firma) {
 
 async function loadCatalog() {
   shell(`<div class="empty">Wczytuję katalog…</div>`);
-  await ensureCatalog(state.firma);
+  // Wszystkie firmy partnera naraz — widok „Wszystkie” i tak ich potrzebuje.
+  await Promise.all(state.me.firmy.map(ensureCatalog));
   renderCatalog();
 }
 
-const emptyCatalog = () =>
-  `<div class="empty">${state.q ? "Nic nie pasuje do wyszukiwania." : "Katalog jest pusty — odezwij się do opiekuna."}</div>`;
+const AV_RANK = { ok: 0, low: 1, out: 2 };
+const SORTS = {
+  avail: ["Dostępne najpierw", (a, b) => AV_RANK[a.availability] - AV_RANK[b.availability] || a.name.localeCompare(b.name, "pl")],
+  name:  ["Nazwa A–Z", (a, b) => a.name.localeCompare(b.name, "pl")],
+  asc:   ["Cena rosnąco", (a, b) => a.price_net - b.price_net],
+  desc:  ["Cena malejąco", (a, b) => b.price_net - a.price_net],
+};
+const AVAIL = {
+  "":       "Wszystkie",
+  ok:       "Dostępne",
+  low:      "Ostatnie sztuki",
+  incoming: "W drodze",
+};
 
-// Przerysowanie samej listy: input zostaje w DOM, więc kursor nie ucieka na początek.
+// Filtr katalogu (state.cf) jest osobny od firmy koszyka (state.firma):
+// przeglądasz wszystko naraz, a do koszyka produkt trafia i tak pod swoją firmę.
+function catalogList() {
+  const q = state.q.trim().toLowerCase();
+  const firmy = state.cf === "all" ? state.me.firmy : [state.cf];
+  return firmy.flatMap(f => state.catalogs[f] || [])
+    .filter(p => !q || (p.name + " " + p.sku).toLowerCase().includes(q))
+    .filter(p => !state.av
+      || (state.av === "incoming" ? p.incoming && p.availability !== "ok" : p.availability === state.av))
+    .sort(SORTS[state.sort][1]);
+}
+
+const cartOf = f => (state.carts[f] ||= {});
+
+const emptyCatalog = () =>
+  `<div class="empty">${state.q || state.av ? "Nic nie pasuje do filtrów." : "Katalog jest pusty — odezwij się do opiekuna."}</div>`;
+
+// Przerysowanie samej listy: pola filtrów zostają w DOM, więc kursor nie ucieka.
 function paintProducts() {
   const el = $("#plist"); if (!el) return renderCatalog();
-  el.innerHTML = productRows() || emptyCatalog();
+  const list = catalogList();
+  el.innerHTML = productRows(list) || emptyCatalog();
+  const cnt = $("#pcount"); if (cnt) cnt.textContent = `${list.length} ${plural(list.length, "produkt", "produkty", "produktów")}`;
   wireProducts();
+  updateCartBadge();
   renderCartBar();
 }
 
-function productRows() {
-  const q = state.q.toLowerCase();
-  const list = (state.catalogs[state.firma] || []).filter(p => !q || (p.name + " " + p.sku).toLowerCase().includes(q));
-  const c = cart();
-  const rows2 = list.map(p => {
+function productRows(list) {
+  const many = state.me.firmy.length > 1 && state.cf === "all";
+  return list.map(p => {
     const av = p.availability === "ok" ? `<span class="pill ok">Dostępny</span>`
       : p.availability === "low" ? `<span class="pill warn">Ostatnie sztuki</span>`
-      : `<span class="pill bad">Brak${p.incoming ? ", w drodze" : ""}</span>`;
-    const n = c[p.sku] || 0;
+      : p.incoming ? `<span class="pill info">W drodze</span>` : `<span class="pill bad">Brak</span>`;
+    const soon = p.availability === "low" && p.incoming ? `<span class="hint" style="margin:0">dostawa w drodze</span>` : "";
+    const key = `${p.firma}|${esc(p.sku)}`;
+    const n = cartOf(p.firma)[p.sku] || 0;
     const buy = p.availability === "out"
       ? `<button class="btn" disabled>Niedostępny</button>`
-      : n ? `<div class="step"><button data-dec="${p.sku}">−</button><span>${n}</span><button data-inc="${p.sku}">+</button></div>`
-          : `<button class="btn primary" data-add="${p.sku}">Dodaj</button>`;
+      : n ? `<div class="step"><button data-dec="${key}" aria-label="Mniej">−</button><span>${n}</span><button data-inc="${key}" aria-label="Więcej">+</button></div>`
+          : `<button class="btn primary" data-add="${key}">Dodaj</button>`;
     return `<article class="prod">
       ${thumb(p)}
-      <div><h3>${p.name}</h3><div class="sku">${p.sku}</div><div class="prow">${av}</div></div>
+      <div><h3>${esc(p.name)}</h3><div class="sku">${esc(p.sku)}</div>
+        <div class="prow">${many ? `<span class="pill fpill">${fl(p.firma)}</span>` : ""}${av}${soon}</div></div>
       <div class="pbuy"><div class="price">${zl(p.price_net)}<small>netto, VAT ${p.vat ?? 23}%</small></div>${buy}</div>
     </article>`;
   }).join("");
-  return rows2;
 }
 
 function wireProducts() {
-  document.querySelectorAll("[data-add]").forEach(b => b.onclick = () => { cart()[b.dataset.add] = 1; paintProducts(); });
-  document.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => { cart()[b.dataset.inc]++; paintProducts(); });
+  const split = k => { const i = k.indexOf("|"); return [k.slice(0, i), k.slice(i + 1)]; };
+  document.querySelectorAll("[data-add]").forEach(b => b.onclick = () => {
+    const [f, sku] = split(b.dataset.add); cartOf(f)[sku] = 1; paintProducts();
+  });
+  document.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => {
+    const [f, sku] = split(b.dataset.inc); cartOf(f)[sku]++; paintProducts();
+  });
   document.querySelectorAll("[data-dec]").forEach(b => b.onclick = () => {
-    if (--cart()[b.dataset.dec] <= 0) delete cart()[b.dataset.dec];
+    const [f, sku] = split(b.dataset.dec);
+    if (--cartOf(f)[sku] <= 0) delete cartOf(f)[sku];
     paintProducts();
   });
 }
 
+function updateCartBadge() {
+  const t = document.querySelector('[data-tab="koszyk"]'); if (!t) return;
+  const n = Object.values(state.carts).reduce((s, c) => s + Object.values(c).reduce((a, b) => a + b, 0), 0);
+  t.innerHTML = `Koszyk${n ? `<span class="badge">${n}</span>` : ""}`;
+}
+
 function renderCatalog() {
-  const rows = productRows();
+  const firmy = state.me.firmy;
+  const cnt = f => (state.catalogs[f] || []).length;
+  const tabs = firmy.length > 1 ? `<div class="fsw" id="cfs">
+      <button data-cf="all" aria-selected="${state.cf === "all"}">Wszystkie</button>
+      ${firmy.map(f => `<button data-cf="${f}" aria-selected="${state.cf === f}">${fl(f)} <small style="opacity:.7">${cnt(f)}</small></button>`).join("")}
+    </div>` : `<p class="hint" style="margin:0">Kupujesz od <b>${fl(firmy[0])}</b>.</p>`;
+
   shell(`
     <div class="sechead">
-      <div><h2>Katalog</h2><p>Ceny netto z Twojego cennika.</p></div>
-      <input type="search" id="q" placeholder="Szukaj po nazwie lub SKU" value="${state.q}" style="max-width:280px">
+      <div><div class="eyebrow">Twój cennik</div><h2>Katalog produktów</h2>
+        <p>Ceny netto i dostępność dla Twojego konta.${firmy.length > 1 ? " Każda firma to osobne zamówienie." : ""}</p></div>
     </div>
-    ${firmSwitch()}
-    <div class="plist" id="plist">${rows || emptyCatalog()}</div>`);
+    <div class="ctools">
+      ${tabs}
+      <input type="search" id="q" placeholder="Szukaj po nazwie lub SKU" value="${esc(state.q)}">
+    </div>
+    <div class="ctools ctools2">
+      <div class="chips" id="avs">${Object.entries(AVAIL).map(([k, v]) =>
+        `<button data-av="${k}" aria-pressed="${state.av === k}">${v}</button>`).join("")}</div>
+      <span class="hint" id="pcount" style="margin:0 0 0 auto"></span>
+      <select id="sort" style="width:auto">${Object.entries(SORTS).map(([k, [v]]) =>
+        `<option value="${k}"${state.sort === k ? " selected" : ""}>${v}</option>`).join("")}</select>
+    </div>
+    <div class="plist" id="plist"></div>`);
 
   $("#q").oninput = e => { state.q = e.target.value; paintProducts(); };
-  wireFirms();
-  wireProducts();
+  $("#sort").onchange = e => { state.sort = e.target.value; paintProducts(); };
+  document.querySelectorAll("[data-cf]").forEach(b => b.onclick = () => {
+    state.cf = b.dataset.cf;
+    document.querySelectorAll("[data-cf]").forEach(x => x.setAttribute("aria-selected", x === b));
+    paintProducts();
+  });
+  document.querySelectorAll("[data-av]").forEach(b => b.onclick = () => {
+    state.av = b.dataset.av;
+    document.querySelectorAll("[data-av]").forEach(x => x.setAttribute("aria-pressed", x === b));
+    paintProducts();
+  });
+  paintProducts();
 }
 
 function wireFirms() {
