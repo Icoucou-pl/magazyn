@@ -498,7 +498,7 @@ function productRows() {
     return `<article class="prod">
       ${thumb(p)}
       <div><h3>${p.name}</h3><div class="sku">${p.sku}</div><div class="prow">${av}</div></div>
-      <div class="pbuy"><div class="price">${zl(p.price_net)}<small>netto</small></div>${buy}</div>
+      <div class="pbuy"><div class="price">${zl(p.price_net)}<small>netto, VAT ${p.vat ?? 23}%</small></div>${buy}</div>
     </article>`;
   }).join("");
   return rows2;
@@ -555,7 +555,9 @@ function renderCart() {
       <div class="step"><button data-dec="${sku}">−</button><span>${q}</span><button data-inc="${sku}">+</button></div>
       <div class="lval">${zl((P[sku]?.price_net || 0) * q)}</div></div>`).join("");
   const net = items.reduce((s, [sku, q]) => s + (P[sku]?.price_net || 0) * q, 0);
-  const gross = Math.round(net * 1.23 * 100) / 100;
+  // Każda pozycja ma swoją stawkę — w Acti łóżka idą na 8%, akcesoria na 23%.
+  const gross = Math.round(items.reduce((s, [sku, q]) =>
+    s + (P[sku]?.price_net || 0) * q * (1 + (P[sku]?.vat ?? 23) / 100), 0) * 100) / 100;
   const pay = state.me.payment_mode === "przedplata"
     ? "Płatność z góry. Po złożeniu dostaniesz dane do przelewu, wysyłamy po zaksięgowaniu wpłaty."
     : `Trafi na fakturę zbiorczą ${fl(state.firma)} na koniec miesiąca.`;
@@ -598,7 +600,7 @@ function renderCart() {
           <label class="f">Link do etykiety (PDF)<input type="text" id="fLabel" placeholder="możesz dodać później"></label>
         </div>
 
-        <dl class="sum"><dt>Netto</dt><dd>${zl(net)}</dd><dt>VAT 23%</dt><dd>${zl(gross - net)}</dd>
+        <dl class="sum"><dt>Netto</dt><dd>${zl(net)}</dd><dt>VAT</dt><dd>${zl(gross - net)}</dd>
           <dt class="big">Brutto</dt><dd class="big">${zl(gross)}</dd></dl>
         <p class="hint">${pay}</p>
         <button class="btn primary wide" id="send" style="margin-top:12px">Złóż zamówienie</button>
