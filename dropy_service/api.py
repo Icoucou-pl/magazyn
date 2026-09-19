@@ -17,12 +17,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from activity import log, plural, who, zl
 from auth import Partner, create_token, current_partner, verify_password
 from config import settings
 from db import get_db
 
 router = APIRouter(prefix="/drop/v1", tags=["portal"])
 VAT = Decimal(str(settings.VAT))
+FIRMA_LABEL = {"amh": "AMH", "acti": "Acti4med", "veluxa": "Veluxa"}
+STATUS_INFO = {
+    "platnosc": "Czeka na wpłatę",
+    "etykieta": "Czeka na etykietę",
+}
 
 
 class LoginIn(BaseModel):
@@ -307,6 +313,20 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
             "VALUES (:o, :s, :n, :q, :c, :v)"
         ), {"o": oid, "s": it["sku"], "n": it["name"], "q": it["qty"],
             "c": it["price_net"], "v": it["vat"]})
+
+    _, kto = await who(db, p)
+    n = len(items)
+    tekst = (f"{kto} złożył zamówienie {nr} ({FIRMA_LABEL.get(firma, firma)}, "
+             f"{n} {plural(n, 'pozycja', 'pozycje', 'pozycji')}, {zl(total)} netto)")
+    if payload.external_id:
+        tekst += f", nr w sklepie partnera: {payload.external_id}"
+    if status in STATUS_INFO:
+        tekst += f". {STATUS_INFO[status]}"
+    await log(db, p, "order_created", tekst, order_nr=nr, changes={
+        "status": status, "typ": payload.typ, "shipping_mode": payload.shipping_mode, "cod": payload.cod,
+        "total_net": float(total), "total_gross": float(gross),
+        "items": [{"sku": i["sku"], "qty": i["qty"], "price_net": i["price_net"]} for i in items],
+    })
     await db.commit()
     return await get_order(nr, p, db)
 
@@ -415,10 +435,11 @@ async def declare_payment(
     """Partner zgłasza wpłatę. Trafia jako niepotwierdzona — saldo zmienia się dopiero,
     gdy my ją potwierdzimy. Dzięki temu zgłoszenie niczego nie zeruje na siłę."""
     r = await db.execute(
-        text("SELECT id FROM dropy.invoices WHERE id = :i AND partner_id = :p AND NOT is_canceled"),
+        text("SELECT id, nr FROM dropy.invoices WHERE id = :i AND partner_id = :p AND NOT is_canceled"),
         {"i": iid, "p": p.id},
     )
-    if not r.first():
+    inv = r.mappings().first()
+    if not inv:
         raise HTTPException(404, "Nie ma takiej faktury")
     try:
         when = datetime.strptime(payload.paid_date, "%Y-%m-%d").date()
@@ -432,6 +453,11 @@ async def declare_payment(
         "VALUES (:p, :i, :d, :a, :u, :n, 'partner')"
     ), {"p": p.id, "i": iid, "d": when, "a": payload.amount,
         "u": payload.confirmation_url, "n": payload.note})
+    _, kto = await who(db, p)
+    await log(db, p, "payment_declared",
+              f"{kto} zgłosił wpłatę {zl(payload.amount)} z {when.strftime('%d.%m.%Y')} do faktury {inv['nr']}",
+              changes={"invoice_nr": inv["nr"], "amount": payload.amount, "paid_date": when,
+                       "confirmation_url": payload.confirmation_url, "note": payload.note})
     await db.commit()
     return {"ok": True, "info": "Zgłoszenie przyjęte, potwierdzimy po zaksięgowaniu"}
 
@@ -440,7 +466,7 @@ async def declare_payment(
 async def set_label(nr: str, payload: LabelIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
     """Etykieta partnera przy pobraniu. Odblokowuje zamówienie do pakowania."""
     r = await db.execute(
-        text("SELECT id, status, shipping_mode FROM dropy.orders WHERE nr = :nr AND partner_id = :p"),
+        text("SELECT id, status, shipping_mode, label_url FROM dropy.orders WHERE nr = :nr AND partner_id = :p"),
         {"nr": nr, "p": p.id},
     )
     o = r.mappings().first()
@@ -455,5 +481,17 @@ async def set_label(nr: str, payload: LabelIn, p: Partner = Depends(current_part
     await db.execute(text(
         "UPDATE dropy.orders SET label_url = :l, status = :s, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
     ), {"l": payload.label_url, "s": new_status, "id": o["id"]})
+
+    _, kto = await who(db, p)
+    if o["label_url"]:
+        tekst = f"{kto} zmienił etykietę w zamówieniu {nr}"
+    else:
+        tekst = f"{kto} dodał etykietę do zamówienia {nr}"
+    if new_status != o["status"]:
+        tekst += " — zamówienie przeszło do realizacji"
+    changes = {"label_url": [o["label_url"], payload.label_url]}
+    if new_status != o["status"]:
+        changes["status"] = [o["status"], new_status]
+    await log(db, p, "label_changed" if o["label_url"] else "label_added", tekst, order_nr=nr, changes=changes)
     await db.commit()
     return await get_order(nr, p, db)

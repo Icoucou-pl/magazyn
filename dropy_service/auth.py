@@ -41,7 +41,8 @@ def create_token(user_id: int, partner_id: int, email: str) -> str:
 class Partner:
     """Partner rozpoznany z poświadczenia."""
 
-    def __init__(self, row: dict, via: str, user_id: Optional[int] = None):
+    def __init__(self, row: dict, via: str, user_id: Optional[int] = None,
+                 key_label: Optional[str] = None, key_hint: Optional[str] = None):
         self.id = row["id"]
         self.code = row["code"]
         self.name = row["name"]
@@ -51,6 +52,8 @@ class Partner:
         self.address = row["address"]
         self.via = via                     # 'portal' albo 'api'
         self.user_id = user_id
+        self.key_label = key_label         # przy API: nazwa i końcówka klucza — do logów
+        self.key_hint = key_hint
 
 
 async def _partner_row(db: AsyncSession, pid: int) -> dict:
@@ -69,7 +72,7 @@ async def current_partner(
     if x_drop_key:
         digest = hashlib.sha256(x_drop_key.strip().encode()).hexdigest()
         r = await db.execute(
-            text("SELECT partner_id FROM dropy.api_keys WHERE key_hash = :h AND is_active"),
+            text("SELECT partner_id, label, key_hint FROM dropy.api_keys WHERE key_hash = :h AND is_active"),
             {"h": digest},
         )
         row = r.first()
@@ -80,7 +83,7 @@ async def current_partner(
             {"h": digest},
         )
         await db.commit()
-        return Partner(await _partner_row(db, row[0]), via="api")
+        return Partner(await _partner_row(db, row[0]), via="api", key_label=row[1], key_hint=row[2])
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Wymagane logowanie")
