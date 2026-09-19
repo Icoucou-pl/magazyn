@@ -170,6 +170,22 @@ td.r{text-align:right}
 .chips button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:color-mix(in oklch,var(--accent) 9%,transparent)}
 .pill.fpill{--c:var(--muted)}
 
+/* zamówienia: oś statusów i szczegóły */
+.tl{display:flex;margin:16px 0 6px}
+.tstep{flex:1;position:relative;text-align:center;padding-top:20px;font-size:11.5px;color:var(--muted)}
+.tstep:before{content:"";position:absolute;top:5px;left:0;right:0;height:3px;background:var(--line)}
+.tstep:first-child:before{left:50%}.tstep:last-child:before{right:50%}
+.tstep:after{content:"";position:absolute;top:0;left:calc(50% - 7px);width:13px;height:13px;border-radius:50%;background:var(--line);border:2px solid var(--surface)}
+.tstep.done:before,.tstep.done:after{background:var(--ok)}
+.tstep.cur{color:var(--ink);font-weight:500}
+.tstep.cur:after{background:var(--accent);box-shadow:0 0 0 4px color-mix(in oklch,var(--accent) 20%,transparent)}
+.tstep.cur.warn:after{background:var(--warn);box-shadow:0 0 0 4px color-mix(in oklch,var(--warn) 20%,transparent)}
+.tstep em{display:block;font-style:normal;color:var(--warn);font-size:11px}
+.dgrid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.dbox{background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px}
+.dbox small{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}
+.ctools #oq{flex:1 1 240px;width:auto}
+
 /* nagłówek */
 .brand{display:flex;gap:12px;align-items:center;min-width:0}
 .mark{width:36px;height:36px;border-radius:9px;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font-weight:700;flex:none}
@@ -275,6 +291,7 @@ const state = {
   token: localStorage.getItem("drop_token") || "",
   me: null, tab: "start", firma: null, dash: null,
   cf: "all", av: "", sort: "avail",
+  og: "", of: "all", oq: "",
   carts: {}, catalogs: {}, orders: null, od: "", do: "", q: "", finanse: null,
 };
 
@@ -496,7 +513,7 @@ function renderStart() {
   const tasks = d.tasks.length ? d.tasks.map(t => {
     const nrs = t.orders ? `<div class="nrs">${t.orders.slice(0, 4).map(n => `<button data-open="${esc(n)}">${esc(n)}</button>`).join("")}${t.orders.length > 4 ? `<span class="hint" style="margin:0">+${t.orders.length - 4}</span>` : ""}</div>` : "";
     const action = t.orders
-      ? (t.orders.length === 1 ? `<button class="lnk" data-open="${esc(t.orders[0])}">Otwórz →</button>` : `<button class="lnk" data-go="zamowienia">Zamówienia →</button>`)
+      ? (t.orders.length === 1 ? `<button class="lnk" data-open="${esc(t.orders[0])}">Otwórz →</button>` : `<button class="lnk" data-go="zamowienia" data-og="action">Zamówienia →</button>`)
       : `<button class="lnk" data-go="finanse">Zobacz fakturę →</button>`;
     return `<div class="task"><div class="sig ${t.level}">${t.kind.startsWith("invoice") ? "zł" : "!"}</div>
       <div><b>${esc(t.title)}</b><small>${esc(t.text)}</small>${t.orders && t.orders.length > 1 ? nrs : ""}</div>${action}</div>`;
@@ -552,7 +569,10 @@ function renderStart() {
     </div>`);
 
   document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
-  document.querySelectorAll("[data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
+  document.querySelectorAll("[data-go]").forEach(b => b.onclick = () => {
+    if (b.dataset.og !== undefined) state.og = b.dataset.og;
+    go(b.dataset.go);
+  });
 }
 
 // ── Finanse ──────────────────────────────────────────────────
@@ -926,32 +946,74 @@ function thisMonth() {
 }
 const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
+// Grupy statusów widziane oczami partnera. „Wymaga działania” ignoruje daty:
+// zaległa etykieta sprzed miesiąca dalej blokuje wysyłkę.
+const OGROUPS = {
+  "":      ["Wszystkie", null],
+  action:  ["Wymaga działania", ["platnosc", "etykieta"]],
+  work:    ["W realizacji", ["nowe", "przyjete", "spakowane"]],
+  sent:    ["Wysłane", ["wyslane"]],
+  cancel:  ["Anulowane", ["anulowane"]],
+};
+
 async function loadOrders() {
   if (!state.od && !state.do) [state.od, state.do] = thisMonth();
   shell(`<div class="empty">Wczytuję zamówienia…</div>`);
-  try { state.orders = await api(`/orders?od=${state.od}&do=${state.do}`); }
+  const g = OGROUPS[state.og || ""][1];
+  const qs = state.og === "action"
+    ? `od=2000-01-01&status=${g.join(",")}`
+    : `od=${state.od}&do=${state.do}${g ? "&status=" + g.join(",") : ""}`;
+  try { state.orders = await api(`/orders?${qs}`); }
   catch (e) { state.orders = { orders: [], summary: {} }; toast(e.message, "bad"); }
   renderOrders();
 }
 
-function renderOrders() {
-  const { orders = [], summary = {} } = state.orders || {};
-  const rows = orders.map(o => {
+function orderList() {
+  const q = (state.oq || "").trim().toLowerCase();
+  return (state.orders?.orders || [])
+    .filter(o => state.of === "all" || o.firma === state.of)
+    .filter(o => !q || [o.nr, o.recipient?.name, o.recipient?.city, o.external_id, o.tracking]
+      .some(v => (v || "").toLowerCase().includes(q)));
+}
+
+function orderRows(list) {
+  return list.map(o => {
     const [lbl, cls] = STATUS[o.status] || [o.status, "info"];
-    return `<button class="orow" data-open="${o.nr}">
-      <span class="onr mono" style="font-size:12.5px">${o.nr}</span>
+    const ship = o.shipping_mode === "wlasna"
+      ? (o.label_url ? "moja etykieta ✓" : "moja etykieta — brak")
+      : (o.tracking ? `przesyłka ${esc(o.tracking)}` : "wysyłka od Was");
+    return `<button class="orow" data-open="${esc(o.nr)}">
+      <span class="onr mono" style="font-size:12.5px">${esc(o.nr)}</span>
       <span class="odate">${dm(o.created_at)}</span>
-      <span class="oodb">${o.recipient?.name || "Na mój adres"}
-        <small>${fl(o.firma)} · ${o.shipping_mode === "wlasna" ? (o.label_url ? "moja etykieta ✓" : "moja etykieta — brak") : "wysyłka od Was"}${o.cod ? " · pobranie" : ""}${o.external_id ? " · " + o.external_id : ""}</small></span>
+      <span class="oodb">${esc(o.recipient?.name || "Na mój adres")}
+        <small>${fl(o.firma)} · ${ship}${o.cod ? " · pobranie" : ""}${o.external_id ? " · " + esc(o.external_id) : ""}</small></span>
       <span class="oval">${zl(o.total_net)}</span>
       <span class="pill ${cls}">${lbl}</span>
     </button>`;
   }).join("");
+}
 
+function paintOrders() {
+  const list = orderList(), el = $("#olist");
+  if (!el) return;
+  const live = list.filter(o => o.status !== "anulowane");
+  el.innerHTML = orderRows(list) || `<div class="empty">${
+    state.oq || state.of !== "all" ? "Nic nie pasuje do filtrów."
+    : state.og === "action" ? "Nic nie czeka na Twoją reakcję ✓" : "Brak zamówień w tym okresie."}</div>`;
+  $("#ok1").textContent = live.length;
+  $("#ok2").textContent = zl(live.reduce((s, o) => s + o.total_net, 0));
+  $("#ok3").textContent = list.filter(o => ["platnosc", "etykieta"].includes(o.status)).length;
+  $("#ok3").closest(".kpi").classList.toggle("warn", $("#ok3").textContent !== "0");
+  document.querySelectorAll("#olist [data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
+}
+
+function renderOrders() {
+  const action = state.og === "action";
+  const firmy = state.me.firmy;
   shell(`
     <div class="sechead">
-      <div><h2>Zamówienia</h2><p>Statusy aktualizują się automatycznie.</p></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <div><h2>Zamówienia</h2><p>${action ? "Wszystkie zamówienia czekające na etykietę lub wpłatę, bez względu na datę." : "Statusy aktualizują się automatycznie."}</p></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center${action ? ";opacity:.45;pointer-events:none" : ""}">
         <input type="date" id="od" value="${state.od}" style="width:auto">
         <span style="color:var(--muted)">–</span>
         <input type="date" id="do" value="${state.do}" style="width:auto">
@@ -960,12 +1022,20 @@ function renderOrders() {
         <button class="btn sm" data-range="year">Ten rok</button>
       </div>
     </div>
-    <div class="kpis">
-      <div class="kpi"><small>Zamówienia</small><b>${summary.count ?? 0}</b></div>
-      <div class="kpi"><small>Wartość netto</small><b>${zl(summary.net)}</b></div>
-      <div class="kpi ${summary.waiting ? "warn" : ""}"><small>Czeka na Ciebie</small><b>${summary.waiting ?? 0}</b></div>
+    <div class="ctools">
+      <div class="chips">${Object.entries(OGROUPS).map(([k, [v]]) =>
+        `<button data-og="${k}" aria-pressed="${(state.og || "") === k}">${v}</button>`).join("")}</div>
+      ${firmy.length > 1 ? `<select id="of" style="width:auto">
+        <option value="all">Wszystkie firmy</option>
+        ${firmy.map(f => `<option value="${f}"${state.of === f ? " selected" : ""}>${fl(f)}</option>`).join("")}</select>` : ""}
+      <input type="search" id="oq" placeholder="Szukaj: numer, odbiorca, nr w sklepie, przesyłka" value="${esc(state.oq || "")}">
     </div>
-    <div class="olist">${rows || `<div class="empty">Brak zamówień w tym miesiącu.</div>`}</div>`);
+    <div class="kpis">
+      <div class="kpi"><small>Zamówienia</small><b id="ok1">0</b></div>
+      <div class="kpi"><small>Wartość netto</small><b id="ok2">0</b></div>
+      <div class="kpi"><small>Czeka na Ciebie</small><b id="ok3">0</b></div>
+    </div>
+    <div class="olist" id="olist"></div>`);
 
   const apply = () => { state.od = $("#od").value; state.do = $("#do").value; loadOrders(); };
   $("#od").onchange = apply; $("#do").onchange = apply;
@@ -979,9 +1049,11 @@ function renderOrders() {
     if (b.dataset.range === "year") { state.od = `${now.getFullYear()}-01-01`; state.do = iso(now); }
     loadOrders();
   });
-  document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openOrder(b.dataset.open));
+  document.querySelectorAll("[data-og]").forEach(b => b.onclick = () => { state.og = b.dataset.og; loadOrders(); });
+  const of = $("#of"); if (of) of.onchange = e => { state.of = e.target.value; paintOrders(); };
+  $("#oq").oninput = e => { state.oq = e.target.value; paintOrders(); };
+  paintOrders();
 }
-
 
 // Zamówienie może przyjść z listy, ze Startu albo trzeba je dociągnąć (np. starsze niż wybrany zakres).
 async function openOrder(nr) {
@@ -989,6 +1061,18 @@ async function openOrder(nr) {
   if (known) return showOrder(known);
   try { showOrder(await api(`/orders/${encodeURIComponent(nr)}`)); }
   catch (e) { toast(e.message, "bad"); }
+}
+
+// Oś statusów. Blokada (etykieta/wpłata) to wciąż krok „Złożone”, tylko z ostrzeżeniem.
+function timeline(o) {
+  if (o.status === "anulowane") return `<div class="callout bad"><p><b>Zamówienie anulowane.</b></p></div>`;
+  const steps = ["Złożone", "Przyjęte", "Spakowane", "Wysłane"];
+  const at = { platnosc: 0, etykieta: 0, nowe: 1, przyjete: 1, spakowane: 2, wyslane: 3 }[o.status] ?? 0;
+  const blocked = o.status === "platnosc" ? "czeka na wpłatę" : o.status === "etykieta" ? "czeka na etykietę" : "";
+  return `<div class="tl">${steps.map((s, i) => {
+    const cls = i < at || (i === at && o.status === "wyslane") ? "done" : i === at ? (blocked ? "cur warn" : "cur") : "";
+    return `<div class="tstep ${cls}"><span>${s}${i === at && blocked ? `<em>${blocked}</em>` : ""}</span></div>`;
+  }).join("")}</div>`;
 }
 
 function showOrder(o) {
@@ -1002,6 +1086,13 @@ function showOrder(o) {
       <button class="x" data-close aria-label="Zamknij">×</button>
     </div>
     <div><span class="pill ${cls}">${lbl}</span></div>
+    ${timeline(o)}
+    <div class="dgrid2">
+      <div class="dbox"><small>Wysyłka</small>${o.shipping_mode === "wlasna" ? "Moja etykieta" : "Wysyłamy my"}${o.cod ? " · pobranie" : ""}
+        ${o.typ === "zbiorcze" ? `<div class="hint" style="margin:2px 0 0">na mój adres</div>` : ""}</div>
+      <div class="dbox"><small>Przesyłka</small>${o.tracking ? `<span class="mono" style="font-size:13px">${esc(o.tracking)}</span>`
+        : `<span style="color:var(--muted)">${o.status === "wyslane" ? "brak numeru" : "numer pojawi się po nadaniu"}</span>`}</div>
+    </div>
     ${o.shipping_mode === "wlasna" && o.label_url && isHttp(o.label_url) ? `<div class="dsec"><h3>Etykieta</h3>
       <a href="${esc(o.label_url)}" target="_blank" rel="noopener noreferrer" style="font-size:13.5px">Otwórz przesłaną etykietę ↗</a></div>` : ""}
     ${needLabel ? `<div class="callout warn">
@@ -1009,10 +1100,9 @@ function showOrder(o) {
       <label class="f">Link do etykiety (PDF)<input type="text" id="lbl" value="${esc(o.label_url)}"></label>
       <button class="btn primary sm" id="lblSave" style="margin-top:8px">${o.label_url ? "Podmień etykietę" : "Zapisz etykietę"}</button></div>` : ""}
     <div class="dsec"><h3>Odbiorca</h3>
-      <div style="font-size:13.5px">${o.recipient?.name || "—"}<br>${o.recipient?.street || ""} ${o.recipient?.zip || ""} ${o.recipient?.city || ""}<br>${o.recipient?.phone || ""}</div></div>
-    ${o.tracking ? `<div class="dsec"><h3>Przesyłka</h3><div class="mono" style="font-size:13px">${o.tracking}</div></div>` : ""}
+      <div style="font-size:13.5px">${esc(o.recipient?.name || "—")}<br>${esc(o.recipient?.street || "")} ${esc(o.recipient?.zip || "")} ${esc(o.recipient?.city || "")}<br>${esc(o.recipient?.phone || "")}</div></div>
     <div class="dsec"><h3>Produkty</h3><table><tbody>
-      ${o.items.map(i => `<tr><td>${i.name}<div class="sku">${i.sku}</div></td><td class="r">${i.qty}</td><td class="r">${zl(i.price_net * i.qty)}</td></tr>`).join("")}
+      ${o.items.map(i => `<tr><td>${esc(i.name)}<div class="sku">${esc(i.sku)}</div></td><td class="r">${i.qty}</td><td class="r">${zl(i.price_net * i.qty)}</td></tr>`).join("")}
       <tr><td><b>Razem</b></td><td></td><td class="r"><b>${zl(o.total_net)} netto</b><br><small>${zl(o.total_gross)} brutto</small></td></tr>
     </tbody></table></div>`;
   $("#scrim").hidden = false; $("#drawer").hidden = false;
