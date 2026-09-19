@@ -279,13 +279,15 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         if not pid:
             raise SellasistError(0, f"{sku}: nie ma tego produktu w Sellasist {firma.slug}")
         # Sellasist przyjmuje cenę BRUTTO — tak samo wyglądają zamówienia z Make.
+        # Stawka VAT idzie z pozycji: Acti ma głównie 8%, więc 23% na sztywno zawyżałoby faktury.
+        vat = float(it.get("vat") or 23)
         lines.append({
             "product_id": pid,
             "symbol": sku,
             "catalog_number": sku,
             "quantity": int(it.get("qty") or 0),
-            "price": round(float(it.get("price_net") or 0) * 1.23, 2),
-            "tax_rate": 23,
+            "price": round(float(it.get("price_net") or 0) * (1 + vat / 100), 2),
+            "tax_rate": vat,
         })
 
     # Adres płatnika to PARTNER (to on jest naszym klientem i on dostaje fakturę),
