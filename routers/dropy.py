@@ -218,6 +218,9 @@ def _month_range(month: str):
 # Zdanie składamy w chwili zdarzenia, podmiot zawsze rodzaju męskiego
 # („Użytkownik …”, „System …”), więc forma czasownika pasuje niezależnie od osoby.
 FIRMA_LABEL = {"amh": "AMH", "acti": "Acti4med", "veluxa": "Veluxa"}
+VAT_OK = (23, 8)        # jedyne stawki, jakie dopuszczamy w katalogu dropów
+VAT_DEFAULT = 23
+VAT_IN = ", ".join(str(v) for v in VAT_OK)
 STATUS_LABEL = {
     "platnosc": "Czeka na płatność", "etykieta": "Czeka na etykietę", "nowe": "Nowe",
     "przyjete": "Przyjęte", "spakowane": "Spakowane", "wyslane": "Wysłane", "anulowane": "Anulowane",
@@ -851,17 +854,29 @@ async def refresh_catalog(db: AsyncSession = Depends(get_db), user: CurrentUser 
     czyta wyłącznie tę migawkę i nie ma praw do schematu public.
     Docelowo wołane z crona, na razie ręcznie przyciskiem w zakładce.
     """
-    total = 0
+    total, odd = 0, 0
     for slug in ALL_SHOPS:
         # Stawka VAT per SKU — z najświeższej pozycji zamówienia w tym sklepie.
         # To jedyne miejsce, gdzie mamy prawdziwy VAT (Acti ma głównie 8%).
+        # Bierzemy tylko stawki krajowe: jedna sprzedaż zagraniczna (np. 21%)
+        # potrafiła podmienić stawkę produktu w całym katalogu partnerów.
         rv = await db.execute(text(
             f"SELECT DISTINCT ON (LOWER(TRIM(symbol))) LOWER(TRIM(symbol)) AS k, tax_rate "
             f"FROM {settings.TABLE_ORDER_ITEMS} "
             f"WHERE shop = :shop AND symbol IS NOT NULL AND tax_rate IS NOT NULL "
+            f"  AND tax_rate IN ({VAT_IN}) "
             f"ORDER BY LOWER(TRIM(symbol)), order_date DESC NULLS LAST"
         ), {"shop": slug})
         vats = {x["k"]: float(x["tax_rate"]) for x in rv.mappings()}
+
+        # Ile SKU nie ma w ogóle krajowej stawki — trafią na domyślne 23%.
+        rv = await db.execute(text(
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT LOWER(TRIM(symbol)) AS k FROM {settings.TABLE_ORDER_ITEMS} "
+            f"  WHERE shop = :shop AND symbol IS NOT NULL AND tax_rate IS NOT NULL "
+            f"    AND tax_rate NOT IN ({VAT_IN})) x "
+            f"WHERE x.k <> ALL(CAST(:known AS TEXT[]))"
+        ), {"shop": slug, "known": list(vats.keys()) or [""]})
+        odd += int(rv.scalar() or 0)
 
         products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, slug)
         for pr in products:
@@ -875,13 +890,14 @@ async def refresh_catalog(db: AsyncSession = Depends(get_db), user: CurrentUser 
                 "sku": pr.sku, "firma": slug, "name": pr.name,
                 "stock": int(pr.stock or 0), "transit": int(pr.stock_in_transit or 0),
                 "pid": pr.photo_id, "phash": pr.photo_hash,
-                "vat": vats.get(pr.sku.strip().lower(), 23),
+                "vat": vats.get(pr.sku.strip().lower(), VAT_DEFAULT),
             })
             total += 1
+    ogon = f"; {odd} {_plural(odd, 'produkt miał', 'produkty miały', 'produktów miało')} tylko zagraniczną stawkę VAT — ustawiono {VAT_DEFAULT:g}%" if odd else ""
     await _log(db, user, "catalog_refreshed",
-               f"{_kto(user)} odświeżył katalog partnerów ({total} {_plural(total, 'pozycja', 'pozycje', 'pozycji')})")
+               f"{_kto(user)} odświeżył katalog partnerów ({total} {_plural(total, 'pozycja', 'pozycje', 'pozycji')}{ogon})")
     await db.commit()
-    return {"refreshed": total, "firmy": list(ALL_SHOPS)}
+    return {"refreshed": total, "firmy": list(ALL_SHOPS), "vat_fallback": odd}
 
 
 # ===== ZAMÓWIENIA (podgląd i obsługa po naszej stronie) =====
@@ -1263,7 +1279,8 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
 
     ri = await db.execute(text(f"SELECT * FROM {SCHEMA}.order_items WHERE order_id = :id ORDER BY id"), {"id": oid})
     items = [{"sku": x["sku"], "name": x["name"], "qty": int(x["qty"]),
-              "price_net": float(x["price_net"]), "vat": float(x["vat"] or 23)}
+              "price_net": float(x["price_net"]),
+              "vat": float(x["vat"]) if int(x["vat"] or 0) in VAT_OK else float(VAT_DEFAULT)}
              for x in ri.mappings()]
 
     payload = {
