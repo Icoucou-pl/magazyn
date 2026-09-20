@@ -25,6 +25,18 @@ from db import get_db
 router = APIRouter(prefix="/drop/v1", tags=["portal"])
 VAT = Decimal(str(settings.VAT))
 FIRMA_LABEL = {"amh": "AMH", "acti": "Acti4med", "veluxa": "Veluxa"}
+VAT_OK = (23, 8)          # w katalogu dropów dopuszczamy tylko stawki krajowe
+
+
+def _vat(v) -> Decimal:
+    """Stawka z migawki katalogu. Zagraniczne (np. 21% po sprzedaży za granicę)
+    traktujemy jak brak danych i wracamy do 23% — migawkę prostuje odświeżenie katalogu."""
+    try:
+        d = Decimal(str(v))
+    except Exception:
+        return Decimal("23")
+    return d if int(d) in VAT_OK else Decimal("23")
+
 STATUS_INFO = {
     "platnosc": "Czeka na wpłatę",
     "etykieta": "Czeka na etykietę",
@@ -123,7 +135,7 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
         photo = None
         if settings.PHOTO_BASE and x["photo_id"] and x["photo_hash"]:
             photo = f"{settings.PHOTO_BASE}/product-photos/{x['photo_id']}/{x['photo_hash']}"
-        vat = float(x["vat"] or 23)
+        vat = float(_vat(x["vat"]))
         out.append({
             "sku": x["sku"], "name": x["name"], "firma": firma,
             "photo_thumb": f"{photo}/thumb" if photo else None,
@@ -295,7 +307,7 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         if not row:
             raise HTTPException(400, f"{ln.sku}: nie ma tego produktu w Twoim katalogu dla firmy {firma}")
         cena = Decimal(str(row["price_net"]))
-        vat = Decimal(str(row["vat"] or 23))
+        vat = _vat(row["vat"])
         net_line = cena * ln.qty
         total += net_line
         gross += (net_line * (1 + vat / 100)).quantize(Decimal("0.01"))
