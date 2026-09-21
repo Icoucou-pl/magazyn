@@ -24,6 +24,10 @@ const PAY_SHORT: Record<PayMode, string> = { zbiorcza: "Faktura zbiorcza", przed
 type Partner = {
   id: number; code: string; name: string; nip?: string | null; email?: string | null;
   phone?: string | null; address?: string | null; firmy: string[];
+  // Dane do faktury (płatnik w Sellasist) i adres wysyłek zbiorczych („Na mój adres”)
+  bill_street?: string | null; bill_home_number?: string | null; bill_postcode?: string | null; bill_city?: string | null;
+  ship_name?: string | null; ship_street?: string | null; ship_postcode?: string | null; ship_city?: string | null;
+  ship_phone?: string | null;
   payment_mode: PayMode; allow_installments: boolean;
   terms?: Record<string, PayMode>;          // tryb płatności per firma
   shipping?: Record<string, number | null>; // koszt wysyłki netto per firma („Wyślijcie wy”)
@@ -55,6 +59,10 @@ type Template = {
 
 type PortalUser = { id: number; email: string; full_name: string | null; is_active: boolean; last_login: string | null };
 type ApiKey = { id: number; label: string; key_hint: string; is_active: boolean; last_used: string | null };
+
+const ADDR_KEYS = ["bill_street", "bill_home_number", "bill_postcode", "bill_city",
+  "ship_name", "ship_street", "ship_postcode", "ship_city", "ship_phone"] as const;
+type AddrKey = typeof ADDR_KEYS[number];
 
 const FIRMY = [
   { slug: "amh", label: "AMH" },
@@ -331,6 +339,7 @@ function PartnerForm({ partner, onClose, onSaved }: {
   const [f, setF] = useState({
     code: partner?.code ?? "", name: partner?.name ?? "", nip: partner?.nip ?? "",
     email: partner?.email ?? "", phone: partner?.phone ?? "", address: partner?.address ?? "",
+    ...Object.fromEntries(ADDR_KEYS.map(k => [k, (partner?.[k] as string | null | undefined) ?? ""])) as Record<AddrKey, string>,
     firmy: partner?.firmy ?? [],
     terms: { ...(partner?.terms ?? Object.fromEntries((partner?.firmy ?? []).map(x => [x, partner?.payment_mode ?? "zbiorcza"]))) } as Record<string, PayMode>,
     shipping: Object.fromEntries(Object.entries(partner?.shipping ?? {}).map(([k, v]) => [k, v != null ? String(v) : ""])) as Record<string, string>,
@@ -358,12 +367,19 @@ function PartnerForm({ partner, onClose, onSaved }: {
       return v !== "" && !(Number(v) >= 0);
     });
     if (badShip) { toast(`Koszt wysyłki ${firmaLabel(badShip)} musi być liczbą`, "warning"); return; }
+    const shipAny = [f.ship_street, f.ship_postcode, f.ship_city].some(v => v.trim());
+    const shipAll = [f.ship_street, f.ship_postcode, f.ship_city].every(v => v.trim());
+    if (shipAny && !shipAll) { toast("Adres wysyłek zbiorczych: uzupełnij ulicę, kod i miasto", "warning"); return; }
+    const badZip = [f.bill_postcode, f.ship_postcode].find(v => v.trim() && !/^\d{2}-\d{3}$/.test(v.trim()));
+    if (badZip) { toast(`Kod pocztowy „${badZip}” — wpisz w formacie 00-000`, "warning"); return; }
     setBusy(true);
     // Domyślny tryb partnera (dla firm dodanych później) = tryb pierwszej firmy.
     const firstMode = modeOf(FIRMY.find(x => f.firmy.includes(x.slug))?.slug ?? f.firmy[0]);
     const body: Record<string, unknown> = {
       name: f.name.trim(), nip: f.nip || null, email: f.email || null, phone: f.phone || null,
-      address: f.address || null, firmy: f.firmy,
+      firmy: f.firmy,
+      // Adresy w polach. Puste pole = wyczyść (dlatego "" zamiast null).
+      ...Object.fromEntries(ADDR_KEYS.map(k => [k, (f[k] ?? "").trim()])),
       // Tryb płatności osobno w każdej firmie. Wysyłamy tylko firmy, od których partner kupuje.
       terms: Object.fromEntries(f.firmy.map(x => [x, modeOf(x)])),
       // Koszt wysyłki netto per firma; puste pole = bez opłaty.
@@ -408,9 +424,39 @@ function PartnerForm({ partner, onClose, onSaved }: {
           <Field label="Telefon"><input style={inputStyle} value={f.phone ?? ""} onChange={e => set("phone", e.target.value)}/></Field>
         </div>
         <Field label="E-mail"><input style={inputStyle} value={f.email ?? ""} onChange={e => set("email", e.target.value)}/></Field>
-        <Field label="Adres dla wysyłek zbiorczych">
-          <input style={inputStyle} value={f.address ?? ""} onChange={e => set("address", e.target.value)}/>
-        </Field>
+        <div>
+          <div style={{ fontSize: 12, color: "var(--text-lo)", marginBottom: 6 }}>Dane do faktury (płatnik w Sellasist)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px", gap: 8 }}>
+            <input style={inputStyle} placeholder="Ulica" value={f.bill_street} onChange={e => set("bill_street", e.target.value)}/>
+            <input style={inputStyle} placeholder="Nr" value={f.bill_home_number} onChange={e => set("bill_home_number", e.target.value)}/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8, marginTop: 8 }}>
+            <input style={inputStyle} placeholder="00-000" value={f.bill_postcode} onChange={e => set("bill_postcode", e.target.value)}/>
+            <input style={inputStyle} placeholder="Miasto" value={f.bill_city} onChange={e => set("bill_city", e.target.value)}/>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--text-lo)" }}>Adres wysyłek zbiorczych („Na mój adres”)</span>
+            <div style={{ flex: 1 }}/>
+            <button type="button" style={btn("ghost", true)} onClick={() => setF(prev => ({
+              ...prev, ship_name: prev.ship_name || prev.name,
+              ship_street: [prev.bill_street, prev.bill_home_number].filter(Boolean).join(" "),
+              ship_postcode: prev.bill_postcode, ship_city: prev.bill_city, ship_phone: prev.ship_phone || prev.phone,
+            }))}>Jak do faktury</button>
+          </div>
+          <input style={inputStyle} placeholder="Odbiorca (firma lub osoba)" value={f.ship_name} onChange={e => set("ship_name", e.target.value)}/>
+          <input style={{ ...inputStyle, marginTop: 8 }} placeholder="Ulica i numer" value={f.ship_street} onChange={e => set("ship_street", e.target.value)}/>
+          <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 150px", gap: 8, marginTop: 8 }}>
+            <input style={inputStyle} placeholder="00-000" value={f.ship_postcode} onChange={e => set("ship_postcode", e.target.value)}/>
+            <input style={inputStyle} placeholder="Miasto" value={f.ship_city} onChange={e => set("ship_city", e.target.value)}/>
+            <input style={inputStyle} placeholder="Telefon" value={f.ship_phone} onChange={e => set("ship_phone", e.target.value)}/>
+          </div>
+          {f.address && !f.ship_street && (
+            <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--warning)" }}>Stary zapis adresu: „{f.address}” — przepisz go do pól.</p>
+          )}
+        </div>
 
         <div>
           <div style={{ fontSize: 12, color: "var(--text-lo)", marginBottom: 6 }}>Może kupować od</div>
