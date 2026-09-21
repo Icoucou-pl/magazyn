@@ -77,8 +77,8 @@ class Partner:
 
     @property
     def has_credit(self) -> bool:
-        """Limit kupiecki ma sens tylko tam, gdzie kupuje na fakturę zbiorczą."""
-        return self.credit_limit is not None and "zbiorcza" in self.terms.values()
+        """Limit kupiecki obowiązuje w obu trybach — w obu wysyłamy przed zapłatą."""
+        return self.credit_limit is not None
 
 
 async def _partner_row(db: AsyncSession, pid: int) -> dict:

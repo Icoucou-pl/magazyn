@@ -3,7 +3,8 @@
 Reguły, które trzymamy tutaj, bo to one chronią magazyn i pieniądze:
   · jedno zamówienie = jedna firma,
   · produkt bez ceny w cenniku partnera nie istnieje,
-  · przedpłata → zamówienie czeka na wpłatę (tryb płatności jest per firma),
+  · tryb płatności (per firma) decyduje tylko o fakturze: zbiorcza na koniec miesiąca
+    albo faktura do każdego zamówienia z terminem płatności — żaden nie blokuje wysyłki,
   · pobranie bez etykiety → zamówienie czeka na etykietę,
   · limit kupiecki liczony per partner, ze wszystkich firm razem.
 """
@@ -161,18 +162,17 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
 
 # ===== LIMIT KUPIECKI =====
 async def _credit_used(db: AsyncSession, pid: int) -> Decimal:
-    """Ile limitu jest zajęte = zamówienia „zbiorcza” jeszcze bez faktury + niezapłacona część faktur.
+    """Ile limitu jest zajęte = zamówienia jeszcze bez faktury + niezapłacona część faktur.
 
     Wcześniej liczyliśmy sumę WSZYSTKICH zamówień od początku, więc limit tylko rósł
     i po kilku miesiącach blokowałby partnera, który płaci w terminie.
     Liczymy tylko wpłaty potwierdzone — zgłoszenie partnera limitu nie zwalnia.
-    Zamówienia na przedpłatę limitu nie zajmują: ruszają dopiero po wpłacie.
+    Liczymy oba tryby: „przedpłatę” też wysyłamy od razu, z fakturą na termin, więc to kredyt.
     """
     r = await db.execute(text(
         "SELECT "
         "  COALESCE((SELECT SUM(total_gross) FROM dropy.orders "
-        "            WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane' "
-        "              AND COALESCE(payment_mode, 'zbiorcza') = 'zbiorcza'), 0) "
+        "            WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane'), 0) "
         "+ COALESCE((SELECT SUM(GREATEST(i.total_gross - COALESCE(pm.paid, 0), 0)) "
         "            FROM dropy.invoices i "
         "            LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM dropy.payments "
@@ -370,11 +370,10 @@ async def _insert(db: AsyncSession, p: Partner, part: dict, payload, label_url: 
                   checkout_nr: Optional[str] = None) -> str:
     """Zapisuje jedno zamówienie (jedna firma) + wpis w logu. BEZ commita."""
     firma, pay_mode = part["firma"], part["pay_mode"]
-    # Kolejność blokad: najpierw pieniądze, potem etykieta. Etykiety wymagamy tylko wtedy,
-    # gdy partner deklaruje własną — jeśli wysyłamy my, nadajemy zwykłą przesyłkę.
-    if pay_mode == "przedplata":
-        status = "platnosc"
-    elif payload.shipping_mode == "wlasna" and not label_url:
+    # Tryb płatności niczego nie blokuje: przy „przedpłacie” wystawiamy fakturę z terminem
+    # i wysyłamy od razu. Jedyna blokada to brak etykiety, gdy partner nadaje sam —
+    # jeśli wysyłamy my, nadajemy zwykłą przesyłkę.
+    if payload.shipping_mode == "wlasna" and not label_url:
         status = "etykieta"
     else:
         status = "nowe"
@@ -425,15 +424,15 @@ async def _insert(db: AsyncSession, p: Partner, part: dict, payload, label_url: 
 
 
 async def _check_credit(db: AsyncSession, p: Partner, parts: List[dict]) -> None:
-    """Limit liczony łącznie dla całego koszyka — tylko części na fakturę zbiorczą."""
-    add = sum((x["gross"] for x in parts if x["pay_mode"] == "zbiorcza"), Decimal("0"))
+    """Limit liczony łącznie dla całego koszyka, w obu trybach płatności."""
+    add = sum((x["gross"] for x in parts), Decimal("0"))
     if p.credit_limit is None or not add:
         return
     already = await _credit_used(db, p.id)
     if already + add > Decimal(str(p.credit_limit)):
         free = max(Decimal(str(p.credit_limit)) - already, Decimal("0"))
-        raise HTTPException(409, f"Limit kupiecki przekroczony — zostało {zl(free)}, a koszyk na fakturę "
-                                 f"zbiorczą to {zl(add)} brutto. Opłać zaległe faktury albo napisz do opiekuna.")
+        raise HTTPException(409, f"Limit kupiecki przekroczony — zostało {zl(free)}, a koszyk to "
+                                 f"{zl(add)} brutto. Opłać zaległe faktury albo napisz do opiekuna.")
 
 
 async def _existing(db: AsyncSession, p: Partner, external_id: Optional[str]) -> dict:
