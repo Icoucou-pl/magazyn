@@ -997,8 +997,11 @@ function renderCart() {
           <p class="hint">Pobranie trafia na Twoje konto, więc przesyłkę nadajesz u siebie.</p>
         </div>
         <div id="fZbior" hidden>
-          <p style="margin:0;font-size:14px">${esc(state.me.address || "Adres z umowy")}</p>
-          <p class="hint">Zmianę adresu zgłoś opiekunowi.</p>
+          ${state.me.ship_address ? `<div style="font-size:14px;line-height:1.45">
+              ${esc(state.me.ship_address.name || state.me.name)}<br>${esc(state.me.ship_address.street)}<br>
+              ${esc(state.me.ship_address.postcode)} ${esc(state.me.ship_address.city)}${state.me.ship_address.phone ? `<br>tel. ${esc(state.me.ship_address.phone)}` : ""}</div>
+            <p class="hint">Zmianę adresu zgłoś opiekunowi.</p>`
+          : `<div class="callout warn"><p>Nie masz jeszcze ustawionego adresu do wysyłek zbiorczych. Napisz do opiekuna — do tego czasu wybierz „Do klienta”.</p></div>`}
         </div>
 
         <div id="labelBox" style="margin-top:12px">
