@@ -19,7 +19,9 @@ import { Portal } from "./products-ui";
 
 // ── Typy ─────────────────────────────────────────────────────
 type PayMode = "zbiorcza" | "przedplata";
-const PAY_SHORT: Record<PayMode, string> = { zbiorcza: "Faktura zbiorcza", przedplata: "Przedpłata" };
+// „Przedpłata” (wartość w bazie zostaje) = faktura do każdego zamówienia z terminem płatności.
+// Nie wstrzymuje wysyłki — różni się od zbiorczej tylko sposobem fakturowania.
+const PAY_SHORT: Record<PayMode, string> = { zbiorcza: "Faktura zbiorcza", przedplata: "Faktura do zamówienia" };
 
 type Partner = {
   id: number; code: string; name: string; nip?: string | null; email?: string | null;
@@ -48,6 +50,7 @@ type Order = {
   recipient_zip: string | null; recipient_phone: string | null;
   cod: boolean; shipping_mode: string; label_url: string | null; tracking: string | null;
   sellasist_order_id: string | null; total_net: number; total_gross: number;
+  push_error: string | null; pushed_at: string | null;
   shipping_net: number; checkout_nr: string | null; label_file: string | null;
   created_at: string; items: OrderItem[];
 };
@@ -483,7 +486,7 @@ function PartnerForm({ partner, onClose, onSaved }: {
                 <select style={inputStyle} value={modeOf(fi.slug)}
                   onChange={e => set("terms", { ...f.terms, [fi.slug]: e.target.value as PayMode })}>
                   <option value="zbiorcza">Faktura zbiorcza</option>
-                  <option value="przedplata">Przedpłata</option>
+                  <option value="przedplata">Faktura do zamówienia (termin)</option>
                 </select>
                 <input style={inputStyle} inputMode="decimal" placeholder="bez opłaty" title="Koszt wysyłki netto (VAT 23%)"
                   value={f.shipping[fi.slug] ?? ""}
@@ -1104,6 +1107,9 @@ function OrdersPanel({ partners }: { partners: Partner[] }) {
                 {o.shipping_mode === "wlasna" ? " · etykieta partnera" : " · wysyłka nasza"}
                 {o.cod ? " · pobranie" : ""}{o.external_id ? ` · ${o.external_id}` : ""}
                 {o.sellasist_order_id ? ` · Sellasist #${o.sellasist_order_id}` : ""}
+                {!o.sellasist_order_id && o.push_error && <span style={{ color: "var(--danger)" }}> · błąd Sellasista</span>}
+                {!o.sellasist_order_id && !o.push_error && ["nowe", "przyjete", "spakowane"].includes(o.status) &&
+                  <span style={{ color: "var(--warning)" }}> · czeka na wysłanie do Sellasista</span>}
               </small>
             </span>
             <span style={{ fontSize: 13, textAlign: "right", fontWeight: 600 }}>{zl(o.total_net)}</span>
@@ -1142,6 +1148,16 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
     catch (e) { err(e); } finally { setBusy(false); }
   };
 
+  // Ręczna wysyłka — np. zaraz po poprawieniu mapowania, bez czekania na automat.
+  const canPush = !order.sellasist_order_id && ["nowe", "przyjete", "spakowane"].includes(order.status);
+  const push = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post(`/dropy/orders/${order.id}/push`, {}) as { sellasist_order_id: string };
+      toast(`Wysłane do Sellasista (nr ${r.sellasist_order_id})`, "ok"); onChanged();
+    } catch (e) { err(e); onChanged(); } finally { setBusy(false); }
+  };
+
   return (
     <Modal title={order.nr} onClose={onClose} wide>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
@@ -1155,6 +1171,27 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
         {order.cod && <Tag fg="var(--warning)">pobranie</Tag>}
         {order.checkout_nr && <Tag>koszyk {order.checkout_nr}</Tag>}
       </div>
+
+      {canPush && (
+        <div style={{
+          display: "flex", gap: 12, alignItems: "center", marginBottom: 14, padding: "10px 12px", borderRadius: 8,
+          border: `1px solid ${order.push_error ? "var(--danger)" : "var(--border-soft)"}`,
+          background: order.push_error ? "color-mix(in srgb, var(--danger) 8%, transparent)" : "var(--surface-2)",
+        }}>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            {order.push_error ? (
+              <><strong style={{ color: "var(--danger)" }}>Sellasist odrzucił zamówienie.</strong>
+                <div style={{ marginTop: 2, color: "var(--text-mid)" }}>{order.push_error}</div>
+                <div style={{ marginTop: 2, fontSize: 11.5, color: "var(--text-lo)" }}>Automat ponowi próbę co 30 min.</div></>
+            ) : (
+              <>Jeszcze nie w Sellasist — automat wyśle je w ciągu 2 minut.</>
+            )}
+          </div>
+          <button disabled={busy} style={btn(order.push_error ? "danger" : "primary", true)} onClick={push}>
+            {order.push_error ? "Ponów wysyłkę" : "Wyślij teraz"}
+          </button>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
         <div>
