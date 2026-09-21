@@ -12,7 +12,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import os
+import re
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +26,7 @@ from activity import log, plural, who, zl
 from auth import Partner, create_token, current_partner, verify_password
 from config import settings
 from db import get_db
+import storage
 
 router = APIRouter(prefix="/drop/v1", tags=["portal"])
 VAT = Decimal(str(settings.VAT))
@@ -113,6 +119,7 @@ async def me(p: Partner = Depends(current_partner)):
         "code": p.code, "name": p.name, "firmy": p.firmy,
         "payment_mode": p.payment_mode,            # wspólny tryb albo „mieszana”
         "payment_modes": p.terms,                  # {firma: tryb} — tego używa portal
+        "shipping": p.shipping_net,                # {firma: koszt wysyłki netto, gdy wysyłamy my}
         "credit_limit": p.credit_limit, "address": p.address,
     }
 
@@ -180,6 +187,7 @@ def _out(o: dict, items: List[dict]) -> dict:
         "external_id": o["external_id"], "cod": o["cod"], "tracking": o["tracking"],
         "shipping_mode": o["shipping_mode"], "label_url": o["label_url"],
         "payment_mode": o.get("payment_mode"),
+        "shipping_net": float(o.get("shipping_net") or 0), "checkout_nr": o.get("checkout_nr"),
         "recipient": {
             "name": o["recipient_name"], "phone": o["recipient_phone"], "street": o["recipient_street"],
             "zip": o["recipient_zip"], "city": o["recipient_city"],
@@ -270,32 +278,25 @@ async def get_order(nr: str, p: Partner = Depends(current_partner), db: AsyncSes
     return _out(dict(o), [dict(x) for x in ri.mappings()])
 
 
-@router.post("/orders", status_code=201)
-async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
-    firma = payload.firma.strip().lower()
-    if firma not in p.firmy:
-        raise HTTPException(403, f"Nie kupujesz od firmy {firma}")
+SHIP_VAT = Decimal("23")      # wysyłka zawsze 23%, niezależnie od stawek towaru
+
+
+def _check_common(payload) -> None:
+    """Walidacja wspólna dla pojedynczego zamówienia i koszyka wielofirmowego."""
     if payload.typ not in ("klient", "zbiorcze"):
         raise HTTPException(400, "typ musi być 'klient' albo 'zbiorcze'")
     if payload.shipping_mode not in ("wlasna", "nasza"):
         raise HTTPException(400, "shipping_mode musi być 'wlasna' albo 'nasza'")
-    if not payload.lines:
-        raise HTTPException(400, "Zamówienie bez pozycji")
-    payload.label_url = _clean_label(payload.label_url)
     if payload.typ == "klient" and not (payload.recipient_name and payload.recipient_city):
         raise HTTPException(400, "Wysyłka do klienta wymaga nazwiska i miasta odbiorcy")
 
-    # Idempotencja: ten sam numer ze sklepu partnera zwraca istniejące zamówienie,
-    # więc powtórzony webhook nie tworzy duplikatu.
-    if payload.external_id:
-        r = await db.execute(
-            text("SELECT nr FROM dropy.orders WHERE partner_id = :p AND external_id = :e"),
-            {"p": p.id, "e": payload.external_id},
-        )
-        dup = r.first()
-        if dup:
-            return await get_order(dup[0], p, db)
 
+async def _prepare(db: AsyncSession, p: Partner, firma: str, lines: List["LineIn"], shipping_mode: str) -> dict:
+    """Wycenia część koszyka jednej firmy. Niczego nie zapisuje."""
+    if firma not in p.firmy:
+        raise HTTPException(403, f"Nie kupujesz od firmy {firma}")
+    if not lines:
+        raise HTTPException(400, f"Zamówienie {FIRMA_LABEL.get(firma, firma)} bez pozycji")
     r = await db.execute(text(
         "SELECT LOWER(TRIM(c.sku)) AS key, c.sku, c.name, c.vat, pr.price_net "
         "FROM dropy.prices pr "
@@ -305,84 +306,197 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
     available = {x["key"]: dict(x) for x in r.mappings()}
 
     # Brutto liczymy per pozycja, bo stawki bywają różne w jednym koszyku
-    # (Acti: łóżko 8%, akcesoria 23%).
+    # (Acti: łóżko 8%, akcesoria 23%). Te same SKU w dwóch liniach sklejamy.
+    qty: dict = {}
+    for ln in lines:
+        key = ln.sku.strip().lower()
+        if key not in available:
+            raise HTTPException(400, f"{ln.sku}: nie ma tego produktu w Twoim katalogu dla firmy {FIRMA_LABEL.get(firma, firma)}")
+        qty[key] = qty.get(key, 0) + ln.qty
     items, total, gross = [], Decimal("0"), Decimal("0")
-    for ln in payload.lines:
-        row = available.get(ln.sku.strip().lower())
-        if not row:
-            raise HTTPException(400, f"{ln.sku}: nie ma tego produktu w Twoim katalogu dla firmy {firma}")
+    for key, q in qty.items():
+        row = available[key]
         cena = Decimal(str(row["price_net"]))
         vat = _vat(row["vat"])
-        net_line = cena * ln.qty
+        net_line = cena * q
         total += net_line
         gross += (net_line * (1 + vat / 100)).quantize(Decimal("0.01"))
-        items.append({"sku": row["sku"], "name": row["name"], "qty": ln.qty,
-                      "price_net": float(cena), "vat": float(vat)})
-    gross = gross.quantize(Decimal("0.01"))
+        items.append({"sku": row["sku"], "name": row["name"], "qty": q, "price_net": float(cena), "vat": float(vat)})
 
-    pay_mode = p.mode(firma)
-    if p.credit_limit is not None and pay_mode == "zbiorcza":
-        already = await _credit_used(db, p.id)
-        if already + gross > Decimal(str(p.credit_limit)):
-            raise HTTPException(409, "Limit kupiecki przekroczony. Opłać zaległe faktury albo napisz do opiekuna.")
+    # Koszt wysyłki tylko wtedy, gdy nadajemy my. Kwota per partner × firma, puste = bez opłaty.
+    ship = Decimal(str(p.shipping(firma) or 0)) if shipping_mode == "nasza" else Decimal("0")
+    total += ship
+    gross += (ship * (1 + SHIP_VAT / 100)).quantize(Decimal("0.01"))
+    return {"firma": firma, "items": items, "net": total, "gross": gross.quantize(Decimal("0.01")),
+            "shipping": ship, "pay_mode": p.mode(firma)}
 
-    # Kolejność blokad: najpierw pieniądze, potem etykieta. Etykiety wymagamy tylko wtedy,
-    # gdy partner deklaruje własną — jeśli wysyłamy my, nadajemy zwykłą przesyłkę.
-    if pay_mode == "przedplata":
-        status = "platnosc"
-    elif payload.shipping_mode == "wlasna" and not payload.label_url:
-        status = "etykieta"
-    else:
-        status = "nowe"
 
-    today = date.today()
-    prefix = f"{p.code}/{today.strftime('%Y%m')}/"
+async def _next_nr(db: AsyncSession, code: str) -> str:
+    prefix = f"{code}/{date.today().strftime('%Y%m')}/"
     r = await db.execute(
         text("SELECT nr FROM dropy.orders WHERE nr LIKE :pref ORDER BY nr DESC LIMIT 1"),
         {"pref": prefix + "%"},
     )
     last = r.scalar()
-    nr = f"{prefix}{(int(last.rsplit('/', 1)[1]) + 1 if last else 1):04d}"
+    return f"{prefix}{(int(last.rsplit('/', 1)[1]) + 1 if last else 1):04d}"
 
+
+async def _insert(db: AsyncSession, p: Partner, part: dict, payload, label_url: Optional[str],
+                  checkout_nr: Optional[str] = None) -> str:
+    """Zapisuje jedno zamówienie (jedna firma) + wpis w logu. BEZ commita."""
+    firma, pay_mode = part["firma"], part["pay_mode"]
+    # Kolejność blokad: najpierw pieniądze, potem etykieta. Etykiety wymagamy tylko wtedy,
+    # gdy partner deklaruje własną — jeśli wysyłamy my, nadajemy zwykłą przesyłkę.
+    if pay_mode == "przedplata":
+        status = "platnosc"
+    elif payload.shipping_mode == "wlasna" and not label_url:
+        status = "etykieta"
+    else:
+        status = "nowe"
+
+    nr = await _next_nr(db, p.code)
     r = await db.execute(text(
         "INSERT INTO dropy.orders (nr, partner_id, firma, typ, status, source, external_id, "
         "  recipient_name, recipient_phone, recipient_street, recipient_zip, recipient_city, "
-        "  cod, shipping_mode, label_url, note, total_net, total_gross, payment_mode) "
+        "  cod, shipping_mode, label_url, note, total_net, total_gross, payment_mode, shipping_net, checkout_nr) "
         "VALUES (:nr, :pid, :firma, :typ, :status, :src, :ext, :rn, :rp, :rs, :rz, :rc, "
-        "        :cod, :mode, :label, :note, :net, :gross, :pay) RETURNING id"
+        "        :cod, :mode, :label, :note, :net, :gross, :pay, :ship, :chk) RETURNING id"
     ), {
         "nr": nr, "pid": p.id, "firma": firma, "typ": payload.typ, "status": status,
         "src": "api" if p.via == "api" else "portal", "ext": payload.external_id,
         "rn": payload.recipient_name, "rp": payload.recipient_phone, "rs": payload.recipient_street,
         "rz": payload.recipient_zip, "rc": payload.recipient_city, "cod": payload.cod,
-        "mode": payload.shipping_mode,
-        "label": payload.label_url, "note": payload.note, "net": float(total), "gross": float(gross),
-        "pay": pay_mode,
+        "mode": payload.shipping_mode, "label": label_url, "note": payload.note,
+        "net": float(part["net"]), "gross": float(part["gross"]), "pay": pay_mode,
+        "ship": float(part["shipping"]), "chk": checkout_nr,
     })
     oid = r.scalar()
-    for it in items:
+    for it in part["items"]:
         await db.execute(text(
             "INSERT INTO dropy.order_items (order_id, sku, name, qty, price_net, vat) "
             "VALUES (:o, :s, :n, :q, :c, :v)"
-        ), {"o": oid, "s": it["sku"], "n": it["name"], "q": it["qty"],
-            "c": it["price_net"], "v": it["vat"]})
+        ), {"o": oid, "s": it["sku"], "n": it["name"], "q": it["qty"], "c": it["price_net"], "v": it["vat"]})
 
     _, kto = await who(db, p)
-    n = len(items)
+    n = len(part["items"])
     tekst = (f"{kto} złożył zamówienie {nr} ({FIRMA_LABEL.get(firma, firma)}, "
-             f"{n} {plural(n, 'pozycja', 'pozycje', 'pozycji')}, {zl(total)} netto)")
+             f"{n} {plural(n, 'pozycja', 'pozycje', 'pozycji')}, {zl(part['net'])} netto")
+    if part["shipping"]:
+        tekst += f", w tym wysyłka {zl(part['shipping'])}"
+    tekst += ")"
+    if checkout_nr:
+        tekst += f", część koszyka {checkout_nr}"
     if payload.external_id:
         tekst += f", nr w sklepie partnera: {payload.external_id}"
     if status in STATUS_INFO:
         tekst += f". {STATUS_INFO[status]}"
     await log(db, p, "order_created", tekst, order_nr=nr, changes={
         "status": status, "typ": payload.typ, "shipping_mode": payload.shipping_mode, "cod": payload.cod,
-        "payment_mode": pay_mode,
-        "total_net": float(total), "total_gross": float(gross),
-        "items": [{"sku": i["sku"], "qty": i["qty"], "price_net": i["price_net"]} for i in items],
+        "payment_mode": pay_mode, "shipping_net": float(part["shipping"]), "checkout_nr": checkout_nr,
+        "total_net": float(part["net"]), "total_gross": float(part["gross"]),
+        "items": [{"sku": i["sku"], "qty": i["qty"], "price_net": i["price_net"]} for i in part["items"]],
     })
+    return nr
+
+
+async def _check_credit(db: AsyncSession, p: Partner, parts: List[dict]) -> None:
+    """Limit liczony łącznie dla całego koszyka — tylko części na fakturę zbiorczą."""
+    add = sum((x["gross"] for x in parts if x["pay_mode"] == "zbiorcza"), Decimal("0"))
+    if p.credit_limit is None or not add:
+        return
+    already = await _credit_used(db, p.id)
+    if already + add > Decimal(str(p.credit_limit)):
+        free = max(Decimal(str(p.credit_limit)) - already, Decimal("0"))
+        raise HTTPException(409, f"Limit kupiecki przekroczony — zostało {zl(free)}, a koszyk na fakturę "
+                                 f"zbiorczą to {zl(add)} brutto. Opłać zaległe faktury albo napisz do opiekuna.")
+
+
+async def _existing(db: AsyncSession, p: Partner, external_id: Optional[str]) -> dict:
+    """{firma: nr} zamówień z tym numerem ze sklepu partnera — klucz idempotencji."""
+    if not external_id:
+        return {}
+    r = await db.execute(
+        text("SELECT firma, nr FROM dropy.orders WHERE partner_id = :p AND external_id = :e ORDER BY id"),
+        {"p": p.id, "e": external_id},
+    )
+    out: dict = {}
+    for x in r.mappings():
+        out.setdefault(x["firma"], x["nr"])
+    return out
+
+
+@router.post("/orders", status_code=201)
+async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
+    """Jedno zamówienie = jedna firma. Koszyk z kilku firm idzie przez /orders/checkout."""
+    firma = payload.firma.strip().lower()
+    _check_common(payload)
+    label = _clean_label(payload.label_url)
+
+    # Idempotencja: ten sam numer ze sklepu partnera (w tej firmie) zwraca istniejące
+    # zamówienie, więc powtórzony webhook nie tworzy duplikatu.
+    dup = (await _existing(db, p, payload.external_id)).get(firma)
+    if dup:
+        return await get_order(dup, p, db)
+
+    part = await _prepare(db, p, firma, payload.lines, payload.shipping_mode)
+    await _check_credit(db, p, [part])
+    nr = await _insert(db, p, part, payload, label)
     await db.commit()
     return await get_order(nr, p, db)
+
+
+class CheckoutLine(LineIn):
+    firma: str
+
+
+class CheckoutIn(BaseModel):
+    """Koszyk z kilku firm. Wysyłka i odbiorca wspólne; etykieta osobno dla każdej firmy,
+    bo każda firma to osobna paczka."""
+    typ: str = "klient"
+    shipping_mode: str = "wlasna"
+    lines: List[CheckoutLine]
+    labels: dict = Field(default_factory=dict)        # {firma: link} — opcjonalnie
+    external_id: Optional[str] = None
+    recipient_name: Optional[str] = None
+    recipient_phone: Optional[str] = None
+    recipient_street: Optional[str] = None
+    recipient_zip: Optional[str] = None
+    recipient_city: Optional[str] = None
+    cod: bool = False
+    note: Optional[str] = None
+
+
+@router.post("/orders/checkout", status_code=201)
+async def checkout(payload: CheckoutIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
+    """Jeden koszyk → osobne zamówienie dla każdej firmy, w JEDNEJ transakcji.
+
+    Albo powstają wszystkie, albo żadne: błąd w jednej firmie (brak produktu, limit)
+    nie zostawia połowy koszyka złożonej.
+    """
+    _check_common(payload)
+    if not payload.lines:
+        raise HTTPException(400, "Koszyk jest pusty")
+    by_firma: dict = {}
+    for ln in payload.lines:
+        by_firma.setdefault(ln.firma.strip().lower(), []).append(ln)
+    order = [f for f in p.firmy if f in by_firma] + [f for f in by_firma if f not in p.firmy]
+    labels = {f.strip().lower(): _clean_label(v) for f, v in (payload.labels or {}).items()}
+
+    done = await _existing(db, p, payload.external_id)
+    parts = [await _prepare(db, p, f, by_firma[f], payload.shipping_mode) for f in order if f not in done]
+    await _check_credit(db, p, parts)
+
+    # Numer koszyka = numer pierwszego zamówienia; wiąże części w logach i w Magazynie.
+    nrs, checkout_nr = [], None
+    for part in parts:
+        if len(parts) > 1 and checkout_nr is None:
+            checkout_nr = await _next_nr(db, p.code)
+        nrs.append(await _insert(db, p, part, payload, labels.get(part["firma"]), checkout_nr))
+    await db.commit()
+    all_nrs = [done[f] if f in done else None for f in order]
+    it = iter(nrs)
+    all_nrs = [x or next(it) for x in all_nrs]
+    return {"checkout_nr": checkout_nr, "orders": [await get_order(nr, p, db) for nr in all_nrs]}
 
 
 # ===== FINANSE =====
@@ -554,6 +668,107 @@ async def set_label(nr: str, payload: LabelIn, p: Partner = Depends(current_part
     await log(db, p, "label_changed" if o["label_url"] else "label_added", tekst, order_nr=nr, changes=changes)
     await db.commit()
     return await get_order(nr, p, db)
+
+
+# ===== ETYKIETA PDF (Supabase Storage) =====
+PUBLIC_URL = os.getenv("DROPY_PUBLIC_URL", "").rstrip("/")
+
+
+def _public_base(request: Request) -> str:
+    """Adres portalu do linku etykiety. Railway stoi za proxy, więc bez env bierzemy nagłówki."""
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    return f"{proto}://{host}"
+
+
+@router.post("/orders/{nr:path}/label/pdf")
+async def upload_label(nr: str, request: Request, p: Partner = Depends(current_partner),
+                       db: AsyncSession = Depends(get_db)):
+    """Wgranie PDF etykiety. Treść żądania to sam plik (Content-Type: application/pdf).
+
+    Plik idzie do prywatnego bucketu, a do zamówienia (i dalej do Sellasista) trafia
+    stały link z tokenem, który przy kliknięciu wystawia świeży podpisany adres.
+    """
+    if not storage.enabled():
+        raise HTTPException(503, "Wgrywanie plików jest chwilowo wyłączone — wklej link do etykiety")
+    r = await db.execute(text(
+        "SELECT id, status, shipping_mode, label_url, label_file FROM dropy.orders WHERE nr = :nr AND partner_id = :p"
+    ), {"nr": nr, "p": p.id})
+    o = r.mappings().first()
+    if not o:
+        raise HTTPException(404, "Nie ma takiego zamówienia")
+    if o["shipping_mode"] != "wlasna":
+        raise HTTPException(409, "To zamówienie wysyłamy my — etykieta partnera nie jest potrzebna")
+    if o["status"] not in ("etykieta", "platnosc", "nowe"):
+        raise HTTPException(409, "Zamówienie jest już w realizacji — etykietę wyślij opiekunowi")
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Pusty plik")
+    if len(data) > storage.MAX_BYTES:
+        raise HTTPException(413, "Plik jest za duży — etykieta może mieć najwyżej 5 MB")
+    if not data.lstrip()[:5] == b"%PDF-":
+        raise HTTPException(400, "To nie jest plik PDF")
+
+    token = secrets.token_urlsafe(24)
+    path = f"{p.code}/{re.sub(r'[^A-Za-z0-9_-]+', '_', nr)}-{token[:8]}.pdf"
+    try:
+        await storage.upload(path, data)
+    except storage.StorageError as e:
+        raise HTTPException(502, f"Nie udało się zapisać pliku: {e}")
+
+    url = f"{_public_base(request)}/drop/v1/labels/{token}"
+    new_status = "nowe" if o["status"] == "etykieta" else o["status"]
+    await db.execute(text(
+        "UPDATE dropy.orders SET label_url = :u, label_file = :f, label_token = :t, status = :s, "
+        "updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+    ), {"u": url, "f": path, "t": token, "s": new_status, "id": o["id"]})
+
+    _, kto = await who(db, p)
+    kb = max(1, round(len(data) / 1024))
+    tekst = (f"{kto} {'podmienił' if o['label_url'] else 'wgrał'} etykietę PDF ({kb} KB) "
+             f"{'w zamówieniu' if o['label_url'] else 'do zamówienia'} {nr}")
+    if new_status != o["status"]:
+        tekst += " — zamówienie przeszło do realizacji"
+    changes = {"label_url": [o["label_url"], url], "label_file": path}
+    if new_status != o["status"]:
+        changes["status"] = [o["status"], new_status]
+    await log(db, p, "label_changed" if o["label_url"] else "label_added", tekst, order_nr=nr, changes=changes)
+    await db.commit()
+
+    if o["label_file"] and o["label_file"] != path:        # stary plik już nikomu niepotrzebny
+        try:
+            await storage.remove([o["label_file"]])
+        except storage.StorageError:
+            pass                                             # zostanie posprzątany przy czyszczeniu
+    return await get_order(nr, p, db)
+
+
+_GONE = """<!doctype html><meta charset="utf-8"><title>Etykieta</title>
+<body style="font:15px system-ui;margin:15vh auto;max-width:420px;text-align:center;color:#333">
+<h2 style="font-weight:600">Etykiety już nie ma</h2><p>{msg}</p></body>"""
+
+
+@router.get("/labels/{token}", include_in_schema=False)
+async def open_label(token: str, db: AsyncSession = Depends(get_db)):
+    """Stały link do etykiety (portal, Magazyn, Sellasist). Bez logowania — token jest
+    losowy i nie do zgadnięcia. Każde kliknięcie = nowy podpisany adres na kilka minut."""
+    r = await db.execute(text(
+        "SELECT label_file, label_url FROM dropy.orders WHERE label_token = :t"
+    ), {"t": token})
+    o = r.mappings().first()
+    if not o:
+        return HTMLResponse(_GONE.format(msg="Link jest nieprawidłowy albo etykietę podmieniono na nowszą — "
+                                             "otwórz ją ze szczegółów zamówienia."), status_code=404)
+    if not o["label_file"] or not (o["label_url"] or "").endswith(token):
+        return HTMLResponse(_GONE.format(msg="Plik został usunięty albo podmieniony na nowszy."), status_code=410)
+    try:
+        url = await storage.signed_url(o["label_file"])
+    except storage.StorageError:
+        return HTMLResponse(_GONE.format(msg="Nie udało się otworzyć pliku. Spróbuj za chwilę."), status_code=502)
+    return RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
 
 
 # ===== START (pulpit partnera) =====

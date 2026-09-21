@@ -43,7 +43,7 @@ class Partner:
 
     def __init__(self, row: dict, via: str, user_id: Optional[int] = None,
                  key_label: Optional[str] = None, key_hint: Optional[str] = None,
-                 terms: Optional[Dict[str, str]] = None):
+                 terms: Optional[Dict[str, str]] = None, shipping: Optional[Dict[str, float]] = None):
         self.id = row["id"]
         self.code = row["code"]
         self.name = row["name"]
@@ -52,6 +52,8 @@ class Partner:
         # to tylko wartość domyślna dla firmy, która nie ma jeszcze własnego wpisu.
         self.default_mode = row["payment_mode"] or "zbiorcza"
         self.terms = {f: (terms or {}).get(f, self.default_mode) for f in self.firmy}
+        # Koszt wysyłki netto per firma, gdy nadajemy my. None = bez opłaty.
+        self.shipping_net = {f: (shipping or {}).get(f) for f in self.firmy}
         self.credit_limit = float(row["credit_limit"]) if row["credit_limit"] is not None else None
         self.address = row["address"]
         self.via = via                     # 'portal' albo 'api'
@@ -61,6 +63,9 @@ class Partner:
 
     def mode(self, firma: str) -> str:
         return self.terms.get(firma, self.default_mode)
+
+    def shipping(self, firma: str) -> Optional[float]:
+        return self.shipping_net.get(firma)
 
     @property
     def payment_mode(self) -> str:
@@ -82,9 +87,16 @@ async def _partner_row(db: AsyncSession, pid: int) -> dict:
     return dict(row)
 
 
-async def _partner_terms(db: AsyncSession, pid: int) -> Dict[str, str]:
-    r = await db.execute(text("SELECT firma, payment_mode FROM dropy.partner_terms WHERE partner_id = :id"), {"id": pid})
-    return {x["firma"]: x["payment_mode"] for x in r.mappings()}
+async def _partner_terms(db: AsyncSession, pid: int) -> dict:
+    """Warunki per firma: tryb płatności i koszt wysyłki."""
+    r = await db.execute(text(
+        "SELECT firma, payment_mode, shipping_net FROM dropy.partner_terms WHERE partner_id = :id"
+    ), {"id": pid})
+    rows = list(r.mappings())
+    return {
+        "terms": {x["firma"]: x["payment_mode"] for x in rows},
+        "shipping": {x["firma"]: float(x["shipping_net"]) for x in rows if x["shipping_net"] is not None},
+    }
 
 
 async def current_partner(
@@ -107,7 +119,7 @@ async def current_partner(
         )
         await db.commit()
         return Partner(await _partner_row(db, row[0]), via="api", key_label=row[1], key_hint=row[2],
-                       terms=await _partner_terms(db, row[0]))
+                       **await _partner_terms(db, row[0]))
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Wymagane logowanie")
@@ -130,4 +142,4 @@ async def current_partner(
     if not u:
         raise HTTPException(401, "Konto nie istnieje albo jest wyłączone")
     return Partner(await _partner_row(db, u["partner_id"]), via="portal", user_id=u["id"],
-                   terms=await _partner_terms(db, u["partner_id"]))
+                   **await _partner_terms(db, u["partner_id"]))
