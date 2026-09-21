@@ -312,12 +312,13 @@ const FN = { amh: "AMH", acti: "Acti4med", veluxa: "Veluxa" };
 const fl = s => FN[s] || s;
 // Tryb płatności jest per firma: w AMH faktura zbiorcza, w Veluxie przedpłata itd.
 const payMode = f => (state.me.payment_modes || {})[f] || state.me.payment_mode;
-const PAY_TXT = { zbiorcza: "Faktura zbiorcza na koniec miesiąca.", przedplata: "Przedpłata — realizujemy po zaksięgowaniu wpłaty." };
+// „Przedpłata” nie wstrzymuje wysyłki: faktura do każdego zamówienia z terminem płatności.
+const PAY_TXT = { zbiorcza: "Faktura zbiorcza na koniec miesiąca.", przedplata: "Faktura do każdego zamówienia, z terminem płatności." };
 function payInfo() {
   const firmy = state.me.firmy;
   const modes = new Set(firmy.map(payMode));
   if (modes.size === 1) return `<div style="font-size:14px">${PAY_TXT[payMode(firmy[0])] || ""}</div>`;
-  return firmy.map(f => `<div class="uline"><span>${fl(f)}</span><b>${payMode(f) === "przedplata" ? "przedpłata" : "faktura zbiorcza"}</b></div>`).join("");
+  return firmy.map(f => `<div class="uline"><span>${fl(f)}</span><b>${payMode(f) === "przedplata" ? "faktura do zamówienia" : "faktura zbiorcza"}</b></div>`).join("");
 }
 // Wartości od partnera wstawiamy w HTML — escapujemy, żeby cudzysłów w linku nie rozwalił widoku.
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -739,8 +740,8 @@ function renderFinanse() {
           ${(() => { const pre = state.me.firmy.filter(f => payMode(f) === "przedplata");
             if (!pre.length) return "";
             return pre.length === state.me.firmy.length
-              ? `<p class="hint">Rozliczasz się przedpłatą — zamówienie ruszy po zaksięgowaniu przelewu.</p>`
-              : `<p class="hint">W ${pre.map(fl).join(" i ")} rozliczasz się przedpłatą — takie zamówienie ruszy po zaksięgowaniu przelewu.</p>`; })()}
+              ? `<p class="hint">Każde zamówienie dostaje osobną fakturę z terminem płatności — nie trafia na fakturę zbiorczą.</p>`
+              : `<p class="hint">W ${pre.map(fl).join(" i ")} każde zamówienie dostaje osobną fakturę z terminem płatności — nie trafia na fakturę zbiorczą.</p>`; })()}
         </div>
       </div>
     </div>`);
@@ -960,7 +961,7 @@ function renderCart() {
     const { P, items } = cartPart(f, mode0);
     return `<div class="card csec">
       <div class="chead" style="margin-bottom:6px"><h3 style="font-size:14px">${fl(f)}</h3>
-        <span class="pill ${payMode(f) === "przedplata" ? "warn" : "info"}">${payMode(f) === "przedplata" ? "przedpłata" : "faktura zbiorcza"}</span></div>
+        <span class="pill info">${payMode(f) === "przedplata" ? "faktura do zamówienia" : "faktura zbiorcza"}</span></div>
       ${items.map(([sku, q]) => `<div class="cline">
         ${thumb(P[sku] || { sku })}
         <div><div>${esc(P[sku]?.name || sku)}</div><div class="sku">${esc(sku)}</div></div>
@@ -1056,7 +1057,7 @@ function renderCart() {
       <dt>Netto</dt><dd>${zl(net)}</dd><dt>VAT</dt><dd>${zl(gross - net)}</dd>
       <dt class="big">Brutto</dt><dd class="big">${zl(gross)}</dd>`;
     $("#payNotes").innerHTML = firms.map(f => `<p class="hint">${parts.length > 1 ? `<b>${fl(f)}:</b> ` : ""}${payMode(f) === "przedplata"
-      ? "płatność z góry — po złożeniu dostaniesz dane do przelewu, wysyłamy po zaksięgowaniu wpłaty."
+      ? `osobna faktura ${fl(f)} do tego zamówienia, z terminem płatności. Wysyłamy od razu.`
       : `trafi na fakturę zbiorczą ${fl(f)} na koniec miesiąca.`}</p>`).join("");
     $("#send").textContent = parts.length > 1 ? `Złóż ${parts.length} zamówienia` : "Złóż zamówienie";
   };
