@@ -249,6 +249,15 @@ async def _product_id_map(firma: "Firma") -> Dict[str, int]:
     return out
 
 
+def _split_name(full: str) -> tuple:
+    """„Anna Maria Nowak” → („Anna Maria”, „Nowak”). Sellasist ma osobne pola imię i nazwisko,
+    a bez nazwiska na fakturze automat nie wystawi dokumentu."""
+    parts = (full or "").strip().split()
+    if len(parts) < 2:
+        return (parts[0] if parts else ""), ""
+    return " ".join(parts[:-1]), parts[-1]
+
+
 async def push_drop_order(firma_slug: str, order: dict) -> str:
     """Wysyła zamówienie dropa do Sellasista właściwej firmy i zwraca jego ID.
 
@@ -297,9 +306,14 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
 
     # Adres płatnika to PARTNER (to on jest naszym klientem i on dostaje fakturę),
     # a adres wysyłki to klient końcowy. Dokładnie tak robi to dziś scenariusz w Make.
+    # Osoba na fakturze: z karty partnera (bill_person); bez niej Sellasist nie wystawi FV automatem.
+    bill_first, bill_last = _split_name(order.get("partner_person") or "")
+    ship_first, ship_last = (order.get("recipient_name") or "", order.get("recipient_surname") or "")
+    if not ship_last:
+        ship_first, ship_last = _split_name(ship_first)
     bill = {
-        "name": "",
-        "surname": "",
+        "name": bill_first,
+        "surname": bill_last,
         "company_name": order.get("partner_name") or "",
         "company_nip": order.get("partner_nip") or "",
         "street": order.get("partner_street") or "",
@@ -310,8 +324,8 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         "country": {"id": 170, "code": "PL"},
     }
     ship = {
-        "name": order.get("recipient_name") or "",
-        "surname": order.get("recipient_surname") or "",
+        "name": ship_first,
+        "surname": ship_last,
         "company_name": "",
         # Przy własnej etykiecie partner często nie podaje adresu — przesyłkę nadaje sam.
         "street": order.get("recipient_street") or ("etykieta partnera" if own_label else ""),
