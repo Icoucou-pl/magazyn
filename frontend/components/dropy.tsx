@@ -18,10 +18,14 @@ import { I, Card } from "./ui";
 import { Portal } from "./products-ui";
 
 // ── Typy ─────────────────────────────────────────────────────
+type PayMode = "zbiorcza" | "przedplata";
+const PAY_SHORT: Record<PayMode, string> = { zbiorcza: "Faktura zbiorcza", przedplata: "Przedpłata" };
+
 type Partner = {
   id: number; code: string; name: string; nip?: string | null; email?: string | null;
   phone?: string | null; address?: string | null; firmy: string[];
-  payment_mode: "zbiorcza" | "przedplata"; allow_installments: boolean;
+  payment_mode: PayMode; allow_installments: boolean;
+  terms?: Record<string, PayMode>;          // tryb płatności per firma
   credit_limit: number | null; is_active: boolean; notes?: string | null;
   orders_month: number; net_month: number; users_count: number; keys_count: number;
 };
@@ -272,8 +276,9 @@ function PartnersPanel({ partners, reload }: { partners: Partner[]; reload: () =
                     {!p.is_active && <Tag fg="var(--danger)">Wyłączony</Tag>}
                   </div>
                   <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                    {p.firmy.map(f => <Tag key={f}>{firmaLabel(f)}</Tag>)}
-                    <Tag>{p.payment_mode === "przedplata" ? "Przedpłata" : "Faktura zbiorcza"}</Tag>
+                    {p.firmy.map(f => (
+                      <Tag key={f}>{firmaLabel(f)} · {PAY_SHORT[p.terms?.[f] ?? p.payment_mode].toLowerCase()}</Tag>
+                    ))}
                     {p.allow_installments && <Tag>Raty</Tag>}
                     <Tag>{p.credit_limit != null ? `Limit ${zl(p.credit_limit)}` : "Bez limitu"}</Tag>
                   </div>
@@ -315,7 +320,8 @@ function PartnerForm({ partner, onClose, onSaved }: {
   const [f, setF] = useState({
     code: partner?.code ?? "", name: partner?.name ?? "", nip: partner?.nip ?? "",
     email: partner?.email ?? "", phone: partner?.phone ?? "", address: partner?.address ?? "",
-    firmy: partner?.firmy ?? [], payment_mode: partner?.payment_mode ?? "zbiorcza",
+    firmy: partner?.firmy ?? [],
+    terms: { ...(partner?.terms ?? Object.fromEntries((partner?.firmy ?? []).map(x => [x, partner?.payment_mode ?? "zbiorcza"]))) } as Record<string, PayMode>,
     allow_installments: partner?.allow_installments ?? false,
     credit_limit: partner?.credit_limit != null ? String(partner.credit_limit) : "",
     is_active: partner?.is_active ?? true, notes: partner?.notes ?? "",
@@ -327,15 +333,22 @@ function PartnerForm({ partner, onClose, onSaved }: {
     const has = f.firmy.includes(slug);
     if (has && f.firmy.length === 1) { toast("Partner musi mieć co najmniej jedną firmę", "warning"); return; }
     set("firmy", has ? f.firmy.filter(x => x !== slug) : [...f.firmy, slug]);
+    // Nowa firma dostaje domyślnie fakturę zbiorczą — do zmiany obok.
+    if (!has && !f.terms[slug]) set("terms", { ...f.terms, [slug]: "zbiorcza" });
   };
+  const modeOf = (slug: string): PayMode => f.terms[slug] ?? "zbiorcza";
 
   const save = async () => {
     if (!f.name.trim() || (!partner && !f.code.trim())) { toast("Kod i nazwa są wymagane", "warning"); return; }
     if (f.firmy.length === 0) { toast("Zaznacz przynajmniej jedną firmę", "warning"); return; }
     setBusy(true);
+    // Domyślny tryb partnera (dla firm dodanych później) = tryb pierwszej firmy.
+    const firstMode = modeOf(FIRMY.find(x => f.firmy.includes(x.slug))?.slug ?? f.firmy[0]);
     const body: Record<string, unknown> = {
       name: f.name.trim(), nip: f.nip || null, email: f.email || null, phone: f.phone || null,
-      address: f.address || null, firmy: f.firmy, payment_mode: f.payment_mode,
+      address: f.address || null, firmy: f.firmy,
+      // Tryb płatności osobno w każdej firmie. Wysyłamy tylko firmy, od których partner kupuje.
+      terms: Object.fromEntries(f.firmy.map(x => [x, modeOf(x)])),
       allow_installments: f.allow_installments, notes: f.notes || null,
       credit_limit: f.credit_limit.trim() === "" ? null : Number(f.credit_limit),
     };
@@ -343,7 +356,7 @@ function PartnerForm({ partner, onClose, onSaved }: {
       if (partner) {
         await api.patch(`/dropy/partners/${partner.id}`, { ...body, is_active: f.is_active });
       } else {
-        await api.post("/dropy/partners", { ...body, code: f.code.trim().toUpperCase() });
+        await api.post("/dropy/partners", { ...body, payment_mode: firstMode, code: f.code.trim().toUpperCase() });
       }
       toast(partner ? "Zapisane" : `Partner ${f.code.toUpperCase()} dodany`, "ok");
       onSaved();
@@ -391,18 +404,26 @@ function PartnerForm({ partner, onClose, onSaved }: {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <Field label="Płatność">
-            <select style={inputStyle} value={f.payment_mode} onChange={e => set("payment_mode", e.target.value)}>
-              <option value="zbiorcza">Faktura zbiorcza</option>
-              <option value="przedplata">Przedpłata</option>
-            </select>
-          </Field>
-          <Field label="Limit kupiecki (puste = brak)">
-            <input style={inputStyle} inputMode="decimal" value={f.credit_limit}
-              onChange={e => set("credit_limit", e.target.value)} placeholder="np. 15000"/>
-          </Field>
+        <div>
+          <div style={{ fontSize: 12, color: "var(--text-lo)", marginBottom: 6 }}>Płatność w każdej firmie</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {FIRMY.filter(fi => f.firmy.includes(fi.slug)).map(fi => (
+              <div key={fi.slug} style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 10, alignItems: "center" }}>
+                <span style={{ fontSize: 13 }}>{fi.label}</span>
+                <select style={inputStyle} value={modeOf(fi.slug)}
+                  onChange={e => set("terms", { ...f.terms, [fi.slug]: e.target.value as PayMode })}>
+                  <option value="zbiorcza">Faktura zbiorcza</option>
+                  <option value="przedplata">Przedpłata</option>
+                </select>
+              </div>
+            ))}
+          </div>
         </div>
+
+        <Field label="Limit kupiecki (puste = brak, liczony ze wszystkich firm na fakturze zbiorczej)">
+          <input style={inputStyle} inputMode="decimal" value={f.credit_limit}
+            onChange={e => set("credit_limit", e.target.value)} placeholder="np. 15000"/>
+        </Field>
 
         <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
           <input type="checkbox" checked={f.allow_installments} onChange={e => set("allow_installments", e.target.checked)}/>
@@ -635,6 +656,14 @@ function PricingPanel({ partners }: { partners: Partner[] }) {
 
   return (
     <>
+      {/* Kontekst zawsze na wierzchu — cennik jest per partner × firma, łatwo edytować nie ten. */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: "var(--text-lo)" }}>Cennik:</span>
+        <strong style={{ fontSize: 15 }}>{partner.code} — {partner.name}</strong>
+        <span style={{ fontSize: 15, color: "var(--text-lo)" }}>·</span>
+        <strong style={{ fontSize: 15 }}>{firmaLabel(firma)}</strong>
+        <Tag>{PAY_SHORT[partner.terms?.[firma] ?? partner.payment_mode]}</Tag>
+      </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <select style={{ ...inputStyle, width: "auto", minWidth: 200 }} value={pid ?? ""} onChange={e => setPid(Number(e.target.value))}>
           {partners.map(p => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
