@@ -26,6 +26,7 @@ type Partner = {
   phone?: string | null; address?: string | null; firmy: string[];
   payment_mode: PayMode; allow_installments: boolean;
   terms?: Record<string, PayMode>;          // tryb płatności per firma
+  shipping?: Record<string, number | null>; // koszt wysyłki netto per firma („Wyślijcie wy”)
   credit_limit: number | null; is_active: boolean; notes?: string | null;
   orders_month: number; net_month: number; users_count: number; keys_count: number;
 };
@@ -43,6 +44,7 @@ type Order = {
   recipient_zip: string | null; recipient_phone: string | null;
   cod: boolean; shipping_mode: string; label_url: string | null; tracking: string | null;
   sellasist_order_id: string | null; total_net: number; total_gross: number;
+  shipping_net: number; checkout_nr: string | null; label_file: string | null;
   created_at: string; items: OrderItem[];
 };
 
@@ -174,6 +176,7 @@ export default function DropyView() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [cleanOpen, setCleanOpen] = useState(false);
 
   // Migawkę katalogu odświeżamy MY, nie partner. Docelowo pójdzie to z crona,
   // a przycisk zostaje na wypadek, gdy trzeba przeliczyć od razu (nowy produkt, zmiana VAT).
@@ -221,6 +224,10 @@ export default function DropyView() {
           <button onClick={() => setLogsOpen(true)} aria-label="Logi dropów" title="Logi dropów" style={iconBtnStyle(false)}>
             <I.History size={15}/>
           </button>
+          <button onClick={() => setCleanOpen(true)} aria-label="Wyczyść etykiety PDF"
+                  title="Wyczyść stare etykiety PDF z magazynu plików" style={iconBtnStyle(false)}>
+            <I.Sparkles size={15}/>
+          </button>
         </div>
         <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
       </div>
@@ -236,6 +243,7 @@ export default function DropyView() {
       )}
 
       {logsOpen && <LogsModal partners={partners || []} onClose={() => setLogsOpen(false)}/>}
+      {cleanOpen && <LabelCleanupModal onClose={() => setCleanOpen(false)}/>}
     </div>
   );
 }
@@ -277,7 +285,10 @@ function PartnersPanel({ partners, reload }: { partners: Partner[]; reload: () =
                   </div>
                   <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                     {p.firmy.map(f => (
-                      <Tag key={f}>{firmaLabel(f)} · {PAY_SHORT[p.terms?.[f] ?? p.payment_mode].toLowerCase()}</Tag>
+                      <Tag key={f}>
+                        {firmaLabel(f)} · {PAY_SHORT[p.terms?.[f] ?? p.payment_mode].toLowerCase()}
+                        {p.shipping?.[f] != null ? ` · wysyłka ${zl(p.shipping[f] as number)}` : ""}
+                      </Tag>
                     ))}
                     {p.allow_installments && <Tag>Raty</Tag>}
                     <Tag>{p.credit_limit != null ? `Limit ${zl(p.credit_limit)}` : "Bez limitu"}</Tag>
@@ -322,6 +333,7 @@ function PartnerForm({ partner, onClose, onSaved }: {
     email: partner?.email ?? "", phone: partner?.phone ?? "", address: partner?.address ?? "",
     firmy: partner?.firmy ?? [],
     terms: { ...(partner?.terms ?? Object.fromEntries((partner?.firmy ?? []).map(x => [x, partner?.payment_mode ?? "zbiorcza"]))) } as Record<string, PayMode>,
+    shipping: Object.fromEntries(Object.entries(partner?.shipping ?? {}).map(([k, v]) => [k, v != null ? String(v) : ""])) as Record<string, string>,
     allow_installments: partner?.allow_installments ?? false,
     credit_limit: partner?.credit_limit != null ? String(partner.credit_limit) : "",
     is_active: partner?.is_active ?? true, notes: partner?.notes ?? "",
@@ -341,6 +353,11 @@ function PartnerForm({ partner, onClose, onSaved }: {
   const save = async () => {
     if (!f.name.trim() || (!partner && !f.code.trim())) { toast("Kod i nazwa są wymagane", "warning"); return; }
     if (f.firmy.length === 0) { toast("Zaznacz przynajmniej jedną firmę", "warning"); return; }
+    const badShip = f.firmy.find(x => {
+      const v = (f.shipping[x] ?? "").trim().replace(",", ".");
+      return v !== "" && !(Number(v) >= 0);
+    });
+    if (badShip) { toast(`Koszt wysyłki ${firmaLabel(badShip)} musi być liczbą`, "warning"); return; }
     setBusy(true);
     // Domyślny tryb partnera (dla firm dodanych później) = tryb pierwszej firmy.
     const firstMode = modeOf(FIRMY.find(x => f.firmy.includes(x.slug))?.slug ?? f.firmy[0]);
@@ -349,6 +366,11 @@ function PartnerForm({ partner, onClose, onSaved }: {
       address: f.address || null, firmy: f.firmy,
       // Tryb płatności osobno w każdej firmie. Wysyłamy tylko firmy, od których partner kupuje.
       terms: Object.fromEntries(f.firmy.map(x => [x, modeOf(x)])),
+      // Koszt wysyłki netto per firma; puste pole = bez opłaty.
+      shipping: Object.fromEntries(f.firmy.map(x => {
+        const v = (f.shipping[x] ?? "").trim().replace(",", ".");
+        return [x, v === "" ? null : Number(v)];
+      })),
       allow_installments: f.allow_installments, notes: f.notes || null,
       credit_limit: f.credit_limit.trim() === "" ? null : Number(f.credit_limit),
     };
@@ -405,19 +427,27 @@ function PartnerForm({ partner, onClose, onSaved }: {
         </div>
 
         <div>
-          <div style={{ fontSize: 12, color: "var(--text-lo)", marginBottom: 6 }}>Płatność w każdej firmie</div>
+          <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 150px", gap: 10, fontSize: 12, color: "var(--text-lo)", marginBottom: 6 }}>
+            <span>Warunki w firmie</span><span>Płatność</span><span>Wysyłka „Wyślijcie wy”</span>
+          </div>
           <div style={{ display: "grid", gap: 6 }}>
             {FIRMY.filter(fi => f.firmy.includes(fi.slug)).map(fi => (
-              <div key={fi.slug} style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 10, alignItems: "center" }}>
+              <div key={fi.slug} style={{ display: "grid", gridTemplateColumns: "110px 1fr 150px", gap: 10, alignItems: "center" }}>
                 <span style={{ fontSize: 13 }}>{fi.label}</span>
                 <select style={inputStyle} value={modeOf(fi.slug)}
                   onChange={e => set("terms", { ...f.terms, [fi.slug]: e.target.value as PayMode })}>
                   <option value="zbiorcza">Faktura zbiorcza</option>
                   <option value="przedplata">Przedpłata</option>
                 </select>
+                <input style={inputStyle} inputMode="decimal" placeholder="bez opłaty" title="Koszt wysyłki netto (VAT 23%)"
+                  value={f.shipping[fi.slug] ?? ""}
+                  onChange={e => set("shipping", { ...f.shipping, [fi.slug]: e.target.value })}/>
               </div>
             ))}
           </div>
+          <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--text-lo)" }}>
+            Wysyłkę netto doliczamy tylko wtedy, gdy nadajemy my. Przy etykiecie partnera nic nie doliczamy.
+          </p>
         </div>
 
         <Field label="Limit kupiecki (puste = brak, liczony ze wszystkich firm na fakturze zbiorczej)">
@@ -1077,6 +1107,7 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
           {order.shipping_mode === "wlasna" ? "etykieta partnera" : "wysyłka nasza"}
         </Tag>
         {order.cod && <Tag fg="var(--warning)">pobranie</Tag>}
+        {order.checkout_nr && <Tag>koszyk {order.checkout_nr}</Tag>}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
@@ -1098,7 +1129,7 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
                 {order.label_url ? (
                   <>
                     <a href={order.label_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
-                      Otwórz etykietę partnera
+                      Otwórz etykietę partnera{order.label_file ? " (PDF)" : ""}
                     </a>
                     <button disabled={busy} style={btn("danger", true)} onClick={removeLabel}>Usuń etykietę</button>
                   </>
@@ -1133,6 +1164,12 @@ function OrderModal({ order, onClose, onChanged }: { order: Order; onClose: () =
               <td style={{ padding: "8px 0", textAlign: "right" }}>{zl(it.price_net * it.qty)}</td>
             </tr>
           ))}
+          {order.shipping_net > 0 && (
+            <tr style={{ borderTop: "1px solid var(--border-soft)" }}>
+              <td style={{ padding: "8px 0" }}>Wysyłka</td><td/>
+              <td style={{ padding: "8px 0", textAlign: "right" }}>{zl(order.shipping_net)}</td>
+            </tr>
+          )}
           <tr style={{ borderTop: "1px solid var(--border-soft)" }}>
             <td style={{ padding: "8px 0", fontWeight: 600 }}>Razem</td>
             <td/>
@@ -1341,6 +1378,60 @@ function LogsModal({ partners, onClose }: { partners: Partner[]; onClose: () => 
           )}
         </div>
       )}
+    </Modal>
+  );
+}
+
+
+// ── Czyszczenie etykiet PDF ──────────────────────────────────
+// PDF-y etykiet leżą w prywatnym buckecie. Po wysyłce są zbędne, a podmienione
+// zostają jako sieroty — tu jednym ruchem je usuwamy. Link w zamówieniu zostaje
+// i po kliknięciu mówi, że plik już usunięto.
+function LabelCleanupModal({ onClose }: { onClose: () => void }) {
+  const [days, setDays] = useState("30");
+  const [info, setInfo] = useState<{ to_delete: number; orphans: number; stored: number; enabled: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const d = Math.max(0, Math.floor(Number(days) || 0));
+
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.get(`/dropy/labels/cleanup?days=${d}`) as typeof info;
+        if (live) setInfo(r);
+      } catch (e) { err(e); }
+    }, 250);
+    return () => { live = false; clearTimeout(t); };
+  }, [d]);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/dropy/labels/cleanup", { days: d }) as { removed: number; left: number };
+      toast(r.left ? `Usunięto ${r.removed}, nie udało się ${r.left}` : `Usunięto ${r.removed} plików`, r.left ? "warning" : "ok");
+      onClose();
+    } catch (e) { err(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title="Wyczyść etykiety PDF" onClose={onClose}>
+      <div style={{ display: "grid", gap: 12 }}>
+        <Field label="Usuń PDF-y zamówień wysłanych lub anulowanych dawniej niż (dni)">
+          <input style={{ ...inputStyle, width: 120 }} inputMode="numeric" value={days} onChange={e => setDays(e.target.value)}/>
+        </Field>
+        <p style={{ margin: 0, fontSize: 13 }}>
+          {info === null ? "Liczę…" : !info.enabled
+            ? "Wgrywanie plików nie jest skonfigurowane (brak DROPY_STORAGE_URL / DROPY_STORAGE_KEY)."
+            : <>W magazynie plików: <b>{info.stored}</b>. Do usunięcia: <b>{info.to_delete}</b>
+                {info.orphans ? <> (w tym {info.orphans} podmienionych lub usuniętych z zamówień)</> : null}.</>}
+        </p>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={btn("ghost")}>Anuluj</button>
+          <button onClick={run} disabled={busy || !info?.enabled || !info.to_delete} style={btn("danger")}>
+            {busy ? "Usuwam…" : `Usuń ${info?.to_delete ?? ""}`}
+          </button>
+        </div>
+      </div>
     </Modal>
   );
 }
