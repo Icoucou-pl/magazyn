@@ -126,8 +126,8 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
     r = await db.execute(text(
         "SELECT c.sku, c.name, c.stock, c.in_transit, c.photo_id, c.photo_hash, c.vat, pr.price_net "
         "FROM dropy.prices pr "
-        "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
-        "WHERE pr.partner_id = :p ORDER BY c.name"
+        "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = pr.firma "
+        "WHERE pr.partner_id = :p AND pr.firma = :f ORDER BY c.name"
     ), {"f": firma, "p": p.id})
     out = []
     for x in r.mappings():
@@ -294,8 +294,8 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
     r = await db.execute(text(
         "SELECT LOWER(TRIM(c.sku)) AS key, c.sku, c.name, c.vat, pr.price_net "
         "FROM dropy.prices pr "
-        "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
-        "WHERE pr.partner_id = :p"
+        "JOIN dropy.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = pr.firma "
+        "WHERE pr.partner_id = :p AND pr.firma = :f"
     ), {"f": firma, "p": p.id})
     available = {x["key"]: dict(x) for x in r.mappings()}
 
