@@ -345,6 +345,10 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
     }
     if fields:
         payload["additional_fields"] = fields
+    # Koszt dostawy (brutto) — tylko gdy nadajemy my i partner ma ustawioną stawkę.
+    # Przy własnej etykiecie partnera zawsze 0, więc pola w ogóle nie wysyłamy.
+    if float(order.get("shipping_gross") or 0) > 0:
+        payload["shipment_price"] = round(float(order["shipping_gross"]), 2)
 
     resp = await _http_post(firma, "/orders", payload)
     oid = (resp or {}).get("id") if isinstance(resp, dict) else None
