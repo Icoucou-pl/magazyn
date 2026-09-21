@@ -300,6 +300,15 @@ const zl = n => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "P
 const dm = d => d ? `${d.slice(8,10)}.${d.slice(5,7)}.${d.slice(0,4)}` : "—";
 const FN = { amh: "AMH", acti: "Acti4med", veluxa: "Veluxa" };
 const fl = s => FN[s] || s;
+// Tryb płatności jest per firma: w AMH faktura zbiorcza, w Veluxie przedpłata itd.
+const payMode = f => (state.me.payment_modes || {})[f] || state.me.payment_mode;
+const PAY_TXT = { zbiorcza: "Faktura zbiorcza na koniec miesiąca.", przedplata: "Przedpłata — realizujemy po zaksięgowaniu wpłaty." };
+function payInfo() {
+  const firmy = state.me.firmy;
+  const modes = new Set(firmy.map(payMode));
+  if (modes.size === 1) return `<div style="font-size:14px">${PAY_TXT[payMode(firmy[0])] || ""}</div>`;
+  return firmy.map(f => `<div class="uline"><span>${fl(f)}</span><b>${payMode(f) === "przedplata" ? "przedpłata" : "faktura zbiorcza"}</b></div>`).join("");
+}
 // Wartości od partnera wstawiamy w HTML — escapujemy, żeby cudzysłów w linku nie rozwalił widoku.
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const isHttp = u => /^https?:\/\//i.test(u || "");
@@ -558,7 +567,7 @@ function renderStart() {
         <p class="hint">Limit zwalnia się po zaksięgowaniu wpłat.</p>`;
   } else {
     side = `<div class="chead"><h2>Rozliczenie</h2></div><div class="side">
-        <div style="font-size:14px">${state.me.payment_mode === "przedplata" ? "Przedpłata — realizujemy po zaksięgowaniu wpłaty." : "Faktura zbiorcza na koniec miesiąca."}</div>`;
+        ${payInfo()}`;
   }
   const maxF = Math.max(...d.by_firma.map(x => x.net), 0);
   if (d.by_firma.length > 1) {
@@ -733,7 +742,11 @@ function renderFinanse() {
             ${unbilled.map(u => `<div class="uline"><span>${fl(u.firma)}<small>${u.count} ${plural(u.count, "zamówienie", "zamówienia", "zamówień")}</small></span><b>${zl(u.gross)}</b></div>`).join("")}
             <div class="uline total"><span>Łącznie</span><b>${zl(summary.unbilled)}</b></div>`
           : `<p class="hint" style="margin:0">Wszystkie zamówienia są już zafakturowane.</p>`}
-          ${state.me.payment_mode === "przedplata" ? `<p class="hint">Rozliczasz się przedpłatą — zamówienie ruszy po zaksięgowaniu przelewu.</p>` : ""}
+          ${(() => { const pre = state.me.firmy.filter(f => payMode(f) === "przedplata");
+            if (!pre.length) return "";
+            return pre.length === state.me.firmy.length
+              ? `<p class="hint">Rozliczasz się przedpłatą — zamówienie ruszy po zaksięgowaniu przelewu.</p>`
+              : `<p class="hint">W ${pre.map(fl).join(" i ")} rozliczasz się przedpłatą — takie zamówienie ruszy po zaksięgowaniu przelewu.</p>`; })()}
         </div>
       </div>
     </div>`);
@@ -949,7 +962,7 @@ function renderCart() {
   // Każda pozycja ma swoją stawkę — w Acti łóżka idą na 8%, akcesoria na 23%.
   const gross = Math.round(items.reduce((s, [sku, q]) =>
     s + (P[sku]?.price_net || 0) * q * (1 + (P[sku]?.vat ?? 23) / 100), 0) * 100) / 100;
-  const pay = state.me.payment_mode === "przedplata"
+  const pay = payMode(state.firma) === "przedplata"
     ? "Płatność z góry. Po złożeniu dostaniesz dane do przelewu, wysyłamy po zaksięgowaniu wpłaty."
     : `Trafi na fakturę zbiorczą ${fl(state.firma)} na koniec miesiąca.`;
 
