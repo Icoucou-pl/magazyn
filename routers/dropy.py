@@ -72,6 +72,7 @@ class PartnerIn(BaseModel):
     bill_home_number: Optional[str] = None
     bill_postcode: Optional[str] = None
     bill_city: Optional[str] = None
+    bill_person: Optional[str] = None          # imię i nazwisko na fakturze — bez tego Sellasist nie wystawi FV automatem
     ship_name: Optional[str] = None            # adres wysyłek zbiorczych („Na mój adres”) — odbiorca
     ship_street: Optional[str] = None          # ulica i numer
     ship_postcode: Optional[str] = None
@@ -96,6 +97,7 @@ class PartnerUpdate(BaseModel):
     bill_home_number: Optional[str] = None
     bill_postcode: Optional[str] = None
     bill_city: Optional[str] = None
+    bill_person: Optional[str] = None          # imię i nazwisko na fakturze — bez tego Sellasist nie wystawi FV automatem
     ship_name: Optional[str] = None            # adres wysyłek zbiorczych („Na mój adres”) — odbiorca
     ship_street: Optional[str] = None          # ulica i numer
     ship_postcode: Optional[str] = None
@@ -341,7 +343,7 @@ STATUS_LABEL = {
 PARTNER_FIELDS = {
     "name": "nazwa", "nip": "NIP", "email": "e-mail", "phone": "telefon", "address": "adres",
     "bill_street": "ulica (faktura)", "bill_home_number": "nr domu (faktura)",
-    "bill_postcode": "kod (faktura)", "bill_city": "miasto (faktura)",
+    "bill_postcode": "kod (faktura)", "bill_city": "miasto (faktura)", "bill_person": "osoba (faktura)",
     "ship_name": "odbiorca (wysyłki zbiorcze)", "ship_street": "ulica (wysyłki zbiorcze)",
     "ship_postcode": "kod (wysyłki zbiorcze)", "ship_city": "miasto (wysyłki zbiorcze)",
     "ship_phone": "telefon (wysyłki zbiorcze)", "firmy": "firmy",
@@ -455,17 +457,17 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
 
     r = await db.execute(text(
         f"INSERT INTO {SCHEMA}.partners (code, name, nip, email, phone, address, bill_street, "
-        f"                               bill_home_number, bill_postcode, bill_city, "
+        f"                               bill_home_number, bill_postcode, bill_city, bill_person, "
         f"                               ship_name, ship_street, ship_postcode, ship_city, ship_phone, firmy, payment_mode, "
         f"                               allow_installments, credit_limit, notes) "
-        f"VALUES (:code, :name, :nip, :email, :phone, :address, :bstreet, :bhome, :bpost, :bcity, "
+        f"VALUES (:code, :name, :nip, :email, :phone, :address, :bstreet, :bhome, :bpost, :bcity, :bperson, "
         f"        :sname, :sstreet, :spost, :scity, :sphone, "
         f"        :firmy, :mode, :inst, :lim, :notes) RETURNING *"
     ), {
         "code": code, "name": payload.name.strip(), "nip": payload.nip, "email": payload.email,
         "phone": payload.phone, "address": payload.address,
         "bstreet": payload.bill_street, "bhome": payload.bill_home_number,
-        "bpost": payload.bill_postcode, "bcity": payload.bill_city,
+        "bpost": payload.bill_postcode, "bcity": payload.bill_city, "bperson": payload.bill_person,
         "sname": payload.ship_name, "sstreet": payload.ship_street, "spost": payload.ship_postcode,
         "scity": payload.ship_city, "sphone": payload.ship_phone,
         "firmy": _firmy_in(payload.firmy),
@@ -492,7 +494,7 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
     wanted = _check_terms(payload.terms)
     fields, params = [], {"id": pid}
     for col in ("name", "nip", "email", "phone", "address", "notes", "is_active", "allow_installments",
-                "bill_street", "bill_home_number", "bill_postcode", "bill_city",
+                "bill_street", "bill_home_number", "bill_postcode", "bill_city", "bill_person",
                 "ship_name", "ship_street", "ship_postcode", "ship_city", "ship_phone"):
         val = getattr(payload, col)
         if val is not None:
@@ -536,7 +538,7 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
             tekst = f"{_kto(user)} {'aktywował' if row['is_active'] else 'dezaktywował'} partnera {_plabel(row)}"
         else:
             # Adresy składamy w jedno zdanie zamiast pięciu osobnych „pole: było → jest”.
-            adresy = {"bill_": ("adres do faktury", ("bill_street", "bill_home_number", "bill_postcode", "bill_city")),
+            adresy = {"bill_": ("adres do faktury", ("bill_person", "bill_street", "bill_home_number", "bill_postcode", "bill_city")),
                       "ship_": ("adres wysyłek zbiorczych", ("ship_name", "ship_street", "ship_postcode", "ship_city", "ship_phone"))}
             czesci = [f"{PARTNER_FIELDS[c]}: {_fmt(c, o)} → {_fmt(c, n)}"
                       for c, (o, n) in diff.items() if c != "notes" and not c.startswith(("bill_", "ship_"))]
@@ -1439,7 +1441,7 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
     r = await db.execute(text(
         f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email, "
         f"       p.nip AS partner_nip, p.phone AS partner_phone, p.bill_street, p.bill_home_number, "
-        f"       p.bill_postcode, p.bill_city, COALESCE(o.payment_mode, p.payment_mode) AS pay_mode "
+        f"       p.bill_postcode, p.bill_city, p.bill_person, COALESCE(o.payment_mode, p.payment_mode) AS pay_mode "
         f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id WHERE o.id = :id "
         # Blokada wiersza: automat w tle i kliknięcie w Magazynie nie wyślą tego samego dwa razy —
         # drugi poczeka, zobaczy numer z Sellasista i odpuści.
@@ -1466,6 +1468,7 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
         "partner_phone": o["partner_phone"] or "",
         "partner_street": o["bill_street"] or "", "partner_home_number": o["bill_home_number"] or "",
         "partner_postcode": o["bill_postcode"] or "", "partner_city": o["bill_city"] or "",
+        "partner_person": o["bill_person"] or "",
         "payment_mode": o["pay_mode"],          # tryb z chwili złożenia, per firma
         "recipient_name": o["recipient_name"], "recipient_street": o["recipient_street"],
         "recipient_zip": o["recipient_zip"], "recipient_city": o["recipient_city"],
