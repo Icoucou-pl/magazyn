@@ -40,6 +40,7 @@ from security import (
 )
 from services.products import fetch_products
 from services.sellasist import push_drop_order, SellasistError
+from services import dropy_storage
 
 router = APIRouter(prefix="/api", tags=["dropy"])
 
@@ -74,6 +75,7 @@ class PartnerIn(BaseModel):
     firmy: List[str] = Field(default_factory=list)
     payment_mode: str = "zbiorcza"             # domyślny tryb dla firmy bez własnych warunków
     terms: Optional[Dict[str, str]] = None     # tryb płatności per firma: {"amh": "zbiorcza", "veluxa": "przedplata"}
+    shipping: Optional[Dict[str, Optional[float]]] = None   # koszt wysyłki netto per firma (gdy wysyłamy my); None = bez opłaty
     allow_installments: bool = False
     credit_limit: Optional[float] = None
     notes: Optional[str] = None
@@ -92,6 +94,7 @@ class PartnerUpdate(BaseModel):
     firmy: Optional[List[str]] = None
     payment_mode: Optional[str] = None
     terms: Optional[Dict[str, str]] = None
+    shipping: Optional[Dict[str, Optional[float]]] = None
     allow_installments: Optional[bool] = None
     credit_limit: Optional[float] = None
     is_active: Optional[bool] = None
@@ -258,6 +261,50 @@ async def _save_terms(db: AsyncSession, before_p: dict, after_p: dict, wanted: D
     return {f: [old.get(f), m] for f, m in new.items() if old.get(f) != m}
 
 
+async def _shipping(db: AsyncSession, pids: List[int]) -> Dict[int, Dict[str, Optional[float]]]:
+    """Koszt wysyłki netto per partner × firma — naliczany tylko przy „Wyślijcie wy”."""
+    if not pids:
+        return {}
+    r = await db.execute(text(
+        f"SELECT partner_id, firma, shipping_net FROM {SCHEMA}.partner_terms WHERE partner_id = ANY(:ids)"
+    ), {"ids": pids})
+    out: Dict[int, Dict[str, Optional[float]]] = {}
+    for x in r.mappings():
+        out.setdefault(x["partner_id"], {})[x["firma"]] = float(x["shipping_net"]) if x["shipping_net"] is not None else None
+    return out
+
+
+def _shipping_for(p: dict, stored: Dict[str, Optional[float]]) -> Dict[str, Optional[float]]:
+    return {f: stored.get(f) for f in (_firmy_out(p.get("firmy")) or list(ALL_SHOPS))}
+
+
+async def _save_shipping(db: AsyncSession, p: dict, wanted: Optional[Dict[str, Optional[float]]]) -> Dict[str, list]:
+    """Zapisuje koszty wysyłki (wiersze warunków już istnieją po _save_terms). Zwraca różnice do logu."""
+    if wanted is None:
+        return {}
+    old = _shipping_for(p, (await _shipping(db, [p["id"]])).get(p["id"], {}))
+    diff = {}
+    for f, v in wanted.items():
+        f = (f or "").strip().lower()
+        if f not in old:
+            continue                              # firma, od której partner nie kupuje
+        if v is not None:
+            if v < 0:
+                raise HTTPException(400, f"Ujemny koszt wysyłki dla {FIRMA_LABEL.get(f, f)}")
+            v = round(float(v), 2)
+        if v != old[f]:
+            await db.execute(text(
+                f"UPDATE {SCHEMA}.partner_terms SET shipping_net = :v, updated_at = CURRENT_TIMESTAMP "
+                f"WHERE partner_id = :p AND firma = :f"
+            ), {"v": v, "p": p["id"], "f": f})
+            diff[f] = [old[f], v]
+    return diff
+
+
+def _ship_txt(v) -> str:
+    return _zl(v) if v is not None else "bez opłaty"
+
+
 def _month_range(month: str):
     if month:
         try:
@@ -372,10 +419,12 @@ async def list_partners(
         f"{where} ORDER BY p.name"
     ))
     rows = [dict(x) for x in r.mappings()]
-    terms = await _terms(db, [x["id"] for x in rows])
+    ids = [x["id"] for x in rows]
+    terms, ships = await _terms(db, ids), await _shipping(db, ids)
     return [{
         **_partner_out(row),
         "terms": _terms_for(row, terms.get(row["id"], {})),
+        "shipping": _shipping_for(row, ships.get(row["id"], {})),
         "orders_month": int(row["orders_month"]), "net_month": float(row["net_month"]),
         "users_count": int(row["users_count"]), "keys_count": int(row["keys_count"]),
     } for row in rows]
@@ -408,12 +457,16 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
     })
     row = dict(r.mappings().first())
     await _save_terms(db, row, row, wanted)
+    await _save_shipping(db, row, payload.shipping)
     terms = _terms_for(row, (await _terms(db, [row["id"]])).get(row["id"], {}))
-    warunki = ", ".join(f"{FIRMA_LABEL.get(f, f)}: {PAY_LABEL[m]}" for f, m in terms.items())
+    ships = _shipping_for(row, (await _shipping(db, [row["id"]])).get(row["id"], {}))
+    warunki = ", ".join(f"{FIRMA_LABEL.get(f, f)}: {PAY_LABEL[m]}"
+                        + (f", wysyłka {_zl(ships[f])}" if ships.get(f) is not None else "")
+                        for f, m in terms.items())
     await _log(db, user, "partner_created", f"{_kto(user)} dodał partnera {_plabel(row)} ({warunki})",
-               partner_id=row["id"], changes={"terms": terms})
+               partner_id=row["id"], changes={"terms": terms, "shipping": ships})
     await db.commit()
-    return {**_partner_out(row), "terms": terms}
+    return {**_partner_out(row), "terms": terms, "shipping": ships}
 
 
 @router.patch("/dropy/partners/{pid}")
@@ -445,6 +498,7 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
     else:
         row = before
     terms_diff = await _save_terms(db, before, row, wanted)
+    ship_diff = await _save_shipping(db, row, payload.shipping)
 
     # Tylko to, co faktycznie się zmieniło — zapis tego samego nie robi wpisu.
     diff = {}
@@ -459,22 +513,27 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
             diff[col] = [old, new]
     # Zmiana domyślnego trybu nic nie zmienia, gdy każda firma ma własne warunki — nie śmiecimy logu.
     diff.pop("payment_mode", None)
-    if diff or terms_diff:
-        if list(diff) == ["is_active"] and not terms_diff:
+    if diff or terms_diff or ship_diff:
+        if list(diff) == ["is_active"] and not terms_diff and not ship_diff:
             tekst = f"{_kto(user)} {'aktywował' if row['is_active'] else 'dezaktywował'} partnera {_plabel(row)}"
         else:
             czesci = [f"{PARTNER_FIELDS[c]}: {_fmt(c, o)} → {_fmt(c, n)}"
                       for c, (o, n) in diff.items() if c != "notes"]
             czesci += [f"płatność {FIRMA_LABEL.get(f, f)}: {PAY_LABEL.get(o, '—')} → {PAY_LABEL[n]}"
                        for f, (o, n) in terms_diff.items()]
+            czesci += [f"wysyłka {FIRMA_LABEL.get(f, f)}: {_ship_txt(o)} → {_ship_txt(n)}"
+                       for f, (o, n) in ship_diff.items()]
             if "notes" in diff:
                 czesci.append("notatki")
             tekst = f"{_kto(user)} zmienił dane partnera {_plabel(row)}: {'; '.join(czesci)}"
         if terms_diff:
             diff = {**diff, "terms": terms_diff}
+        if ship_diff:
+            diff = {**diff, "shipping": ship_diff}
         await _log(db, user, "partner_updated", tekst, partner_id=pid, changes=diff)
     await db.commit()
-    return {**_partner_out(row), "terms": _terms_for(row, (await _terms(db, [pid])).get(pid, {}))}
+    return {**_partner_out(row), "terms": _terms_for(row, (await _terms(db, [pid])).get(pid, {})),
+            "shipping": _shipping_for(row, (await _shipping(db, [pid])).get(pid, {}))}
 
 
 # ===== CENNIK =====
@@ -990,7 +1049,8 @@ async def refresh_catalog(db: AsyncSession = Depends(get_db), user: CurrentUser 
 # ===== ZAMÓWIENIA (podgląd i obsługa po naszej stronie) =====
 def _order_out(o: dict, items: List[dict]) -> dict:
     return {
-        **{k: v for k, v in o.items() if k not in ("total_net", "total_gross")},
+        **{k: v for k, v in o.items() if k not in ("total_net", "total_gross", "shipping_net", "label_token")},
+        "shipping_net": float(o.get("shipping_net") or 0),
         "total_net": float(o["total_net"] or 0),
         "total_gross": float(o["total_gross"] or 0),
         "items": [
@@ -1383,6 +1443,8 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
         "recipient_zip": o["recipient_zip"], "recipient_city": o["recipient_city"],
         "recipient_phone": o["recipient_phone"], "label_url": o["label_url"],
         "shipping_mode": o["shipping_mode"],
+        # Koszt wysyłki brutto (23%) — idzie do Sellasista jako koszt dostawy.
+        "shipping_gross": round(float(o["shipping_net"] or 0) * 1.23, 2),
         "items": items,
     }
     try:
@@ -1414,6 +1476,65 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
 async def push_order(oid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     """Ręczne wysłanie zamówienia do Sellasista (ponowienie po błędzie)."""
     return await _do_push(oid, db, user)
+
+
+# ===== ETYKIETY PDF — CZYSZCZENIE =====
+# Pliki etykiet leżą w prywatnym buckecie Supabase. Po wysyłce nie są już potrzebne,
+# a podmienione albo usunięte etykiety zostają jako sieroty — tu je sprzątamy.
+class LabelCleanupIn(BaseModel):
+    days: int = Field(30, ge=0, le=3650)
+
+
+def _cleanup_where() -> str:
+    return (
+        f"FROM {SCHEMA}.orders WHERE label_file IS NOT NULL AND ("
+        f"  label_url IS NULL OR label_token IS NULL OR label_url NOT LIKE '%' || label_token "
+        f"  OR (status IN ('wyslane', 'anulowane') AND updated_at < CURRENT_TIMESTAMP - make_interval(days => :d)))"
+    )
+
+
+@router.get("/dropy/labels/cleanup")
+async def labels_cleanup_preview(days: int = Query(30, ge=0, le=3650), db: AsyncSession = Depends(get_db),
+                                 user: CurrentUser = Depends(require_dropy)):
+    """Ile plików poszłoby do kosza — podgląd przed czyszczeniem."""
+    r = await db.execute(text(
+        f"SELECT COUNT(*) AS n, "
+        f"  COUNT(*) FILTER (WHERE label_url IS NULL OR label_token IS NULL OR label_url NOT LIKE '%' || label_token) AS orphans "
+        + _cleanup_where()), {"d": days})
+    x = r.mappings().first()
+    rt = await db.execute(text(f"SELECT COUNT(*) FROM {SCHEMA}.orders WHERE label_file IS NOT NULL"))
+    return {"days": days, "to_delete": int(x["n"]), "orphans": int(x["orphans"]),
+            "stored": int(rt.scalar() or 0), "enabled": dropy_storage.enabled()}
+
+
+@router.post("/dropy/labels/cleanup")
+async def labels_cleanup(payload: LabelCleanupIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Usuwa z bucketu PDF-y etykiet zamówień wysłanych/anulowanych dawniej niż `days` dni
+    oraz wszystkie sieroty (etykieta usunięta albo podmieniona). Link w zamówieniu zostaje —
+    po kliknięciu pokaże, że plik już usunięto."""
+    if not dropy_storage.enabled():
+        raise HTTPException(503, "Brak konfiguracji Storage (DROPY_STORAGE_URL / DROPY_STORAGE_KEY)")
+    r = await db.execute(text(f"SELECT id, label_file " + _cleanup_where() + " ORDER BY id"), {"d": payload.days})
+    rows = [dict(x) for x in r.mappings()]
+    removed = 0
+    for i in range(0, len(rows), 100):                    # Storage przyjmuje listę ścieżek; paczkami po 100
+        chunk = rows[i:i + 100]
+        try:
+            await dropy_storage.remove([x["label_file"] for x in chunk])
+        except dropy_storage.StorageError as e:
+            if removed:
+                break                                     # zapisujemy to, co już zeszło
+            raise HTTPException(502, f"Storage odrzucił usuwanie: {e}")
+        await db.execute(text(f"UPDATE {SCHEMA}.orders SET label_file = NULL WHERE id = ANY(:ids)"),
+                         {"ids": [x["id"] for x in chunk]})
+        removed += len(chunk)
+    if removed:
+        await _log(db, user, "labels_cleaned",
+                   f"{_kto(user)} wyczyścił etykiety PDF: usunięto {removed} "
+                   f"{_plural(removed, 'plik', 'pliki', 'plików')} (wysłane/anulowane ponad {payload.days} dni temu "
+                   f"oraz podmienione)", changes={"removed": removed, "days": payload.days})
+    await db.commit()
+    return {"removed": removed, "left": len(rows) - removed}
 
 
 # ===== PODSUMOWANIE MIESIĄCA =====
