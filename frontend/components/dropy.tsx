@@ -623,7 +623,8 @@ function PricingPanel({ partners }: { partners: Partner[] }) {
     if (!pid || !changed) return;
     setBusy(true);
     try {
-      await api.put(`/dropy/partners/${pid}/prices`,
+      // Cennik jest per firma — zapis dotyczy tylko wybranej zakładki firmy.
+      await api.put(`/dropy/partners/${pid}/prices?firma=${firma}`,
         Object.entries(draft).map(([sku, price_net]) => ({ sku, price_net })));
       toast(`Cennik zapisany (${changed} zmian)`, "ok");
       load();
