@@ -122,6 +122,13 @@ label.f>*{margin-top:4px}
 .seg input{position:absolute;opacity:0;pointer-events:none}
 .seg label:has(input:checked){background:var(--accent);color:var(--on-accent)}
 .check{display:flex;gap:8px;align-items:center;margin:12px 0 0;cursor:pointer;font-size:14px}
+.csec{margin-bottom:12px}
+.lrow{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.lrow b{grid-column:1/-1;font-size:13px}
+.lrow input[type=text]{min-width:0}
+.filebtn{position:relative;display:inline-flex;align-items:center;border:1px dashed var(--line);border-radius:8px;padding:7px 10px;font-size:13px;cursor:pointer;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.filebtn:hover{border-color:var(--accent)}
+.filebtn input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .sum{display:grid;grid-template-columns:1fr auto;gap:4px 12px;margin:16px 0 0;padding-top:14px;border-top:1px solid var(--line)}
 .sum dt{color:var(--muted)}
 .sum dd{margin:0;text-align:right}
@@ -456,18 +463,6 @@ function shell(inner) {
   renderCartBar();
 }
 
-function firmSwitch() {
-  if (state.me.firmy.length === 1) return `<p class="hint" style="margin:0 0 12px">Kupujesz od <b>${fl(state.me.firmy[0])}</b>.</p>`;
-  return `<div style="margin-bottom:12px">
-    <div class="fsw">${state.me.firmy.map(f => {
-      const n = Object.values(state.carts[f] || {}).reduce((a, b) => a + b, 0);
-      return `<button data-firma="${f}" aria-selected="${f === state.firma}">${fl(f)}${n ? `<span class="badge">${n}</span>` : ""}</button>`;
-    }).join("")}</div>
-    <p class="hint">Każda firma to osobne zamówienie i osobna faktura.</p></div>`;
-}
-
-const cart = () => (state.carts[state.firma] ||= {});
-
 function renderCartBar() {
   const bar = $("#cartbar");
   if (state.tab !== "katalog") { bar.hidden = true; return; }
@@ -483,18 +478,14 @@ function renderCartBar() {
   const who = firms.length === 1 ? fl(firms[0]) : `${firms.length} firmy`;
   bar.innerHTML = `<span>${who}: ${n} szt., ${zl(v)} netto</span><button class="btn">Przejdź do koszyka</button>`;
   bar.hidden = false;
-  // Koszyk jest (na razie) per firma — otwieramy pierwszą, w której coś leży.
-  bar.querySelector("button").onclick = () => {
-    if (!firms.includes(state.firma)) state.firma = firms[0];
-    go("koszyk");
-  };
+  bar.querySelector("button").onclick = () => go("koszyk");
 }
 
 async function go(tab) {
   state.tab = tab; window.scrollTo(0, 0);
   if (tab === "start") await loadStart();
   if (tab === "katalog") await loadCatalog();
-  if (tab === "koszyk") { await ensureCatalog(state.firma); renderCart(); }
+  if (tab === "koszyk") { await Promise.all(cartFirms().map(ensureCatalog)); renderCart(); }
   if (tab === "zamowienia") await loadOrders();
   if (tab === "finanse") await loadFinanse();
 }
@@ -932,50 +923,57 @@ function renderCatalog() {
   paintProducts();
 }
 
-function wireFirms() {
-  document.querySelectorAll("[data-firma]").forEach(b => b.onclick = async () => {
-    state.firma = b.dataset.firma;
-    await ensureCatalog(state.firma);
-    state.tab === "katalog" ? renderCatalog() : renderCart();
-  });
-}
-
 // ── Koszyk ───────────────────────────────────────────────────
-function renderCart() {
-  const items = Object.entries(cart());
-  if (!items.length) {
-    shell(`<div class="sechead"><div><h2>Nowe zamówienie</h2><p>Jedno zamówienie to jedna firma i jedna wysyłka.</p></div></div>
-      ${firmSwitch()}
-      <div class="card empty"><p>Koszyk ${fl(state.firma)} jest pusty.</p>
-      <button class="btn primary" style="margin-top:12px" data-tab="katalog">Otwórz katalog</button></div>`);
-    wireFirms();
-    $("[data-tab]").onclick = () => go("katalog");
-    return;
-  }
-  const P = Object.fromEntries((state.catalogs[state.firma] || []).map(p => [p.sku, p]));
-  const lines = items.map(([sku, q]) => `<div class="cline">
-      ${thumb(P[sku] || { sku })}
-      <div><div>${P[sku]?.name || sku}</div><div class="sku">${sku}</div></div>
-      <div class="step"><button data-dec="${sku}">−</button><span>${q}</span><button data-inc="${sku}">+</button></div>
-      <div class="lval">${zl((P[sku]?.price_net || 0) * q)}</div></div>`).join("");
+// Jeden koszyk na wszystkie firmy. Przy składaniu dzielimy go na osobne zamówienie
+// dla każdej firmy (osobna paczka, osobna faktura) — w jednej transakcji po stronie API.
+const cartFirms = () => state.me.firmy.filter(f => Object.keys(state.carts[f] || {}).length);
+const shipFee = f => Number((state.me.shipping || {})[f] || 0);
+const PDF_MAX = 5 * 1024 * 1024;
+state.labelFiles = state.labelFiles || {};        // {firma: File} — PDF-y wybrane w koszyku
+
+function cartPart(f, mode) {
+  const P = Object.fromEntries((state.catalogs[f] || []).map(p => [p.sku, p]));
+  const items = Object.entries(state.carts[f] || {});
   const net = items.reduce((s, [sku, q]) => s + (P[sku]?.price_net || 0) * q, 0);
   // Każda pozycja ma swoją stawkę — w Acti łóżka idą na 8%, akcesoria na 23%.
-  const gross = Math.round(items.reduce((s, [sku, q]) =>
-    s + (P[sku]?.price_net || 0) * q * (1 + (P[sku]?.vat ?? 23) / 100), 0) * 100) / 100;
-  const pay = payMode(state.firma) === "przedplata"
-    ? "Płatność z góry. Po złożeniu dostaniesz dane do przelewu, wysyłamy po zaksięgowaniu wpłaty."
-    : `Trafi na fakturę zbiorczą ${fl(state.firma)} na koniec miesiąca.`;
+  const vat = items.reduce((s, [sku, q]) => s + (P[sku]?.price_net || 0) * q * (P[sku]?.vat ?? 23) / 100, 0);
+  const ship = mode === "nasza" ? shipFee(f) : 0;
+  return { f, P, items, net: net + ship, ship, vat: vat + ship * 0.23 };
+}
 
-  shell(`
-    <div class="sechead"><div><h2>Nowe zamówienie</h2><p>Jedno zamówienie to jedna firma i jedna wysyłka.</p></div></div>
-    ${firmSwitch()}
+function renderCart() {
+  const firms = cartFirms();
+  const head = `<div class="sechead"><div><h2>Koszyk</h2><p>${state.me.firmy.length > 1
+    ? "Produkty różnych firm możesz zamówić razem — każda firma to osobna paczka i osobna faktura."
+    : "Jedno zamówienie to jedna wysyłka."}</p></div></div>`;
+  if (!firms.length) {
+    shell(`${head}<div class="card empty"><p>Koszyk jest pusty.</p>
+      <button class="btn primary" style="margin-top:12px" id="toCat">Otwórz katalog</button></div>`);
+    $("#toCat").onclick = () => go("katalog");
+    return;
+  }
+  const mode0 = state.cmode || "wlasna";
+  const sections = firms.map(f => {
+    const { P, items } = cartPart(f, mode0);
+    return `<div class="card csec">
+      <div class="chead" style="margin-bottom:6px"><h3 style="font-size:14px">${fl(f)}</h3>
+        <span class="pill ${payMode(f) === "przedplata" ? "warn" : "info"}">${payMode(f) === "przedplata" ? "przedpłata" : "faktura zbiorcza"}</span></div>
+      ${items.map(([sku, q]) => `<div class="cline">
+        ${thumb(P[sku] || { sku })}
+        <div><div>${esc(P[sku]?.name || sku)}</div><div class="sku">${esc(sku)}</div></div>
+        <div class="step"><button data-dec="${f}|${esc(sku)}" aria-label="Mniej">−</button><span>${q}</span><button data-inc="${f}|${esc(sku)}" aria-label="Więcej">+</button></div>
+        <div class="lval">${zl((P[sku]?.price_net || 0) * q)}</div></div>`).join("")}
+      </div>`;
+  }).join("");
+
+  shell(`${head}
     <div class="grid2">
-      <div class="card"><h3 style="font-size:14px;margin-bottom:10px">Produkty</h3>${lines}</div>
+      <div>${sections}</div>
       <div class="card">
         <h3 style="font-size:14px;margin-bottom:10px">Wysyłka</h3>
         <div class="seg">
-          <label><input type="radio" name="mode" value="wlasna" checked>Moja etykieta</label>
-          <label><input type="radio" name="mode" value="nasza">Wyślijcie wy</label>
+          <label><input type="radio" name="mode" value="wlasna"${mode0 === "wlasna" ? " checked" : ""}>Moja etykieta</label>
+          <label><input type="radio" name="mode" value="nasza"${mode0 === "nasza" ? " checked" : ""}>Wyślijcie wy</label>
         </div>
         <p class="hint" id="modeHint" style="margin-top:0"></p>
 
@@ -996,37 +994,68 @@ function renderCart() {
           <p class="hint">Pobranie trafia na Twoje konto, więc przesyłkę nadajesz u siebie.</p>
         </div>
         <div id="fZbior" hidden>
-          <p style="margin:0;font-size:14px">${state.me.address || "Adres z umowy"}</p>
+          <p style="margin:0;font-size:14px">${esc(state.me.address || "Adres z umowy")}</p>
           <p class="hint">Zmianę adresu zgłoś opiekunowi.</p>
         </div>
 
         <div id="labelBox" style="margin-top:12px">
-          <label class="f">Link do etykiety (PDF)<input type="text" id="fLabel" placeholder="możesz dodać później"></label>
+          <h3 style="font-size:13.5px;margin:0 0 4px">Etykiety${firms.length > 1 ? " — osobna dla każdej paczki" : ""}</h3>
+          ${firms.map(f => `<div class="lrow" data-lf="${f}">
+            ${firms.length > 1 ? `<b>${fl(f)}</b>` : ""}
+            <label class="filebtn"><input type="file" accept="application/pdf,.pdf" data-pdf="${f}">
+              <span>${state.labelFiles[f] ? "📄 " + esc(state.labelFiles[f].name) : "Wybierz PDF"}</span></label>
+            <input type="text" data-link="${f}" placeholder="albo wklej link">
+          </div>`).join("")}
+          <p class="hint">Możesz dodać później — zamówienie poczeka na etykietę.</p>
         </div>
 
-        <dl class="sum"><dt>Netto</dt><dd>${zl(net)}</dd><dt>VAT</dt><dd>${zl(gross - net)}</dd>
-          <dt class="big">Brutto</dt><dd class="big">${zl(gross)}</dd></dl>
-        <p class="hint">${pay}</p>
-        <button class="btn primary wide" id="send" style="margin-top:12px">Złóż zamówienie</button>
+        <dl class="sum" id="sum"></dl>
+        <div id="payNotes"></div>
+        <button class="btn primary wide" id="send" style="margin-top:12px"></button>
       </div>
     </div>`);
 
-  wireFirms();
-  document.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => { cart()[b.dataset.inc]++; renderCart(); });
+  const split = k => { const i = k.indexOf("|"); return [k.slice(0, i), k.slice(i + 1)]; };
+  document.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => { const [f, sku] = split(b.dataset.inc); cartOf(f)[sku]++; renderCart(); });
   document.querySelectorAll("[data-dec]").forEach(b => b.onclick = () => {
-    if (--cart()[b.dataset.dec] <= 0) delete cart()[b.dataset.dec];
+    const [f, sku] = split(b.dataset.dec);
+    if (--cartOf(f)[sku] <= 0) delete cartOf(f)[sku];
+    if (!Object.keys(cartOf(f)).length) delete state.labelFiles[f];
     renderCart();
   });
+  document.querySelectorAll("[data-pdf]").forEach(inp => inp.onchange = () => {
+    const f = inp.dataset.pdf, file = inp.files[0];
+    if (!file) return;
+    if (file.size > PDF_MAX) { inp.value = ""; return toast("Plik jest za duży — etykieta może mieć najwyżej 5 MB", "bad"); }
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { inp.value = ""; return toast("Wybierz plik PDF", "bad"); }
+    state.labelFiles[f] = file;
+    inp.nextElementSibling.textContent = "📄 " + file.name;
+  });
 
-  const syncMode = () => {
-    const own = $("input[name=mode]:checked").value === "wlasna";
+  const paint = () => {
+    const mode = $("input[name=mode]:checked").value;
+    state.cmode = mode;
+    const own = mode === "wlasna";
     $("#modeHint").textContent = own
       ? "Nadajesz przesyłkę sam. Zamówienie czeka, aż wgrasz etykietę."
       : "Nadajemy my, swojego kuriera. Etykiety nie potrzebujesz.";
     $("#labelBox").hidden = !own;
+    const parts = firms.map(f => cartPart(f, mode));
+    const net = parts.reduce((s, x) => s + x.net, 0), vat = parts.reduce((s, x) => s + x.vat, 0);
+    const gross = Math.round((net + vat) * 100) / 100;
+    const perFirm = parts.length > 1 ? parts.map(x => `<dt>${fl(x.f)}</dt><dd>${zl(x.net)}</dd>`).join("") : "";
+    const ships = parts.filter(x => x.ship);
+    $("#sum").innerHTML = `${perFirm}
+      ${ships.map(x => `<dt>Wysyłka${parts.length > 1 ? " " + fl(x.f) : ""}</dt><dd>${zl(x.ship)}</dd>`).join("")}
+      <dt>Netto</dt><dd>${zl(net)}</dd><dt>VAT</dt><dd>${zl(gross - net)}</dd>
+      <dt class="big">Brutto</dt><dd class="big">${zl(gross)}</dd>`;
+    $("#payNotes").innerHTML = firms.map(f => `<p class="hint">${parts.length > 1 ? `<b>${fl(f)}:</b> ` : ""}${payMode(f) === "przedplata"
+      ? "płatność z góry — po złożeniu dostaniesz dane do przelewu, wysyłamy po zaksięgowaniu wpłaty."
+      : `trafi na fakturę zbiorczą ${fl(f)} na koniec miesiąca.`}</p>`).join("");
+    $("#send").textContent = parts.length > 1 ? `Złóż ${parts.length} zamówienia` : "Złóż zamówienie";
   };
-  document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = syncMode);
-  syncMode();
+  document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = paint);
+  paint();
 
   const syncTyp = () => {
     const k = $("input[name=typ]:checked").value === "klient";
@@ -1039,10 +1068,15 @@ function renderCart() {
     const mode = $("input[name=mode]:checked").value;
     const name = $("#fName").value.trim(), city = $("#fCity").value.trim();
     if (typ === "klient" && (!name || !city)) return toast("Uzupełnij nazwisko i miasto odbiorcy", "bad");
+    const links = {};
+    if (mode === "wlasna") document.querySelectorAll("[data-link]").forEach(i => {
+      if (i.value.trim() && !state.labelFiles[i.dataset.link]) links[i.dataset.link] = i.value.trim();
+    });
     $("#send").disabled = true;
+    let res;
     try {
-      const o = await api("/orders", { method: "POST", body: JSON.stringify({
-        firma: state.firma, typ, shipping_mode: mode,
+      res = await api("/orders/checkout", { method: "POST", body: JSON.stringify({
+        typ, shipping_mode: mode,
         external_id: $("#fRef").value.trim() || null,
         recipient_name: typ === "klient" ? name : null,
         recipient_street: $("#fStreet").value.trim() || null,
@@ -1050,15 +1084,33 @@ function renderCart() {
         recipient_city: typ === "klient" ? city : null,
         recipient_phone: $("#fPhone").value.trim() || null,
         cod: $("#cod").checked,
-        label_url: mode === "wlasna" ? ($("#fLabel").value.trim() || null) : null,
-        lines: Object.entries(cart()).map(([sku, qty]) => ({ sku, qty })),
+        labels: links,
+        lines: firms.flatMap(f => Object.entries(state.carts[f]).map(([sku, qty]) => ({ firma: f, sku, qty }))),
       }) });
-      state.carts[state.firma] = {};
-      toast(o.status === "etykieta" ? `Złożono ${o.nr}. Czeka na etykietę.`
-        : o.status === "platnosc" ? `Złożono ${o.nr}. Czeka na płatność.` : `Złożono ${o.nr}.`);
-      await go("zamowienia");
-    } catch (e) { toast(e.message, "bad"); $("#send").disabled = false; }
+    } catch (e) { toast(e.message, "bad"); $("#send").disabled = false; return; }
+
+    // Zamówienia już są. PDF-y wgrywamy do każdego z osobna — błąd pliku nie cofa zamówienia.
+    const failed = [];
+    if (mode === "wlasna") for (const o of res.orders) {
+      const file = state.labelFiles[o.firma];
+      if (!file) continue;
+      try { Object.assign(o, await uploadLabel(o.nr, file)); } catch (e) { failed.push(`${o.nr}: ${e.message}`); }
+    }
+    firms.forEach(f => { state.carts[f] = {}; delete state.labelFiles[f]; });
+    const nrs = res.orders.map(o => o.nr).join(", ");
+    const waitFor = [...new Set(res.orders.map(o => ({ platnosc: "wpłatę", etykieta: "etykietę" })[o.status]).filter(Boolean))];
+    const all = res.orders.every(o => o.status === "platnosc" || o.status === "etykieta");
+    toast(`${res.orders.length > 1 ? "Złożono zamówienia" : "Złożono"} ${nrs}.`
+      + (waitFor.length ? ` ${all ? "Czeka" : "Część czeka"} na ${waitFor.join(" lub ")}.` : ""));
+    if (failed.length) toast(`Nie udało się wgrać etykiety — ${failed.join("; ")}. Dodaj ją w szczegółach zamówienia.`, "bad");
+    await go("zamowienia");
   };
+}
+
+async function uploadLabel(nr, file) {
+  return api(`/orders/${encodeURIComponent(nr)}/label/pdf`, {
+    method: "POST", body: file, headers: { "Content-Type": "application/pdf" },
+  });
 }
 
 // ── Zamówienia ───────────────────────────────────────────────
@@ -1204,7 +1256,7 @@ function showOrder(o) {
   $("#dBody").innerHTML = `
     <div class="dhead">
       <div><h2 class="mono" style="font-size:17px">${o.nr}</h2>
-        <p style="margin:2px 0 0;color:var(--muted);font-size:13px">${fl(o.firma)} · ${dm(o.created_at)}${o.external_id ? " · " + o.external_id : ""}</p></div>
+        <p style="margin:2px 0 0;color:var(--muted);font-size:13px">${fl(o.firma)} · ${dm(o.created_at)}${o.external_id ? " · " + esc(o.external_id) : ""}${o.checkout_nr && o.checkout_nr !== o.nr ? ` · z koszyka ${esc(o.checkout_nr)}` : ""}</p></div>
       <button class="x" data-close aria-label="Zamknij">×</button>
     </div>
     <div><span class="pill ${cls}">${lbl}</span></div>
@@ -1219,24 +1271,35 @@ function showOrder(o) {
       <a href="${esc(o.label_url)}" target="_blank" rel="noopener noreferrer" style="font-size:13.5px">Otwórz przesłaną etykietę ↗</a></div>` : ""}
     ${needLabel ? `<div class="callout warn">
       <p><b>${o.status === "etykieta" ? "Zamówienie czeka na etykietę." : "Możesz jeszcze podmienić etykietę."}</b></p>
-      <label class="f">Link do etykiety (PDF)<input type="text" id="lbl" value="${esc(o.label_url)}"></label>
+      <label class="filebtn" style="max-width:none"><input type="file" accept="application/pdf,.pdf" id="lblPdf"><span>Wgraj PDF etykiety</span></label>
+      <label class="f" style="margin-top:8px">albo link do etykiety<input type="text" id="lbl" value="${esc(o.label_url)}"></label>
       <button class="btn primary sm" id="lblSave" style="margin-top:8px">${o.label_url ? "Podmień etykietę" : "Zapisz etykietę"}</button></div>` : ""}
     <div class="dsec"><h3>Odbiorca</h3>
       <div style="font-size:13.5px">${esc(o.recipient?.name || "—")}<br>${esc(o.recipient?.street || "")} ${esc(o.recipient?.zip || "")} ${esc(o.recipient?.city || "")}<br>${esc(o.recipient?.phone || "")}</div></div>
     <div class="dsec"><h3>Produkty</h3><table><tbody>
       ${o.items.map(i => `<tr><td>${esc(i.name)}<div class="sku">${esc(i.sku)}</div></td><td class="r">${i.qty}</td><td class="r">${zl(i.price_net * i.qty)}</td></tr>`).join("")}
+      ${o.shipping_net ? `<tr><td>Wysyłka</td><td></td><td class="r">${zl(o.shipping_net)}</td></tr>` : ""}
       <tr><td><b>Razem</b></td><td></td><td class="r"><b>${zl(o.total_net)} netto</b><br><small>${zl(o.total_gross)} brutto</small></td></tr>
     </tbody></table></div>`;
   $("#scrim").hidden = false; $("#drawer").hidden = false;
   $("#drawer").querySelector(".x").onclick = closeDrawer;
   $("#scrim").onclick = closeDrawer;
   const save = $("#lblSave");
+  const pdf = $("#lblPdf");
+  if (pdf) pdf.onchange = () => {
+    const file = pdf.files[0];
+    if (!file) return;
+    if (file.size > PDF_MAX) { pdf.value = ""; return toast("Plik jest za duży — etykieta może mieć najwyżej 5 MB", "bad"); }
+    pdf.nextElementSibling.textContent = "📄 " + file.name;
+  };
   if (save) save.onclick = async () => {
+    const file = pdf?.files[0];
     const url = $("#lbl").value.trim();
-    if (!url) return toast("Wklej link do pliku z etykietą", "bad");
+    if (!file && (!url || url === o.label_url)) return toast("Wybierz PDF albo wklej link do etykiety", "bad");
     save.disabled = true;
     try {
-      await api(`/orders/${encodeURIComponent(nr)}/label`, { method: "POST", body: JSON.stringify({ label_url: url }) });
+      if (file) await uploadLabel(nr, file);
+      else await api(`/orders/${encodeURIComponent(nr)}/label`, { method: "POST", body: JSON.stringify({ label_url: url }) });
       toast("Etykieta zapisana"); closeDrawer(); await go(state.tab);
     } catch (e) { toast(e.message, "bad"); save.disabled = false; }
   };
