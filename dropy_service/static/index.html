@@ -105,6 +105,9 @@ label.f>*{margin-top:4px}
 .step{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px}
 .step button{border:0;background:none;width:32px;height:34px;cursor:pointer;font-size:17px}
 .step span{min-width:24px;text-align:center;font-weight:600}
+/* Atrybut hidden musi wygrywać z display:flex/grid w klasach — inaczej pasek koszyka
+   i inne ukryte bloki zostają na ekranie (np. „Przejdź do koszyka” w samym koszyku). */
+[hidden]{display:none!important}
 .cartbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;display:flex;gap:14px;align-items:center;
   background:var(--ink);color:var(--bg);padding:8px 8px 8px 16px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);width:min(560px,calc(100% - 24px))}
 .cartbar span{flex:1;font-size:14px}
