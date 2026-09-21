@@ -27,7 +27,7 @@ type Partner = {
   id: number; code: string; name: string; nip?: string | null; email?: string | null;
   phone?: string | null; address?: string | null; firmy: string[];
   // Dane do faktury (płatnik w Sellasist) i adres wysyłek zbiorczych („Na mój adres”)
-  bill_street?: string | null; bill_home_number?: string | null; bill_postcode?: string | null; bill_city?: string | null;
+  bill_person?: string | null; bill_street?: string | null; bill_home_number?: string | null; bill_postcode?: string | null; bill_city?: string | null;
   ship_name?: string | null; ship_street?: string | null; ship_postcode?: string | null; ship_city?: string | null;
   ship_phone?: string | null;
   payment_mode: PayMode; allow_installments: boolean;
@@ -63,7 +63,7 @@ type Template = {
 type PortalUser = { id: number; email: string; full_name: string | null; is_active: boolean; last_login: string | null };
 type ApiKey = { id: number; label: string; key_hint: string; is_active: boolean; last_used: string | null };
 
-const ADDR_KEYS = ["bill_street", "bill_home_number", "bill_postcode", "bill_city",
+const ADDR_KEYS = ["bill_person", "bill_street", "bill_home_number", "bill_postcode", "bill_city",
   "ship_name", "ship_street", "ship_postcode", "ship_city", "ship_phone"] as const;
 type AddrKey = typeof ADDR_KEYS[number];
 
@@ -370,6 +370,9 @@ function PartnerForm({ partner, onClose, onSaved }: {
       return v !== "" && !(Number(v) >= 0);
     });
     if (badShip) { toast(`Koszt wysyłki ${firmaLabel(badShip)} musi być liczbą`, "warning"); return; }
+    if (f.bill_street.trim() && f.bill_person.trim().split(/\s+/).length < 2) {
+      toast("Dane do faktury: wpisz imię i nazwisko osoby — bez tego Sellasist nie wystawi faktury automatem", "warning"); return;
+    }
     const shipAny = [f.ship_street, f.ship_postcode, f.ship_city].some(v => v.trim());
     const shipAll = [f.ship_street, f.ship_postcode, f.ship_city].every(v => v.trim());
     if (shipAny && !shipAll) { toast("Adres wysyłek zbiorczych: uzupełnij ulicę, kod i miasto", "warning"); return; }
@@ -429,6 +432,8 @@ function PartnerForm({ partner, onClose, onSaved }: {
         <Field label="E-mail"><input style={inputStyle} value={f.email ?? ""} onChange={e => set("email", e.target.value)}/></Field>
         <div>
           <div style={{ fontSize: 12, color: "var(--text-lo)", marginBottom: 6 }}>Dane do faktury (płatnik w Sellasist)</div>
+          <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Imię i nazwisko osoby (wymagane do automatycznej FV)"
+            value={f.bill_person} onChange={e => set("bill_person", e.target.value)}/>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 90px", gap: 8 }}>
             <input style={inputStyle} placeholder="Ulica" value={f.bill_street} onChange={e => set("bill_street", e.target.value)}/>
             <input style={inputStyle} placeholder="Nr" value={f.bill_home_number} onChange={e => set("bill_home_number", e.target.value)}/>
