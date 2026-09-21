@@ -3,7 +3,7 @@
 Reguły, które trzymamy tutaj, bo to one chronią magazyn i pieniądze:
   · jedno zamówienie = jedna firma,
   · produkt bez ceny w cenniku partnera nie istnieje,
-  · przedpłata → zamówienie czeka na wpłatę,
+  · przedpłata → zamówienie czeka na wpłatę (tryb płatności jest per firma),
   · pobranie bez etykiety → zamówienie czeka na etykietę,
   · limit kupiecki liczony per partner, ze wszystkich firm razem.
 """
@@ -111,7 +111,9 @@ async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
 async def me(p: Partner = Depends(current_partner)):
     return {
         "code": p.code, "name": p.name, "firmy": p.firmy,
-        "payment_mode": p.payment_mode, "credit_limit": p.credit_limit, "address": p.address,
+        "payment_mode": p.payment_mode,            # wspólny tryb albo „mieszana”
+        "payment_modes": p.terms,                  # {firma: tryb} — tego używa portal
+        "credit_limit": p.credit_limit, "address": p.address,
     }
 
 
@@ -150,16 +152,18 @@ async def catalog(firma: str = Query(...), p: Partner = Depends(current_partner)
 
 # ===== LIMIT KUPIECKI =====
 async def _credit_used(db: AsyncSession, pid: int) -> Decimal:
-    """Ile limitu jest zajęte = zamówienia jeszcze bez faktury + niezapłacona część faktur.
+    """Ile limitu jest zajęte = zamówienia „zbiorcza” jeszcze bez faktury + niezapłacona część faktur.
 
     Wcześniej liczyliśmy sumę WSZYSTKICH zamówień od początku, więc limit tylko rósł
     i po kilku miesiącach blokowałby partnera, który płaci w terminie.
     Liczymy tylko wpłaty potwierdzone — zgłoszenie partnera limitu nie zwalnia.
+    Zamówienia na przedpłatę limitu nie zajmują: ruszają dopiero po wpłacie.
     """
     r = await db.execute(text(
         "SELECT "
         "  COALESCE((SELECT SUM(total_gross) FROM dropy.orders "
-        "            WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane'), 0) "
+        "            WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane' "
+        "              AND COALESCE(payment_mode, 'zbiorcza') = 'zbiorcza'), 0) "
         "+ COALESCE((SELECT SUM(GREATEST(i.total_gross - COALESCE(pm.paid, 0), 0)) "
         "            FROM dropy.invoices i "
         "            LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM dropy.payments "
@@ -175,6 +179,7 @@ def _out(o: dict, items: List[dict]) -> dict:
         "nr": o["nr"], "firma": o["firma"], "typ": o["typ"], "status": o["status"],
         "external_id": o["external_id"], "cod": o["cod"], "tracking": o["tracking"],
         "shipping_mode": o["shipping_mode"], "label_url": o["label_url"],
+        "payment_mode": o.get("payment_mode"),
         "recipient": {
             "name": o["recipient_name"], "phone": o["recipient_phone"], "street": o["recipient_street"],
             "zip": o["recipient_zip"], "city": o["recipient_city"],
@@ -315,14 +320,15 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
                       "price_net": float(cena), "vat": float(vat)})
     gross = gross.quantize(Decimal("0.01"))
 
-    if p.credit_limit is not None and p.payment_mode == "zbiorcza":
+    pay_mode = p.mode(firma)
+    if p.credit_limit is not None and pay_mode == "zbiorcza":
         already = await _credit_used(db, p.id)
         if already + gross > Decimal(str(p.credit_limit)):
             raise HTTPException(409, "Limit kupiecki przekroczony. Opłać zaległe faktury albo napisz do opiekuna.")
 
     # Kolejność blokad: najpierw pieniądze, potem etykieta. Etykiety wymagamy tylko wtedy,
     # gdy partner deklaruje własną — jeśli wysyłamy my, nadajemy zwykłą przesyłkę.
-    if p.payment_mode == "przedplata":
+    if pay_mode == "przedplata":
         status = "platnosc"
     elif payload.shipping_mode == "wlasna" and not payload.label_url:
         status = "etykieta"
@@ -341,9 +347,9 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
     r = await db.execute(text(
         "INSERT INTO dropy.orders (nr, partner_id, firma, typ, status, source, external_id, "
         "  recipient_name, recipient_phone, recipient_street, recipient_zip, recipient_city, "
-        "  cod, shipping_mode, label_url, note, total_net, total_gross) "
+        "  cod, shipping_mode, label_url, note, total_net, total_gross, payment_mode) "
         "VALUES (:nr, :pid, :firma, :typ, :status, :src, :ext, :rn, :rp, :rs, :rz, :rc, "
-        "        :cod, :mode, :label, :note, :net, :gross) RETURNING id"
+        "        :cod, :mode, :label, :note, :net, :gross, :pay) RETURNING id"
     ), {
         "nr": nr, "pid": p.id, "firma": firma, "typ": payload.typ, "status": status,
         "src": "api" if p.via == "api" else "portal", "ext": payload.external_id,
@@ -351,6 +357,7 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         "rz": payload.recipient_zip, "rc": payload.recipient_city, "cod": payload.cod,
         "mode": payload.shipping_mode,
         "label": payload.label_url, "note": payload.note, "net": float(total), "gross": float(gross),
+        "pay": pay_mode,
     })
     oid = r.scalar()
     for it in items:
@@ -370,6 +377,7 @@ async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), 
         tekst += f". {STATUS_INFO[status]}"
     await log(db, p, "order_created", tekst, order_nr=nr, changes={
         "status": status, "typ": payload.typ, "shipping_mode": payload.shipping_mode, "cod": payload.cod,
+        "payment_mode": pay_mode,
         "total_net": float(total), "total_gross": float(gross),
         "items": [{"sku": i["sku"], "qty": i["qty"], "price_net": i["price_net"]} for i in items],
     })
@@ -439,9 +447,11 @@ async def finanse(
         inv["orders"] = by_inv.get(inv["id"], [])
 
     # Zamówienia jeszcze bez faktury — u was to dopisek „na koniec miesiąca”.
+    # Tylko te na fakturę zbiorczą: przedpłata rozlicza się osobno, przed wysyłką.
     ru = await db.execute(text(
         "SELECT firma, COUNT(*) AS cnt, SUM(total_gross) AS gross FROM dropy.orders "
-        "WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane' GROUP BY firma"
+        "WHERE partner_id = :p AND invoice_id IS NULL AND status <> 'anulowane' "
+        "  AND COALESCE(payment_mode, 'zbiorcza') = 'zbiorcza' GROUP BY firma"
     ), {"p": p.id})
     unbilled = [{"firma": x["firma"], "count": int(x["cnt"]), "gross": float(x["gross"] or 0)}
                 for x in ru.mappings()]
@@ -635,7 +645,7 @@ async def dashboard(p: Partner = Depends(current_partner), db: AsyncSession = De
                           "text": f"{float(i['left']):,.2f} zł".replace(",", " ").replace(".", ",") + f" · termin {kiedy}"})
 
     credit = None
-    if p.credit_limit is not None and p.payment_mode == "zbiorcza":
+    if p.has_credit:
         used = float(await _credit_used(db, p.id))
         credit = {"limit": p.credit_limit, "used": round(used, 2), "free": round(p.credit_limit - used, 2)}
 
