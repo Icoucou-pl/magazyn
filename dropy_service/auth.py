@@ -55,7 +55,9 @@ class Partner:
         # Koszt wysyłki netto per firma, gdy nadajemy my. None = bez opłaty.
         self.shipping_net = {f: (shipping or {}).get(f) for f in self.firmy}
         self.credit_limit = float(row["credit_limit"]) if row["credit_limit"] is not None else None
-        self.address = row["address"]
+        self.address = row["address"]              # stary, wolny tekst — tylko awaryjnie do podglądu
+        # Adres wysyłek zbiorczych („Na mój adres”) w polach — tak idzie do Sellasista.
+        self.ship = {k: (row.get(f"ship_{k}") or "").strip() for k in ("name", "street", "postcode", "city", "phone")}
         self.via = via                     # 'portal' albo 'api'
         self.user_id = user_id
         self.key_label = key_label         # przy API: nazwa i końcówka klucza — do logów

@@ -120,7 +120,9 @@ async def me(p: Partner = Depends(current_partner)):
         "payment_mode": p.payment_mode,            # wspólny tryb albo „mieszana”
         "payment_modes": p.terms,                  # {firma: tryb} — tego używa portal
         "shipping": p.shipping_net,                # {firma: koszt wysyłki netto, gdy wysyłamy my}
-        "credit_limit": p.credit_limit, "address": p.address,
+        "credit_limit": p.credit_limit,
+        "address": _ship_text(p),                  # adres wysyłek zbiorczych do wyświetlenia
+        "ship_address": p.ship if _ship_ok(p) else None,
     }
 
 
@@ -281,12 +283,35 @@ async def get_order(nr: str, p: Partner = Depends(current_partner), db: AsyncSes
 SHIP_VAT = Decimal("23")      # wysyłka zawsze 23%, niezależnie od stawek towaru
 
 
-def _check_common(payload) -> None:
-    """Walidacja wspólna dla pojedynczego zamówienia i koszyka wielofirmowego."""
+def _ship_ok(p: Partner) -> bool:
+    return bool(p.ship["street"] and p.ship["postcode"] and p.ship["city"])
+
+
+def _ship_text(p: Partner) -> Optional[str]:
+    if not _ship_ok(p):
+        return None
+    s = p.ship
+    return ", ".join(x for x in (s["name"] or p.name, s["street"], f"{s['postcode']} {s['city']}", s["phone"]) if x)
+
+
+def _check_common(payload, p: Partner) -> None:
+    """Walidacja wspólna dla pojedynczego zamówienia i koszyka wielofirmowego.
+
+    „Na mój adres” (typ=zbiorcze): adres dostawy bierzemy z karty partnera, nie z żądania —
+    inaczej zamówienie szło do Sellasista z pustym adresem i magazyn nie wiedział, gdzie wysłać.
+    """
     if payload.typ not in ("klient", "zbiorcze"):
         raise HTTPException(400, "typ musi być 'klient' albo 'zbiorcze'")
     if payload.shipping_mode not in ("wlasna", "nasza"):
         raise HTTPException(400, "shipping_mode musi być 'wlasna' albo 'nasza'")
+    if payload.typ == "zbiorcze":
+        if not _ship_ok(p):
+            raise HTTPException(400, "Nie masz jeszcze ustawionego adresu do wysyłek zbiorczych — napisz do opiekuna")
+        payload.recipient_name = p.ship["name"] or p.name
+        payload.recipient_street = p.ship["street"]
+        payload.recipient_zip = p.ship["postcode"]
+        payload.recipient_city = p.ship["city"]
+        payload.recipient_phone = p.ship["phone"] or payload.recipient_phone
     if payload.typ == "klient" and not (payload.recipient_name and payload.recipient_city):
         raise HTTPException(400, "Wysyłka do klienta wymaga nazwiska i miasta odbiorcy")
 
@@ -429,7 +454,7 @@ async def _existing(db: AsyncSession, p: Partner, external_id: Optional[str]) ->
 async def create_order(payload: OrderIn, p: Partner = Depends(current_partner), db: AsyncSession = Depends(get_db)):
     """Jedno zamówienie = jedna firma. Koszyk z kilku firm idzie przez /orders/checkout."""
     firma = payload.firma.strip().lower()
-    _check_common(payload)
+    _check_common(payload, p)
     label = _clean_label(payload.label_url)
 
     # Idempotencja: ten sam numer ze sklepu partnera (w tej firmie) zwraca istniejące
@@ -473,7 +498,7 @@ async def checkout(payload: CheckoutIn, p: Partner = Depends(current_partner), d
     Albo powstają wszystkie, albo żadne: błąd w jednej firmie (brak produktu, limit)
     nie zostawia połowy koszyka złożonej.
     """
-    _check_common(payload)
+    _check_common(payload, p)
     if not payload.lines:
         raise HTTPException(400, "Koszyk jest pusty")
     by_firma: dict = {}
