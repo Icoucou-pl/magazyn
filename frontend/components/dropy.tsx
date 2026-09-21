@@ -1421,7 +1421,7 @@ function LabelCleanupModal({ onClose }: { onClose: () => void }) {
         </Field>
         <p style={{ margin: 0, fontSize: 13 }}>
           {info === null ? "Liczę…" : !info.enabled
-            ? "Wgrywanie plików nie jest skonfigurowane (brak DROPY_STORAGE_URL / DROPY_STORAGE_KEY)."
+            ? "Wgrywanie plików nie jest skonfigurowane (brak zmiennych DROPY_STORAGE_* w Railway)."
             : <>W magazynie plików: <b>{info.stored}</b>. Do usunięcia: <b>{info.to_delete}</b>
                 {info.orphans ? <> (w tym {info.orphans} podmienionych lub usuniętych z zamówień)</> : null}.</>}
         </p>
