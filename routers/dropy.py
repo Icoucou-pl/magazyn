@@ -32,7 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from database import get_db
+from database import get_db, SessionLocal
 from models import CurrentUser
 from security import (
     get_current_user, hash_password, validate_password_strength,
@@ -348,7 +348,7 @@ PARTNER_FIELDS = {
     "payment_mode": "tryb płatności", "allow_installments": "raty", "credit_limit": "limit kupiecki",
     "is_active": "aktywny", "notes": "notatki",
 }
-PAY_LABEL = {"zbiorcza": "faktura zbiorcza", "przedplata": "przedpłata"}
+PAY_LABEL = {"zbiorcza": "faktura zbiorcza", "przedplata": "faktura do zamówienia (termin)"}
 MODE_LABEL = {"replace": "zastąp wszystko", "fill": "dołóż brakujące", "update": "zmień istniejące"}
 
 
@@ -1440,7 +1440,10 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
         f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email, "
         f"       p.nip AS partner_nip, p.phone AS partner_phone, p.bill_street, p.bill_home_number, "
         f"       p.bill_postcode, p.bill_city, COALESCE(o.payment_mode, p.payment_mode) AS pay_mode "
-        f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id WHERE o.id = :id"
+        f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id WHERE o.id = :id "
+        # Blokada wiersza: automat w tle i kliknięcie w Magazynie nie wyślą tego samego dwa razy —
+        # drugi poczeka, zobaczy numer z Sellasista i odpuści.
+        f"FOR UPDATE OF o"
     ), {"id": oid})
     o = r.mappings().first()
     if not o:
@@ -1495,6 +1498,38 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
                partner_id=o["partner_id"], order_nr=o["nr"], changes={"sellasist_order_id": sid})
     await db.commit()
     return {"ok": True, "sellasist_order_id": sid}
+
+
+# ===== AUTOMAT: wysyłka do Sellasista w tle =====
+# Zamówienie „Nowe” z portalu albo API nie ma już nic do odblokowania, więc automat
+# wysyła je sam. Odrzucone przez Sellasist (push_error) ponawia najwyżej co 30 min —
+# po poprawce mapowania samo „dojdzie”, a przy trwałym błędzie nie spamujemy API.
+PUSH_RETRY_MINUTES = 30
+
+
+async def push_pending(limit: int = 25) -> dict:
+    """Jeden bieg automatu. Każde zamówienie we własnej sesji — błąd jednego nie blokuje reszty."""
+    async with SessionLocal() as db:
+        r = await db.execute(text(
+            f"SELECT id FROM {SCHEMA}.orders "
+            f"WHERE status = ANY(:st) AND sellasist_order_id IS NULL "
+            f"  AND created_at > CURRENT_TIMESTAMP - INTERVAL '30 days' "
+            f"  AND (push_error IS NULL OR updated_at < CURRENT_TIMESTAMP - make_interval(mins => :retry)) "
+            f"ORDER BY id LIMIT :lim"
+        ), {"st": list(PUSHABLE), "retry": PUSH_RETRY_MINUTES, "lim": limit})
+        ids = [x[0] for x in r.fetchall()]
+    ok = failed = 0
+    for oid in ids:
+        try:
+            async with SessionLocal() as db:
+                res = await _do_push(oid, db, None)
+            ok += 1 if res.get("ok") else 0
+        except HTTPException:
+            failed += 1                                   # treść błędu jest już w push_error i w logach
+        except Exception as e:                            # np. zerwane połączenie — spróbujemy w kolejnym biegu
+            failed += 1
+            print(f"[dropy] push {oid} błąd: {e}")
+    return {"checked": len(ids), "pushed": ok, "failed": failed}
 
 
 @router.post("/dropy/orders/{oid}/push")
