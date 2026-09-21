@@ -1513,7 +1513,7 @@ async def labels_cleanup(payload: LabelCleanupIn, db: AsyncSession = Depends(get
     oraz wszystkie sieroty (etykieta usunięta albo podmieniona). Link w zamówieniu zostaje —
     po kliknięciu pokaże, że plik już usunięto."""
     if not dropy_storage.enabled():
-        raise HTTPException(503, "Brak konfiguracji Storage (DROPY_STORAGE_URL / DROPY_STORAGE_KEY)")
+        raise HTTPException(503, "Brak konfiguracji Storage (DROPY_STORAGE_URL, _ANON_KEY, _EMAIL, _PASSWORD)")
     r = await db.execute(text(f"SELECT id, label_file " + _cleanup_where() + " ORDER BY id"), {"d": payload.days})
     rows = [dict(x) for x in r.mappings()]
     removed = 0
