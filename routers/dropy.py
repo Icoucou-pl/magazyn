@@ -24,7 +24,7 @@ import json
 import secrets
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -72,7 +72,8 @@ class PartnerIn(BaseModel):
     bill_postcode: Optional[str] = None
     bill_city: Optional[str] = None
     firmy: List[str] = Field(default_factory=list)
-    payment_mode: str = "zbiorcza"
+    payment_mode: str = "zbiorcza"             # domyślny tryb dla firmy bez własnych warunków
+    terms: Optional[Dict[str, str]] = None     # tryb płatności per firma: {"amh": "zbiorcza", "veluxa": "przedplata"}
     allow_installments: bool = False
     credit_limit: Optional[float] = None
     notes: Optional[str] = None
@@ -90,6 +91,7 @@ class PartnerUpdate(BaseModel):
     bill_city: Optional[str] = None
     firmy: Optional[List[str]] = None
     payment_mode: Optional[str] = None
+    terms: Optional[Dict[str, str]] = None
     allow_installments: Optional[bool] = None
     credit_limit: Optional[float] = None
     is_active: Optional[bool] = None
@@ -202,6 +204,60 @@ async def _get_partner(db: AsyncSession, pid: int) -> dict:
     return dict(row)
 
 
+# ===== WARUNKI PŁATNOŚCI (per partner × firma) =====
+# Partner może mieć w AMH fakturę zbiorczą, a w Veluxie przedpłatę. Tryb żyje
+# w dropy.partner_terms; partners.payment_mode to już tylko domyślny tryb dla firmy,
+# którą partnerowi dopiero dodajemy. Limit kupiecki zostaje per partner.
+async def _terms(db: AsyncSession, pids: List[int]) -> Dict[int, Dict[str, str]]:
+    if not pids:
+        return {}
+    r = await db.execute(text(
+        f"SELECT partner_id, firma, payment_mode FROM {SCHEMA}.partner_terms WHERE partner_id = ANY(:ids)"
+    ), {"ids": pids})
+    out: Dict[int, Dict[str, str]] = {}
+    for x in r.mappings():
+        out.setdefault(x["partner_id"], {})[x["firma"]] = x["payment_mode"]
+    return out
+
+
+def _terms_for(p: dict, stored: Dict[str, str]) -> Dict[str, str]:
+    """Tryb dla KAŻDEJ firmy partnera — brak wpisu = tryb domyślny partnera."""
+    default = p.get("payment_mode") or "zbiorcza"
+    return {f: stored.get(f, default) for f in (_firmy_out(p.get("firmy")) or list(ALL_SHOPS))}
+
+
+def _check_terms(terms: Optional[Dict[str, str]]) -> Dict[str, str]:
+    out = {}
+    for f, mode in (terms or {}).items():
+        f = (f or "").strip().lower()
+        if f not in ALL_SHOPS:
+            raise HTTPException(400, f"Nieznana firma w warunkach płatności: {f}")
+        if mode not in PAYMENT_MODES:
+            raise HTTPException(400, f"Tryb płatności musi być jednym z: {', '.join(PAYMENT_MODES)}")
+        out[f] = mode
+    return out
+
+
+async def _save_terms(db: AsyncSession, before_p: dict, after_p: dict, wanted: Dict[str, str]) -> Dict[str, list]:
+    """Zapisuje warunki dla bieżących firm partnera, a firmy, od których już nie kupuje, czyści.
+    Zwraca różnice {firma: [było, jest]} do logu; firma dopiero dodana ma „było” = None."""
+    stored = (await _terms(db, [after_p["id"]])).get(after_p["id"], {})
+    old = _terms_for(before_p, stored)
+    new = {f: wanted.get(f, m) for f, m in _terms_for(after_p, stored).items()}
+    await db.execute(text(
+        f"DELETE FROM {SCHEMA}.partner_terms WHERE partner_id = :p AND firma <> ALL(CAST(:f AS TEXT[]))"
+    ), {"p": after_p["id"], "f": list(new)})
+    for f, mode in new.items():
+        if stored.get(f) == mode:
+            continue
+        await db.execute(text(
+            f"INSERT INTO {SCHEMA}.partner_terms (partner_id, firma, payment_mode) VALUES (:p, :f, :m) "
+            f"ON CONFLICT (partner_id, firma) DO UPDATE SET payment_mode = EXCLUDED.payment_mode, "
+            f"updated_at = CURRENT_TIMESTAMP"
+        ), {"p": after_p["id"], "f": f, "m": mode})
+    return {f: [old.get(f), m] for f, m in new.items() if old.get(f) != m}
+
+
 def _month_range(month: str):
     if month:
         try:
@@ -232,6 +288,7 @@ PARTNER_FIELDS = {
     "payment_mode": "tryb płatności", "allow_installments": "raty", "credit_limit": "limit kupiecki",
     "is_active": "aktywny", "notes": "notatki",
 }
+PAY_LABEL = {"zbiorcza": "faktura zbiorcza", "przedplata": "przedpłata"}
 MODE_LABEL = {"replace": "zastąp wszystko", "fill": "dołóż brakujące", "update": "zmień istniejące"}
 
 
@@ -265,6 +322,8 @@ def _fmt(col: str, v) -> str:
         return _zl(v)
     if col == "firmy":
         return ", ".join(FIRMA_LABEL.get(f, f) for f in _firmy_out(v)) or "—"
+    if col == "payment_mode":
+        return PAY_LABEL.get(v, v)
     if isinstance(v, bool):
         return "tak" if v else "nie"
     if col == "status":
@@ -312,17 +371,21 @@ async def list_partners(
         f"       ON k.partner_id = p.id "
         f"{where} ORDER BY p.name"
     ))
+    rows = [dict(x) for x in r.mappings()]
+    terms = await _terms(db, [x["id"] for x in rows])
     return [{
-        **_partner_out(dict(row)),
+        **_partner_out(row),
+        "terms": _terms_for(row, terms.get(row["id"], {})),
         "orders_month": int(row["orders_month"]), "net_month": float(row["net_month"]),
         "users_count": int(row["users_count"]), "keys_count": int(row["keys_count"]),
-    } for row in r.mappings()]
+    } for row in rows]
 
 
 @router.post("/dropy/partners", status_code=201)
 async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     if payload.payment_mode not in PAYMENT_MODES:
         raise HTTPException(400, f"payment_mode musi być jednym z: {', '.join(PAYMENT_MODES)}")
+    wanted = _check_terms(payload.terms)
     code = payload.code.strip().upper()
     dup = await db.execute(text(f"SELECT id FROM {SCHEMA}.partners WHERE UPPER(code) = :c"), {"c": code})
     if dup.first():
@@ -344,14 +407,19 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
         "lim": payload.credit_limit, "notes": payload.notes,
     })
     row = dict(r.mappings().first())
-    await _log(db, user, "partner_created", f"{_kto(user)} dodał partnera {_plabel(row)}", partner_id=row["id"])
+    await _save_terms(db, row, row, wanted)
+    terms = _terms_for(row, (await _terms(db, [row["id"]])).get(row["id"], {}))
+    warunki = ", ".join(f"{FIRMA_LABEL.get(f, f)}: {PAY_LABEL[m]}" for f, m in terms.items())
+    await _log(db, user, "partner_created", f"{_kto(user)} dodał partnera {_plabel(row)} ({warunki})",
+               partner_id=row["id"], changes={"terms": terms})
     await db.commit()
-    return _partner_out(row)
+    return {**_partner_out(row), "terms": terms}
 
 
 @router.patch("/dropy/partners/{pid}")
 async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     before = await _get_partner(db, pid)
+    wanted = _check_terms(payload.terms)
     fields, params = [], {"id": pid}
     for col in ("name", "nip", "email", "phone", "address", "notes", "is_active", "allow_installments",
                 "bill_street", "bill_home_number", "bill_postcode", "bill_city"):
@@ -370,12 +438,13 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
     if "credit_limit" in payload.model_fields_set:
         fields.append("credit_limit = :lim")
         params["lim"] = payload.credit_limit          # None = zdejmij limit
-    if not fields:
-        return _partner_out(await _get_partner(db, pid))
-
-    fields.append("updated_at = CURRENT_TIMESTAMP")
-    r = await db.execute(text(f"UPDATE {SCHEMA}.partners SET {', '.join(fields)} WHERE id = :id RETURNING *"), params)
-    row = dict(r.mappings().first())
+    if fields:
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        r = await db.execute(text(f"UPDATE {SCHEMA}.partners SET {', '.join(fields)} WHERE id = :id RETURNING *"), params)
+        row = dict(r.mappings().first())
+    else:
+        row = before
+    terms_diff = await _save_terms(db, before, row, wanted)
 
     # Tylko to, co faktycznie się zmieniło — zapis tego samego nie robi wpisu.
     diff = {}
@@ -388,18 +457,24 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
             old, new = _firmy_out(old), _firmy_out(new)
         if old != new:
             diff[col] = [old, new]
-    if diff:
-        if list(diff) == ["is_active"]:
+    # Zmiana domyślnego trybu nic nie zmienia, gdy każda firma ma własne warunki — nie śmiecimy logu.
+    diff.pop("payment_mode", None)
+    if diff or terms_diff:
+        if list(diff) == ["is_active"] and not terms_diff:
             tekst = f"{_kto(user)} {'aktywował' if row['is_active'] else 'dezaktywował'} partnera {_plabel(row)}"
         else:
-            zmiany = "; ".join(f"{PARTNER_FIELDS[c]}: {_fmt(c, o)} → {_fmt(c, n)}"
-                               for c, (o, n) in diff.items() if c != "notes")
+            czesci = [f"{PARTNER_FIELDS[c]}: {_fmt(c, o)} → {_fmt(c, n)}"
+                      for c, (o, n) in diff.items() if c != "notes"]
+            czesci += [f"płatność {FIRMA_LABEL.get(f, f)}: {PAY_LABEL.get(o, '—')} → {PAY_LABEL[n]}"
+                       for f, (o, n) in terms_diff.items()]
             if "notes" in diff:
-                zmiany = (zmiany + "; " if zmiany else "") + "notatki"
-            tekst = f"{_kto(user)} zmienił dane partnera {_plabel(row)}: {zmiany}"
+                czesci.append("notatki")
+            tekst = f"{_kto(user)} zmienił dane partnera {_plabel(row)}: {'; '.join(czesci)}"
+        if terms_diff:
+            diff = {**diff, "terms": terms_diff}
         await _log(db, user, "partner_updated", tekst, partner_id=pid, changes=diff)
     await db.commit()
-    return _partner_out(row)
+    return {**_partner_out(row), "terms": _terms_for(row, (await _terms(db, [pid])).get(pid, {}))}
 
 
 # ===== CENNIK =====
@@ -1137,6 +1212,7 @@ async def unbilled_orders(
     """Zamówienia bez faktury — podstawa do wystawienia zbiorczej („na koniec miesiąca”)."""
     r = await db.execute(text(
         f"SELECT o.id, o.nr, o.firma, o.created_at, o.recipient_name, o.total_net, o.total_gross, o.status, "
+        f"       COALESCE(o.payment_mode, p.payment_mode) AS payment_mode, "
         f"       p.code AS partner_code, p.name AS partner_name, o.partner_id "
         f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id "
         f"WHERE o.invoice_id IS NULL AND o.status NOT IN ('anulowane') "
@@ -1278,7 +1354,7 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
     r = await db.execute(text(
         f"SELECT o.*, p.code AS partner_code, p.name AS partner_name, p.email AS partner_email, "
         f"       p.nip AS partner_nip, p.phone AS partner_phone, p.bill_street, p.bill_home_number, "
-        f"       p.bill_postcode, p.bill_city, p.payment_mode "
+        f"       p.bill_postcode, p.bill_city, COALESCE(o.payment_mode, p.payment_mode) AS pay_mode "
         f"FROM {SCHEMA}.orders o JOIN {SCHEMA}.partners p ON p.id = o.partner_id WHERE o.id = :id"
     ), {"id": oid})
     o = r.mappings().first()
@@ -1302,7 +1378,7 @@ async def _do_push(oid: int, db: AsyncSession, user: Optional[CurrentUser] = Non
         "partner_phone": o["partner_phone"] or "",
         "partner_street": o["bill_street"] or "", "partner_home_number": o["bill_home_number"] or "",
         "partner_postcode": o["bill_postcode"] or "", "partner_city": o["bill_city"] or "",
-        "payment_mode": o["payment_mode"],
+        "payment_mode": o["pay_mode"],          # tryb z chwili złożenia, per firma
         "recipient_name": o["recipient_name"], "recipient_street": o["recipient_street"],
         "recipient_zip": o["recipient_zip"], "recipient_city": o["recipient_city"],
         "recipient_phone": o["recipient_phone"], "label_url": o["label_url"],
