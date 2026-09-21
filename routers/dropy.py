@@ -72,6 +72,11 @@ class PartnerIn(BaseModel):
     bill_home_number: Optional[str] = None
     bill_postcode: Optional[str] = None
     bill_city: Optional[str] = None
+    ship_name: Optional[str] = None            # adres wysyłek zbiorczych („Na mój adres”) — odbiorca
+    ship_street: Optional[str] = None          # ulica i numer
+    ship_postcode: Optional[str] = None
+    ship_city: Optional[str] = None
+    ship_phone: Optional[str] = None
     firmy: List[str] = Field(default_factory=list)
     payment_mode: str = "zbiorcza"             # domyślny tryb dla firmy bez własnych warunków
     terms: Optional[Dict[str, str]] = None     # tryb płatności per firma: {"amh": "zbiorcza", "veluxa": "przedplata"}
@@ -91,6 +96,11 @@ class PartnerUpdate(BaseModel):
     bill_home_number: Optional[str] = None
     bill_postcode: Optional[str] = None
     bill_city: Optional[str] = None
+    ship_name: Optional[str] = None            # adres wysyłek zbiorczych („Na mój adres”) — odbiorca
+    ship_street: Optional[str] = None          # ulica i numer
+    ship_postcode: Optional[str] = None
+    ship_city: Optional[str] = None
+    ship_phone: Optional[str] = None
     firmy: Optional[List[str]] = None
     payment_mode: Optional[str] = None
     terms: Optional[Dict[str, str]] = None
@@ -331,7 +341,10 @@ STATUS_LABEL = {
 PARTNER_FIELDS = {
     "name": "nazwa", "nip": "NIP", "email": "e-mail", "phone": "telefon", "address": "adres",
     "bill_street": "ulica (faktura)", "bill_home_number": "nr domu (faktura)",
-    "bill_postcode": "kod (faktura)", "bill_city": "miasto (faktura)", "firmy": "firmy",
+    "bill_postcode": "kod (faktura)", "bill_city": "miasto (faktura)",
+    "ship_name": "odbiorca (wysyłki zbiorcze)", "ship_street": "ulica (wysyłki zbiorcze)",
+    "ship_postcode": "kod (wysyłki zbiorcze)", "ship_city": "miasto (wysyłki zbiorcze)",
+    "ship_phone": "telefon (wysyłki zbiorcze)", "firmy": "firmy",
     "payment_mode": "tryb płatności", "allow_installments": "raty", "credit_limit": "limit kupiecki",
     "is_active": "aktywny", "notes": "notatki",
 }
@@ -442,15 +455,19 @@ async def create_partner(payload: PartnerIn, db: AsyncSession = Depends(get_db),
 
     r = await db.execute(text(
         f"INSERT INTO {SCHEMA}.partners (code, name, nip, email, phone, address, bill_street, "
-        f"                               bill_home_number, bill_postcode, bill_city, firmy, payment_mode, "
+        f"                               bill_home_number, bill_postcode, bill_city, "
+        f"                               ship_name, ship_street, ship_postcode, ship_city, ship_phone, firmy, payment_mode, "
         f"                               allow_installments, credit_limit, notes) "
         f"VALUES (:code, :name, :nip, :email, :phone, :address, :bstreet, :bhome, :bpost, :bcity, "
+        f"        :sname, :sstreet, :spost, :scity, :sphone, "
         f"        :firmy, :mode, :inst, :lim, :notes) RETURNING *"
     ), {
         "code": code, "name": payload.name.strip(), "nip": payload.nip, "email": payload.email,
         "phone": payload.phone, "address": payload.address,
         "bstreet": payload.bill_street, "bhome": payload.bill_home_number,
         "bpost": payload.bill_postcode, "bcity": payload.bill_city,
+        "sname": payload.ship_name, "sstreet": payload.ship_street, "spost": payload.ship_postcode,
+        "scity": payload.ship_city, "sphone": payload.ship_phone,
         "firmy": _firmy_in(payload.firmy),
         "mode": payload.payment_mode, "inst": payload.allow_installments,
         "lim": payload.credit_limit, "notes": payload.notes,
@@ -475,7 +492,8 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
     wanted = _check_terms(payload.terms)
     fields, params = [], {"id": pid}
     for col in ("name", "nip", "email", "phone", "address", "notes", "is_active", "allow_installments",
-                "bill_street", "bill_home_number", "bill_postcode", "bill_city"):
+                "bill_street", "bill_home_number", "bill_postcode", "bill_city",
+                "ship_name", "ship_street", "ship_postcode", "ship_city", "ship_phone"):
         val = getattr(payload, col)
         if val is not None:
             fields.append(f"{col} = :{col}")
@@ -517,8 +535,15 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
         if list(diff) == ["is_active"] and not terms_diff and not ship_diff:
             tekst = f"{_kto(user)} {'aktywował' if row['is_active'] else 'dezaktywował'} partnera {_plabel(row)}"
         else:
+            # Adresy składamy w jedno zdanie zamiast pięciu osobnych „pole: było → jest”.
+            adresy = {"bill_": ("adres do faktury", ("bill_street", "bill_home_number", "bill_postcode", "bill_city")),
+                      "ship_": ("adres wysyłek zbiorczych", ("ship_name", "ship_street", "ship_postcode", "ship_city", "ship_phone"))}
             czesci = [f"{PARTNER_FIELDS[c]}: {_fmt(c, o)} → {_fmt(c, n)}"
-                      for c, (o, n) in diff.items() if c != "notes"]
+                      for c, (o, n) in diff.items() if c != "notes" and not c.startswith(("bill_", "ship_"))]
+            for pref, (nazwa, cols) in adresy.items():
+                if any(c in diff for c in cols):
+                    txt = lambda src: ", ".join(str(src.get(c) or "").strip() for c in cols if str(src.get(c) or "").strip()) or "—"
+                    czesci.append(f"{nazwa}: {txt(before)} → {txt(row)}")
             czesci += [f"płatność {FIRMA_LABEL.get(f, f)}: {PAY_LABEL.get(o, '—')} → {PAY_LABEL[n]}"
                        for f, (o, n) in terms_diff.items()]
             czesci += [f"wysyłka {FIRMA_LABEL.get(f, f)}: {_ship_txt(o)} → {_ship_txt(n)}"
