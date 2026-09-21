@@ -404,33 +404,49 @@ async def update_partner(pid: int, payload: PartnerUpdate, db: AsyncSession = De
 
 # ===== CENNIK =====
 @router.get("/dropy/partners/{pid}/prices")
-async def get_prices(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+async def get_prices(pid: int, firma: str = Query("", description="slug firmy; pusto = wszystkie"),
+                     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
     await _get_partner(db, pid)
+    firma = (firma or "").strip().lower()
     r = await db.execute(text(
-        f"SELECT sku, price_net, updated_at FROM {SCHEMA}.prices WHERE partner_id = :p ORDER BY sku"
-    ), {"p": pid})
-    return [{"sku": x["sku"], "price_net": float(x["price_net"]), "updated_at": x["updated_at"]} for x in r.mappings()]
+        f"SELECT firma, sku, price_net, updated_at FROM {SCHEMA}.prices "
+        f"WHERE partner_id = :p AND (:f = '' OR firma = :f) ORDER BY firma, sku"
+    ), {"p": pid, "f": firma})
+    return [{"firma": x["firma"], "sku": x["sku"], "price_net": float(x["price_net"]), "updated_at": x["updated_at"]}
+            for x in r.mappings()]
 
 
 @router.put("/dropy/partners/{pid}/prices")
-async def set_prices(pid: int, payload: List[PriceIn], db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
-    """Wsad cennika. price_net = null usuwa pozycję, czyli produkt znika z katalogu partnera."""
+async def set_prices(pid: int, payload: List[PriceIn], firma: str = Query(..., description="slug firmy, której dotyczy wsad"),
+                     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_dropy)):
+    """Wsad cennika JEDNEJ firmy. price_net = null usuwa pozycję, czyli produkt znika z katalogu partnera.
+
+    Cennik jest per partner × firma: ten sam SKU może być sprzedawany przez dwie firmy
+    (np. import Veluxy przeniesiony na AMH) i każda ma własną cenę oraz własną widoczność.
+    """
     partner = await _get_partner(db, pid)
+    firma = (firma or "").strip().lower()
+    if firma not in _firmy_out(partner.get("firmy")):
+        raise HTTPException(403, f"Partner {partner['code']} nie kupuje od firmy {firma}")
     upserts = [p for p in payload if p.price_net is not None]
     deletes = [p.sku.strip() for p in payload if p.price_net is None]
 
-    r = await db.execute(text(f"SELECT sku, price_net FROM {SCHEMA}.prices WHERE partner_id = :p"), {"p": pid})
+    r = await db.execute(text(
+        f"SELECT sku, price_net FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f"
+    ), {"p": pid, "f": firma})
     old = {x["sku"]: float(x["price_net"]) for x in r.mappings()}
 
     for p in upserts:
         if p.price_net < 0:
             raise HTTPException(400, f"Ujemna cena dla {p.sku}")
         await db.execute(text(
-            f"INSERT INTO {SCHEMA}.prices (partner_id, sku, price_net) VALUES (:p, :sku, :cena) "
-            f"ON CONFLICT (partner_id, sku) DO UPDATE SET price_net = EXCLUDED.price_net, updated_at = CURRENT_TIMESTAMP"
-        ), {"p": pid, "sku": p.sku.strip(), "cena": p.price_net})
+            f"INSERT INTO {SCHEMA}.prices (partner_id, firma, sku, price_net) VALUES (:p, :f, :sku, :cena) "
+            f"ON CONFLICT (partner_id, firma, sku) DO UPDATE SET price_net = EXCLUDED.price_net, updated_at = CURRENT_TIMESTAMP"
+        ), {"p": pid, "f": firma, "sku": p.sku.strip(), "cena": p.price_net})
     for sku in deletes:
-        await db.execute(text(f"DELETE FROM {SCHEMA}.prices WHERE partner_id = :p AND sku = :sku"), {"p": pid, "sku": sku})
+        await db.execute(text(
+            f"DELETE FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f AND sku = :sku"
+        ), {"p": pid, "f": firma, "sku": sku})
 
     diff = {}
     for p in upserts:
@@ -451,8 +467,9 @@ async def set_prices(pid: int, payload: List[PriceIn], db: AsyncSession = Depend
             zm = n - dod - usu
             czesci = [f"{x} {w}" for x, w in ((dod, "nowych"), (zm, "zmienionych"), (usu, "usuniętych")) if x]
             opis = f"{n} {_plural(n, 'pozycja', 'pozycje', 'pozycji')} ({', '.join(czesci)})"
-        await _log(db, user, "prices_changed", f"{_kto(user)} zmienił cennik partnera {_plabel(partner)}: {opis}",
-                   partner_id=pid, changes=diff)
+        await _log(db, user, "prices_changed",
+                   f"{_kto(user)} zmienił cennik partnera {_plabel(partner)} ({FIRMA_LABEL.get(firma, firma)}): {opis}",
+                   partner_id=pid, changes={"firma": firma, **diff})
     await db.commit()
     return {"updated": len(upserts), "deleted": len(deletes)}
 
@@ -475,8 +492,8 @@ async def pricing_sheet(
         raise HTTPException(403, f"Partner {p['code']} nie kupuje od firmy {firma}")
 
     r = await db.execute(
-        text(f"SELECT LOWER(TRIM(sku)) AS k, price_net FROM {SCHEMA}.prices WHERE partner_id = :p"),
-        {"p": pid},
+        text(f"SELECT LOWER(TRIM(sku)) AS k, price_net FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f"),
+        {"p": pid, "f": firma},
     )
     prices = {x["k"]: float(x["price_net"]) for x in r.mappings()}
 
@@ -536,11 +553,8 @@ async def create_template(payload: TemplateIn, db: AsyncSession = Depends(get_db
         p = await _get_partner(db, payload.partner_id)
         if firma not in _firmy_out(p.get("firmy")):
             raise HTTPException(400, f"Partner {p['code']} nie kupuje od firmy {firma}")
-        # Tylko SKU tej firmy — cennik partnera bywa wspólny dla kilku firm.
         r = await db.execute(text(
-            f"SELECT pr.sku, pr.price_net FROM {SCHEMA}.prices pr "
-            f"JOIN {SCHEMA}.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
-            f"WHERE pr.partner_id = :p"
+            f"SELECT sku, price_net FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f ORDER BY sku"
         ), {"f": firma, "p": payload.partner_id})
         rows = [{"sku": x["sku"], "price_net": float(x["price_net"])} for x in r.mappings()]
     elif payload.items:
@@ -648,9 +662,7 @@ async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(
         if firma not in _firmy_out(src.get("firmy")):
             raise HTTPException(400, f"Partner {src['code']} nie kupuje od firmy {firma}")
         r = await db.execute(text(
-            f"SELECT pr.sku, pr.price_net FROM {SCHEMA}.prices pr "
-            f"JOIN {SCHEMA}.catalog_cache c ON LOWER(TRIM(c.sku)) = LOWER(TRIM(pr.sku)) AND c.firma = :f "
-            f"WHERE pr.partner_id = :p"
+            f"SELECT sku, price_net FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f ORDER BY sku"
         ), {"f": firma, "p": payload.from_partner_id})
     else:
         raise HTTPException(400, "Podaj template_id albo from_partner_id")
@@ -669,14 +681,14 @@ async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(
         for pr in await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"}, firma):
             costs[pr.sku.strip().lower()] = float(pr.purchase_price or 0)
 
-    r = await db.execute(text(f"SELECT LOWER(TRIM(sku)) AS k FROM {SCHEMA}.prices WHERE partner_id = :p"), {"p": pid})
+    r = await db.execute(text(
+        f"SELECT LOWER(TRIM(sku)) AS k FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f"
+    ), {"p": pid, "f": firma})
     existing = {x["k"] for x in r.mappings()}
 
     if payload.mode == "replace":
-        await db.execute(text(
-            f"DELETE FROM {SCHEMA}.prices WHERE partner_id = :p AND LOWER(TRIM(sku)) IN "
-            f"(SELECT LOWER(TRIM(sku)) FROM {SCHEMA}.catalog_cache WHERE firma = :f)"
-        ), {"p": pid, "f": firma})
+        await db.execute(text(f"DELETE FROM {SCHEMA}.prices WHERE partner_id = :p AND firma = :f"),
+                         {"p": pid, "f": firma})
         existing = set()
 
     factor = 1 + (payload.adjust_pct or 0) / 100
@@ -698,9 +710,9 @@ async def apply_template(pid: int, payload: ApplyIn, db: AsyncSession = Depends(
             cena = zakup * (1 + (payload.markup_pct or 0) / 100)
         cena = round(cena * factor, 2)
         await db.execute(text(
-            f"INSERT INTO {SCHEMA}.prices (partner_id, sku, price_net) VALUES (:p, :s, :c) "
-            f"ON CONFLICT (partner_id, sku) DO UPDATE SET price_net = EXCLUDED.price_net, updated_at = CURRENT_TIMESTAMP"
-        ), {"p": pid, "s": row["sku"].strip(), "c": cena})
+            f"INSERT INTO {SCHEMA}.prices (partner_id, firma, sku, price_net) VALUES (:p, :f, :s, :c) "
+            f"ON CONFLICT (partner_id, firma, sku) DO UPDATE SET price_net = EXCLUDED.price_net, updated_at = CURRENT_TIMESTAMP"
+        ), {"p": pid, "f": firma, "s": row["sku"].strip(), "c": cena})
         written += 1
 
     dodatki = []
