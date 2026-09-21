@@ -282,7 +282,12 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         # Stawka VAT idzie z pozycji: Acti ma głównie 8%, więc 23% na sztywno zawyżałoby faktury.
         vat = float(it.get("vat") or 23)
         lines.append({
+            # Sellasist w GET /orders/{id} oddaje pozycje jako `carts` z `id` = ID produktu —
+            # tak samo je wysyłamy. `product_id` zostaje dla zgodności, `name` żeby linia
+            # nie była pusta, gdyby Sellasist nie dopasował produktu.
+            "id": pid,
             "product_id": pid,
+            "name": str(it.get("name") or sku),
             "symbol": sku,
             "catalog_number": sku,
             "quantity": int(it.get("qty") or 0),
@@ -341,6 +346,9 @@ async def push_drop_order(firma_slug: str, order: dict) -> str:
         "external_id": order.get("external_id") or order.get("nr"),
         "bill_address": bill,
         "shipment_address": ship,
+        # Pozycje zamówienia: klucz `carts` (jak w odczycie). Pod `products` Sellasist
+        # przyjmował zamówienie, ale bez pozycji — zostawiamy oba dla bezpieczeństwa.
+        "carts": lines,
         "products": lines,
     }
     if fields:
