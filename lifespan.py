@@ -136,6 +136,24 @@ async def _sellasist_auto_loop():
             print(f"[fakturownia_history] auto błąd (pomijam, pętla działa dalej): {e}")
 
 
+DROPY_PUSH_INTERVAL_SECONDS = 120
+
+
+async def _dropy_push_loop():
+    """Co 2 minuty wysyła do Sellasista zamówienia dropów, które na nic nie czekają
+    (status „Nowe” bez numeru Sellasista). Każdy błąd łapany — pętla nigdy nie umiera."""
+    from routers.dropy import push_pending
+    await asyncio.sleep(30)                     # daj aplikacji wstać po deployu
+    while True:
+        try:
+            res = await push_pending()
+            if res["checked"]:
+                print(f"[dropy] auto-push: {res}")
+        except Exception as e:
+            print(f"[dropy] auto-push błąd (pomijam, pętla działa dalej): {e}")
+        await asyncio.sleep(DROPY_PUSH_INTERVAL_SECONDS)
+
+
 SNAPSHOT_TIMES = ((7, 5, "rano"), (20, 5, "wieczor"))   # (godz, min, nazwa pory) — czas warszawski
 
 
@@ -558,11 +576,12 @@ async def lifespan(app: FastAPI):
     fx_task = asyncio.create_task(_fx_refresh_loop())
     sellasist_task = asyncio.create_task(_sellasist_auto_loop())
     snapshot_task = asyncio.create_task(_snapshot_loop())
+    dropy_push_task = asyncio.create_task(_dropy_push_loop())
 
     yield
 
     # Sprzątanie przy zamknięciu
-    for _t in (fx_task, sellasist_task, snapshot_task):
+    for _t in (fx_task, sellasist_task, snapshot_task, dropy_push_task):
         _t.cancel()
         try:
             await _t
