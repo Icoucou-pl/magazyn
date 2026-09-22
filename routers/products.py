@@ -24,6 +24,58 @@ from routers.product_history import require_super_admin   # ten sam guard co his
 router = APIRouter(prefix="/api", tags=["products"])
 
 
+async def _sku_atrybutow(db: AsyncSession, sku: str) -> str:
+    """Pisownia SKU, pod którą zapisujemy do app_product_attrs.
+
+    Atrybuty są unikalne po `sku` DOSŁOWNIE, a cała reszta aplikacji łączy je
+    po LOWER(TRIM(sku)). Zapis pod inną wielkością liter nie trafiał więc
+    w istniejący wiersz, tylko zakładał drugi — tak powstały duble typu
+    SZP1_Outlet / szp1_outlet (modal „brak ceny zakupu" w Finansach podaje
+    SKU małymi literami) i MKP1 / Mkp1 / „Mkp1 " ze spacją.
+
+    Kolejność:
+      1. istniejący wiersz atrybutów pod tym SKU w dowolnej pisowni,
+      2. pisownia ze źródła: Subiekt (oba), Fakturownia, stany Sellasista,
+         pozycje zamówień — kolejność jak w katalogu (sql.py),
+      3. to, co przyszło, obcięte ze spacji.
+    """
+    s = (sku or "").strip()
+    if not s:
+        return s
+    r = await db.execute(text(f"""
+        SELECT sku FROM (
+            SELECT sku, 0 AS pri, updated_at AS ts
+              FROM {settings.TABLE_PRODUCT_ATTRS}
+             WHERE LOWER(TRIM(sku)) = LOWER(:s)
+            UNION ALL
+            SELECT TRIM({settings.COL_PRODUCT_SKU}), 1, NULL
+              FROM {settings.TABLE_PRODUCTS}
+             WHERE LOWER(TRIM({settings.COL_PRODUCT_SKU})) = LOWER(:s)
+            UNION ALL
+            SELECT TRIM(sku), 2, NULL
+              FROM {settings.TABLE_SUBIEKT_DWA}
+             WHERE LOWER(TRIM(sku)) = LOWER(:s)
+            UNION ALL
+            SELECT TRIM(sku), 3, NULL
+              FROM {settings.TABLE_FAKTUROWNIA_STOCK}
+             WHERE sku_canon = LOWER(:s) AND sku IS NOT NULL
+            UNION ALL
+            SELECT TRIM(symbol), 4, NULL
+              FROM {settings.TABLE_EXTERNAL_STOCK}
+             WHERE sku_canon = LOWER(:s) AND symbol IS NOT NULL
+            UNION ALL
+            SELECT TRIM({settings.COL_ITEM_SKU}), 5, NULL
+              FROM {settings.TABLE_ORDER_ITEMS}
+             WHERE LOWER(TRIM({settings.COL_ITEM_SKU})) = LOWER(:s)
+        ) k
+        WHERE sku IS NOT NULL AND sku <> ''
+        ORDER BY pri, ts DESC NULLS LAST
+        LIMIT 1
+    """), {"s": s})
+    hit = r.scalar_one_or_none()
+    return hit or s
+
+
 def _mask_financials(products, user):
     """Serwerowe ukrycie cen: zeruje pola finansowe dla usera bez viewFinancials.
     Front i tak maskuje wizualnie — to zamyka wyciek wartości w payloadzie (zakładka Network)."""
@@ -69,6 +121,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 
 @router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    sku = await _sku_atrybutow(db, sku)
     existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
@@ -215,6 +268,15 @@ async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_
     mfr_result = await db.execute(text(f"SELECT id, name FROM {settings.TABLE_MANUFACTURERS}"))
     mfr_map = {r._mapping["name"].strip().lower(): r._mapping["id"] for r in mfr_result}
 
+    # Raz na import zamiast _sku_atrybutow() na każdy wiersz: ten helper przeszukuje
+    # też pozycje zamówień, a import potrafi mieć setki wierszy.
+    attrs_res = await db.execute(text(
+        f"SELECT DISTINCT ON (LOWER(TRIM(sku))) LOWER(TRIM(sku)) AS k, sku "
+        f"FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL "
+        f"ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST"
+    ))
+    attrs_pisownia = {r._mapping["k"]: r._mapping["sku"] for r in attrs_res}
+
     updated = 0
     skipped = 0
     errors = []
@@ -225,7 +287,9 @@ async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_
             skipped += 1
             errors.append(f"{row.sku}: nie znaleziono w bazie")
             continue
-        real_sku = valid_skus[sku_key]
+        # Istniejący wiersz atrybutów w dowolnej pisowni wygrywa z pisownią Subiekta —
+        # inaczej import zakładałby drugi wiersz obok już istniejącego.
+        real_sku = attrs_pisownia.get(sku_key, valid_skus[sku_key])
 
         mfr_id = None
         if row.manufacturer_name:
@@ -343,6 +407,7 @@ async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_
 async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
     """Przełącza status ulubione - jeśli był true, robi false i odwrotnie.
     Wymaga editProducts (VIEWER nie może zmieniać obserwowania)."""
+    sku = await _sku_atrybutow(db, sku)
     existing = await db.execute(text(f"SELECT is_favorite FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     new_val = not e.is_favorite if e else True
@@ -364,6 +429,7 @@ async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db), user: 
     """Przełącza „nie dozamawiamy" — produkt znika z pożarów i całego flow zamawiania
     (lista zakupów, auto-sugestia, lista AI), ale zostaje żywy w Produktach/sprzedaży/wyprzedaży.
     Nie rusza statusu ani klasyfikacji — to nie INACTIVE/DEAD_STOCK."""
+    sku = await _sku_atrybutow(db, sku)
     existing = await db.execute(text(f"SELECT no_reorder FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     new_val = not e.no_reorder if e else True
@@ -445,6 +511,7 @@ async def create_sample(payload: SampleCreate, db: AsyncSession = Depends(get_db
     sku = payload.sku.strip()
     if not sku:
         raise HTTPException(400, "SKU nie moze byc puste")
+    sku = await _sku_atrybutow(db, sku)
 
     dup = await db.execute(
         text(f"SELECT 1 FROM {settings.TABLE_PRODUCT_ATTRS} WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:sku)) AND COALESCE(is_sample, FALSE)"),
