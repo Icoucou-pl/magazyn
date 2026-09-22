@@ -38,7 +38,18 @@ _SELECT = f"""
            m.name  AS manufacturer_name,
            m.color AS manufacturer_color
     FROM {settings.TABLE_CN_SKU} cs
-    LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(cs.sku))
+    -- Dokładnie JEDEN wiersz atrybutów na wpis CN-SKU. app_product_attrs jest
+    -- unikalne po `sku` dosłownie, a łączymy bez rozróżniania wielkości liter
+    -- i spacji — więc „D2cz" i „D2CZ" w atrybutach mnożyły wiersz listy
+    -- (dwa wiersze z tym samym id → ostrzeżenie Reacta o zdublowanym kluczu).
+    -- Pierwszeństwo: dokładne dopasowanie SKU, potem najświeższa zmiana.
+    LEFT JOIN LATERAL (
+        SELECT p.name_override, p.manufacturer_id
+          FROM {settings.TABLE_PRODUCT_ATTRS} p
+         WHERE LOWER(TRIM(p.sku)) = LOWER(TRIM(cs.sku))
+         ORDER BY (p.sku = cs.sku) DESC, p.updated_at DESC NULLS LAST
+         LIMIT 1
+    ) pa ON TRUE
     LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
 """
 
