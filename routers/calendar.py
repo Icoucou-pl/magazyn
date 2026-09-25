@@ -200,8 +200,9 @@ async def calendar_events(
     to wcześniej sam, POMIJAJĄC środkowy stopień: umówiony odbiór („u nas") był ignorowany
     i chip siedział na szacunku +7 dni, choć raporty i prognoza pokazywały datę umówioną.
 
-    Kontenery auto-domknięte po ETA+N (bez ręcznej daty) już fizycznie weszły do magazynu,
-    więc nie zaśmiecają kalendarza.
+    Kontenery auto-domknięte (bez ręcznej daty dostawy) też są pokazywane — na dniu z hierarchii
+    wyżej. Wcześniej były pomijane, przez co z kalendarza znikały dostawy „u nas" / auto-dostawa
+    dokładnie w dniu, w którym przychodziły (np. kontener z umówionym odbiorem na dziś).
 
     Zdarzenie niesie też eta_date (przyjście do PORTU) i delivery_source — port to data,
     którą operuje spedytor, a magazyn to port + odprawa. Bez pokazania obu dat te same
@@ -249,8 +250,6 @@ async def calendar_events(
             if not share or (getattr(share, "units", 0) or 0) <= 0:
                 continue
         eff = c.effective_status or c.status
-        if c.delivered_date is None and eff == "DELIVERED":
-            continue                                  # auto-domknięte po ETA+N — już w magazynie
         deliv_date = c.warehouse_delivery_date
         if deliv_date is None:
             continue                                  # bez ETA i bez dat ręcznych nie ma czego wstawić
