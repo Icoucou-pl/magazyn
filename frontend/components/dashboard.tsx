@@ -59,6 +59,7 @@ type ContainerOut = {
   is_consolidated?: boolean;
   subiekt_wbite?: boolean | null;
   lots?: { id: number; total_value: number; subiekt_wbite?: boolean | null; firma_breakdown?: Record<string, FirmaShare>;
+           manufacturer_name?: string | null; manufacturer_color?: string | null;
            zaplacono_pln?: number; pozostalo_pln?: number; do_zaplacenia_pln?: number; brak_kursu?: number }[];
   // Płatności przeliczone na PLN po kursie NBP z dnia poprzedzającego wpłatę (liczy backend).
   zaplacono_pln?: number;
@@ -734,6 +735,17 @@ function FiresCard({ fires, onProductClick, onNoReorder }: { fires: ShoppingProd
 }
 
 // ── Najbliższe dostawy ───────────────────────────────────────
+// Etykieta producent(ów) — bliźniak _delivery_manufacturers z routers/calendar.py.
+// Kontener SKONSOLIDOWANY ma manufacturer_name pusty, producenci siedzą na lotach:
+// składamy unikalne nazwy w kolejności lotów, złączone „ · ".
+function deliveryManufacturers(c: ContainerOut): string | null {
+  const names: string[] = [];
+  const push = (n?: string | null) => { if (n && !names.includes(n)) names.push(n); };
+  push(c.manufacturer_name);
+  for (const l of c.lots ?? []) push(l.manufacturer_name);
+  return names.length ? names.join(" · ") : null;
+}
+
 function DeliveriesCard({
   deliveries, shop, onContainerClick,
 }: {
@@ -768,7 +780,7 @@ function DeliveriesCard({
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span title={`Magazyn w drodze: ${subSt === "green" ? `w ${erpLocOf(c)}` : subMeta.label}`} style={{ width: 9, height: 9, borderRadius: 99, background: subMeta.color, flexShrink: 0, boxShadow: `0 0 0 2px color-mix(in oklch, ${subMeta.color} 22%, transparent)` }} />
-                  <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "-0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.manufacturer_name || "—"}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "-0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{deliveryManufacturers(c) || "—"}</span>
                   {share && (
                     <Pill bg="var(--surface-2)" fg={share.color ?? "var(--text-mid)"} size="sm" dot={share.color ?? undefined}>
                       {share.name ?? share.slug.toUpperCase()}
