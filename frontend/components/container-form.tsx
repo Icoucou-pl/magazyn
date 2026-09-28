@@ -736,7 +736,7 @@ export default function ContainerFormModal({
                     </a>
                   ) : carrier && !isTracked(carrier) ? (
                     <span style={{ display: "block", fontSize: 10.5, color: "var(--text-lo)", marginTop: 4 }}>
-                      Śledzenie online dostępne na razie tylko dla MSC i CMA CGM.
+                      Śledzenie online dostępne na razie dla MSC, CMA CGM i Maersk.
                     </span>
                   ) : null}
                 </Field>

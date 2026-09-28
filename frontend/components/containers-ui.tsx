@@ -896,7 +896,7 @@ function ContainerCardBody({
         <div className="cc-actions" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {/* Śledzenie u armatora zapisanego na kontenerze. Przycisk pojawia się tylko,
               gdy numer jest poprawny (ISO 6346) i znamy format URL danego armatora
-              — dziś MSC i CMA CGM. Reszta bez linku, żeby nie prowadzić w pustkę. */}
+              — dziś MSC, CMA CGM i Maersk. Reszta bez linku, żeby nie prowadzić w pustkę. */}
           {/* Jeden przycisk = jeden producent. Przy skonsolidowanym kontenerze zbiorczy
               przycisk musiałby i tak zapytać „którego?", więc od razu pokazujemy nazwy. */}
           {onManufacturerClick && cardMfrs.map((m) => (
