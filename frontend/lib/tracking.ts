@@ -2,7 +2,7 @@
 // Armatorzy + linki do śledzenia kontenerów, walidacja numeru ISO 6346.
 //
 // UWAGA: link generujemy wyłącznie dla armatorów o POTWIERDZONYM formacie URL
-// (MSC, CMA CGM). Reszta jest na liście do wyboru — służy jako informacja
+// (MSC, CMA CGM, Maersk). Reszta jest na liście do wyboru — służy jako informacja
 // w kartotece kontenera — ale przycisku „Śledź" nie dostaje, bo zgadnięty
 // adres prowadziłby do pustego wyniku. Kolejnych dokładamy dopiero po
 // zweryfikowaniu prawdziwego URL-a na żywym kontenerze.
@@ -13,7 +13,7 @@ export type Carrier =
 export const CARRIERS: { value: Carrier; label: string; tracked: boolean }[] = [
   { value: "MSC",       label: "MSC",             tracked: true  },
   { value: "CMA",       label: "CMA CGM",         tracked: true  },
-  { value: "MAERSK",    label: "Maersk",          tracked: false },
+  { value: "MAERSK",    label: "Maersk",          tracked: true  },
   { value: "COSCO",     label: "COSCO",           tracked: false },
   { value: "HAPAG",     label: "Hapag-Lloyd",     tracked: false },
   { value: "ONE",       label: "ONE",             tracked: false },
@@ -74,6 +74,8 @@ function b64(input: string): string {
 const CARRIER_URLS: Partial<Record<Carrier, (no: string) => string>> = {
   MSC: (no) => `https://www.msc.com/en/track-a-shipment?params=${encodeURIComponent(b64(`trackingNumber=${no}&trackingMode=0`))}`,
   CMA: (no) => `https://www.cma-cgm.com/eBusiness/tracking/detail/${no}`,
+  // Maersk: numer kontenera wprost w ścieżce (test: SUDU8862886).
+  MAERSK: (no) => `https://www.maersk.com/tracking/${no}`,
 };
 
 /** true, gdy dla danego armatora umiemy zbudować działający link. */
