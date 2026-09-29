@@ -174,10 +174,13 @@ export default function ProductsView({
         if (!aktualne()) return;
 
         if (p) {
-          const wlasciciel = p.firma_id
+          // shop_resolved = firma, w której backend faktycznie znalazł produkt.
+          // Firma z atrybutów bywa inna (Veluxa sprowadza, AMH sprzedaje) i
+          // przełączenie na nią kończyło się pustym widokiem.
+          const wlasciciel = p.shop_resolved ?? (p.firma_id
             ? firmy.find((f) => f.id === p.firma_id)?.slug
-            : "amh";
-          if (wlasciciel && wlasciciel !== shop) setShop(wlasciciel);
+            : "amh");
+          if (wlasciciel != null && wlasciciel !== shop) setShop(wlasciciel);
           setSelectedProduct(p);
         } else {
           toast(`Nie znaleziono produktu ${sku}`, "info");

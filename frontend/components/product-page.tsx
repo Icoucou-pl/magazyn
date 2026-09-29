@@ -113,6 +113,11 @@ export default function ProductPage({
   // Po przełączeniu firmy SKU może w niej nie występować. Nie zamykamy karty
   // pod palcami — zostają liczby poprzedniej firmy, a nad nimi uczciwa informacja.
   const [brakWFirmie, setBrakWFirmie] = useState(false);
+  // Firma z atrybutów (ta, która towar sprowadza) nie ma go u siebie, więc backend
+  // otworzył kartę tam, gdzie towar faktycznie żyje. { wlasciciel, pokazana } do komunikatu.
+  const [pozaWlascicielem, setPozaWlascicielem] = useState<{ wlasciciel: string; pokazana: string; slug: string } | null>(null);
+  // Błąd inny niż 404 (np. 500): nie udajemy, że produktu nie ma.
+  const [bladWczytania, setBladWczytania] = useState<string | null>(null);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [firmy, setFirmy] = useState<Firma[]>([]);
   const [proj, setProj] = useState<Projection | null>(null);
@@ -149,6 +154,7 @@ export default function ProductPage({
   const zaladowaneSku = useRef<string | null>(null);
   useEffect(() => {
     setProduct(null); setNieZnaleziono(false); setBrakWFirmie(false);
+    setPozaWlascicielem(null); setBladWczytania(null);
     setProj(null); setSeason(null); setHasHistory(null); setDelChk(null);
     setEditingAttrs(false); setEditingLT(false);
     window.scrollTo({ top: 0 });
@@ -172,11 +178,24 @@ export default function ProductPage({
         try { slownik = ((await api.get("/firmy")) as Firma[]) || []; } catch { slownik = []; }
       }
       if (!alive) return;
-      const wlasciciel = p.firma_id ? slownik.find((f) => f.id === p.firma_id)?.slug : "amh";
+      const zAtrybutow = p.firma_id ? slownik.find((f) => f.id === p.firma_id)?.slug : "amh";
+      // Backend mówi, gdzie produkt FAKTYCZNIE znalazł. Firma z atrybutów to tylko
+      // pierwszy strzał — przełączenie na nią na siłę dawało 404 (LM_b: Veluxa
+      // sprowadza, AMH sprzedaje). Starszy backend bez pola → dawne zachowanie.
+      const docelowa = p.shop_resolved ?? zAtrybutow;
       zaladowaneSku.current = sku;
-      if (wlasciciel && wlasciciel !== shop) setShop(wlasciciel);
+      if (docelowa != null && docelowa !== shop) setShop(docelowa);
+      if (p.shop_resolved != null && zAtrybutow && p.shop_resolved !== zAtrybutow) {
+        const nazwa = (slug: string) =>
+          slug === "" ? "wszystkich firm" : (slownik.find((f) => f.slug === slug)?.name || slug.toUpperCase());
+        setPozaWlascicielem({ wlasciciel: p.firma_name || nazwa(zAtrybutow), pokazana: nazwa(p.shop_resolved), slug: p.shop_resolved });
+      } else {
+        setPozaWlascicielem(null);
+      }
       setProduct(p); setBrakWFirmie(false);
     };
+    const jest404 = (e: unknown) => (e as { status?: number } | null)?.status === 404;
+    const opisBledu = (e: unknown) => (e instanceof Error && e.message) ? e.message : "nieznany błąd";
 
     (async () => {
       try {
@@ -185,13 +204,21 @@ export default function ProductPage({
         if (!alive) return;
         zaladowaneSku.current = sku;
         setProduct(p); setBrakWFirmie(false);
-      } catch {
+      } catch (e) {
         if (!alive) return;
         if (pierwszeWejscie) {
+          // zaladujAuto samo sprawdza wszystkie firmy — gdy padło za pierwszym razem
+          // (autoShop), drugi strzał nic nie zmieni, chyba że to był chwilowy błąd.
           try { await zaladujAuto(); }
-          catch { if (alive) setNieZnaleziono(true); }
-        } else {
+          catch (e2) {
+            if (!alive) return;
+            if (jest404(e2)) setNieZnaleziono(true);
+            else setBladWczytania(opisBledu(e2));
+          }
+        } else if (jest404(e)) {
           setBrakWFirmie(true);
+        } else {
+          toast(`Nie udało się wczytać produktu: ${opisBledu(e)}`, "warning");
         }
       }
     })();
@@ -300,6 +327,19 @@ export default function ProductPage({
       )}
     </div>
   );
+
+  if (bladWczytania && !product) {
+    return (
+      <div className="fade-in">
+        {pasekGorny}
+        <div style={{ padding: 48, textAlign: "center", background: "var(--surface-1)", border: "1px dashed var(--border)", borderRadius: "var(--r-lg)" }}>
+          <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: "var(--text-hi)" }}>{sku}</div>
+          <p style={{ color: "var(--text-lo)", fontSize: 13, margin: "8px 0 16px" }}>Nie udało się wczytać produktu — {bladWczytania}. Spróbuj odświeżyć stronę.</p>
+          <button onClick={onBackToList} style={backBtn}>Wróć do listy produktów</button>
+        </div>
+      </div>
+    );
+  }
 
   if (nieZnaleziono) {
     return (
@@ -452,6 +492,12 @@ export default function ProductPage({
             }}>{TAB_LABELS[k]}</button>
         ))}
       </div>
+
+      {pozaWlascicielem && !brakWFirmie && shop === pozaWlascicielem.slug && (
+        <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--surface-2)", color: "var(--text-lo)", fontSize: 12 }}>
+          Produkt przypisany do firmy {pozaWlascicielem.wlasciciel}, ale nie ma jej towaru ani sprzedaży — pokazuję liczby {pozaWlascicielem.slug === "" ? pozaWlascicielem.pokazana : `firmy ${pozaWlascicielem.pokazana}`}.
+        </div>
+      )}
 
       {brakWFirmie && (
         <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--warning-soft)", color: "var(--warning)", fontSize: 12 }}>

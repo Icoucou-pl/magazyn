@@ -59,6 +59,9 @@ export type Product = {
   firma_id: number | null;
   firma_name: string | null;
   firma_color: string | null;
+  /** Tylko przy ?shop=auto: firma, w której backend faktycznie znalazł produkt
+   *  ("" = suma wszystkich firm). Może się różnić od firmy z atrybutów. */
+  shop_resolved?: string | null;
   seasonality_enabled: boolean;
   is_favorite: boolean;
   no_reorder?: boolean;
