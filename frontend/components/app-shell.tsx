@@ -36,13 +36,17 @@ import { usePathname } from "next/navigation";
 import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/lib/api";
 import { UserContext as RawUserContext } from "@/lib/permissions";
 import { ShopProvider } from "@/lib/shop";
-import { parsePath, pathForContainer, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST } from "@/lib/routes";
+import {
+  parsePath, pathForContainer, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST,
+  pathForContainerPage, containerSlug,
+} from "@/lib/routes";
 import LoginScreen from "@/components/login";
 import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
 import ProductsView from "@/components/products";
 import ProductPage, { type ProductTab } from "@/components/product-page";
 import ManufacturerPage from "@/components/manufacturer-page";
+import ContainerPage from "@/components/container-page";
 import { extendTrail, trailFromState, type Crumb, type Trail } from "@/components/breadcrumbs";
 import ContainersView from "@/components/containers";
 import Calendar from "@/components/calendar";
@@ -96,6 +100,12 @@ function ComingSoon({ view }: { view: string }) {
 // aktualizacji usePathname. Stąd żadnego przekazywania window.history.state dalej.
 type HistState = { trail?: Trail };
 
+// Etykieta ogniwa kontenera w sznurku: „#MSDU6911513" / „#SK2605042", a dla zapasowego
+// klucza „id-12" po prostu „Kontener".
+function etykietaKontenera(key: string): string {
+  return /^id-\d+$/i.test(key) ? "Kontener" : `#${key}`;
+}
+
 function useInstantRouter() {
   return React.useMemo(() => ({
     push(path: string, state?: HistState) {
@@ -103,8 +113,9 @@ function useInstantRouter() {
       window.scrollTo({ top: 0 });
     },
     // replace (np. zmiana zakładki ?tab=) zachowuje sznurek bieżącego wpisu.
-    replace(path: string, opts?: { scroll?: boolean }) {
-      const trail = (window.history.state as HistState | null)?.trail;
+    // Z `trail` — podmiana adresu razem ze sznurkiem (karta kontenera: FV → nr kontenera).
+    replace(path: string, opts?: { scroll?: boolean; trail?: Trail }) {
+      const trail = opts?.trail ?? (window.history.state as HistState | null)?.trail;
       window.history.replaceState(trail ? { trail } : null, "", path);
       if (opts?.scroll !== false) window.scrollTo({ top: 0 });
     },
@@ -126,10 +137,11 @@ export default function AppShell() {
 
   // Widok, deep-link do produktu i do kontenera czytamy z adresu.
   // Nie ma tu useState — dwa źródła prawdy rozjechałyby się przy „wstecz".
-  const { view, sku: pendingProductSku, containerId: pendingContainerId, mfrName, settingsSection } = parsePath(pathname);
+  const { view, sku: pendingProductSku, containerId: pendingContainerId, mfrName, settingsSection, containerKey } = parsePath(pathname);
   // Menu nie ma pozycji „Producenci" — na karcie producenta podświetlamy Produkty,
   // bo wchodzi się na nią z karty produktu.
-  const navView = view === "manufacturers" ? "products" : view;
+  // Karta kontenera podświetla Kontenery.
+  const navView = view === "manufacturers" ? "products" : view === "containerPage" ? "containers" : view;
 
   // Podmiana pod Sidebar/Topbar: te komponenty wołają setView(id) i nie muszą
   // wiedzieć, że pod spodem jest router.
@@ -336,6 +348,12 @@ export default function AppShell() {
         { label: mfrName, path: pathForManufacturer(mfrName) },
       ];
     }
+    if (view === "containerPage" && containerKey) {
+      return [
+        { label: "Kontenery", path: pathForView("containers") },
+        { label: etykietaKontenera(containerKey), path: pathForContainerPage(containerKey), mono: true },
+      ];
+    }
     return [];
   };
   const sznurek: Trail = trailFromState(window.history.state, pathname) ?? domyslnySznurek();
@@ -351,11 +369,28 @@ export default function AppShell() {
     autoShopSku.current = sku;
     idzPoSznurku({ label: sku, path: pathForProduct(sku), mono: true });
   };
+  // Karta produktu / producenta → karta kontenera.
+  const openContainerPage = (key: string) => {
+    idzPoSznurku({ label: etykietaKontenera(key), path: pathForContainerPage(key), mono: true });
+  };
+  // Kontener dostał numer (albo zmienił FV) — adres i ostatnie ogniwo na nowy klucz,
+  // bez nowego wpisu w historii.
+  const onContainerCanonicalKey = (key: string) => {
+    const nowe = { label: etykietaKontenera(key), path: pathForContainerPage(key), mono: true };
+    router.replace(pathForContainerPage(key), { scroll: false, trail: [...sznurek.slice(0, -1), nowe] });
+  };
+  // Na karcie kontenera podświetlamy SKU, z którego karty przyszliśmy.
+  const poprzednieOgniwo = sznurek.length >= 2 ? sznurek[sznurek.length - 2] : null;
+  const skuZSznurka = poprzednieOgniwo?.path.startsWith("/produkty/")
+    ? decodeURIComponent(poprzednieOgniwo.path.slice("/produkty/".length))
+    : null;
+
   // Klik w ogniwo breadcrumba = przycięcie sznurka do tego ogniwa.
   const onCrumb = (i: number) => {
     const c = sznurek[i];
     if (!c) return;
     if (c.path === pathForView("products")) { router.push(pathForView("products")); return; }
+    if (c.path === pathForView("containers")) { router.push(pathForView("containers")); return; }
     if (c.path === PATH_MANUFACTURERS_LIST) { router.push(PATH_MANUFACTURERS_LIST); return; }
     if (c.path.startsWith("/produkty/")) autoShopSku.current = decodeURIComponent(c.path.slice("/produkty/".length));
     router.push(c.path, { trail: sznurek.slice(0, i + 1) });
@@ -466,7 +501,7 @@ export default function AppShell() {
             onCreateContainer={(mfrId) => { setPendingAutoSuggestMfr(mfrId); setPendingAutoSuggestNew(true); setView("containers"); }}
             onOpenMoneyEntries={goMoneyEntries}
           />
-        ) : view === "products" || view === "manufacturers" ? (
+        ) : view === "products" || view === "manufacturers" || view === "containerPage" ? (
           <>
             {/* Lista zostaje zamontowana także pod otwartą kartą (produktu albo
                 producenta) — tylko ukryta. Dzięki temu „wstecz" wraca do tych samych
@@ -489,7 +524,28 @@ export default function AppShell() {
                 trail={sznurek}
                 onCrumb={onCrumb}
                 onOpenProduct={openProductFromTrail}
+                onOpenContainer={(c) => openContainerPage(containerSlug({
+                  id: c.id, container_number: c.container_number, order_number: c.order_number,
+                  lot_order_numbers: (c.lots ?? []).map((l) => l.order_number),
+                }))}
                 onBackToList={() => router.push(PATH_MANUFACTURERS_LIST)}
+              />
+            )}
+            {view === "containerPage" && containerKey && (
+              <ContainerPage
+                containerKey={containerKey}
+                trail={sznurek}
+                onCrumb={onCrumb}
+                highlightSku={skuZSznurka}
+                onOpenProduct={openProductFromTrail}
+                onOpenManufacturer={openManufacturerPage}
+                onBackToList={() => router.push(pathForView("containers"))}
+                onDeleted={() => {
+                  // Kontener usunięty — wracamy o ogniwo w sznurku (albo na listę Kontenerów).
+                  if (sznurek.length >= 2) onCrumb(sznurek.length - 2);
+                  else router.replace(pathForView("containers"));
+                }}
+                onCanonicalKey={onContainerCanonicalKey}
               />
             )}
             {view === "products" && pendingProductSku && (
@@ -507,6 +563,7 @@ export default function AppShell() {
                 trail={sznurek}
                 onCrumb={onCrumb}
                 onManufacturerClick={openManufacturerPage}
+                onOpenContainerPage={openContainerPage}
               />
             )}
           </>

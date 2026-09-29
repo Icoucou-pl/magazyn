@@ -8,8 +8,8 @@
 //
 // Treść to ManufacturerModal w trybie "page": te same KPI, sezon, produkty
 // i kontenery, policzone tym samym kodem. Klik w produkt → pełna karta produktu
-// (sznurek rośnie: … › Anji › A2-1cz), klik w kontener → karta kontenera jako
-// okno nad stroną, jak dotąd w modalu.
+// (sznurek rośnie: … › Anji › A2-1cz), klik w kontener → pełna karta kontenera
+// (… › Anji › #MSDU6911513).
 //
 // W adresie jest NAZWA producenta. Szukamy jej bez względu na wielkość liter
 // i spacje na brzegach, żeby ręcznie wpisany /producenci/anji też trafiał.
@@ -19,19 +19,22 @@ import React, { useEffect, useMemo, useState } from "react";
 import ManufacturerModal from "./manufacturer-modal";
 import Breadcrumbs, { type Trail } from "./breadcrumbs";
 import type { Manufacturer } from "./products-ui";
+import type { Container } from "./containers-ui";
 import { api } from "@/lib/api";
 import { can, useUser } from "@/lib/permissions";
 
 const norm = (s: string) => s.trim().toLocaleLowerCase("pl-PL");
 
 export default function ManufacturerPage({
-  name, trail, onCrumb, onOpenProduct, onBackToList,
+  name, trail, onCrumb, onOpenProduct, onOpenContainer, onBackToList,
 }: {
   /** Nazwa z adresu (już zdekodowana). */
   name: string;
   trail: Trail;
   onCrumb: (index: number) => void;
   onOpenProduct: (sku: string) => void;
+  /** Klik w kontener na liście → pełna karta kontenera. */
+  onOpenContainer?: (c: Container) => void;
   /** Ustawienia → Producenci — przycisk przy „nie znaleziono". */
   onBackToList: () => void;
 }) {
@@ -99,6 +102,7 @@ export default function ManufacturerPage({
         showFin={showFin}
         onClose={() => { /* strona — nie ma czego zamykać */ }}
         onOpenProduct={onOpenProduct}
+        onOpenContainer={onOpenContainer}
       />
     </div>
   );

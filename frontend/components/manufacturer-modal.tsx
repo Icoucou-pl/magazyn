@@ -95,7 +95,7 @@ const arrivalOf = (c: Container): string =>
 // zdejmuje dokładnie jedno piętro, bo Esc obsługuje wyłącznie najgłębszy modal bez dzieci.
 export default function ManufacturerModal({
   mfr, products, containers, manufacturers, firmy, allProducts, showFin, onClose, onContainersChanged,
-  variant = "modal", onOpenProduct,
+  variant = "modal", onOpenProduct, onOpenContainer,
 }: {
   mfr: Manufacturer | null;
   /** Produkty producenta. Pominięte = modal odfiltruje je sobie z katalogu (patrz `allProducts`).
@@ -123,6 +123,8 @@ export default function ManufacturerModal({
   variant?: "modal" | "page";
   /** Klik w produkt. Podane = nawigacja na kartę produktu; brak = modal produktu na tym oknie. */
   onOpenProduct?: (sku: string) => void;
+  /** Klik w kontener. Podane = nawigacja na kartę kontenera; brak = formularz w oknie. */
+  onOpenContainer?: (c: Container) => void;
 }) {
   const isPage = variant === "page";
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
@@ -496,7 +498,7 @@ export default function ManufacturerModal({
                     ? new Date(arrivalOf(c)).toLocaleDateString("pl-PL")
                     : days >= 0 ? `za ${days}d` : `${-days}d po ETA`;
                   return (
-                    <div key={c.id} className="mm-ct-row" onClick={() => { void openContainer(c.id); }} style={{
+                    <div key={c.id} className="mm-ct-row" onClick={() => { if (onOpenContainer) onOpenContainer(c); else void openContainer(c.id); }} style={{
                       display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer",
                       background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 8,
                       opacity: ctLoading ? 0.6 : 1,

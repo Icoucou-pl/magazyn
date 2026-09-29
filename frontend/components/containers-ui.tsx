@@ -123,6 +123,10 @@ export type Container = {
 // Renderowany raz przez <ContainersStyles /> w orkiestratorze. Desktop = układ jak dotąd,
 // cała warstwa mobilna siedzi w jednej media query (720 px) — nic nie zmienia się dla ≥720 px.
 const CONTAINERS_CSS = `
+/* SKU jako link do karty produktu (karta kontenera) — styl jak pole „Producent" na karcie produktu */
+.cc-sku-link { background:none; border:0; padding:0; cursor:pointer; font-size:inherit; color:var(--text-hi); text-align:left;
+  text-decoration:underline; text-decoration-color:var(--border-strong); text-decoration-thickness:1px; text-underline-offset:3px; }
+.cc-sku-link:hover { color:var(--info); text-decoration-color:var(--info); }
 /* Nagłówek grupy miesięcznej */
 .mg-head { display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:13px 16px; background:transparent; border:none; cursor:pointer; }
 .mg-chev { flex-shrink:0; }
@@ -507,6 +511,7 @@ export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggl
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
   container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
+  pinned = false, onProductClick, highlightSku,
 }: {
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
@@ -514,6 +519,12 @@ export function ContainerCard({
   onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
   /** Otwiera szczegóły producenta. Bez tego propa przycisk się nie pojawia. */
   onManufacturerClick?: (id: number) => void;
+  /** Karta kontenera (/kontenery/NR): zawsze rozwinięta, nagłówek nie zwija. */
+  pinned?: boolean;
+  /** Klik w SKU na liście pozycji → karta produktu. Bez propa SKU nie jest linkiem. */
+  onProductClick?: (sku: string) => void;
+  /** SKU, z którego karty przyszliśmy — podświetlony na liście pozycji. */
+  highlightSku?: string | null;
 }) {
   const eStatus = eff(c);
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
@@ -556,11 +567,11 @@ export function ContainerCard({
       }}
       onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.borderColor = "var(--border)"; }}
       onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.borderColor = "var(--border-soft)"; }}>
-      <div onClick={onToggle} className="cc-head" style={{ padding: "14px 16px", cursor: "pointer", position: "relative", background: expanded ? "var(--surface-2)" : "transparent", transition: "background 0.12s", borderBottom: expanded ? "1px solid var(--border-soft)" : "none" }}>
+      <div onClick={pinned ? undefined : onToggle} className="cc-head" style={{ padding: "14px 16px", cursor: pinned ? "default" : "pointer", position: "relative", background: expanded ? "var(--surface-2)" : "transparent", transition: "background 0.12s", borderBottom: expanded ? "1px solid var(--border-soft)" : "none" }}>
         <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: meta.accent }} />
 
         <div className="cc-top">
-          <span style={{ color: "var(--text-lo)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.18s", display: "inline-flex", flexShrink: 0 }}><I.ChevronR size={14} /></span>
+          {!pinned && <span style={{ color: "var(--text-lo)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.18s", display: "inline-flex", flexShrink: 0 }}><I.ChevronR size={14} /></span>}
           <div style={{ width: 36, height: 36, borderRadius: 8, background: meta.bg, color: meta.fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={16} /></div>
 
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -648,19 +659,22 @@ export function ContainerCard({
         )}
       </div>
 
-      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} onManufacturerClick={onManufacturerClick} />}
+      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} onManufacturerClick={onManufacturerClick} onProductClick={onProductClick} highlightSku={highlightSku} />}
     </div>
   );
 }
 
 function ContainerCardBody({
   container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
+  onProductClick, highlightSku,
 }: {
   container: Container; fillColor: string; nextStatus?: string;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
   onSetDelivered?: (d: string | null) => Promise<void>;
   onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
   onManufacturerClick?: (id: number) => void;
+  onProductClick?: (sku: string) => void;
+  highlightSku?: string | null;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -838,14 +852,27 @@ function ContainerCardBody({
             return (
               // Identyfikacja (SKU + nazwa) w osobnym bloku `it-id`: na desktopie to nadal
               // dwie pierwsze kolumny siatki, na telefonie łamie się na dwie linie nad liczbami.
-              <div key={item.id} className="it-row" style={{ padding: "8px 12px", borderBottom: i === c.items.length - 1 ? "none" : "1px solid var(--border-soft)", fontSize: 12 }}>
+              <div key={item.id} className="it-row" style={{
+                padding: "8px 12px", borderBottom: i === c.items.length - 1 ? "none" : "1px solid var(--border-soft)", fontSize: 12,
+                // SKU, z którego karty przyszliśmy — żeby od razu było widać „swój" wiersz.
+                background: highlightSku && item.sku.toLowerCase() === highlightSku.toLowerCase() ? "var(--info-soft)" : undefined,
+              }}>
                 <div className="it-id">
                   {/* Podgląd zdjęcia TYLKO na samym SKU (szerokość tekstu, nie całej komórki).
                       Wcześniej łapała go też nazwa i przy szybkim ruchu myszką po liście
                       odpalało się kilka podglądów naraz. */}
                   <div style={{ overflow: "hidden", minWidth: 0 }}>
                     <PhotoHover sku={item.sku} style={{ display: "inline-block", maxWidth: "100%", overflow: "hidden", verticalAlign: "top", cursor: "zoom-in" }}>
-                      <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.sku}</span>
+                      {onProductClick ? (
+                        // Na karcie kontenera SKU prowadzi na kartę produktu — ten sam styl
+                        // linku co pole „Producent" na karcie produktu.
+                        <button type="button" onClick={() => onProductClick(item.sku)} title={`Otwórz kartę produktu ${item.sku}`}
+                          className="mono cc-sku-link" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: "100%" }}>
+                          {item.sku}
+                        </button>
+                      ) : (
+                        <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.sku}</span>
+                      )}
                     </PhotoHover>
                   </div>
                   <span className="it-name" style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", minWidth: 0 }}>{item.product_name}</span>

@@ -40,6 +40,7 @@ import {
 import { ProductSalesTab } from "./finance";
 import ManufacturerModal from "./manufacturer-modal";
 import Breadcrumbs, { type Trail } from "./breadcrumbs";
+import { containerSlug } from "@/lib/routes";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { ProductThumb } from "./photo-hover";
@@ -69,7 +70,7 @@ function czytajTabZAdresu(): ProductTab | null {
 
 export default function ProductPage({
   sku, autoShop, backLabel, onBack, onBackToList, onTabChange, onContainerClick, onUpdated, onDeleted,
-  trail, onCrumb, onManufacturerClick,
+  trail, onCrumb, onManufacturerClick, onOpenContainerPage,
 }: {
   sku: string;
   /** Wejście „z zewnątrz" (wyszukiwarka, skaner, dashboard, prognoza): sami ustalamy
@@ -91,6 +92,8 @@ export default function ProductPage({
   onCrumb?: (index: number) => void;
   /** Chip producenta → pełna karta producenta. Brak = stary modal (zapas). */
   onManufacturerClick?: (name: string) => void;
+  /** „Kontenery z tym SKU" → pełna karta kontenera (klucz: nr kontenera / FV). Brak = stary deep-link. */
+  onOpenContainerPage?: (key: string) => void;
 }) {
   const user = useUser();
   const showFin = can(user, "viewFinancials");
@@ -515,7 +518,22 @@ export default function ProductPage({
               hint={proj ? `${proj.deliveries.length} planowanych dostaw · sprzedaż ${Math.round(product.avg_monthly_weighted)}/mies` : "ładowanie…"}>
               {proj ? <StockProjectionChart projection={proj} product={product} /> : <div style={skeleton(200)} className="pulse-soft" />}
             </Section>
-            <ContainersSection product={product} onContainerClick={onContainerClick} onClose={() => { /* karta nie jest oknem — nie ma czego zamykać */ }} />
+            <ContainersSection
+              product={product}
+              onContainerClick={onOpenContainerPage ? (id) => {
+                // Klucz do adresu karty liczymy z tego, co już przyszło z produktem —
+                // bez zapytania o kontener przed nawigacją.
+                const ds = (product.incoming_deliveries || []).filter((d) => d.container_id === id);
+                const d = ds[0];
+                onOpenContainerPage(containerSlug({
+                  id,
+                  container_number: d?.container_number,
+                  order_number: d?.container_order_number,
+                  lot_order_numbers: ds.map((x) => x.lot_order_number),
+                }));
+              } : onContainerClick}
+              onClose={() => { /* karta nie jest oknem — nie ma czego zamykać */ }}
+            />
           </>
         )}
 
