@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from lifespan import lifespan
 from audit import audit_middleware
+from services.products import invalidate_sales_cache
 from routers import (
     auth, users, audit_log, meta, products, anomalies,
     containers, manufacturers, container_types, calendar, tools, fx, finance,
@@ -48,6 +49,10 @@ async def timing_middleware(request, call_next):
     ms = (time.perf_counter() - t0) * 1000
     response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
     response.headers["Timing-Allow-Origin"] = "*"
+    # Każda udana zmiana danych kasuje wspólny wynik SALES_QUERY (services/products.py),
+    # żeby po edycji produktu lista nie pokazała stanu sprzed zmiany.
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 400:
+        invalidate_sales_cache()
     if ms >= SLOW_REQUEST_MS:
         q = f"?{request.url.query}" if request.url.query else ""
         print(f"[wolne] {request.method} {request.url.path}{q} {ms:.0f} ms", flush=True)

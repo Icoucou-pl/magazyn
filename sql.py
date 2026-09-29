@@ -478,6 +478,11 @@ SELECT UPPER(sku_canon) AS sku, cena FROM prod_prices;
 # SAMPLE (do wejścia do magazynu w drodze) → NOWOŚĆ (6 mies. od dostawy na główny) → zwykła
 # klasyfikacja. Osobne lekkie zapytanie mergowane po SKU w Pythonie (wzorzec INCOMING_QUERY) —
 # SALES_QUERY zostaje nietknięte, bez ryzyka fan-outu. Zawężone do SKU z etykietą sample.
+#
+# WYDAJNOŚĆ: każda tabela czytana RAZ i grupowana po SKU. Pierwsza wersja miała
+# podzapytania skorelowane per sampel — przy każdym SKU dwa pełne skany
+# app_stock_snapshots (rośnie 2×/dzień × cały katalog), co dawało ~3 s na wywołanie,
+# a fetch_products woła to przy KAŻDEJ liście produktów (dashboard: 5× naraz).
 #   z_kontenera   — najwcześniejsza POTWIERDZONA dostawa kontenera (delivered_date, nie z przyszłości)
 #   ze_stanu      — pierwszy snapshot ze stanem magazynu głównego > 0 (Subiekt/Sellasist,
 #                   nie ręczny sample_stock) — na produkty z niedomkniętym kontenerem
@@ -490,32 +495,45 @@ WITH s AS (
     SELECT DISTINCT LOWER(TRIM(sku)) AS k
     FROM {settings.TABLE_PRODUCT_ATTRS}
     WHERE COALESCE(is_sample, FALSE) AND sku IS NOT NULL AND TRIM(sku) <> ''
+),
+kont AS (
+    SELECT LOWER(TRIM(ci.sku)) AS k,
+           MIN(c.delivered_date) FILTER (WHERE c.delivered_date IS NOT NULL
+                                           AND c.delivered_date <= CURRENT_DATE) AS z_kontenera,
+           MIN(COALESCE(l.subiekt_wbite_at, c.subiekt_wbite_at))
+               FILTER (WHERE COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE)) AS wbite_od
+    FROM {settings.TABLE_CONTAINER_ITEMS} ci
+    JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+    LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
+    WHERE LOWER(TRIM(ci.sku)) IN (SELECT k FROM s)
+    GROUP BY LOWER(TRIM(ci.sku))
+),
+snap AS (
+    SELECT LOWER(TRIM(ss.sku)) AS k,
+           MIN(ss.snap_date) FILTER (WHERE COALESCE(ss.stan_glowny, 0) > 0)   AS ze_stanu,
+           MIN(ss.snap_date) FILTER (WHERE COALESCE(ss.stan_w_drodze, 0) > 0) AS w_drodze_od
+    FROM {settings.TABLE_STOCK_SNAPSHOTS} ss
+    WHERE LOWER(TRIM(ss.sku)) IN (SELECT k FROM s)
+      AND (COALESCE(ss.stan_glowny, 0) > 0 OR COALESCE(ss.stan_w_drodze, 0) > 0)
+    GROUP BY LOWER(TRIM(ss.sku))
+),
+teraz AS (
+    SELECT LOWER(TRIM(dwa.sku)) AS k
+    FROM {settings.TABLE_SUBIEKT_DWA} dwa
+    WHERE COALESCE(dwa.stan_magazyn_w_drodze, 0) > 0 AND LOWER(TRIM(dwa.sku)) IN (SELECT k FROM s)
+    UNION
+    SELECT LOWER(TRIM(fs.sku))
+    FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
+    WHERE COALESCE(fs.in_transit_qty, 0) > 0 AND LOWER(TRIM(fs.sku)) IN (SELECT k FROM s)
 )
 SELECT s.k,
-       (SELECT MIN(c.delivered_date)
-          FROM {settings.TABLE_CONTAINER_ITEMS} ci
-          JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
-         WHERE LOWER(TRIM(ci.sku)) = s.k
-           AND c.delivered_date IS NOT NULL
-           AND c.delivered_date <= CURRENT_DATE) AS z_kontenera,
-       (SELECT MIN(ss.snap_date)
-          FROM {settings.TABLE_STOCK_SNAPSHOTS} ss
-         WHERE LOWER(TRIM(ss.sku)) = s.k
-           AND COALESCE(ss.stan_glowny, 0) > 0) AS ze_stanu,
-       (SELECT MIN(COALESCE(l.subiekt_wbite_at, c.subiekt_wbite_at))
-          FROM {settings.TABLE_CONTAINER_ITEMS} ci
-          JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
-          LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
-         WHERE LOWER(TRIM(ci.sku)) = s.k
-           AND COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE)) AS wbite_od,
-       (SELECT MIN(ss.snap_date)
-          FROM {settings.TABLE_STOCK_SNAPSHOTS} ss
-         WHERE LOWER(TRIM(ss.sku)) = s.k
-           AND COALESCE(ss.stan_w_drodze, 0) > 0) AS w_drodze_od,
-       (EXISTS (SELECT 1 FROM {settings.TABLE_SUBIEKT_DWA} dwa
-                 WHERE LOWER(TRIM(dwa.sku)) = s.k AND COALESCE(dwa.stan_magazyn_w_drodze, 0) > 0)
-        OR EXISTS (SELECT 1 FROM {settings.TABLE_FAKTUROWNIA_STOCK} fs
-                    WHERE LOWER(TRIM(fs.sku)) = s.k AND COALESCE(fs.in_transit_qty, 0) > 0)
-       ) AS teraz_w_drodze
-FROM s;
+       kont.z_kontenera,
+       snap.ze_stanu,
+       kont.wbite_od,
+       snap.w_drodze_od,
+       (teraz.k IS NOT NULL) AS teraz_w_drodze
+FROM s
+LEFT JOIN kont  ON kont.k  = s.k
+LEFT JOIN snap  ON snap.k  = s.k
+LEFT JOIN teraz ON teraz.k = s.k;
 """
