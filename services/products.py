@@ -121,7 +121,8 @@ def new_product_until(row: dict) -> Optional[date]:
     return _add_months(arrival, NEW_PRODUCT_MONTHS) if arrival else None
 
 
-def is_new_product(row: dict, today: Optional[date] = None) -> bool:
+def is_new_sample(row: dict, today: Optional[date] = None) -> bool:
+    """Sampel w okresie NOWOŚCI. Tylko ta ścieżka chroni status (classify_product)."""
     # Ręczne „Nieaktywny" / „Dead stock" to świadoma decyzja, że produkt jest skreślony
     # (np. sampel, który się nie przyjął) — znacznik NOWOŚĆ znika razem z nim, inaczej
     # produkt dalej wisiałby w filtrze „Nowości" przy włączonych nieaktywnych.
@@ -131,6 +132,38 @@ def is_new_product(row: dict, today: Optional[date] = None) -> bool:
         return False
     until = new_product_until(row)
     return until is None or (today or date.today()) < until
+
+
+# ── Nowość ustawiona ręcznie ─────────────────────────────────
+# app_product_attrs.manual_new_until — data końca, zawsze podana (nie ma nowości „na zawsze").
+# To TYLKO znacznik: plakietka NOWOŚĆ i filtr „Nowości". Status liczy się normalnie,
+# bez ochrony przed DEAD_STOCK / INACTIVE, jaką ma sampel. Ręczna klasyfikacja
+# INACTIVE / DEAD_STOCK zdejmuje ją tak samo jak nowość sampla.
+def manual_new_active(row: dict, today: Optional[date] = None) -> bool:
+    until = row.get("manual_new_until")
+    if not until or row.get("forced_status") in ("INACTIVE", "DEAD_STOCK"):
+        return False
+    return (today or date.today()) < until
+
+
+def is_new_product(row: dict, today: Optional[date] = None) -> bool:
+    """Znacznik NOWOŚĆ na liście i karcie: sampel w okresie nowości ALBO ręczna data w przyszłości."""
+    return is_new_sample(row, today) or manual_new_active(row, today)
+
+
+def new_until_display(row: dict, today: Optional[date] = None) -> Optional[date]:
+    """Data końca do plakietki. Sampel jeszcze w drodze (None) zostaje None — „liczone od dostawy".
+    Gdy obie nowości trwają, pokazujemy późniejszą datę."""
+    sample_on = is_new_sample(row, today)
+    manual_on = manual_new_active(row, today)
+    if sample_on and manual_on:
+        s = new_product_until(row)
+        return None if s is None else max(s, row["manual_new_until"])
+    if sample_on:
+        return new_product_until(row)
+    if manual_on:
+        return row["manual_new_until"]
+    return None
 
 
 def classify_product(row: dict) -> str:
@@ -149,7 +182,7 @@ def classify_product(row: dict) -> str:
     if row.get("is_sample", False):
         if not row.get("first_transit_date"):
             return "SAMPLE"
-        if is_new_product(row):
+        if is_new_sample(row):
             stock_now = row.get("stock_global", row["stock"])
             return "ACTIVE" if stock_now > 0 else "ACTIVE_NO_STOCK"
 
@@ -365,7 +398,8 @@ def calculate_forecast(row: dict, incoming: List[dict],
         first_transit_date=row.get("first_transit_date"),
         app_only=int(row.get("src_pri", 0) or 0) >= 4,
         is_new=is_new_product(row),
-        new_until=new_product_until(row),
+        new_until=new_until_display(row),
+        manual_new_until=(row.get("manual_new_until") if manual_new_active(row) else None),
         ean=row.get("ean"),
         forced_status=row.get("forced_status"),
         lead_time_days=row["lead_time_days"],
