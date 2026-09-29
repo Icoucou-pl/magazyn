@@ -132,14 +132,23 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # editBankBalances bez viewBankBalances nic nie daje — nie ma czego edytować.
 # Dopisanie takiego klucza do ROLE_PERMS otworzy go całej roli — rób to świadomie.
 #
+# viewPurchasePrice — sama cena zakupu (koszt netto / szt) dla osób BEZ viewFinancials.
+# Odczytywane w routers/products.py::_mask_financials — cena zostaje w odpowiedzi,
+# reszta pól finansowych (wartość stanu) dalej jest zerowana.
+#
+# viewProductSales — zakładka „Sprzedaż" na pełnej karcie produktu. Domyślnie TYLKO ADMIN.
+# Sam klucz niczego po stronie API nie otwiera: /finance/product dalej wymaga
+# viewFinancials. Trzymamy go tu, żeby has_perm i front (permissions.js) widziały
+# ten sam zestaw uprawnień.
+#
 # viewCalendarPayments — płatności „Do zapłaty" jako zdarzenia kalendarza. Domyślnie TYLKO ADMIN;
 # IMPORT/VIEWER dostają dostęp wyłącznie ręcznym ptaszkiem. Uprawnienie jest KONIUNKCYJNE
 # z viewFinancials (patrz can_see_calendar_payments) — kalendarz pokazuje kwoty zobowiązań,
 # więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy tylnymi drzwiami.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False},
 }
 
 
