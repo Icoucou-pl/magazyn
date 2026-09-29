@@ -5,7 +5,7 @@
 // siedział wyłącznie w useState. Efekt: historia przeglądarki miała jeden
 // wpis, więc „wstecz" wyrzucało z aplikacji zamiast cofać o widok.
 //
-// Teraz źródłem prawdy jest adres. Zmiana widoku = router.push(ścieżka),
+// Teraz źródłem prawdy jest adres. Zmiana widoku = history.pushState(ścieżka) (components/app-shell),
 // a Next sam pilnuje historii — wstecz/dalej działają bez naszego kodu.
 //
 // Segmenty są po polsku (widać je w pasku i w linkach wysyłanych na Slacku),
