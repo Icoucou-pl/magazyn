@@ -27,7 +27,7 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { I, Pill, MfrChip, STATUS_META } from "./ui";
+import { I, Pill, STATUS_META } from "./ui";
 import {
   StatusPillExt, displayStatus, NewBadge, SampleBadge,
   type Product, type Manufacturer, type Firma,
@@ -352,6 +352,15 @@ export default function ProductPage({
         .pp-actions { grid-area: actions; display: flex; gap: 6px; }
         .pp-line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .pp-meta { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 12px; }
+        .pp-mfr-link { display: inline-flex; align-items: center; gap: 5px; margin: 2px 0 0 -6px; padding: 1px 6px;
+          background: none; border: 0; border-radius: 6px; cursor: pointer; font: inherit;
+          font-size: 14px; font-weight: 600; color: var(--info); }
+        .pp-mfr-name { border-bottom: 1px dashed color-mix(in oklch, var(--info) 55%, transparent); line-height: 1.25; }
+        .pp-mfr-arrow { transition: transform .15s ease; }
+        .pp-mfr-link:hover { background: var(--info-soft); }
+        .pp-mfr-link:hover .pp-mfr-name { border-bottom-style: solid; }
+        .pp-mfr-link:hover .pp-mfr-arrow { transform: translateX(2px); }
+        .pp-mfr-link:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
         .pp-tabs { scrollbar-width: none; }
         .pp-tabs::-webkit-scrollbar { display: none; }
         @media (max-width: 640px) {
@@ -376,17 +385,6 @@ export default function ProductPage({
           <div className="pp-main">
             <div className="pp-line1">
               <span className="mono pp-sku" style={{ fontSize: 20, fontWeight: 700, color: "var(--text-hi)", letterSpacing: "-0.01em" }}>{product.sku}</span>
-              {product.manufacturer_id && product.manufacturer_name && (
-                <button
-                  onClick={() => (onManufacturerClick
-                    ? onManufacturerClick(product.manufacturer_name as string)
-                    : setMfrModalId(product.manufacturer_id as number))}
-                  title={`Szczegóły producenta: ${product.manufacturer_name}`}
-                  style={{ background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, borderRadius: 999 }}>
-                  <MfrChip name={product.manufacturer_name} color={mfrColor} size="md" />
-                  <span style={{ color: mfrColor, display: "flex" }}><I.ChevronR size={12} /></span>
-                </button>
-              )}
               <StatusPillExt status={statusKey} size="md" />
               {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
               {product.is_sample && <SampleBadge size="sm" />}
@@ -395,6 +393,26 @@ export default function ProductPage({
             </div>
             <div style={{ fontSize: 14, color: "var(--text-mid)", marginTop: 4 }}>{product.name}</div>
             <div className="pp-meta">
+              {/* Producent jako POLE z etykietą, nie plakietka w rzędzie statusów —
+                  jako chip wyglądał jak kolejny status i mało kto wiedział, że da się
+                  go kliknąć. Tu wygląda jak link: ikona, kolor, podkreślenie, strzałka. */}
+              <div>
+                <div style={metaLabel}>Producent</div>
+                {product.manufacturer_id && product.manufacturer_name ? (
+                  <button
+                    className="pp-mfr-link"
+                    onClick={() => (onManufacturerClick
+                      ? onManufacturerClick(product.manufacturer_name as string)
+                      : setMfrModalId(product.manufacturer_id as number))}
+                    title={`Otwórz kartę producenta: ${product.manufacturer_name}`}>
+                    <span style={{ color: mfrColor, display: "flex" }}><I.Factory size={14} /></span>
+                    <span className="pp-mfr-name">{product.manufacturer_name}</span>
+                    <span className="pp-mfr-arrow" style={{ display: "flex" }}><I.ChevronR size={13} /></span>
+                  </button>
+                ) : (
+                  <div className="num" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-lo)", marginTop: 2 }}>—</div>
+                )}
+              </div>
               <Meta label="Stan dostępny" value={`${fmtNum(product.stock)} szt`} />
               <Meta label="Koszt netto / szt" value={showPrice ? fmtPLN(product.purchase_price) : "•••••"} />
               <Meta label="EAN" value={product.ean || "—"} mono />
@@ -507,6 +525,11 @@ function Meta({ label, value, mono }: { label: string; value: string; mono?: boo
     </div>
   );
 }
+
+// Etykieta pola w wierszu danych — ta sama co w <Meta>, żeby „Producent" stał w szeregu.
+const metaLabel: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)",
+};
 
 const skeleton = (h: number): React.CSSProperties => ({
   height: h, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10,
