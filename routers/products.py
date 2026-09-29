@@ -78,14 +78,19 @@ async def _sku_atrybutow(db: AsyncSession, sku: str) -> str:
 
 def _mask_financials(products, user):
     """Serwerowe ukrycie cen: zeruje pola finansowe dla usera bez viewFinancials.
-    Front i tak maskuje wizualnie — to zamyka wyciek wartości w payloadzie (zakładka Network)."""
+    Front i tak maskuje wizualnie — to zamyka wyciek wartości w payloadzie (zakładka Network).
+
+    viewPurchasePrice: osoba bez finansów, która musi znać cenę jednostkową —
+    cena zakupu (i jej źródło) zostaje, wartość stanu dalej jest zerowana."""
     if has_perm(user, "viewFinancials"):
         return products
+    widzi_cene = has_perm(user, "viewPurchasePrice")
     for p in products:
         p.stock_value = 0.0
-        p.purchase_price = 0.0
-        p.cena_zakupu_manual = None
-        p.price_source = None   # cena wyzerowana → etykieta źródła nie ma czego opisywać
+        if not widzi_cene:
+            p.purchase_price = 0.0
+            p.cena_zakupu_manual = None
+            p.price_source = None   # cena wyzerowana → etykieta źródła nie ma czego opisywać
     return products
 
 
