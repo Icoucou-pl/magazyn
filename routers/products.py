@@ -14,7 +14,7 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, ManualNewUpdate,
 )
 from security import get_current_user, has_perm, require_perm, resolve_shop
 from services.products import fetch_products, get_product
@@ -446,6 +446,28 @@ async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db), user: 
             ON CONFLICT (sku) DO UPDATE SET no_reorder = EXCLUDED.no_reorder, updated_at = CURRENT_TIMESTAMP
         """),
         {"sku": sku, "nr": new_val}
+    )
+    await db.commit()
+    return await get_product(db, sku)
+
+
+@router.put("/products/{sku:path}/new-until", response_model=ProductSummary)
+async def set_manual_new(sku: str, body: ManualNewUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
+    """Nowość ustawiona ręcznie (app_product_attrs.manual_new_until).
+    Tylko znacznik NOWOŚĆ i filtr „Nowości" — status produktu liczy się normalnie.
+    Nowości sampla stąd nie ruszamy: kończy się ją odznaczeniem Sample."""
+    if body.until is not None and body.until <= date.today():
+        raise HTTPException(status_code=400, detail="Data końca nowości musi być w przyszłości")
+    if body.until is not None and body.until > date.today() + timedelta(days=731):
+        raise HTTPException(status_code=400, detail="Nowość można ustawić najwyżej na 2 lata")
+    sku = await _sku_atrybutow(db, sku)
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, manual_new_until, updated_at)
+            VALUES (:sku, :until, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET manual_new_until = EXCLUDED.manual_new_until, updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "until": body.until}
     )
     await db.commit()
     return await get_product(db, sku)
