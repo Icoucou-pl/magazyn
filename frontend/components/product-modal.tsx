@@ -21,7 +21,7 @@ import {
 import { api, photoUrl } from "@/lib/api";
 import { PhotoHover, ProductThumb, resetPhotoCache } from "./photo-hover";   // PhotoHover — tylko kafelki w „Danych podstawowych”
 import { toast } from "./toast";
-import { canEdit, can, useUser } from "@/lib/permissions";
+import { canEdit, can, canSeePurchasePrice, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
@@ -1106,6 +1106,10 @@ export function AttributesCard({
   const user = useUser();
   const showEdit = canEdit(user);
   const showFin = can(user, "viewFinancials");
+  // Podgląd ceny: finanse ALBO „Cena zakupu produktu". Edycja ceny zostaje
+  // tylko przy finansach — backend (PUT attrs) i tak przyjmuje ją wyłącznie
+  // od viewFinancials, więc osoba z samym podglądem widzi ją tylko do odczytu.
+  const showPrice = canSeePurchasePrice(user);
   const init = () => ({
     nazwa: product.name_override_manual ?? "",
     ean: product.ean ?? "",
@@ -1170,9 +1174,9 @@ export function AttributesCard({
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>Cena zakupu</span>
-          {!showFin ? (
+          {!showPrice ? (
             <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>•••••</span>
-          ) : editing ? (
+          ) : editing && showFin ? (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <input
                 type="number" step="0.01" inputMode="decimal"
