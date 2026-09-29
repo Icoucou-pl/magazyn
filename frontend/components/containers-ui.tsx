@@ -840,12 +840,15 @@ function ContainerCardBody({
               // dwie pierwsze kolumny siatki, na telefonie łamie się na dwie linie nad liczbami.
               <div key={item.id} className="it-row" style={{ padding: "8px 12px", borderBottom: i === c.items.length - 1 ? "none" : "1px solid var(--border-soft)", fontSize: 12 }}>
                 <div className="it-id">
-                  <PhotoHover sku={item.sku} style={{ display: "block", overflow: "hidden", minWidth: 0 }}>
-                    <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.sku}</span>
-                  </PhotoHover>
-                  <PhotoHover sku={item.sku} style={{ display: "block", overflow: "hidden", minWidth: 0 }}>
-                    <span className="it-name" style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.product_name}</span>
-                  </PhotoHover>
+                  {/* Podgląd zdjęcia TYLKO na samym SKU (szerokość tekstu, nie całej komórki).
+                      Wcześniej łapała go też nazwa i przy szybkim ruchu myszką po liście
+                      odpalało się kilka podglądów naraz. */}
+                  <div style={{ overflow: "hidden", minWidth: 0 }}>
+                    <PhotoHover sku={item.sku} style={{ display: "inline-block", maxWidth: "100%", overflow: "hidden", verticalAlign: "top", cursor: "zoom-in" }}>
+                      <span className="mono" style={{ fontWeight: 600, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.sku}</span>
+                    </PhotoHover>
+                  </div>
+                  <span className="it-name" style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", minWidth: 0 }}>{item.product_name}</span>
                 </div>
                 <span className="num it-qty" style={{ color: "var(--text-hi)", fontWeight: 600 }}>×{item.quantity}</span>
                 <span className="num it-cbm" style={{ color: "var(--text-lo)" }}>{itemCbm.toFixed(3)} m³</span>

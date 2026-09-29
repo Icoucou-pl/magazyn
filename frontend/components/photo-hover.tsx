@@ -80,11 +80,16 @@ export function PhotoHover({
   const [ref, setRef] = useState<PhotoRef>(znane);
   const [poz, setPoz] = useState<{ x: number; y: number } | null>(null);
   const boxRef = useRef<HTMLSpanElement | null>(null);
+  // Czy kursor NADAL jest nad elementem. Zdjęcie pozycji kontenera dociągamy
+  // asynchronicznie — gdy odpowiedź wróci po `mouseleave` (szybki ruch myszką),
+  // podgląd pokazałby się po fakcie i już nigdy nie zniknął. Ta flaga to blokuje.
+  const nadElementem = useRef(false);
 
   useEffect(() => { setRef(photoId && photoHash ? { id: photoId, hash: photoHash } : null); }, [photoId, photoHash]);
 
   const wejscie = useCallback(async (e: React.MouseEvent) => {
     if (!maHover()) return;
+    nadElementem.current = true;
     const kursorX = e.clientX;
     const kursorY = e.clientY;
 
@@ -93,6 +98,7 @@ export function PhotoHover({
       r = await pobierzZdjecie(sku);
       if (!r) return;
       setRef(r);
+      if (!nadElementem.current) return;   // user już zjechał — nie pokazujemy spóźnionego podglądu
     }
 
     // Punktem odniesienia jest KURSOR, nie element. Element bywa szeroki
@@ -107,7 +113,7 @@ export function PhotoHover({
     setPoz({ x, y });
   }, [ref, sku, ROZMIAR]);
 
-  const wyjscie = useCallback(() => setPoz(null), []);
+  const wyjscie = useCallback(() => { nadElementem.current = false; setPoz(null); }, []);
 
   // Przewinięcie strony z otwartym podglądem zostawiłoby go wiszącego w powietrzu.
   useEffect(() => {
