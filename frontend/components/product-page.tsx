@@ -41,7 +41,7 @@ import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { ProductThumb } from "./photo-hover";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
-import { can, canSeeProductSales, canSeePurchasePrice, useUser } from "@/lib/permissions";
+import { can, canSeeProductHistory, canSeeProductSales, canSeePurchasePrice, useUser } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
@@ -93,6 +93,9 @@ export default function ProductPage({
     (user as { is_super_admin?: boolean; isSuper?: boolean } | null)?.is_super_admin
     ?? (user as { isSuper?: boolean } | null)?.isSuper,
   );
+  // Historia: ptaszek „Historia produktu" (domyślnie admin) albo super-admin.
+  // Strefa usuwania zostaje wyłącznie przy super-adminie.
+  const historyAllowed = canSeeProductHistory(user);
   const { shop, setShop } = useShop();
 
   const [product, setProduct] = useState<Product | null>(null);
@@ -215,13 +218,13 @@ export default function ProductPage({
 
   // ── Sondy super-admina (jak w modalu) ──────────────────────
   useEffect(() => {
-    if (!isSuper) { setHasHistory(false); return; }
+    if (!historyAllowed) { setHasHistory(false); return; }
     let alive = true;
     api.get(`/products/${encodeURIComponent(sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then(() => { if (alive) setHasHistory(true); })
       .catch(() => { if (alive) setHasHistory(false); });
     return () => { alive = false; };
-  }, [sku, isSuper, shop]);
+  }, [sku, historyAllowed, shop]);
 
   useEffect(() => {
     if (!isSuper) { setDelChk(null); return; }
@@ -236,10 +239,10 @@ export default function ProductPage({
   const tabs = useMemo(() => {
     const out: ProductTab[] = ["logistyka"];
     if (salesAllowed) out.push("sprzedaz");
-    if (isSuper && hasHistory) out.push("historia");
+    if (historyAllowed && hasHistory) out.push("historia");
     out.push("dane");
     return out;
-  }, [salesAllowed, isSuper, hasHistory]);
+  }, [salesAllowed, historyAllowed, hasHistory]);
 
   // Zakładka z linku, do której ktoś nie ma dostępu (albo historia, której
   // SKU nie ma) → Logistyka. Dla historii czekamy na odpowiedź sondy.
@@ -447,7 +450,7 @@ export default function ProductPage({
           />
         )}
 
-        {tab === "historia" && isSuper && hasHistory && (
+        {tab === "historia" && historyAllowed && hasHistory && (
           <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />
         )}
 

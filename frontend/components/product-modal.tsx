@@ -21,7 +21,7 @@ import {
 import { api, photoUrl } from "@/lib/api";
 import { PhotoHover, ProductThumb, resetPhotoCache } from "./photo-hover";   // PhotoHover — tylko kafelki w „Danych podstawowych”
 import { toast } from "./toast";
-import { canEdit, can, canSeePurchasePrice, useUser } from "@/lib/permissions";
+import { canEdit, can, canSeeProductHistory, canSeePurchasePrice, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
@@ -132,6 +132,9 @@ export default function ProductModal({
     (user as { is_super_admin?: boolean; isSuper?: boolean } | null)?.is_super_admin
     ?? (user as { isSuper?: boolean } | null)?.isSuper,
   );
+  // Historia produktu: ptaszek „Historia produktu" albo super-admin — tak samo
+  // jak na pełnej karcie. Kto go ma, dostaje też pasek zakładek w modalu.
+  const historyAllowed = canSeeProductHistory(user);
   // Firma z globalnego fragmentatora (lib/shop) — ta sama, którą czyta
   // lista produktów i Finanse. Bez niej „Przegląd" pokazywał stan Veluxy,
   // a „Historia produktu" dane AMH, bo historia szła na sztywno do Subiekta.
@@ -146,7 +149,7 @@ export default function ProductModal({
   const [tab, setTab] = useState<"przeglad" | "zycie2" | "dane">("przeglad");
 
   useEffect(() => {
-    if (!isSuper) { setHasHistory(false); return; }
+    if (!historyAllowed) { setHasHistory(false); return; }
     let alive = true;
     // Świadomie NIE zerujemy `hasHistory` przed odpowiedzią. Zerowanie na czas
     // sondy powodowało, że przy zmianie firmy zakładki na moment znikały, a
@@ -157,7 +160,7 @@ export default function ProductModal({
       .then(() => { if (alive) setHasHistory(true); })
       .catch(() => { if (alive) setHasHistory(false); });
     return () => { alive = false; };
-  }, [product.sku, isSuper, shop]);
+  }, [product.sku, historyAllowed, shop]);
 
   // Reset zakładki TYLKO przy zmianie produktu. Dawniej siedział w sondzie
   // wyżej, a odkąd ta reaguje też na zmianę firmy, przełączenie spółki
@@ -177,15 +180,15 @@ export default function ProductModal({
   // Które spółki mają historię tego symbolu. Nie zależy od `shop` — lista jest
   // ta sama niezależnie od wybranej firmy, więc pobieramy ją raz na SKU.
   useEffect(() => {
-    if (!isSuper) { setFirmyHist([]); return; }
+    if (!historyAllowed) { setFirmyHist([]); return; }
     let alive = true;
     api.get(`/products/${encodeURIComponent(product.sku)}/historia-firmy`)
       .then((d) => { if (alive) setFirmyHist(((d as { firmy?: FirmaHist[] })?.firmy) || []); })
       .catch(() => { if (alive) setFirmyHist([]); });
     return () => { alive = false; };
-  }, [product.sku, isSuper]);
+  }, [product.sku, historyAllowed]);
 
-  const showTabs = isSuper;
+  const showTabs = historyAllowed;
 
   // ── Usuwanie produktu: WYŁĄCZNIE super-admin ────────────────
   // Sonda jak przy historii: dla nie-super nie ma zapytania ani bloku w DOM.
