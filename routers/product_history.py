@@ -85,7 +85,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import get_db
 from models import CurrentUser
-from security import get_current_user
+from security import get_current_user, has_perm
 
 router = APIRouter(prefix="/api", tags=["lifecycle"])
 
@@ -112,6 +112,23 @@ def require_super_admin(
         raise HTTPException(404, "Nie znaleziono")
 
     return user
+
+
+def _jest_super(user: Optional[CurrentUser]) -> bool:
+    super_email = (settings.SUPER_ADMIN_EMAIL or "").strip().lower()
+    return bool(super_email and user and (user.email or "").strip().lower() == super_email)
+
+
+def require_view_history(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Historia produktu: uprawnienie viewProductHistory (domyślnie ADMIN)
+    albo super-admin. Usuwanie produktu zostaje przy require_super_admin."""
+    if _jest_super(user) or has_perm(user, "viewProductHistory"):
+        return user
+    # 404 jak przy super-adminie — front traktuje każdy błąd sondy jako
+    # „brak historii" i po prostu nie pokazuje zakładki.
+    raise HTTPException(404, "Nie znaleziono")
 
 
 # ===== MODELE =====
@@ -693,7 +710,7 @@ async def historia_produktu(
     sku: str,
     shop: str = Query("", description="slug firmy z fragmentatora"),
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_super_admin),
+    user: CurrentUser = Depends(require_view_history),
 ):
     firma_id, slug = await _rozstrzygnij_zrodlo(db, shop)
 
@@ -707,7 +724,7 @@ async def historia_produktu(
 async def historia_firmy(
     sku: str,
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_super_admin),
+    user: CurrentUser = Depends(require_view_history),
 ):
     """Które spółki mają historię tego SKU — zapala przełącznik we froncie.
 
