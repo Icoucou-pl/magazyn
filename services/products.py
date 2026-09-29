@@ -669,7 +669,43 @@ async def _firma_produktu(db: AsyncSession, sku: str) -> str:
     return (row[0] if row else "amh") or "amh"
 
 
-async def get_product(db: AsyncSession, sku: str, shop: str = "") -> ProductSummary:
+async def _firma_z_danych(db: AsyncSession, sku: str) -> Optional[str]:
+    """Firma, w której SKU FAKTYCZNIE żyje — niezależnie od przypisania w atrybutach.
+
+    Kolejność: Subiekt (→ AMH), potem stan w magazynach Sellasist (największy),
+    na końcu sklep z najświeższym zamówieniem. None = nic nie znaleziono.
+    Potrzebne, bo firma z atrybutów to firma, która towar SPROWADZA — a bywa,
+    że sprzedaje go inna (Veluxa ściąga, Fakturownią przesuwa do AMH, AMH sprzedaje).
+    """
+    row = (await db.execute(text(f"""
+        SELECT slug FROM (
+            SELECT 'amh' AS slug, 1 AS pri, 0::numeric AS qty, NULL::timestamp AS dt
+            FROM {settings.TABLE_SUBIEKT_DWA}
+            WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:sku))
+            UNION ALL
+            SELECT 'amh', 1, 0::numeric, NULL::timestamp
+            FROM {settings.TABLE_PRODUCTS}
+            WHERE LOWER(TRIM({settings.COL_PRODUCT_SKU})) = LOWER(TRIM(:sku))
+            UNION ALL
+            SELECT LOWER(shop), 2, COALESCE(quantity, 0)::numeric, NULL::timestamp
+            FROM {settings.TABLE_EXTERNAL_STOCK}
+            WHERE sku_canon = LOWER(TRIM(:sku)) AND shop IS NOT NULL
+            UNION ALL
+            SELECT LOWER(o.shop), 3, 0::numeric, MAX(o.{settings.COL_ORDER_DATE})::timestamp
+            FROM {settings.TABLE_ORDER_ITEMS} oi
+            JOIN {settings.TABLE_ORDERS} o
+              ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID} AND o.shop = oi.shop
+            WHERE LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sku))
+            GROUP BY LOWER(o.shop)
+        ) x
+        ORDER BY pri, qty DESC, dt DESC NULLS LAST
+        LIMIT 1
+    """), {"sku": sku})).first()
+    return row[0] if row else None
+
+
+async def get_product(db: AsyncSession, sku: str, shop: str = "",
+                      allowed: Optional[List[str]] = None) -> ProductSummary:
     """Pojedynczy produkt po SKU (szuka we wszystkich statusach). Rzuca 404.
     Dopasowanie po kanonicznym SKU (case-insensitive) — globalne wyszukiwanie i lista
     mogą renderować różną wielkość liter tego samego SKU.
@@ -677,18 +713,48 @@ async def get_product(db: AsyncSession, sku: str, shop: str = "") -> ProductSumm
     `shop` domyślnie pusty, czyli suma po firmach — tak było od zawsze i tak ma
     zostać dla „Wszyscy". Ale wejście z globalnej wyszukiwarki ustawia teraz
     firmę właściciela produktu, więc karta musi umieć pokazać liczby TEJ spółki.
-    Bez tego przełącznik mówił „Veluxa", a stan był sumą wszystkich firm."""
+    Bez tego przełącznik mówił „Veluxa", a stan był sumą wszystkich firm.
+
+    shop="auto": najpierw firma z atrybutów. Gdy tam produktu nie ma (LM_b: przypisany
+    do Veluxy, która go sprowadza, a stan i sprzedaż są w AMH), próbujemy firmy, w której
+    towar faktycznie żyje, a na końcu sumy wszystkich firm. Bez tego karta z wyszukiwarki
+    kończyła się ekranem „Nie znaleziono", choć produkt stał na magazynie.
+    `allowed` = zakres firm usera (company_scope); None = bez ograniczeń. Użytkownik
+    z zakresem nigdy nie dostaje fallbacku na firmę spoza zakresu ani na sumę."""
     from fastapi import HTTPException
 
-    # "auto" = sam rozpoznaj firmę właściciela. Jedno dodatkowe, bardzo tanie
-    # zapytanie zamiast drugiego pełnego przeliczenia katalogu.
-    if shop == "auto":
-        shop = await _firma_produktu(db, sku)
-
-    products = await fetch_products(
-        db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}, shop)
     target = (sku or "").strip().lower()
-    for p in products:
-        if (p.sku or "").strip().lower() == target:
+    statusy = {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE"}
+
+    async def _szukaj(s: str) -> Optional[ProductSummary]:
+        for p in await fetch_products(db, statusy, s):
+            if (p.sku or "").strip().lower() == target:
+                return p
+        return None
+
+    if shop != "auto":
+        p = await _szukaj(shop)
+        if p:
+            return p
+        raise HTTPException(404, f"Produkt {sku} nie znaleziony")
+
+    # Kandydaci w kolejności: właściciel z atrybutów → firma z danych → suma („Wszyscy").
+    kandydaci: List[str] = [await _firma_produktu(db, sku)]
+    z_danych = await _firma_z_danych(db, sku)
+    if z_danych:
+        kandydaci.append(z_danych)
+    kandydaci.append("")
+    if allowed:
+        dozwolone = [a.strip().lower() for a in allowed]
+        kandydaci = [k for k in kandydaci if k in dozwolone] or [dozwolone[0]]
+
+    sprawdzone: set = set()
+    for k in kandydaci:
+        if k in sprawdzone:
+            continue
+        sprawdzone.add(k)
+        p = await _szukaj(k)
+        if p:
+            p.shop_resolved = k
             return p
     raise HTTPException(404, f"Produkt {sku} nie znaleziony")
