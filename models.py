@@ -165,6 +165,7 @@ class ProductSummary(BaseModel):
     first_transit_date: Optional[date] = None  # sample: pierwsze pojawienie się w magazynie w drodze (start NOWOŚCI)
     is_new: bool = False               # sample w okresie NOWOŚCI (od magazynu w drodze do 6 mies. po dostawie)
     new_until: Optional[date] = None   # do kiedy trwa nowość (None = jeszcze płynie, termin liczony od dostawy)
+    manual_new_until: Optional[date] = None  # nowość ustawiona ręcznie — tylko znacznik, bez wpływu na status
     ean: Optional[str] = None
     forced_status: Optional[str] = None  # gdy ustawione: produkt ma wymuszony status
     lead_time_days: int
@@ -231,6 +232,12 @@ class ProductPhotoOut(BaseModel):
     full_bytes: int
     uploaded_at: datetime
     uploaded_by: Optional[str] = None
+
+
+class ManualNewUpdate(BaseModel):
+    """PUT /products/{sku}/new-until — nowość ustawiona ręcznie.
+    Data końca w przyszłości = ustaw / zmień; None = zdejmij."""
+    until: Optional[date] = None
 
 
 class SampleCreate(BaseModel):
