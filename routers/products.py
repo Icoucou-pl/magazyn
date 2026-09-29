@@ -16,7 +16,7 @@ from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
     StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, ManualNewUpdate,
 )
-from security import get_current_user, has_perm, require_perm, resolve_shop
+from security import get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
 from audit import log_audit
 from routers.product_history import require_super_admin   # ten sam guard co historia produktu
@@ -105,7 +105,7 @@ async def list_products(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), shop: st
 
 @router.get("/products/{sku}", response_model=ProductSummary)
 async def get_product_endpoint(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    p = await get_product(db, sku, shop)
+    p = await get_product(db, sku, shop, allowed=allowed_shops(user))
     _mask_financials([p], user)
     return p
 
