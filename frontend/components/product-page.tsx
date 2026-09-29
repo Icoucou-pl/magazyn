@@ -352,15 +352,14 @@ export default function ProductPage({
         .pp-actions { grid-area: actions; display: flex; gap: 6px; }
         .pp-line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .pp-meta { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 12px; }
-        .pp-mfr-link { display: inline-flex; align-items: center; gap: 5px; margin: 2px 0 0 -6px; padding: 1px 6px;
-          background: none; border: 0; border-radius: 6px; cursor: pointer; font: inherit;
-          font-size: 14px; font-weight: 600; color: var(--info); }
-        .pp-mfr-name { border-bottom: 1px dashed color-mix(in oklch, var(--info) 55%, transparent); line-height: 1.25; }
-        .pp-mfr-arrow { transition: transform .15s ease; }
-        .pp-mfr-link:hover { background: var(--info-soft); }
-        .pp-mfr-link:hover .pp-mfr-name { border-bottom-style: solid; }
-        .pp-mfr-link:hover .pp-mfr-arrow { transform: translateX(2px); }
-        .pp-mfr-link:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+        .pp-mfr-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 2px; padding: 0;
+          background: none; border: 0; cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text-hi); }
+        .pp-mfr-name { text-decoration: underline; text-decoration-color: var(--border-strong);
+          text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color .15s, text-decoration-color .15s; }
+        .pp-mfr-arrow { color: var(--text-lo); transition: transform .15s ease, color .15s; }
+        .pp-mfr-link:hover .pp-mfr-name { color: var(--info); text-decoration-color: var(--info); }
+        .pp-mfr-link:hover .pp-mfr-arrow { color: var(--info); transform: translateX(2px); }
+        .pp-mfr-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
         .pp-tabs { scrollbar-width: none; }
         .pp-tabs::-webkit-scrollbar { display: none; }
         @media (max-width: 640px) {
@@ -395,7 +394,9 @@ export default function ProductPage({
             <div className="pp-meta">
               {/* Producent jako POLE z etykietą, nie plakietka w rzędzie statusów —
                   jako chip wyglądał jak kolejny status i mało kto wiedział, że da się
-                  go kliknąć. Tu wygląda jak link: ikona, kolor, podkreślenie, strzałka. */}
+                  go kliknąć. Krój i kolor jak sąsiednie wartości; klikalność zdradzają
+                  kropka w kolorze producenta, delikatne podkreślenie i strzałka,
+                  a na hover całość robi się niebieska. */}
               <div>
                 <div style={metaLabel}>Producent</div>
                 {product.manufacturer_id && product.manufacturer_name ? (
@@ -405,8 +406,8 @@ export default function ProductPage({
                       ? onManufacturerClick(product.manufacturer_name as string)
                       : setMfrModalId(product.manufacturer_id as number))}
                     title={`Otwórz kartę producenta: ${product.manufacturer_name}`}>
-                    <span style={{ color: mfrColor, display: "flex" }}><I.Factory size={14} /></span>
-                    <span className="pp-mfr-name">{product.manufacturer_name}</span>
+                    <span aria-hidden style={{ width: 8, height: 8, borderRadius: 999, background: mfrColor, flexShrink: 0 }} />
+                    <span className="num pp-mfr-name">{product.manufacturer_name}</span>
                     <span className="pp-mfr-arrow" style={{ display: "flex" }}><I.ChevronR size={13} /></span>
                   </button>
                 ) : (
