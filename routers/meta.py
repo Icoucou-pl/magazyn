@@ -10,8 +10,8 @@ from config import settings
 from database import get_db
 from models import CurrentUser
 from security import get_current_user, resolve_shop
-from sql import SALES_QUERY
-from services.products import classify_product, fetch_sample_arrivals, attach_first_arrival
+
+from services.products import classify_product, fetch_sales_rows, attach_first_arrival
 
 router = APIRouter(prefix="/api", tags=["meta"])
 
@@ -53,9 +53,7 @@ async def classification(shop: str = "", favorites_only: bool = False, db: Async
     więc KPI „Aktywne SKU" i „Dead stock" dotyczą wyłącznie sprzedawanego asortymentu.
     """
     shop = resolve_shop(shop, user)
-    products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
-    rows = [dict(r._mapping) for r in products_result]
-    arrivals = await fetch_sample_arrivals(db)   # SAMPLE vs NOWOŚĆ — to samo co fetch_products
+    rows, arrivals = await fetch_sales_rows(db, shop)   # to samo liczenie co fetch_products
     counts = {"ACTIVE": 0, "ACTIVE_NO_STOCK": 0, "DEAD_STOCK": 0, "INACTIVE": 0, "SAMPLE": 0}
     dead_stock_value = 0.0
     for row in rows:
