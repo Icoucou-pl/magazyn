@@ -28,6 +28,7 @@ export const PERMISSIONS = [
   { key: "viewCalendarPayments", label: "Płatności w kalendarzu", desc: "Terminy płatności „Do zapłaty” jako zdarzenia kalendarza (wymaga też Dane finansowe)", group: "Widoczność" },
   { key: "viewBankBalances", label: "Stan konta firmy", desc: "Saldo rachunku i pożyczki wspólników — wykres na pulpicie i zakładka w Cashflow (wymaga też Dane finansowe)", group: "Widoczność" },
   { key: "editBankBalances", label: "Wpisywanie stanu konta", desc: "Dodawanie i poprawianie odczytów salda oraz pożyczek wspólników", group: "Dane" },
+  { key: "viewProductHistory", label: "Historia produktu", desc: "Zakładka „Historia produktu” na karcie produktu: przyjęcia, koszt zakupu w czasie, narzut logistyczny", group: "Widoczność" },
   { key: "viewPurchasePrice", label: "Cena zakupu produktu", desc: "Koszt netto za sztukę na karcie produktu — bez dostępu do pozostałych danych finansowych", group: "Widoczność" },
   { key: "viewProductSales", label: "Sprzedaż na karcie produktu", desc: "Zakładka „Sprzedaż” na karcie produktu: przychód, marża, kanały (wymaga też Dane finansowe)", group: "Widoczność" },
 ];
@@ -42,6 +43,9 @@ export const PERMISSIONS = [
 // viewBankBalances / editBankBalances — saldo rachunku i pożyczki wspólników. Domyślnie TYLKO ADMIN.
 // Sprawdzaj przez canSeeBank() / canEditBank() — oba są koniunkcyjne z viewFinancials.
 //
+// viewProductHistory — zakładka „Historia produktu" na karcie. Domyślnie TYLKO ADMIN
+// (wcześniej wyłącznie super-admin — ten dalej widzi ją zawsze, patrz canSeeProductHistory).
+//
 // viewPurchasePrice — sama cena zakupu (koszt netto / szt) dla osób BEZ viewFinancials,
 // np. obsługa, która musi znać cenę jednostkową, ale nie ma widzieć przychodów i marż.
 // Sprawdzaj przez canSeePurchasePrice() — viewFinancials i tak ją obejmuje.
@@ -54,9 +58,9 @@ export const PERMISSIONS = [
 // IMPORT/VIEWER dostają je wyłącznie ręcznym ptaszkiem. Sprawdzaj przez canSeeCalendarPayments(),
 // nie przez samo can() — uprawnienie jest koniunkcyjne z viewFinancials.
 export const ROLE_PERMS = {
-  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false },
+  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true,  viewProductHistory: true },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
@@ -85,6 +89,8 @@ export const canSeeBank = (u) => can(u, "viewBankBalances") && can(u, "viewFinan
 export const canEditBank = (u) => canSeeBank(u) && can(u, "editBankBalances");
 export const canSeeProductSales = (u) => can(u, "viewProductSales") && can(u, "viewFinancials");
 export const canSeePurchasePrice = (u) => can(u, "viewFinancials") || can(u, "viewPurchasePrice");
+export const canSeeProductHistory = (u) =>
+  Boolean(u?.is_super_admin || u?.isSuper) || can(u, "viewProductHistory");
 
 // Efektywna mapa uprawnień użytkownika (domyślne z roli + override)
 export const effectivePerms = (u) => {
