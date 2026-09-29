@@ -3,7 +3,9 @@ Logika produktowa: klasyfikacja statusu, prognoza wyczerpania zapasu,
 pobieranie listy produktów z naliczonymi metrykami.
 """
 
+import asyncio
 import calendar
+import time
 from datetime import date, timedelta
 from typing import List, Dict, Optional
 
@@ -389,6 +391,69 @@ def calculate_forecast(row: dict, incoming: List[dict],
     )
 
 
+# ── Wspólne liczenie SALES_QUERY ─────────────────────────────
+# SALES_QUERY to najcięższe zapytanie w aplikacji (kilka sekund), a dashboard
+# woła fetch_products kilka razy NARAZ dla tej samej firmy (anomalie, lista
+# zakupów, top sprzedaży, historia wartości). Zamiast 5 identycznych zapytań
+# równolegle — jedno: pierwsze żądanie liczy, pozostałe czekają na ten sam wynik.
+# Wynik żyje SALES_CACHE_TTL sekund i znika przy KAŻDEJ zmianie danych przez API
+# (main.py → invalidate_sales_cache po udanym POST/PUT/PATCH/DELETE), więc edycja
+# produktu widać od razu. Synchronizacje w tle łapie TTL.
+# Każdy wołający dostaje własne kopie wierszy — attach_first_arrival i dalsze
+# liczenie modyfikują słowniki w miejscu.
+SALES_CACHE_TTL = 60.0
+_sales_cache: Dict[str, tuple] = {}             # shop → (znacznik czasu, wiersze, arrivals)
+_sales_inflight: Dict[str, "asyncio.Future"] = {}
+_sales_gen = 0
+
+
+def invalidate_sales_cache() -> None:
+    """Zmiana danych → następne żądanie liczy od nowa."""
+    global _sales_gen
+    _sales_gen += 1
+    _sales_cache.clear()
+    _sales_inflight.clear()
+
+
+async def _load_sales_rows(db: AsyncSession, shop: str) -> tuple:
+    r = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
+    rows = [dict(x._mapping) for x in r]
+    # Wejście sampli do magazynu w drodze / na główny — przed klasyfikacją (SAMPLE vs NOWOŚĆ).
+    arrivals = await fetch_sample_arrivals(db)
+    return rows, arrivals
+
+
+async def fetch_sales_rows(db: AsyncSession, shop: str = "") -> tuple:
+    """(wiersze SALES_QUERY jako świeże kopie, arrivals sampli) dla firmy."""
+    hit = _sales_cache.get(shop)
+    if hit and time.monotonic() - hit[0] < SALES_CACHE_TTL:
+        rows, arrivals = hit[1], hit[2]
+    else:
+        fut = _sales_inflight.get(shop)
+        if fut is not None:
+            rows, arrivals = await asyncio.shield(fut)
+        else:
+            gen = _sales_gen
+            fut = asyncio.get_running_loop().create_future()
+            _sales_inflight[shop] = fut
+            try:
+                rows, arrivals = await _load_sales_rows(db, shop)
+            except asyncio.CancelledError:
+                fut.cancel()                       # żądanie przerwane (klient zamknął kartę)
+                raise
+            except Exception as e:
+                fut.set_exception(e)
+                fut.exception()                    # oznacz jako odebrany — bez ostrzeżeń asyncio
+                raise
+            finally:
+                if _sales_inflight.get(shop) is fut:
+                    _sales_inflight.pop(shop, None)
+            fut.set_result((rows, arrivals))
+            if gen == _sales_gen:                  # w międzyczasie nikt nie zmienił danych
+                _sales_cache[shop] = (time.monotonic(), rows, arrivals)
+    return [dict(r) for r in rows], arrivals
+
+
 async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> List[ProductSummary]:
     """Pobiera produkty z metrykami, filtrowane po statusie (include_set).
     shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = sprzedaż i stan tylko danego sklepu (Faza 3).
@@ -397,11 +462,8 @@ async def fetch_products(db: AsyncSession, include_set: set, shop: str = "") -> 
     compute_effective_status (ETA → odprawa celna → auto-dostawa). Nie ruszamy
     tu kolumny `status` w bazie — dawny auto_deliver_containers przepisywał
     IN_TRANSIT→DELIVERED w dniu ETA i tym samym zjadał okno odprawy."""
-    products_result = await db.execute(text(SALES_QUERY), {"default_lead_time": settings.DEFAULT_LEAD_TIME_DAYS, "shop": shop})
-    products = [dict(r._mapping) for r in products_result]
-
-    # Wejście sampli do magazynu w drodze / na główny — przed klasyfikacją (SAMPLE vs NOWOŚĆ).
-    arrivals = await fetch_sample_arrivals(db)
+    # SALES_QUERY + wejścia sampli — wspólne liczenie z krótką pamięcią (fetch_sales_rows).
+    products, arrivals = await fetch_sales_rows(db, shop)
     today = date.today()
     for p in products:
         attach_first_arrival(p, arrivals, today)
