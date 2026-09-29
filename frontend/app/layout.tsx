@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import AppShell from "@/components/app-shell";
 
 // Geist (sans) — font zmienny, więc bez listy weight (dostajemy pełen zakres 300–700).
 // latin-ext = polskie znaki (ą ć ę ł ń ó ś ź ż).
@@ -34,7 +35,10 @@ export default function RootLayout({
     >
       <body className="min-h-full">
         {/* #app: kontekst stackingu nad teksturą tła (body::before) — odpowiednik #root z mocka */}
-        <div id="app">{children}</div>
+        {/* Powłoka apki siedzi tutaj, a nie w page.tsx — layout nie montuje się
+            od nowa przy zmianie adresu, więc stan (filtry listy, historia wejść)
+            przeżywa nawigację. `children` to pusta strona catch-all. */}
+        <div id="app"><AppShell />{children}</div>
       </body>
     </html>
   );
