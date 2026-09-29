@@ -11,6 +11,11 @@
 //   Produkty): ręczna nadpiska → Fakturownia → subiekt_dwa_magazyny → subiekt_towary.
 //   Subiekt jest ERP-em AMH i nie zna towaru Acti/Veluxy, więc dla nich wygrywa Fakturownia.
 //   Cały moduł pod uprawnieniem viewFinancials (gate w nav + zasłona defensywna).
+//
+//   ProductSalesTab (eksport) = zakładka „Sprzedaż" pełnej karty produktu
+//   (product-page.tsx). Składa się z tych samych klocków co „Karta produktu"
+//   tutaj (ProductKpiGrid, RotationBlock, ProductChannelTable, PeriodPicker),
+//   więc obie drogi liczą i pokazują to samo.
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -141,34 +146,11 @@ export default function FinanceView({ density }: { density?: string }) {
             <TabBtn active={tab === "product"} onClick={() => setTab("product")} icon={<I.Box size={14} />}>Karta produktu</TabBtn>
           </div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
-          <div style={{ display: "flex", gap: 2, padding: 4, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-            {PERIODS.map(([id, label]) => (
-              <button key={id} onClick={() => setPeriod(id)} style={{
-                padding: "7px 12px", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
-                background: period === id ? "var(--surface-3)" : "transparent",
-                color: period === id ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
-              }}>{label}</button>
-            ))}
-            {/* Własny zakres — pozostałe fragmentatory bez zmian, domyślnie aktywne „Ten rok" (ytd). */}
-            <button key="custom" onClick={() => setPeriod("custom")} style={{
-              padding: "7px 12px", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
-              background: period === "custom" ? "var(--surface-3)" : "transparent",
-              color: period === "custom" ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
-              display: "inline-flex", alignItems: "center", gap: 5,
-            }}><I.Calendar size={13} /> Zakres</button>
-          </div>
-          {period === "custom" && (
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-              <span style={{ fontSize: 12, color: "var(--text-lo)" }}>od</span>
-              <input type="date" value={fromDate} min={CUSTOM_MIN} max={toDate}
-                onChange={(e) => setFromDate(e.target.value || CUSTOM_MIN)} style={dateInput} />
-              <span style={{ fontSize: 12, color: "var(--text-lo)" }}>do</span>
-              <input type="date" value={toDate} min={fromDate} max={todayISO()}
-                onChange={(e) => setToDate(e.target.value || todayISO())} style={dateInput} />
-            </div>
-          )}
-        </div>
+        <PeriodPicker
+          period={period} setPeriod={setPeriod}
+          from={fromDate} setFrom={setFromDate}
+          to={toDate} setTo={setToDate}
+        />
       </div>
 
       {tab === "overview"
@@ -556,14 +538,7 @@ function ProductCardBody({ data, loading, picked, onToggle, onClear }: {
       </div>
 
       {/* KPI */}
-      <div style={kpiGrid}>
-        <StatCard label="Przychód bez VAT" value={fmtPLN(kpi.revenue_net)} icon={<I.Wallet size={16} />} accent />
-        <StatCard label="Marża" value={`${dec1(kpi.margin_pct)}%`} sub={fmtPLN(kpi.margin)} icon={<I.TrendUp size={16} />} tone={kpi.margin >= 0 ? "ok" : "bad"} />
-        <StatCard label="Sztuki" value={fmtNum(kpi.units)} sub={`${fmtNum(kpi.orders)} zam.`} icon={<I.Box size={16} />} />
-        <StatCard label="Śr. cena netto / szt" value={fmtPLN(kpi.avg_price_net)} icon={<I.Cart size={16} />} />
-        <StatCard label="Marża / szt" value={fmtPLN(kpi.unit_margin)} sub={`koszt ${fmtPLN(kpi.unit_cost)}`} icon={<I.Activity size={16} />} tone={kpi.unit_margin >= 0 ? "ok" : "bad"} />
-        <StatCard label="Przychód z VAT" value={fmtPLN(kpi.revenue_gross)} icon={<I.Factory size={16} />} />
-      </div>
+      <ProductKpiGrid kpi={kpi} />
 
       {/* Rotacja / pokrycie stanu */}
       <RotationBlock rotation={rotation} leadTime={info.lead_time_days} filtered={filtered} />
@@ -577,9 +552,161 @@ function ProductCardBody({ data, loading, picked, onToggle, onClear }: {
   );
 }
 
+// „Ten rok" → „ten rok" — okres w podpisie czyta się jako część zdania.
+function okresMalymi(label?: string): string {
+  if (!label) return "wybranego okresu";
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+// ── KPI produktu (6 kafelków) ────────────────────────────────
+function ProductKpiGrid({ kpi }: { kpi: ProductKpi }) {
+  return (
+    <div style={kpiGrid}>
+      <StatCard label="Przychód bez VAT" value={fmtPLN(kpi.revenue_net)} icon={<I.Wallet size={16} />} accent />
+      <StatCard label="Marża" value={`${dec1(kpi.margin_pct)}%`} sub={fmtPLN(kpi.margin)} icon={<I.TrendUp size={16} />} tone={kpi.margin >= 0 ? "ok" : "bad"} />
+      <StatCard label="Sztuki" value={fmtNum(kpi.units)} sub={`${fmtNum(kpi.orders)} zam.`} icon={<I.Box size={16} />} />
+      <StatCard label="Śr. cena netto / szt" value={fmtPLN(kpi.avg_price_net)} icon={<I.Cart size={16} />} />
+      <StatCard label="Marża / szt" value={fmtPLN(kpi.unit_margin)} sub={`koszt ${fmtPLN(kpi.unit_cost)}`} icon={<I.Activity size={16} />} tone={kpi.unit_margin >= 0 ? "ok" : "bad"} />
+      <StatCard label="Przychód z VAT" value={fmtPLN(kpi.revenue_gross)} icon={<I.Factory size={16} />} />
+    </div>
+  );
+}
+
+// ── Selektor okresu (Finanse + zakładka Sprzedaż na karcie) ──
+function PeriodPicker({ period, setPeriod, from, setFrom, to, setTo }: {
+  period: string; setPeriod: (p: string) => void;
+  from: string; setFrom: (v: string) => void;
+  to: string; setTo: (v: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+      <div style={{ display: "flex", gap: 2, padding: 4, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10, flexWrap: "wrap" }}>
+        {PERIODS.map(([id, label]) => (
+          <button key={id} onClick={() => setPeriod(id)} style={{
+            padding: "7px 12px", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
+            background: period === id ? "var(--surface-3)" : "transparent",
+            color: period === id ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
+          }}>{label}</button>
+        ))}
+        {/* Własny zakres — pozostałe fragmentatory bez zmian, domyślnie aktywne „Ten rok" (ytd). */}
+        <button key="custom" onClick={() => setPeriod("custom")} style={{
+          padding: "7px 12px", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
+          background: period === "custom" ? "var(--surface-3)" : "transparent",
+          color: period === "custom" ? "var(--text-hi)" : "var(--text-mid)", transition: "all 0.12s",
+          display: "inline-flex", alignItems: "center", gap: 5,
+        }}><I.Calendar size={13} /> Zakres</button>
+      </div>
+      {period === "custom" && (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+          <span style={{ fontSize: 12, color: "var(--text-lo)" }}>od</span>
+          <input type="date" value={from} min={CUSTOM_MIN} max={to}
+            onChange={(e) => setFrom(e.target.value || CUSTOM_MIN)} style={dateInput} />
+          <span style={{ fontSize: 12, color: "var(--text-lo)" }}>do</span>
+          <input type="date" value={to} min={from} max={todayISO()}
+            onChange={(e) => setTo(e.target.value || todayISO())} style={dateInput} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// ZAKŁADKA „SPRZEDAŻ" PEŁNEJ KARTY PRODUKTU (eksport)
+// ============================================================
+// Okres jest lokalny dla zakładki — to nie jest globalny filtr aplikacji.
+// `transit` = magazyn w drodze + kontenery z /products/SKU; wchodzi do dni
+// pokrycia. `sezon` to gotowy wykres „sezon do sezonu" z modala, wstawiany
+// między rotację a kanały (tak jak ustaliliśmy układ zakładki).
+export function ProductSalesTab({ sku, shop, transit, leadTime, sezon }: {
+  sku: string; shop: string; transit: number; leadTime: number | null; sezon?: React.ReactNode;
+}) {
+  const [period, setPeriod] = useState("ytd");
+  const [fromDate, setFromDate] = useState(CUSTOM_MIN);
+  const [toDate, setToDate] = useState(todayISO);
+  const [data, setData] = useState<ProductCard | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+
+  useEffect(() => { setPicked([]); }, [sku, shop]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setErr(null);
+    const q = period === "custom"
+      ? `period=custom&from_date=${fromDate}&to_date=${toDate}`
+      : `period=${period}`;
+    const chQ = picked.map((c) => `&channel=${encodeURIComponent(c)}`).join("");
+    api.get(`/finance/product?symbol=${encodeURIComponent(sku)}&${q}${shop ? `&shop=${shop}` : ""}${chQ}`)
+      .then((d: ProductCard) => { if (alive) setData(d); })
+      .catch((e: unknown) => { if (alive) { setErr(e instanceof Error ? e.message : "Błąd pobierania"); setData(null); } })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [sku, shop, period, fromDate, toDate, picked]);
+
+  const toggleChannel = (name: string) =>
+    setPicked((prev) => prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]);
+  const filtered = picked.length > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minHeight: 36 }}>
+          {data && (
+            <p style={{ margin: 0, fontSize: 12, color: "var(--text-lo)" }}>{data.period_label} · {data.date_from} – {data.date_to} · w PLN</p>
+          )}
+          {filtered && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-mid)" }}>
+              <span style={{ color: "var(--text-lo)" }}>·</span>
+              <span>KPI tylko dla: <strong style={{ color: "var(--text-hi)" }}>{picked.join(", ")}</strong></span>
+              <button onClick={() => setPicked([])} style={{
+                border: "1px solid var(--border)", background: "var(--surface-1)", color: "var(--text-mid)",
+                borderRadius: 999, padding: "2px 10px", fontSize: 11, cursor: "pointer",
+              }}>wyczyść</button>
+            </span>
+          )}
+        </div>
+        <PeriodPicker
+          period={period} setPeriod={setPeriod}
+          from={fromDate} setFrom={setFromDate}
+          to={toDate} setTo={setToDate}
+        />
+      </div>
+
+      {err ? <ErrBox msg={err} />
+        : loading && !data ? <LoadBox />
+          : data ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, opacity: loading ? 0.6 : 1, transition: "opacity 0.15s" }}>
+              <ProductKpiGrid kpi={data.kpi} />
+              <RotationBlock
+                rotation={data.rotation}
+                leadTime={leadTime ?? data.info.lead_time_days}
+                filtered={filtered}
+                transit={transit}
+                periodLabel={data.period_label}
+              />
+              {sezon}
+              <ProductChannelTable channels={data.channels} picked={picked} onToggle={toggleChannel} />
+            </div>
+          ) : null}
+    </div>
+  );
+}
+
 // ── Rotacja ──────────────────────────────────────────────────
-function RotationBlock({ rotation, leadTime, filtered = false }: { rotation: ProductRotation; leadTime: number | null; filtered?: boolean }) {
-  const dc = rotation.days_of_cover;
+// `transit` podany → dni pokrycia liczą półkę RAZEM z towarem w drodze
+// i w kontenerach (pełna karta produktu). Bez niego zachowanie jak dotąd
+// (zakładka „Karta produktu" w Finansach). Sama półka przy produkcie, na
+// który płynie kontener, straszyła końcem zapasu, który nie nastąpi.
+function RotationBlock({ rotation, leadTime, filtered = false, transit = null, periodLabel }: {
+  rotation: ProductRotation; leadTime: number | null; filtered?: boolean;
+  transit?: number | null; periodLabel?: string;
+}) {
+  const zDostawami = transit != null;
+  const dcPolka = rotation.days_of_cover;
+  const dc = zDostawami
+    ? (rotation.avg_daily_units > 0 ? (rotation.stock + (transit as number)) / rotation.avg_daily_units : null)
+    : dcPolka;
   const lt = leadTime ?? 45;
   let tone: "ok" | "warn" | "bad" | "muted" = "muted";
   let note = "brak sprzedaży w okresie";
@@ -607,7 +734,20 @@ function RotationBlock({ rotation, leadTime, filtered = false }: { rotation: Pro
           <div className="num" style={{ fontSize: 26, fontWeight: 700, color: dcColor, lineHeight: 1.1, marginTop: 6 }}>
             {dc != null ? fmtNum(Math.round(dc)) : "—"}
           </div>
-          <div style={{ fontSize: 11, color: dcColor, marginTop: 2 }}>{note}</div>
+          {zDostawami ? (
+            <>
+              <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>
+                półka + dostawy · tempo z okresu: {okresMalymi(periodLabel)}
+              </div>
+              {(transit as number) > 0 && (
+                <div style={{ fontSize: 11, color: "var(--text-mid)", marginTop: 1 }}>
+                  na samej półce {dcPolka != null ? `${fmtNum(Math.round(dcPolka))}d` : "—"}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ fontSize: 11, color: dcColor, marginTop: 2 }}>{note}</div>
+          )}
         </div>
       </div>
     </div>

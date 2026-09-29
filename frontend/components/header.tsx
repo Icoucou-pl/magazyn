@@ -248,8 +248,11 @@ export function Topbar({
                 className="icon-btn"
                 style={{
                   ...iconBtn,
+                  // Pełny `border`, nie samo `borderColor`: bazowy iconBtn ustawia skrót
+                  // `border`, a mieszanie skrótu z pojedynczą właściwością React zgłasza
+                  // przy wyjściu z ustawień (znika borderColor, zostaje border).
                   ...(view === "settings"
-                    ? { background: "var(--surface-2)", borderColor: "var(--border)", color: "var(--text-hi)" }
+                    ? { background: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text-hi)" }
                     : {}),
                 }}
                 title="Ustawienia"

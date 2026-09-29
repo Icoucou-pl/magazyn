@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { api } from "@/lib/api";
 import { toast, exportCsv, type CsvColumn } from "./toast";
-import { useUser, can } from "@/lib/permissions";
+import { useUser, can, canSeePurchasePrice } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import {
   ProductsToolbar, ProductsTable, ColPickerModal, BulkBar, AddSampleModal,
@@ -33,15 +33,24 @@ const sortVal = (p: Product, key: keyof Product): number | string => {
 };
 
 export default function ProductsView({
-  density, openSku, onOpenedSku, onContainerClick,
+  density, openSku, onOpenedSku, onOpenProduct, externalUpdate, reloadKey, onContainerClick,
 }: {
   density?: string;
   openSku?: string | null;
   onOpenedSku?: () => void;
+  /** Klik w wiersz → pełna karta produktu (/produkty/SKU). Bez tego propa
+   *  wiersz otwiera modal jak dawniej. */
+  onOpenProduct?: (sku: string) => void;
+  /** Produkt zmieniony na karcie (obserwuj, atrybuty, zdjęcie) — łatamy wiersz,
+   *  żeby po powrocie lista nie pokazywała starego stanu. */
+  externalUpdate?: Product | null;
+  /** Zmiana wartości = przeładuj katalog (np. po usunięciu produktu na karcie). */
+  reloadKey?: number;
   onContainerClick?: (id: number) => void;
 }) {
   const gap = density === "compact" ? 10 : 12;
-  const showFin = can(useUser(), "viewFinancials");
+  const user = useUser();
+  const showFin = can(user, "viewFinancials");
 
   const [products, setProducts] = useState<Product[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
@@ -183,6 +192,20 @@ export default function ProductsView({
     })();
   }, [openSku, onOpenedSku, firmy, shop, setShop, products]);
 
+  // Zmiana zrobiona na pełnej karcie produktu — łatka jednego wiersza,
+  // bez przeładowania całego katalogu.
+  useEffect(() => {
+    if (!externalUpdate) return;
+    setProducts((prev) => prev.map((x) => (x.sku === externalUpdate.sku ? externalUpdate : x)));
+  }, [externalUpdate]);
+
+  // Pierwsze montowanie ładuje listę samo (efekt wyżej) — tu reagujemy
+  // wyłącznie na kolejne zmiany klucza.
+  useEffect(() => {
+    if (reloadKey) void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
+
   const toggleRow = (sku: string) => setSelected((prev) => {
     const n = new Set(prev);
     if (n.has(sku)) n.delete(sku); else n.add(sku);
@@ -271,9 +294,12 @@ export default function ProductsView({
       { label: "Sprzedaż/mies", get: (p) => Math.round(p.avg_monthly_weighted) },
       { key: "sales_1m", label: "Sprzedaż 30d" },
       { label: "Miesięcy zapasu", get: (p) => monthsDisplay(p.months_of_stock) },
-      ...(showFin ? [
+      // Ceny: finanse ALBO „Cena zakupu produktu". Wartość stanu tylko z finansami.
+      ...(canSeePurchasePrice(user) ? [
         { key: "purchase_price", label: "Cena zakupu (obecna)" },
         { label: "Cena zakupu (ręczna)", get: (p) => (p.cena_zakupu_manual != null && p.cena_zakupu_manual > 0 ? p.cena_zakupu_manual : "") },
+      ] as CsvColumn<Product>[] : []),
+      ...(showFin ? [
         { key: "stock_value", label: "Wartość stanu" },
       ] as CsvColumn<Product>[] : []),
       { key: "lead_time_days", label: "Lead time (dni)" },
@@ -316,7 +342,7 @@ export default function ProductsView({
         rows={filtered}
         cols={PRODUCT_COLS.filter((c) => visibleCols.includes(c.id))}
         sort={sort} toggleSort={toggleSort}
-        onProductClick={(p) => setSelectedProduct(p)}
+        onProductClick={(p) => (onOpenProduct ? onOpenProduct(p.sku) : setSelectedProduct(p))}
         selected={selected}
         onToggleRow={toggleRow}
         onToggleAll={toggleAll}

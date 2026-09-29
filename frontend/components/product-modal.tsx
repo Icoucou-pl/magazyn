@@ -4,6 +4,11 @@
 //   KPI · prognoza 180 dni (/projection) · sprzedaż+YoY · edycja
 //   atrybutów (PUT attrs) i lead-time (PUT lead-time) · gwiazdka.
 //   Porównanie sezonowe + historia: odłożone do etapu 5.
+//
+//   Pełna karta produktu (product-page.tsx) składa się z TYCH SAMYCH
+//   klocków — stąd eksporty niżej (LogistykaKpi, wykres prognozy, kontenery,
+//   karty atrybutów). Modal zostaje dla wejścia przez producenta; dzięki
+//   wspólnym klockom obie drogi pokazują to samo i nie rozjadą się z czasem.
 // ============================================================
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -22,12 +27,12 @@ import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 
-type ApiProjPoint = { date: string; stock: number; event: string | null };
+export type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
 // Spółka, która ma historię danego symbolu (GET /products/{sku}/historia-firmy).
 type FirmaHist = { firma: string; zrodlo: string; od: string | null; do: string | null; przyjec: number };
 type ProjPoint = { day: number; stock: number; arrivals: Delivery[] };
-type Projection = { points: ProjPoint[]; deliveries: Delivery[]; deliveryMarkers: { day: number; qty: number }[]; stockOutDay: number | null; orderByDay: number | null };
+export type Projection = { points: ProjPoint[]; deliveries: Delivery[]; deliveryMarkers: { day: number; qty: number }[]; stockOutDay: number | null; orderByDay: number | null };
 
 const CLASSIFICATION_OPTIONS = [
   { value: "AUTO", label: "Automatyczna" },
@@ -37,7 +42,9 @@ const CLASSIFICATION_OPTIONS = [
   { value: "INACTIVE", label: "Nieaktywny" },
 ];
 
-function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projection {
+// `days` = horyzont prognozy. Modal zostaje na 180, pełna karta bierze 270 —
+// endpoint /projection przyjmuje dowolny `days`, więc to jedyne miejsce zmiany.
+export function buildProjection(apiPoints: ApiProjPoint[], product: Product, days = 180): Projection {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const deliveries: Delivery[] = (product.incoming_deliveries || [])
     .map((d) => {
@@ -58,7 +65,7 @@ function buildProjection(apiPoints: ApiProjPoint[], product: Product): Projectio
 
       return { day, qty: d.quantity, container: etykieta, eta: d.eta_date, status: d.status };
     })
-    .filter((d) => d.day >= 0 && d.day <= 180)
+    .filter((d) => d.day >= 0 && d.day <= days)
     .sort((a, b) => a.day - b.day);
 
   const points: ProjPoint[] = apiPoints.map((p, i) => ({
@@ -249,66 +256,10 @@ export default function ProductModal({
     ? { label: "DEAD STOCK", bg: "var(--surface-3)", fg: "var(--text-lo)", dot: "var(--text-disabled)" }
     : { label: statusKey, bg: "var(--surface-3)", fg: "var(--text-lo)", dot: "var(--text-disabled)" });
 
-  const monthsStr = monthsDisplay(product.months_of_stock);
-
-  // Kafelek „Mies. zapasu" zestawiał dwie liczby liczone z różnych rzeczy:
-  // sama wartość zawiera towar W DRODZE (stan + tranzyt / sprzedaż), a podpis
-  // „Nd do końca" to symulacja dzień po dniu, uwzględniająca datę przypłynięcia.
-  // Na Pod_1b w Veluxie dawało to „5.5m" obok „8d do końca" — obie liczby
-  // poprawne, ale razem wyglądały na sprzeczność. Podpis mówi więc najpierw,
-  // CZEGO dotyczy duża liczba (zawiera towar w drodze), a dopiero potem podaje
-  // zapas samej półki — inaczej czyta się tak, jakby opisywał wartość powyżej.
-  const zapasBezTranzytu =
-    product.avg_monthly_weighted > 0 ? product.stock / product.avg_monthly_weighted : null;
-  const tranzytLiczy =
-    zapasBezTranzytu != null && product.months_of_stock - zapasBezTranzytu >= 0.15;
-  const monthsTone = monthsStr === "∞" ? "neutral" : product.months_of_stock < 1 ? "critical" : product.months_of_stock < 2 ? "warning" : "neutral";
-
-  // KPI „Najbliższa dostawa" — data wejścia na magazyn + skąd pochodzi.
-  const nearestDelivery: { value: React.ReactNode; sub: string; tone: "neutral" | "info" | "ok" } =
-    product.nearest_delivery_date
-      ? {
-          value: fmtDay(product.nearest_delivery_date),
-          sub: product.nearest_delivery_source === "estimate" ? "szac. · ETA+7" : "potwierdzona",
-          tone: product.nearest_delivery_source === "estimate" ? "info" : "ok",
-        }
-      : { value: "—", sub: "brak dostaw", tone: "neutral" };
-
   // Bloki treści wydzielone, żeby OBIE ścieżki renderowania — z zakładkami
   // i bez — używały dokładnie tego samego JSX. Bez tego zwykły użytkownik
   // i super-admin patrzyliby na dwie kopie, które z czasem by się rozjechały.
-  const kpiBlok = (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
-      <MetricBox
-        label="Stan"
-        value={product.stock}
-        // Zero w aplikacji, a towar leży w ERP — produkt nie został wystawiony
-        // w sklepie, więc nie sprzedaje się nigdzie, choć fizycznie jest.
-        // Liczby nie podmieniamy, pokazujemy obok: inaczej problem zniknąłby
-        // z oczu zamiast zostać naprawiony.
-        sub={
-          product.stan_erp_niewystawione
-            ? `w Fakturowni ${product.stan_erp_niewystawione} szt · brak w sklepie`
-            : showFin ? fmtPLN(product.stock_value) : "•••••"
-        }
-        tone={product.stock === 0 ? "critical" : "neutral"} />
-      <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do ERP (w drodze)" : "nic w drodze"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
-      <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
-      <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
-      <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
-      <MetricBox
-        label="Mies. zapasu"
-        value={monthsStr === "∞" ? "∞" : monthsStr + "m"}
-        sub={
-          product.days_until_empty >= 365
-            ? "brak ruchu"
-            : tranzytLiczy
-              ? `z towarem w drodze · na półce ${monthsDisplay(zapasBezTranzytu as number)}m, pusto za ${product.days_until_empty}d`
-              : `${product.days_until_empty}d do końca`
-        }
-        tone={monthsTone} />
-    </div>
-  );
+  const kpiBlok = <LogistykaKpi product={product} showFin={showFin} />;
 
   const sezonBlok = (
     <Section title="Sprzedaż — sezon do sezonu">
@@ -557,7 +508,7 @@ export default function ProductModal({
 }
 
 // ── Usuwanie produktu (super-admin) ──────────────────────────
-type DeleteCheck = {
+export type DeleteCheck = {
   sku: string;
   external_sources: string[];
   containers: {
@@ -569,7 +520,7 @@ type DeleteCheck = {
   can_delete: boolean;
 };
 
-function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
+export function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
   check: DeleteCheck;
   onContainerClick?: (id: number) => void;
   onClose: () => void;
@@ -654,7 +605,7 @@ function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
 }
 
 // ── Metric box ───────────────────────────────────────────────
-function MetricBox({ label, value, sub, tone = "neutral", dot }: { label: string; value: React.ReactNode; sub?: string; tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string }) {
+export function MetricBox({ label, value, sub, tone = "neutral", dot }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string }) {
   const color = { neutral: "var(--text-hi)", critical: "var(--critical)", warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)" }[tone];
   return (
     <div style={{ padding: "12px 14px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
@@ -668,7 +619,76 @@ function MetricBox({ label, value, sub, tone = "neutral", dot }: { label: string
   );
 }
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+// ── KPI logistyczne (modal „Przegląd" i karta → „Logistyka") ──
+// Wydzielone z modala, żeby pełna karta produktu nie miała własnej kopii
+// tych samych sześciu kafelków — dwie kopie rozjechałyby się przy pierwszej
+// poprawce podpisu.
+export function LogistykaKpi({ product, showFin }: { product: Product; showFin: boolean }) {
+  const monthsStr = monthsDisplay(product.months_of_stock);
+
+  // „Mies. zapasu" = (stan + magazyn w drodze + kontenery) ÷ średnia ważona
+  // z ostatnich 4 miesięcy (services/products.py). Pierwsza linijka podpisu
+  // mówi wprost CO liczymy, bo obok w zakładce Sprzedaż stoją „Dni pokrycia"
+  // z innym tempem — bez tego wyglądały na sprzeczne liczby o tym samym.
+  // Druga linijka: sama półka i symulacja dzień po dniu z datami dostaw.
+  const zapasBezTranzytu =
+    product.avg_monthly_weighted > 0 ? product.stock / product.avg_monthly_weighted : null;
+  const tranzytLiczy =
+    zapasBezTranzytu != null && product.months_of_stock - zapasBezTranzytu >= 0.15;
+  const monthsTone = monthsStr === "∞" ? "neutral" : product.months_of_stock < 1 ? "critical" : product.months_of_stock < 2 ? "warning" : "neutral";
+
+  // KPI „Najbliższa dostawa" — data wejścia na magazyn + skąd pochodzi.
+  const nearestDelivery: { value: React.ReactNode; sub: string; tone: "neutral" | "info" | "ok" } =
+    product.nearest_delivery_date
+      ? {
+          value: fmtDay(product.nearest_delivery_date),
+          sub: product.nearest_delivery_source === "estimate" ? "szac. · ETA+7" : "potwierdzona",
+          tone: product.nearest_delivery_source === "estimate" ? "info" : "ok",
+        }
+      : { value: "—", sub: "brak dostaw", tone: "neutral" };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+      <MetricBox
+        label="Stan"
+        value={product.stock}
+        // Zero w aplikacji, a towar leży w ERP — produkt nie został wystawiony
+        // w sklepie, więc nie sprzedaje się nigdzie, choć fizycznie jest.
+        // Liczby nie podmieniamy, pokazujemy obok: inaczej problem zniknąłby
+        // z oczu zamiast zostać naprawiony.
+        sub={
+          product.stan_erp_niewystawione
+            ? `w Fakturowni ${product.stan_erp_niewystawione} szt · brak w sklepie`
+            : showFin ? fmtPLN(product.stock_value) : "•••••"
+        }
+        tone={product.stock === 0 ? "critical" : "neutral"} />
+      <MetricBox label="Magazyn w drodze" dot="var(--ok)" value={product.stock_in_transit_wbite > 0 ? `+${product.stock_in_transit_wbite}` : "—"} sub={product.stock_in_transit_wbite > 0 ? "wbite do ERP (w drodze)" : "nic w drodze"} tone={product.stock_in_transit_wbite > 0 ? "ok" : "neutral"} />
+      <MetricBox label="W kontenerach" dot="var(--info)" value={product.stock_in_transit_containers > 0 ? `+${product.stock_in_transit_containers}` : "—"} sub={product.stock_in_transit_containers > 0 ? "jeszcze nie wbite" : "nic w kontenerach"} tone={product.stock_in_transit_containers > 0 ? "info" : "neutral"} />
+      <MetricBox label="Najbliższa dostawa" value={nearestDelivery.value} sub={nearestDelivery.sub} tone={nearestDelivery.tone} />
+      <MetricBox label="Sprzedaż / mies." value={Math.round(product.avg_monthly_weighted)} sub="średnia ważona" tone="neutral" />
+      <MetricBox
+        label="Mies. zapasu"
+        value={monthsStr === "∞" ? "∞" : monthsStr + "m"}
+        sub={
+          product.days_until_empty >= 365
+            ? "brak ruchu"
+            : (
+              <>
+                <div>półka + dostawy · tempo z ost. 4 mies.</div>
+                <div style={{ color: "var(--text-mid)", marginTop: 1 }}>
+                  {tranzytLiczy
+                    ? `na półce ${monthsDisplay(zapasBezTranzytu as number)}m · pusto za ${product.days_until_empty}d`
+                    : `pusto za ${product.days_until_empty}d`}
+                </div>
+              </>
+            )
+        }
+        tone={monthsTone} />
+    </div>
+  );
+}
+
+export function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10 }}>
@@ -681,7 +701,7 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 }
 
 // ── Prognoza stanu ───────────────────────────────────────────
-function StockProjectionChart({ projection, product }: { projection: Projection; product: Product }) {
+export function StockProjectionChart({ projection, product }: { projection: Projection; product: Product }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ w: 800, h: 200 });
   const [hover, setHover] = useState<number | null>(null);
@@ -701,6 +721,9 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
   const iw = size.w - pad.l - pad.r;
   const ih = size.h - pad.t - pad.b;
   const x = (i: number) => pad.l + (i / (points.length - 1)) * iw;
+  // Horyzont bierzemy z danych, nie ze stałej: modal pyta o 180 dni, pełna
+  // karta o 270. Podpisy osi i znacznik „KONIEC" idą za tym samym.
+  const horizon = Math.max(1, points.length - 1);
   const y = (v: number) => pad.t + ih - (v / max) * ih;
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -750,7 +773,7 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
           </g>
         )}
 
-        {stockOutDay != null && stockOutDay < 180 && (
+        {stockOutDay != null && stockOutDay < horizon && (
           <g>
             <line x1={x(stockOutDay)} x2={x(stockOutDay)} y1={pad.t} y2={pad.t + ih} stroke="var(--critical)" strokeWidth="1.5" strokeDasharray="3,2" />
             <text x={x(stockOutDay) - 4} y={pad.t + 10} fill="var(--critical)" fontSize="9" fontWeight="700" fontFamily="var(--font-mono)" textAnchor="end">KONIEC (+{stockOutDay}d)</text>
@@ -778,10 +801,10 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
         <text x={pad.l + 4} y={pad.t + 9} fill="var(--text-lo)" fontSize="9" fontFamily="var(--font-mono)">{Math.round(max)}</text>
 
         <text x={pad.l} y={size.h - 10} fill="var(--text-lo)" fontSize="10" fontFamily="var(--font-mono)">dziś</text>
-        <text x={pad.l + iw * 0.25} y={size.h - 10} fill="var(--text-disabled)" fontSize="10" textAnchor="middle" fontFamily="var(--font-mono)">{fmtDate(dayToDate(45))}</text>
-        <text x={size.w / 2} y={size.h - 10} fill="var(--text-disabled)" fontSize="10" textAnchor="middle" fontFamily="var(--font-mono)">{fmtDate(dayToDate(90))}</text>
-        <text x={pad.l + iw * 0.75} y={size.h - 10} fill="var(--text-disabled)" fontSize="10" textAnchor="middle" fontFamily="var(--font-mono)">{fmtDate(dayToDate(135))}</text>
-        <text x={size.w - pad.r} y={size.h - 10} fill="var(--text-lo)" fontSize="10" textAnchor="end" fontFamily="var(--font-mono)">{fmtDate(dayToDate(180))}</text>
+        <text x={pad.l + iw * 0.25} y={size.h - 10} fill="var(--text-disabled)" fontSize="10" textAnchor="middle" fontFamily="var(--font-mono)">{fmtDate(dayToDate(Math.round(horizon * 0.25)))}</text>
+        <text x={size.w / 2} y={size.h - 10} fill="var(--text-disabled)" fontSize="10" textAnchor="middle" fontFamily="var(--font-mono)">{fmtDate(dayToDate(Math.round(horizon * 0.5)))}</text>
+        <text x={pad.l + iw * 0.75} y={size.h - 10} fill="var(--text-disabled)" fontSize="10" textAnchor="middle" fontFamily="var(--font-mono)">{fmtDate(dayToDate(Math.round(horizon * 0.75)))}</text>
+        <text x={size.w - pad.r} y={size.h - 10} fill="var(--text-lo)" fontSize="10" textAnchor="end" fontFamily="var(--font-mono)">{fmtDate(dayToDate(horizon))}</text>
       </svg>
 
       {hover != null && (
@@ -809,7 +832,7 @@ function StockProjectionChart({ projection, product }: { projection: Projection;
 }
 
 // ── Sekcja: kontenery z tym SKU ──────────────────────────────
-function fmtDay(iso: string): string {
+export function fmtDay(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -832,7 +855,7 @@ type CardAgg = {
   manufacturer_name: string | null; qty: number;
 };
 
-function ContainersSection({ product, onContainerClick, onClose }: { product: Product; onContainerClick?: (id: number) => void; onClose: () => void }) {
+export function ContainersSection({ product, onContainerClick, onClose }: { product: Product; onContainerClick?: (id: number) => void; onClose: () => void }) {
   // Grupujemy po kontenerze (ten sam SKU zwykle jest raz na kontener, ale na wszelki wypadek sumujemy).
   const byContainer = new Map<number, CardAgg>();
   for (const d of product.incoming_deliveries || []) {
@@ -1073,7 +1096,7 @@ function ProductPhotos({ sku, editing, onChanged }: { sku: string; editing: bool
 }
 
 // ── Dane podstawowe (edytowalne) ─────────────────────────────
-function AttributesCard({
+export function AttributesCard({
   product, manufacturers, firmy, editing, setEditing, onSaved, onPhotosChanged,
 }: {
   product: Product; manufacturers: Manufacturer[]; firmy?: Firma[];
@@ -1231,7 +1254,7 @@ function AttributesCard({
 // Wymiary opisują KARTON eksportowy. CBM/szt = objętość kartonu ÷ szt. w kartonie.
 // Ręczne nadpisanie (cbm_manual) zawsze wygrywa — backend liczy to samo w
 // compute_effective_cbm, tutaj tylko podglądamy wynik na żywo przed zapisem.
-function DimensionsCard({
+export function DimensionsCard({
   product, editing, setEditing, onSaved,
 }: {
   product: Product; editing: boolean; setEditing: (v: boolean) => void; onSaved: (p: Product) => void;
@@ -1433,7 +1456,7 @@ function AttrToggle({ label, value, editing, onChange, locked = false }: { label
 const attrRowStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", gap: 12 };
 const attrLabelStyle: React.CSSProperties = { fontSize: 11, color: "var(--text-lo)", flexShrink: 0 };
 
-const iconBtnHeader: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 7, color: "var(--text-mid)" };
+export const iconBtnHeader: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 7, color: "var(--text-mid)" };
 const btnGhostMini: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "transparent", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, fontWeight: 500 };
 
 
