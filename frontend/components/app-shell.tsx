@@ -17,6 +17,11 @@
 //   - KARTA PRODUKTU: /produkty/SKU renderuje pełną stronę (ProductPage)
 //     zamiast modala. Lista zostaje zamontowana pod spodem (ukryta), więc
 //     powrót nie gubi filtrów, wyszukiwania ani miejsca przewinięcia.
+//   - KARTA PRODUCENTA: /producenci/Nazwa (ManufacturerPage), wejście z chipa
+//     na karcie produktu. Inne wejścia (Ustawienia, Kontenery…) zostają przy modalu.
+//   - SZNUREK: breadcrumb pokazuje drogę (Produkty › D2k › Anji › A2-1cz).
+//     Trzymamy go w history.state wpisu — wstecz/dalej/odświeżenie go odtwarzają,
+//     a link bez historii dostaje domyślny. Szczegóły: components/breadcrumbs.
 //   - auth gate przez getUser()/logout() z lib/api; nasłuch 'magazyn:unauthorized'
 //   - UserContext.Provider (lib/permissions) — widoki czytają usera/uprawnienia
 //   - motyw: useTweaks + applyTweaks; Sun/Moon w headerze ↔ AppearancePanel (sync przez wspólny stan)
@@ -31,12 +36,14 @@ import { usePathname } from "next/navigation";
 import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/lib/api";
 import { UserContext as RawUserContext } from "@/lib/permissions";
 import { ShopProvider } from "@/lib/shop";
-import { parsePath, pathForContainer, pathForProduct, pathForView } from "@/lib/routes";
+import { parsePath, pathForContainer, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST } from "@/lib/routes";
 import LoginScreen from "@/components/login";
 import { Sidebar, Topbar, NAV_ITEMS, type User } from "@/components/header";
 import Dashboard from "@/components/dashboard";
 import ProductsView from "@/components/products";
 import ProductPage, { type ProductTab } from "@/components/product-page";
+import ManufacturerPage from "@/components/manufacturer-page";
+import { extendTrail, trailFromState, type Crumb, type Trail } from "@/components/breadcrumbs";
 import ContainersView from "@/components/containers";
 import Calendar from "@/components/calendar";
 import CashflowView from "@/components/cashflow";
@@ -84,14 +91,21 @@ function ComingSoon({ view }: { view: string }) {
   );
 }
 
+// Stan wpisu historii: tylko nasz sznurek. ZAWSZE świeży obiekt — Next dokleja do
+// niego swoje pola (__NA, drzewo), a obiekt, który już je ma, przepuszcza bez
+// aktualizacji usePathname. Stąd żadnego przekazywania window.history.state dalej.
+type HistState = { trail?: Trail };
+
 function useInstantRouter() {
   return React.useMemo(() => ({
-    push(path: string) {
-      window.history.pushState(null, "", path);
+    push(path: string, state?: HistState) {
+      window.history.pushState(state ? { trail: state.trail } : null, "", path);
       window.scrollTo({ top: 0 });
     },
+    // replace (np. zmiana zakładki ?tab=) zachowuje sznurek bieżącego wpisu.
     replace(path: string, opts?: { scroll?: boolean }) {
-      window.history.replaceState(null, "", path);
+      const trail = (window.history.state as HistState | null)?.trail;
+      window.history.replaceState(trail ? { trail } : null, "", path);
       if (opts?.scroll !== false) window.scrollTo({ top: 0 });
     },
     back() { window.history.back(); },
@@ -112,7 +126,10 @@ export default function AppShell() {
 
   // Widok, deep-link do produktu i do kontenera czytamy z adresu.
   // Nie ma tu useState — dwa źródła prawdy rozjechałyby się przy „wstecz".
-  const { view, sku: pendingProductSku, containerId: pendingContainerId } = parsePath(pathname);
+  const { view, sku: pendingProductSku, containerId: pendingContainerId, mfrName, settingsSection } = parsePath(pathname);
+  // Menu nie ma pozycji „Producenci" — na karcie producenta podświetlamy Produkty,
+  // bo wchodzi się na nią z karty produktu.
+  const navView = view === "manufacturers" ? "products" : view;
 
   // Podmiana pod Sidebar/Topbar: te komponenty wołają setView(id) i nie muszą
   // wiedzieć, że pod spodem jest router.
@@ -126,6 +143,12 @@ export default function AppShell() {
   //   produktów. Wtedy obok breadcrumba pokazujemy „← Wróć do: …".
   // listScroll — miejsce przewinięcia listy w chwili wejścia na kartę.
   const autoShopSku = useRef<string | null>(null);
+  // Lista produktów raz zamontowana zostaje pod kartą producenta (ukryta) —
+  // Produkty › D2k › Anji › wstecz › wstecz wraca do tych samych filtrów.
+  // Wejście prosto na /producenci/… jej nie montuje (zbędne pobranie katalogu).
+  // (Stan ustawiany w renderze, nie ref — to wzorzec „pamiętaj z poprzedniego renderu".)
+  const [listaZamontowana, setListaZamontowana] = useState(false);
+  if (view === "products" && !listaZamontowana) setListaZamontowana(true);
   const listScroll = useRef(0);
   const poprzedniAdres = useRef<string | null>(null);
   const [kartaZ, setKartaZ] = useState<string | null>(null);
@@ -297,6 +320,47 @@ export default function AppShell() {
     return <LoginScreen onLogin={(u) => setCurrentUser(u)} />;
   }
 
+  // ── Sznurek ────────────────────────────────────────────────
+  // Czytany z bieżącego wpisu historii przy każdym renderze: każda zmiana wpisu
+  // (push, wstecz, dalej) zmienia też adres, więc render i tak nastąpi.
+  const domyslnySznurek = (): Trail => {
+    if (view === "products" && pendingProductSku) {
+      return [
+        { label: "Produkty", path: pathForView("products") },
+        { label: pendingProductSku, path: pathForProduct(pendingProductSku), mono: true },
+      ];
+    }
+    if (view === "manufacturers" && mfrName) {
+      return [
+        { label: "Producenci", path: PATH_MANUFACTURERS_LIST },
+        { label: mfrName, path: pathForManufacturer(mfrName) },
+      ];
+    }
+    return [];
+  };
+  const sznurek: Trail = trailFromState(window.history.state, pathname) ?? domyslnySznurek();
+  const idzPoSznurku = (crumb: Crumb) => router.push(crumb.path, { trail: extendTrail(sznurek, crumb) });
+
+  // Karta produktu → karta producenta.
+  const openManufacturerPage = (name: string) => {
+    idzPoSznurku({ label: name, path: pathForManufacturer(name) });
+  };
+  // Karta producenta → karta produktu. SKU producenta bywa w innej firmie niż
+  // bieżąca, więc karta sama ustala właściciela (jak z wyszukiwarki).
+  const openProductFromTrail = (sku: string) => {
+    autoShopSku.current = sku;
+    idzPoSznurku({ label: sku, path: pathForProduct(sku), mono: true });
+  };
+  // Klik w ogniwo breadcrumba = przycięcie sznurka do tego ogniwa.
+  const onCrumb = (i: number) => {
+    const c = sznurek[i];
+    if (!c) return;
+    if (c.path === pathForView("products")) { router.push(pathForView("products")); return; }
+    if (c.path === PATH_MANUFACTURERS_LIST) { router.push(PATH_MANUFACTURERS_LIST); return; }
+    if (c.path.startsWith("/produkty/")) autoShopSku.current = decodeURIComponent(c.path.slice("/produkty/".length));
+    router.push(c.path, { trail: sznurek.slice(0, i + 1) });
+  };
+
   const handleLogout = () => {
     logout();
     setCurrentUser(null);
@@ -371,10 +435,10 @@ export default function AppShell() {
     <UserContext.Provider value={currentUser}>
      <ShopProvider companyScope={currentUser.company_scope}>
       <div style={{ display: "flex", alignItems: "flex-start", minHeight: "100dvh" }}>
-        <Sidebar view={view} setView={setView} user={currentUser}/>
+        <Sidebar view={navView} setView={setView} user={currentUser}/>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: "100dvh" }}>
           <Topbar
-            view={view}
+            view={navView}
             setView={setView}
             user={currentUser}
             theme={t.theme}
@@ -402,21 +466,33 @@ export default function AppShell() {
             onCreateContainer={(mfrId) => { setPendingAutoSuggestMfr(mfrId); setPendingAutoSuggestNew(true); setView("containers"); }}
             onOpenMoneyEntries={goMoneyEntries}
           />
-        ) : view === "products" ? (
+        ) : view === "products" || view === "manufacturers" ? (
           <>
-            {/* Lista zostaje zamontowana także pod otwartą kartą — tylko ukryta.
-                Dzięki temu „wstecz" wraca do tych samych filtrów i wyszukiwania,
-                bez ponownego pobierania całego katalogu. */}
-            <div style={{ display: pendingProductSku ? "none" : "block" }}>
-              <ProductsView
-                density={t.density}
-                onOpenProduct={openFromList}
-                externalUpdate={lastUpdated}
-                reloadKey={productsReload}
-                onContainerClick={goContainers}
+            {/* Lista zostaje zamontowana także pod otwartą kartą (produktu albo
+                producenta) — tylko ukryta. Dzięki temu „wstecz" wraca do tych samych
+                filtrów i wyszukiwania, bez ponownego pobierania całego katalogu. */}
+            {(listaZamontowana || view === "products") && (
+              <div style={{ display: view === "products" && !pendingProductSku ? "block" : "none" }}>
+                <ProductsView
+                  density={t.density}
+                  onOpenProduct={openFromList}
+                  externalUpdate={lastUpdated}
+                  reloadKey={productsReload}
+                  onContainerClick={goContainers}
+                />
+              </div>
+            )}
+            {view === "manufacturers" && mfrName && (
+              <ManufacturerPage
+                key={mfrName}
+                name={mfrName}
+                trail={sznurek}
+                onCrumb={onCrumb}
+                onOpenProduct={openProductFromTrail}
+                onBackToList={() => router.push(PATH_MANUFACTURERS_LIST)}
               />
-            </div>
-            {pendingProductSku && (
+            )}
+            {view === "products" && pendingProductSku && (
               <ProductPage
                 key={pendingProductSku}
                 sku={pendingProductSku}
@@ -428,6 +504,9 @@ export default function AppShell() {
                 onContainerClick={goContainers}
                 onUpdated={setLastUpdated}
                 onDeleted={() => { setProductsReload((n) => n + 1); router.replace(pathForView("products")); }}
+                trail={sznurek}
+                onCrumb={onCrumb}
+                onManufacturerClick={openManufacturerPage}
               />
             )}
           </>
@@ -463,7 +542,7 @@ export default function AppShell() {
           <DropyView/>
         ) : view === "settings" ? (
           <SettingsView
-            initialSection={pendingManufacturerId != null ? "manufacturers" : undefined}
+            initialSection={pendingManufacturerId != null || settingsSection === "manufacturers" ? "manufacturers" : undefined}
             openManufacturerId={pendingManufacturerId}
             onOpenedManufacturer={() => setPendingManufacturerId(null)}
           />

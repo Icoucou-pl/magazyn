@@ -6,6 +6,15 @@
 //   Osobny plik zamiast eksportu z forecast.tsx — inaczej Ustawienia ciągnęłyby
 //   cały widok prognozy (macierz, sezonowość, eksport) tylko po jeden modal.
 //   Dane podaje wywołujący: produkty i kontenery już zawężone do producenta.
+//
+//   DWA TRYBY (variant):
+//   • "modal" (domyślny) — okno nad widokiem. Tak otwierają go Ustawienia,
+//     Kontenery, Prognoza, lista Produktów i stosy modali (kontener → producent).
+//   • "page" — ta sama treść jako pełna karta producenta (/producenci/Nazwa,
+//     components/manufacturer-page). Bez tła, bez ✕, bez Esc; klik w produkt
+//     idzie przez onOpenProduct na pełną kartę produktu zamiast piętrowego modala.
+//   Jeden komponent zamiast dwóch — KPI, sezon i listy liczą się w jednym miejscu,
+//   więc modal i karta nie mogą się rozjechać.
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -86,6 +95,7 @@ const arrivalOf = (c: Container): string =>
 // zdejmuje dokładnie jedno piętro, bo Esc obsługuje wyłącznie najgłębszy modal bez dzieci.
 export default function ManufacturerModal({
   mfr, products, containers, manufacturers, firmy, allProducts, showFin, onClose, onContainersChanged,
+  variant = "modal", onOpenProduct,
 }: {
   mfr: Manufacturer | null;
   /** Produkty producenta. Pominięte = modal odfiltruje je sobie z katalogu (patrz `allProducts`).
@@ -109,7 +119,12 @@ export default function ManufacturerModal({
   onClose: () => void;
   /** Zapis/usunięcie kontenera w karcie otwartej stąd — rodzic ma przeładować swoją listę. */
   onContainersChanged?: () => void;
+  /** "page" = pełna karta producenta zamiast okna (patrz nagłówek pliku). */
+  variant?: "modal" | "page";
+  /** Klik w produkt. Podane = nawigacja na kartę produktu; brak = modal produktu na tym oknie. */
+  onOpenProduct?: (sku: string) => void;
 }) {
+  const isPage = variant === "page";
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
   const [seasonErr, setSeasonErr] = useState(false);
   const [tab, setTab] = useState<MpTab>("fav");
@@ -189,12 +204,13 @@ export default function ManufacturerModal({
   useEffect(() => {
     // Gdy na wierzchu jest karta produktu, Esc ma zamknąć tylko ją. Bez tego obie
     // obsługi łapią to samo zdarzenie i modal producenta znika razem z kartą.
+    if (isPage) return;  // strona nie ma czego zamykać — Esc obsługują jej modale
     const esc = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !openSku && openContainerId == null && nestedMfrId == null) onClose();
     };
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
-  }, [onClose, openSku, openContainerId, nestedMfrId]);
+  }, [onClose, openSku, openContainerId, nestedMfrId, isPage]);
 
   useEffect(() => {
     if (mfrId == null) return;
@@ -266,6 +282,13 @@ export default function ManufacturerModal({
     }
   };
 
+  // Po zapisie kontenera: rodzic przeładowuje swoją listę, a jeśli kontenery
+  // dociągaliśmy sami (karta producenta, lista Produktów) — pobieramy je od nowa.
+  const afterContainerChange = () => {
+    if (!containers) setLazyContainers(null);
+    onContainersChanged?.();
+  };
+
   const openContainerCont = useMemo(
     () => (openContainerId == null ? null : allContainers.find((c) => c.id === openContainerId) || null),
     [openContainerId, allContainers],
@@ -309,15 +332,7 @@ export default function ManufacturerModal({
   // Kwoty w drodze: ten sam kod co KPI na pulpicie, tylko zakres = producent zamiast firmy.
   const pipe = mfrPipeline(allContainers, mfr.id);
 
-  return (
-    <Portal>
-    {/* data-modal-* włącza mobilne reguły z globals.css (padding tła, wysokość karty).
-        maxHeight w dvh, nie vh: na iOS `vh` mierzy się do NAJWIĘKSZEGO widoku (pasek URL
-        schowany), więc przy widocznym pasku karta była wyższa niż ekran i nagłówek
-        uciekał nad krawędź. */}
-    <div onClick={onClose} data-modal-backdrop style={modalBackdrop}>
-      <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in" style={{ ...modalCard, maxWidth: 820, maxHeight: "88dvh", display: "flex", flexDirection: "column" }}>
-        {/* Nagłówek */}
+  const naglowek = (
         <div style={{ padding: "16px 22px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)", position: "relative", flexShrink: 0 }}>
           <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: mfr.color }} />
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -330,11 +345,13 @@ export default function ManufacturerModal({
                 {mfrExt.contact ? `${mfrExt.contact} · ` : ""}<span className="mono">{mfr.email || "—"}</span>
               </div>
             </div>
-            <button onClick={onClose} style={fcIconBtnHeader}><I.Close size={14} /></button>
+            {!isPage && <button onClick={onClose} style={fcIconBtnHeader}><I.Close size={14} /></button>}
           </div>
         </div>
+  );
 
-        <div style={{ overflowY: "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
+  const tresc = (
+        <div style={{ overflowY: isPage ? "visible" : "auto", padding: 22, display: "flex", flexDirection: "column", gap: 18 }}>
           {/* KPI */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
             {/* Bez sampli — inaczej kafelek kłamie względem zakładki „Wszystkie". */}
@@ -413,7 +430,8 @@ export default function ManufacturerModal({
                 </div>
               </div>
 
-              <div style={{ maxHeight: 328, overflowY: "auto" }}>
+              {/* Na stronie lista może być dłuższa — nie konkuruje o wysokość okna. */}
+              <div style={{ maxHeight: isPage ? 520 : 328, overflowY: "auto" }}>
                 {booting && visible.length === 0 ? (
                   <div className="pulse-soft" style={{ height: 120, background: "var(--surface-2)" }} />
                 ) : visible.length === 0 ? (
@@ -423,7 +441,7 @@ export default function ManufacturerModal({
                         : "Brak produktów przypiętych do tego producenta."}
                   </div>
                 ) : visible.map((p, i) => (
-                  <div key={p.sku} onClick={() => setOpenSku(p.sku)} style={{
+                  <div key={p.sku} onClick={() => (onOpenProduct ? onOpenProduct(p.sku) : setOpenSku(p.sku))} style={{
                     display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", cursor: "pointer",
                     borderBottom: i === visible.length - 1 ? "none" : "1px solid var(--border-soft)",
                   }}
@@ -506,11 +524,13 @@ export default function ManufacturerModal({
             </FcSection>
           )}
         </div>
-      </div>
+  );
 
-      <style>{MM_CSS}</style>
-    </div>
-
+  // Piętra nad producentem (karta produktu, kontener, kolejny producent) — wspólne dla
+  // obu trybów. Na stronie zostaje z nich w praktyce tylko kontener: produkt idzie
+  // przez onOpenProduct, a zagnieżdżony producent otwiera się wyłącznie z modala produktu.
+  const pietra = (
+    <>
     {/* Karta produktu NA modalu producenta — RODZEŃSTWO tła, nie dziecko.
         React przepuszcza zdarzenia przez drzewo Reacta, nie DOM-u, więc portal
         zagnieżdżony w tle z onClick={onClose} zamykałby modal producenta przy
@@ -538,8 +558,8 @@ export default function ManufacturerModal({
         containerTypes={ctTypes || []}
         products={catalog || listProducts}
         onClose={() => setOpenContainerId(null)}
-        onSaved={() => { setOpenContainerId(null); onContainersChanged?.(); }}
-        onDeleted={() => { setOpenContainerId(null); onContainersChanged?.(); }}
+        onSaved={() => { setOpenContainerId(null); afterContainerChange(); }}
+        onDeleted={() => { setOpenContainerId(null); afterContainerChange(); }}
       />
     )}
 
@@ -558,6 +578,37 @@ export default function ManufacturerModal({
         onContainersChanged={onContainersChanged}
       />
     )}
+    </>
+  );
+
+  if (isPage) {
+    return (
+      <>
+        <div className="fade-in" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-md)", overflow: "hidden" }}>
+          {naglowek}
+          {tresc}
+        </div>
+        <style>{MM_CSS}</style>
+        <Portal>{pietra}</Portal>
+      </>
+    );
+  }
+
+  return (
+    <Portal>
+    {/* data-modal-* włącza mobilne reguły z globals.css (padding tła, wysokość karty).
+        maxHeight w dvh, nie vh: na iOS `vh` mierzy się do NAJWIĘKSZEGO widoku (pasek URL
+        schowany), więc przy widocznym pasku karta była wyższa niż ekran i nagłówek
+        uciekał nad krawędź. */}
+    <div onClick={onClose} data-modal-backdrop style={modalBackdrop}>
+      <div onClick={(e) => e.stopPropagation()} data-modal-card className="fade-in" style={{ ...modalCard, maxWidth: 820, maxHeight: "88dvh", display: "flex", flexDirection: "column" }}>
+        {naglowek}
+        {tresc}
+      </div>
+
+      <style>{MM_CSS}</style>
+    </div>
+    {pietra}
     </Portal>
   );
 }
