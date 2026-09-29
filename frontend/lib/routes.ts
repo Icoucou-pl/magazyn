@@ -17,6 +17,10 @@ export type Route = {
   view: string;
   sku: string | null;
   containerId: number | null;
+  /** Karta producenta (/producenci/Nazwa) — nazwa tak, jak stoi w adresie. */
+  mfrName: string | null;
+  /** Podsekcja Ustawień z adresu (/ustawienia/producenci → "manufacturers"). */
+  settingsSection: string | null;
 };
 
 // Segment adresu → identyfikator widoku.
@@ -30,6 +34,14 @@ const VIEW_BY_SEGMENT: Record<string, string> = {
   raporty: "reports",
   dropy: "dropy",
   ustawienia: "settings",
+  // Karta producenta nie ma pozycji w menu — wchodzi się na nią z karty produktu.
+  producenci: "manufacturers",
+};
+
+// Podsekcje Ustawień, do których prowadzi adres. Na razie tylko producenci —
+// to korzeń breadcrumba karty producenta otwartej z linku.
+const SETTINGS_SECTION_BY_SEGMENT: Record<string, string> = {
+  producenci: "manufacturers",
 };
 
 const SEGMENT_BY_VIEW: Record<string, string> = Object.fromEntries(
@@ -54,6 +66,17 @@ export function pathForProduct(sku: string): string {
   return `/produkty/${encodeURIComponent(sku)}`;
 }
 
+/**
+ * Karta producenta. W adresie NAZWA, nie id — „/producenci/Anji" coś mówi,
+ * „/producenci/12" nie. Kodujemy, bo nazwy mają spacje i ukośniki.
+ */
+export function pathForManufacturer(name: string): string {
+  return `/producenci/${encodeURIComponent(name)}`;
+}
+
+/** Ustawienia → Producenci (lista producentów, bez otwierania modala). */
+export const PATH_MANUFACTURERS_LIST = "/ustawienia/producenci";
+
 export function pathForContainer(id: number): string {
   return `/kontenery/${id}`;
 }
@@ -63,7 +86,7 @@ export function pathForContainer(id: number): string {
  * tak samo jak przy wejściu na „/". Stare linki nie wywalają aplikacji.
  */
 export function parsePath(pathname: string | null): Route {
-  const pusty: Route = { view: DEFAULT_VIEW, sku: null, containerId: null };
+  const pusty: Route = { view: DEFAULT_VIEW, sku: null, containerId: null, mfrName: null, settingsSection: null };
   if (!pathname) return pusty;
 
   const segments = pathname.split("/").filter(Boolean);
@@ -72,14 +95,23 @@ export function parsePath(pathname: string | null): Route {
   const view = VIEW_BY_SEGMENT[segments[0]];
   if (!view) return pusty;
 
-  const drugi = segments[1] ? decodeURIComponent(segments[1]) : null;
+  let drugi: string | null = null;
+  try { drugi = segments[1] ? decodeURIComponent(segments[1]) : null; }
+  catch { drugi = segments[1] ?? null; }  // „%" bez kodu w ręcznie wklejonym linku
 
-  if (view === "products") {
-    return { view, sku: drugi, containerId: null };
-  }
+  const r: Route = { ...pusty, view };
+  if (view === "products") return { ...r, sku: drugi };
   if (view === "containers") {
     const id = drugi != null ? Number(drugi) : NaN;
-    return { view, sku: null, containerId: Number.isFinite(id) ? id : null };
+    return { ...r, containerId: Number.isFinite(id) ? id : null };
   }
-  return { view, sku: null, containerId: null };
+  if (view === "manufacturers") {
+    // Sam „/producenci" bez nazwy nie ma własnego widoku — to lista w Ustawieniach.
+    if (!drugi) return { ...r, view: "settings", settingsSection: "manufacturers" };
+    return { ...r, mfrName: drugi };
+  }
+  if (view === "settings") {
+    return { ...r, settingsSection: segments[1] ? (SETTINGS_SECTION_BY_SEGMENT[segments[1]] ?? null) : null };
+  }
+  return r;
 }
