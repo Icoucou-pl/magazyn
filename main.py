@@ -13,6 +13,7 @@ from config import settings
 from lifespan import lifespan
 from audit import audit_middleware
 from services.products import invalidate_sales_cache
+from database import db_timing
 from routers import (
     auth, users, audit_log, meta, products, anomalies,
     containers, manufacturers, container_types, calendar, tools, fx, finance,
@@ -45,6 +46,8 @@ SLOW_REQUEST_MS = 500
 @app.middleware("http")
 async def timing_middleware(request, call_next):
     t0 = time.perf_counter()
+    slot: dict = {}
+    db_timing.set(slot)          # get_db dopisze tu czas łączenia z bazą
     response = await call_next(request)
     ms = (time.perf_counter() - t0) * 1000
     response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
@@ -55,7 +58,8 @@ async def timing_middleware(request, call_next):
         invalidate_sales_cache()
     if ms >= SLOW_REQUEST_MS:
         q = f"?{request.url.query}" if request.url.query else ""
-        print(f"[wolne] {request.method} {request.url.path}{q} {ms:.0f} ms", flush=True)
+        conn = f" (łączenie z bazą {slot['connect_ms']:.0f} ms)" if "connect_ms" in slot else ""
+        print(f"[wolne] {request.method} {request.url.path}{q} {ms:.0f} ms{conn}", flush=True)
     return response
 
 # Routery - każdy ma własny prefix /api

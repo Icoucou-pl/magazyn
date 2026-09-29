@@ -3,6 +3,10 @@ Połączenie z bazą (Supabase / PostgreSQL przez asyncpg).
 Session pooler port 5432 + statement_cache_size=0 (PgBouncer nie lubi prepared statements).
 """
 
+import time
+from contextvars import ContextVar
+from typing import Optional
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
@@ -27,9 +31,20 @@ engine = create_async_engine(
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+# Pomiar czasu zestawienia połączenia z bazą (NullPool → nowe połączenie na każde
+# żądanie). Middleware w main.py wkłada do kontekstu pusty słownik, get_db dopisuje
+# do niego czas, a log „[wolne]" pokazuje, ile z całego żądania zjadło samo łączenie.
+db_timing: ContextVar[Optional[dict]] = ContextVar("db_timing", default=None)
+
+
 async def get_db():
     """Dependency FastAPI - sesja bazy na czas żądania."""
     async with SessionLocal() as session:
+        t0 = time.perf_counter()
+        await session.connection()
+        slot = db_timing.get()
+        if slot is not None:
+            slot["connect_ms"] = (time.perf_counter() - t0) * 1000
         yield session
 
 
