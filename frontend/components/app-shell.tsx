@@ -27,7 +27,7 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/lib/api";
 import { UserContext as RawUserContext } from "@/lib/permissions";
 import { ShopProvider } from "@/lib/shop";
@@ -84,10 +84,30 @@ function ComingSoon({ view }: { view: string }) {
   );
 }
 
+function useInstantRouter() {
+  return React.useMemo(() => ({
+    push(path: string) {
+      window.history.pushState(null, "", path);
+      window.scrollTo({ top: 0 });
+    },
+    replace(path: string, opts?: { scroll?: boolean }) {
+      window.history.replaceState(null, "", path);
+      if (opts?.scroll !== false) window.scrollTo({ top: 0 });
+    },
+    back() { window.history.back(); },
+  }), []);
+}
+
 export default function AppShell() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
-  const router = useRouter();
+  // NAWIGACJA BEZ SERWERA: router.push/replace z next/navigation przy każdym
+  // kliknięciu odpytywał serwer Next o payload RSC dynamicznej trasy
+  // [[...slug]] (pusta strona!) i dopiero po odpowiedzi zmieniał widok —
+  // to było opóźnienie na każdej zakładce. Natywne history.pushState/
+  // replaceState Next integruje z usePathname, więc adres, historia i
+  // „wstecz" działają tak samo, ale bez zapytania do serwera.
+  const router = useInstantRouter();
   const pathname = usePathname();
 
   // Widok, deep-link do produktu i do kontenera czytamy z adresu.
