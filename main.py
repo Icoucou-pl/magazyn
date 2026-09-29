@@ -4,6 +4,8 @@ Cała logika rozbita na moduły: config, database, security, models, sql, servic
 Ten plik tylko spina wszystko razem.
 """
 
+import time
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,6 +32,26 @@ app.add_middleware(
 
 # Middleware automatycznego audytu mutacji (POST/PUT/PATCH/DELETE)
 app.middleware("http")(audit_middleware)
+
+
+# Pomiar czasu odpowiedzi. Dodany jako ostatni = najbardziej zewnętrzny, więc mierzy
+# całe żądanie (auth, baza, serializacja). Wolne żądania lądują w logach Railwaya
+# jako „[wolne] GET /api/anomalies 2345 ms", a każda odpowiedź niesie nagłówek
+# Server-Timing — przeglądarka pokazuje go w DevTools → Network → Timing.
+SLOW_REQUEST_MS = 500
+
+
+@app.middleware("http")
+async def timing_middleware(request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+    response.headers["Timing-Allow-Origin"] = "*"
+    if ms >= SLOW_REQUEST_MS:
+        q = f"?{request.url.query}" if request.url.query else ""
+        print(f"[wolne] {request.method} {request.url.path}{q} {ms:.0f} ms", flush=True)
+    return response
 
 # Routery - każdy ma własny prefix /api
 for r in (auth, users, audit_log, meta, products, anomalies,
