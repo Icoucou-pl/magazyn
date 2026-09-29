@@ -21,6 +21,8 @@ export type Route = {
   mfrName: string | null;
   /** Podsekcja Ustawień z adresu (/ustawienia/producenci → "manufacturers"). */
   settingsSection: string | null;
+  /** Karta kontenera (/kontenery/MSDU6911513 albo /kontenery/SK2605042) — patrz containerSlug. */
+  containerKey: string | null;
 };
 
 // Segment adresu → identyfikator widoku.
@@ -81,12 +83,45 @@ export function pathForContainer(id: number): string {
   return `/kontenery/${id}`;
 }
 
+/** Karta kontenera pod jego „ludzkim" kluczem (containerSlug). */
+export function pathForContainerPage(key: string): string {
+  return `/kontenery/${encodeURIComponent(key)}`;
+}
+
+type SlugSource = {
+  id: number;
+  container_number?: string | null;
+  order_number?: string | null;
+  lot_order_numbers?: (string | null | undefined)[];
+};
+
+/**
+ * Klucz kontenera w adresie karty. Numer kontenera znamy zwykle dopiero po
+ * wypłynięciu, a FV wpisujemy od razu przy zakładaniu — więc:
+ *   1. prawdziwy numer kontenera (bez roboczego „Draft-…"),
+ *   2. inaczej nr FV kontenera, a w skonsolidowanym — FV pierwszego lotu,
+ *   3. inaczej „id-12".
+ * Gdy numer się pojawi, link zmieni się na numer kontenera, ale stary link
+ * z FV dalej trafia — karta szuka po numerze kontenera ORAZ po FV (także lotów).
+ * Klucz z samych cyfr zamieniamy na „id-12", bo same cyfry w adresie to stary
+ * deep-link do formularza (/kontenery/12).
+ */
+export function containerSlug(c: SlugSource): string {
+  const clean = (v?: string | null) => (v || "").trim();
+  const nr = clean(c.container_number);
+  const realNr = nr && !/^draft-/i.test(nr) ? nr : "";
+  const fv = clean(c.order_number) || (c.lot_order_numbers || []).map(clean).find(Boolean) || "";
+  const key = realNr || fv;
+  if (!key || /^\d+$/.test(key)) return `id-${c.id}`;
+  return key;
+}
+
 /**
  * Adres → widok. Nieznany segment nie jest błędem: lądujemy na dashboardzie,
  * tak samo jak przy wejściu na „/". Stare linki nie wywalają aplikacji.
  */
 export function parsePath(pathname: string | null): Route {
-  const pusty: Route = { view: DEFAULT_VIEW, sku: null, containerId: null, mfrName: null, settingsSection: null };
+  const pusty: Route = { view: DEFAULT_VIEW, sku: null, containerId: null, mfrName: null, settingsSection: null, containerKey: null };
   if (!pathname) return pusty;
 
   const segments = pathname.split("/").filter(Boolean);
@@ -102,8 +137,12 @@ export function parsePath(pathname: string | null): Route {
   const r: Route = { ...pusty, view };
   if (view === "products") return { ...r, sku: drugi };
   if (view === "containers") {
-    const id = drugi != null ? Number(drugi) : NaN;
-    return { ...r, containerId: Number.isFinite(id) ? id : null };
+    // Same cyfry = stary deep-link (/kontenery/12): lista Kontenerów + formularz w oknie.
+    // Kalendarz, Cashflow i pulpit dalej tak otwierają kontener.
+    // Cokolwiek innego = numer kontenera / FV → pełna karta kontenera.
+    if (drugi != null && /^\d+$/.test(drugi)) return { ...r, containerId: Number(drugi) };
+    if (drugi) return { ...r, view: "containerPage", containerKey: drugi };
+    return r;
   }
   if (view === "manufacturers") {
     // Sam „/producenci" bez nazwy nie ma własnego widoku — to lista w Ustawieniach.
