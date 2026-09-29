@@ -835,6 +835,17 @@ export function StockProjectionChart({ projection, product }: { projection: Proj
 }
 
 // ── Sekcja: kontenery z tym SKU ──────────────────────────────
+// Koniec nowości sampla: 6 mies. od dostawy na główny (jak NEW_PRODUCT_MONTHS w backendzie).
+// Liczone tu, bo new_until z backendu to późniejsza z dat sampla i nowości ustawionej ręcznie.
+function sampleNewUntil(arrivalIso: string): Date {
+  const d = new Date(arrivalIso);
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + 6);
+  d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  return d;
+}
+
 export function fmtDay(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
@@ -1237,9 +1248,16 @@ export function AttributesCard({
                 ? "Nowość wyłączona ręczną klasyfikacją"
                 : !product.first_arrival_date
                   ? `W drodze od ${fmtDay(product.first_transit_date || "")} · nowość, 6 mies. liczone od dostawy`
-                  : product.is_new
-                    ? `Dotarł ${fmtDay(product.first_arrival_date)} · nowość do ${fmtDay(product.new_until || "")}`
+                  : sampleNewUntil(product.first_arrival_date) > new Date()
+                    ? `Dotarł ${fmtDay(product.first_arrival_date)} · nowość do ${fmtDay(sampleNewUntil(product.first_arrival_date).toISOString())}`
                     : `Dotarł ${fmtDay(product.first_arrival_date)} · okres nowości minął`}
+          </div>
+        )}
+        {/* Nowość ustawiona ręcznie (ikonka ✨ na karcie produktu). Tylko znacznik —
+            status liczy się normalnie. Backend zwraca datę tylko, gdy nowość trwa. */}
+        {product.manual_new_until && !editing && (
+          <div style={{ fontSize: 11, color: "var(--text-lo)", padding: "0 14px 8px", lineHeight: 1.4 }}>
+            Nowość do {fmtDay(product.manual_new_until)} · ustawiono ręcznie
           </div>
         )}
         {draft.isSample && (

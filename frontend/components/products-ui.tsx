@@ -69,8 +69,9 @@ export type Product = {
   app_only?: boolean;      // w katalogu tylko dzięki etykiecie (brak w Subiekcie/Sellasiście) — ptaszka nie da się odznaczyć
   first_arrival_date?: string | null;   // sample: pierwsze wejście na magazyn główny (null = jeszcze nie dotarł)
   first_transit_date?: string | null;   // sample: pierwsze pojawienie się w magazynie w drodze (start nowości)
-  is_new?: boolean;                     // NOWOŚĆ: od magazynu w drodze do 6 mies. po dostawie — status ACTIVE / ACTIVE_NO_STOCK
+  is_new?: boolean;                     // NOWOŚĆ: sampel (od magazynu w drodze do 6 mies. po dostawie) albo ustawiona ręcznie
   new_until?: string | null;            // do kiedy trwa nowość (null = jeszcze płynie)
+  manual_new_until?: string | null;     // nowość ustawiona ręcznie (tylko gdy trwa) — sam znacznik, bez wpływu na status
   sample_stock: number;    // ręczny stan; liczy się tylko dla SKU spoza Subiektu i Sellasista
   ean: string | null;
   forced_status: string | null;
