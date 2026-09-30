@@ -216,6 +216,86 @@ def test_brak_cbm_nie_wywala_rachunku():
     assert [u for u in r.uwagi if "CBM" in u.tresc]
 
 
+# Odprawa Acti 1782 w pigułce: duża pozycja niedopełniona przez stare ceny planowane,
+# obok drobna pozycja, której wartość odpowiada co do grosza jednemu SKU. Metryka
+# bezwzględna dawała tu REMIS między „wstaw drobiazg do dużej pozycji" a „zostaw jego
+# własną pozycję pustą" — i wybierała to drugie, przez co wysięgniki z własnym cłem 6,5%
+# lądowały w gratisach przy łóżkach.
+SAD_PUSTA_POZYCJA = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-05-11"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="9600" P35BruttoZestawu="970" SumaClaZestawu="33">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST02"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="900" P38MasaNetto="880" P42WartoscPozycji="9000" P47WartCelna="36000">
+    <P31ZnakiINumery OpisTowaru="Duza pozycja"><Opakowania RodzOpak="CT" LiczbaOpak="90"/>
+      <Kontenery Numer="TEST3333333"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94016100"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+    <P47Oplaty Typ="B00" Stawka="23" Kwota="8280" MP="G"><Skladowe KwotaOplaty="8280"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="20" P38MasaNetto="18" P42WartoscPozycji="100" P47WartCelna="400">
+    <P31ZnakiINumery OpisTowaru="Czesc gratis"><Opakowania RodzOpak="CT" LiczbaOpak="1"/>
+      <Kontenery Numer="TEST3333333"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="84122180"/>
+    <P47Oplaty Typ="A00" Stawka="2.7" Kwota="11" MP="H"><Skladowe KwotaOplaty="10.8"/></P47Oplaty>
+    <P47Oplaty Typ="B00" Stawka="23" Kwota="95" MP="G"><Skladowe KwotaOplaty="94.5"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="50" P38MasaNetto="45" P42WartoscPozycji="500" P47WartCelna="2000">
+    <P31ZnakiINumery OpisTowaru="Wysiegniki - wlasna pozycja"><Opakowania RodzOpak="CT" LiczbaOpak="5"/>
+      <Kontenery Numer="TEST3333333"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="39269097"/>
+    <P47Oplaty Typ="A00" Stawka="6.5" Kwota="130" MP="H"><Skladowe KwotaOplaty="130"/></P47Oplaty>
+    <P47Oplaty Typ="B00" Stawka="23" Kwota="489" MP="G"><Skladowe KwotaOplaty="489"/></P47Oplaty>
+  </PozycjeSADu>
+</SADUE>"""
+
+# Ceny planowane celowo zaniżone o ~6% na dużej pozycji — tak jak w prawdziwej odprawie,
+# gdzie unit_cost pochodzi sprzed dostawy.
+TOWAR_PUSTA = [
+    PozycjaTowaru(11, 201, "DUZY", 100, 340.0),   # 8 500 USD wobec pozycji za 9 000
+    PozycjaTowaru(12, 201, "WYSIEG", 50, 40.0),   # 500 USD — dokładnie tyle, co pozycja 3
+]
+
+
+def test_nie_zostawia_pustej_pozycji_gdy_pasuje_do_niej_towar():
+    o = parsuj(SAD_PUSTA_POZYCJA)
+    p = dopasuj(o, TOWAR_PUSTA)
+    assert p[12] == 3, "SKU o wartości równej pozycji 3 musi tam trafić, a nie do niedopełnionej pozycji 1"
+    assert p[11] == 1
+
+
+def test_wlasna_pozycja_niesie_wlasne_clo():
+    o = parsuj(SAD_PUSTA_POZYCJA)
+    r = policz(o, TOWAR_PUSTA, [LiniaKosztu("Fracht morski", 1000.0, lp=1)], klucz=KLUCZ_WAGA)
+    wysieg = next(w for w in r.pozycje if w.sku == "WYSIEG")
+    duzy = next(w for w in r.pozycje if w.sku == "DUZY")
+    assert round(wysieg.clo, 2) == 130.0, "cło 6,5% należy do wysięgników, nie do gratisów"
+    assert round(duzy.clo, 2) == 0.0
+    # Gratis to cło pozycji 2 (11 zł) ORAZ jej udział we frachcie — część zamienna też
+    # zajęła miejsce w kontenerze, więc nie jeździ za darmo.
+    assert duzy.gratisy > 11.0 and wysieg.gratisy == 0.0
+    razem = sum(w.razem for w in r.pozycje)
+    assert abs(razem - (38000 + 1000 * 4 + 141)) < 0.01, f"towar + fracht + cło, wyszło {razem}"
+    assert not any(w.szacunek for w in r.pozycje), "każda pozycja ma jedno SKU — bez szacowania"
+
+
+def test_niepewne_dopasowanie_daje_ostrzezenie():
+    """Dwa SKU o zbliżonej wartości i dwie pozycje, które da się obsadzić na dwa sposoby."""
+    xml = SAD_PUSTA_POZYCJA.replace('P42WartoscPozycji="500"', 'P42WartoscPozycji="900"')
+    o = parsuj(xml)
+    towar = [PozycjaTowaru(21, 201, "A", 10, 380.0), PozycjaTowaru(22, 201, "B", 10, 370.0)]
+    r = policz(o, towar, [LiniaKosztu("Fracht morski", 100.0, lp=1)], klucz=KLUCZ_WAGA)
+    assert [u for u in r.uwagi if "niepewne" in u.tresc], "bliski remis musi zapalić ostrzeżenie"
+
+
+def test_pewne_dopasowanie_bez_ostrzezenia():
+    o = parsuj(SAD_PUSTA_POZYCJA)
+    r = policz(o, TOWAR_PUSTA, [LiniaKosztu("Fracht morski", 1000.0, lp=1)], klucz=KLUCZ_WAGA)
+    assert not [u for u in r.uwagi if "niepewne" in u.tresc]
+
+
 if __name__ == "__main__":
     zle = 0
     for nazwa, fn in sorted(globals().items()):
