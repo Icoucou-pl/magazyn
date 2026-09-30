@@ -516,6 +516,43 @@ def test_waga_obiecana_tylko_przy_pozycji_z_jednym_sku():
     assert len(obietnice) == 1 and obietnice[0].szczegol == "POK70L", [u.szczegol for u in obietnice]
     assert len(recznie) == 1 and recznie[0].szczegol == "POSZ_w, PRZE5S", [u.szczegol for u in recznie]
 
+
+# Odprawa Acti 1796 w miniaturze: towar bez cła i część zamienna „gratis", na której
+# cło jednak jest. Zgłoszenie każe zapłacić 21 zł, a kafelek CŁO pokazywał 0 — bo kwota
+# szła razem z logistyką gratisu. Na sztuce nic się nie zmienia, ale panel kontrolny
+# rozjeżdżał się z SAD-em dokładnie tam, gdzie ma się zgadzać.
+SAD_GRATIS_Z_CLEM = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-09-16"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="1200" P35BruttoZestawu="1010" SumaClaZestawu="20">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST06"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="1000" P38MasaNetto="950" P42WartoscPozycji="1000" P47WartCelna="4000">
+    <P31ZnakiINumery OpisTowaru="LOZKA SZPITALNE STALOWE"><Opakowania RodzOpak="CT" LiczbaOpak="100"/>
+      <Kontenery Numer="TEST7777777"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94029000"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="10" P38MasaNetto="9" P42WartoscPozycji="200" P47WartCelna="800">
+    <P31ZnakiINumery OpisTowaru="SILOWNIK TELESKOPOWY, CZESC ZAMIENNA"><Opakowania RodzOpak="CT" LiczbaOpak="1"/>
+      <Kontenery Numer="TEST7777777"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="84122180"/>
+    <P47Oplaty Typ="A00" Stawka="2.7" Kwota="20" MP="H"><Skladowe KwotaOplaty="21.60"/></P47Oplaty>
+  </PozycjeSADu>
+</SADUE>"""
+
+
+def test_clo_pozycji_gratis_liczy_sie_do_cla_a_nie_do_logistyki():
+    o = parsuj(SAD_GRATIS_Z_CLEM)
+    towar = [PozycjaTowaru(61, 301, "SZP", 10, 500.0, nazwa="Łóżko szpitalne")]
+    r = policz(o, towar, [LiniaKosztu("Fracht morski", 100.0, lp=1)], klucz=KLUCZ_WAGA)
+    assert round(r.suma_clo, 2) == 20.0, "kafelek CŁO ma pokazywać to, co zgłoszenie każe zapłacić"
+    assert round(r.suma_logistyka, 2) == round(100.0 * 4.0, 2), "logistyka to sama faktura spedytora"
+    # Na sztuce nic nie ubywa — cło gratisu nadal jedzie w kolumnie „gratisy".
+    w = r.pozycje[0]
+    assert round(w.razem, 2) == round(1000 * 4.0 + 400.0 + 20.0, 2)
+
 if __name__ == "__main__":
     zle = 0
     for nazwa, fn in sorted(globals().items()):
