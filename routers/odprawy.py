@@ -43,6 +43,7 @@ from services.odprawy import (
 )
 from services.products import compute_effective_cbm
 from services.sad import BladSAD, Odprawa, kontrole, parsuj
+from sql import PRODUCT_NAMES_CTE
 
 router = APIRouter(prefix="/api", tags=["odprawy"])
 
@@ -97,13 +98,19 @@ async def _towar(db: AsyncSession, container_ids: Sequence[int]) -> List[Pozycja
     """
     if not container_ids:
         return []
+    # Nazwa z katalogu (prod_names — to samo źródło co lista kontenerów) jest potrzebna
+    # do dopasowania pozycji zgłoszenia: opis celny mówi „PODUSZKA KOSMETYCZNA", a bez
+    # nazwy zostałaby tylko wartość, która przy starych cenach planowanych myli.
     rows = (await db.execute(
         text(f"""
+            WITH {PRODUCT_NAMES_CTE}
             SELECT ci.id AS item_id, ci.container_id, ci.sku, ci.quantity, ci.unit_cost,
+                   pn.nazwa AS product_name,
                    pa.waga_brutto_kg, pa.kod_cn,
                    COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
                    pa.dlugosc_cm, pa.szerokosc_cm, pa.wysokosc_cm, pa.szt_w_kartonie
               FROM {settings.TABLE_CONTAINER_ITEMS} ci
+              LEFT JOIN prod_names pn ON pn.sku_canon = LOWER(TRIM(ci.sku))
               LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
                      ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(ci.sku))
              WHERE ci.container_id = ANY(:ids)
@@ -124,6 +131,7 @@ async def _towar(db: AsyncSession, container_ids: Sequence[int]) -> List[Pozycja
             waga_brutto_kg=float(r["waga_brutto_kg"]) if r["waga_brutto_kg"] is not None else None,
             cbm=cbm or None,
             kod_cn=r["kod_cn"],
+            nazwa=r["product_name"],
         ))
     return towar
 
