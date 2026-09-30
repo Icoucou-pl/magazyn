@@ -615,6 +615,9 @@ class ContainerOut(BaseModel):
     koszt_spedycji: Optional[float] = None
     oplata_spedycji: Optional[float] = None            # = koszt_spedycji − koszt_transportu (liczone)
     koszt_transportu_magazyn: Optional[float] = None   # PLN — z portu do magazynu
+    # Stan rozliczenia odprawy: "zapisana" | "szkic" | None. Zasila plakietkę na liście
+    # kontenerów, żeby jednym spojrzeniem znaleźć te bez policzonego kosztu jednostkowego.
+    koszt_status: Optional[str] = None
     folder: Optional[str] = None
     subiekt_nr: Optional[str] = None
     mrn: Optional[str] = None                          # odprawa celna (kontener nieskonsolidowany)
