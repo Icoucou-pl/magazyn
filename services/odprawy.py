@@ -128,8 +128,13 @@ class Rachunek:
 
 # ===== dopasowanie =====
 
-def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru]) -> Dict[int, int]:
-    """Zwraca {item_id: nr pozycji SAD}. Najpierw po kodzie CN, reszta po wartości."""
+def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru],
+            margines: Optional[List[float]] = None) -> Dict[int, int]:
+    """Zwraca {item_id: nr pozycji SAD}. Najpierw po kodzie CN, reszta po wartości.
+
+    `margines` (opcjonalna lista) dostaje odstęp między najlepszym a drugim układem —
+    `policz` zamienia go na ostrzeżenie, gdy dopasowanie jest niepewne.
+    """
     if not towar or not odprawa.pozycje:
         return {}
 
@@ -154,7 +159,9 @@ def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru]) -> Dict[int, int]:
             nierozstrzygniete.append(sku)
 
     if nierozstrzygniete:
-        wynik.update(_dopasuj_po_wartosci(odprawa, grupy, nierozstrzygniete, wynik))
+        wynik.update(_dopasuj_po_wartosci(odprawa, grupy, nierozstrzygniete, wynik, margines))
+    elif margines is not None:
+        margines.append(1.0)   # wszystko po kodzie CN — nie ma czego zgadywać
     return wynik
 
 
@@ -163,10 +170,10 @@ def _dopasuj_po_wartosci(
     grupy: Dict[str, List[PozycjaTowaru]],
     do_ulozenia: List[str],
     juz: Dict[int, int],
+    margines: Optional[List[float]] = None,
 ) -> Dict[int, int]:
     kurs = odprawa.kurs_celny or 1.0
     poz = odprawa.pozycje
-    calosc = odprawa.wartosc_faktur or 1.0
 
     # Ile wartości każda pozycja SAD ma już zajęte przez SKU dopasowane po kodzie CN.
     zajete = {p.nr: 0.0 for p in poz}
@@ -178,19 +185,40 @@ def _dopasuj_po_wartosci(
     wartosci = [sum(s.ilosc * s.cena_planowana / kurs for s in grupy[sku]) for sku in do_ulozenia]
 
     def blad(uklad: Sequence[int]) -> float:
+        """Suma odchyleń WZGLĘDNYCH — każde liczone do wartości swojej pozycji.
+
+        Odchylenie bezwzględne daje remisy i wybiera wtedy byle co. Odprawa Acti 1782:
+        pozycja 1 (łóżka, 36 938 USD) jest niedopełniona, bo ceny planowane bywają stare,
+        więc dorzucenie do niej wysięgnika za 646 USD zbijało jej odchyłkę dokładnie o tyle,
+        ile dokładało pozycji 3 zostawionej pustej — remis co do centa, a o wyniku decydowała
+        kolejność pętli. Wysięgniki lądowały wtedy przy łóżkach, a ich własna pozycja szła
+        w gratisy razem ze swoim cłem 6,5%.
+
+        Miara względna wycenia pustą pozycję na całe 1,0 jej wartości, więc zostawienie
+        pozycji bez towaru musi się opłacić naprawdę mocno. Jednocześnie nie wciąga towaru
+        na siłę do drobnych pozycji: dorzucenie dużego SKU do pozycji za 100 USD kosztuje
+        wielokrotność tej setki.
+        """
         sumy = dict(zajete)
         for i, idx in enumerate(uklad):
             sumy[poz[idx].nr] += wartosci[i]
-        return sum(abs(sumy[p.nr] - p.wartosc) for p in poz) / calosc
+        return sum(abs(sumy[p.nr] - p.wartosc) / max(p.wartosc, 1.0) for p in poz)
 
     n, m = len(do_ulozenia), len(poz)
     najlepszy: Optional[List[int]] = None
     if m ** n <= LIMIT_PRZEGLADU:
-        naj = float("inf")
+        naj, drugi = float("inf"), float("inf")
         for uklad in iloczyn(range(m), repeat=n):
             b = blad(uklad)
             if b < naj:
-                naj, najlepszy = b, list(uklad)
+                naj, drugi, najlepszy = b, naj, list(uklad)
+            elif b < drugi:
+                drugi = b
+        # Odstęp do drugiego najlepszego układu. Blisko zera znaczy, że wartości pozycji
+        # NIE rozstrzygają dopasowania — ceny planowane bywają stare i dwa układy wychodzą
+        # prawie tak samo. Wtedy nie udajemy pewności, tylko prosimy o sprawdzenie.
+        if margines is not None:
+            margines.append(drugi - naj if drugi < float("inf") else 1.0)
     else:
         # Zachłannie: najdroższe SKU sadzamy pierwsze, bo one decydują o dopasowaniu.
         najlepszy = [0] * n
@@ -230,7 +258,9 @@ def policz(
     `ceny_reczne` to {item_id: cena na sztukę w walucie odprawy} — wpisywane z faktury
     dostawcy tam, gdzie jedna pozycja SAD obejmuje kilka SKU i podział jest szacunkiem.
     """
-    przypisanie = dict(przypisanie or dopasuj(odprawa, towar))
+    margines: List[float] = []
+    auto = przypisanie is None
+    przypisanie = dict(przypisanie or dopasuj(odprawa, towar, margines))
     fx_t = kurs_towaru or odprawa.kurs_celny
     fx_k = kurs_kosztow or odprawa.kurs_celny
     ceny_reczne = ceny_reczne or {}
@@ -378,6 +408,15 @@ def policz(
             wyniki[cel].gratisy += kwota
         else:
             uwagi.append(Uwaga("blad", f"Pozycja {nr} bez towaru nie ma wskazanego produktu", ""))
+
+    # Próg 0,05 to 5% wartości jednej pozycji rozłożone na całe zgłoszenie — poniżej
+    # tego dwa układy są praktycznie nieodróżnialne przy cenach planowanych sprzed dostawy.
+    if auto and margines and margines[0] < 0.05:
+        uwagi.append(Uwaga(
+            "ostrzezenie",
+            "Dopasowanie SKU do pozycji zgłoszenia jest niepewne — sprawdź je przed zapisem",
+            "ceny planowane nie rozstrzygają; po pierwszym potwierdzeniu zadecyduje kod CN",
+        ))
 
     pozycje = list(wyniki.values())
     r = Rachunek(
