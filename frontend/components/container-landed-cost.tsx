@@ -36,7 +36,7 @@ type Towar = {
   item_id: number; container_id: number; container_number: string; sku: string; ilosc: number;
   cena_planowana: number; cena_zakupu_waluta: number; towar: number; logistyka: number; clo: number;
   gratisy: number; transport_krajowy: number; koszt_jednostkowy: number; zmiana_proc: number | null;
-  szacunek: boolean; poz_sad: number | null;
+  szacunek: boolean; reczna: boolean; poz_sad: number | null;
 };
 export type Odprawa = {
   mrn: string | null; data_zgloszenia: string | null; dostawca: string | null; importer: string | null;
@@ -234,7 +234,12 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
             {zapisany ? "zapisana" : bledy.length ? `${bledy.length} do poprawy` : "gotowa do zapisu"}
           </span>
           {canEdit && (
-            <button onClick={() => { setDane(null); setPlik(null); setKoszty([]); }} style={btnSec}>
+            <button onClick={() => {
+              // Ręczne poprawki są kluczowane po item_id, a te potrafią się powtórzyć w innym
+              // zgłoszeniu — zostawione przykleiłyby się do cudzej pozycji. Czyścimy wszystko.
+              setDane(null); setPlik(null); setKoszty([]);
+              setCenyReczne({}); setPrzypisanie({}); setGratisy({});
+            }} style={btnSec}>
               {zapisany ? "Wczytaj ponownie" : "Zmień plik"}
             </button>
           )}
@@ -330,7 +335,10 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                         <td style={{ ...td, fontFamily: "var(--font-mono)" }}>{t.ilosc}</td>
                         <td style={{ ...td, fontFamily: "var(--font-mono)", color: "var(--text-lo)" }}>{pl(t.cena_planowana)}</td>
                         <td style={td}>
-                          {canEdit && t.szacunek ? (
+                          {canEdit && mieszana ? (
+                            // Edytowalne dopóki pozycja jest mieszana — także po wpisaniu ceny.
+                            // Wcześniej pole znikało razem z flagą „szacunek", czyli dokładnie
+                            // wtedy, gdy trzeba było poprawić literówkę w świeżo wpisanej kwocie.
                             <input type="number" step="0.01" style={input}
                               placeholder={pl(t.cena_zakupu_waluta)}
                               value={cenyReczne[t.item_id] ?? ""}
@@ -340,8 +348,11 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                           )}
                         </td>
                         <td style={{ ...td, textAlign: "left" }}>
-                          <span style={{ ...tag, ...(t.szacunek ? ostrzStyl : okStyl) }}>
-                            {t.szacunek ? "SZACUNEK" : "Z SAD"}
+                          {/* W zapisanej odprawie nie wiadomo, czy cenę wpisano ręcznie, czy
+                              wyliczono proporcją — baza trzyma sam wynik. „Z SAD" byłoby wtedy
+                              nieprawdą, więc mówimy tylko tyle, ile wiemy: że to zatwierdzona kwota. */}
+                          <span style={{ ...tag, ...(zapisany ? infoStyl : t.szacunek ? ostrzStyl : t.reczna ? infoStyl : okStyl) }}>
+                            {zapisany ? "ZAPISANA" : t.szacunek ? "SZACUNEK" : t.reczna ? "RĘCZNA" : "Z SAD"}
                           </span>
                         </td>
                         <td style={{ ...td, fontFamily: "var(--font-mono)" }}>{pl(t.clo)} zł</td>
