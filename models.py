@@ -1024,6 +1024,7 @@ class OdprawaTowarOut(BaseModel):
     koszt_jednostkowy: float
     zmiana_proc: Optional[float] = None
     szacunek: bool = False
+    reczna: bool = False
     poz_sad: Optional[int] = None
 
 
