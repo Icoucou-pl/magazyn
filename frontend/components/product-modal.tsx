@@ -1133,12 +1133,13 @@ export function AttributesCard({
     cena: product.cena_zakupu_manual != null ? String(product.cena_zakupu_manual) : "",
     isSample: product.is_sample ?? false,
     sampleStock: String(product.sample_stock ?? 0),
+    kodCn: product.kod_cn ?? "",
   });
   const [draft, setDraft] = useState(init);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock]);
+  }, [product.sku, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock, product.kod_cn]);
 
   const save = async () => {
     if (busy) return;
@@ -1152,6 +1153,7 @@ export function AttributesCard({
         forced_status: draft.classification,
         is_sample: draft.isSample,
         sample_stock: parseInt(draft.sampleStock, 10) || 0,
+        kod_cn: draft.kodCn,
         ...(showFin ? { cena_zakupu: draft.cena.trim() === "" ? 0 : (parseFloat(draft.cena.replace(",", ".")) || 0) } : {}),
       })) as Product;
       onSaved(updated);
@@ -1186,6 +1188,10 @@ export function AttributesCard({
       <div style={{ padding: "6px 0" }}>
         <AttrInput label="Nazwa (ręczna)" wide value={editing ? draft.nazwa : (product.name_override_manual || "—")} editing={editing} placeholder={product.name} onChange={(v) => setDraft({ ...draft, nazwa: v })} />
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
+        {/* Kod CN — z pozycji zgłoszenia celnego. Wpisany raz, wiąże SKU z pozycją SAD przy
+            kolejnych dostawach. Backend normalizuje do samych cyfr (9402 90 00 → 94029000). */}
+        <AttrInput label="Kod CN" value={draft.kodCn || (editing ? "" : "—")} editing={editing} mono
+          placeholder="94029000" onChange={(v) => setDraft({ ...draft, kodCn: v })} />
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>Cena zakupu</span>
           {!showPrice ? (
@@ -1293,6 +1299,7 @@ export function DimensionsCard({
     szt: product.szt_w_kartonie != null ? String(product.szt_w_kartonie) : "",
     cbmMan: product.cbm_manual != null ? String(product.cbm_manual) : "",
     moq: product.moq != null ? String(product.moq) : "",
+    waga: product.waga_brutto_kg != null ? String(product.waga_brutto_kg) : "",
     zaokr: product.zaokraglaj_karton ?? false,
     lt: String(product.lead_time_days ?? 0),
   });
@@ -1300,7 +1307,7 @@ export function DimensionsCard({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); // eslint-disable-next-line
-  }, [product.sku, product.dlugosc_cm, product.szerokosc_cm, product.wysokosc_cm, product.szt_w_kartonie, product.cbm_manual, product.moq, product.zaokraglaj_karton, product.lead_time_days]);
+  }, [product.sku, product.dlugosc_cm, product.szerokosc_cm, product.wysokosc_cm, product.szt_w_kartonie, product.cbm_manual, product.moq, product.zaokraglaj_karton, product.lead_time_days, product.waga_brutto_kg]);
 
   const num = (s: string) => parseFloat((s || "").replace(",", ".")) || 0;
 
@@ -1328,6 +1335,7 @@ export function DimensionsCard({
         wysokosc_cm: num(draft.wy),
         szt_w_kartonie: parseInt(draft.szt, 10) || 0,
         cbm_per_unit: num(draft.cbmMan),
+        waga_brutto_kg: num(draft.waga),
         moq: parseInt(draft.moq, 10) || 0,
         zaokraglaj_karton: draft.zaokr,
       })) as Product;
@@ -1401,6 +1409,12 @@ export function DimensionsCard({
           value={editing ? draft.cbmMan : (product.cbm_manual != null ? String(product.cbm_manual) : "—")}
           editing={editing} onChange={(v) => setDraft({ ...draft, cbmMan: v })} />
 
+        {/* Waga brutto (z opakowaniem) na sztukę. Tym kluczem agencja celna rozbija fracht
+            w SAD, więc to ona wchodzi do kosztu jednostkowego kontenera — nie waga netto. */}
+        <AttrInput label="Waga brutto / szt" suffix="kg" type="number" step="0.001"
+          value={editing ? draft.waga : (product.waga_brutto_kg != null ? String(product.waga_brutto_kg) : "—")}
+          editing={editing} onChange={(v) => setDraft({ ...draft, waga: v })} />
+
         <div style={{ height: 1, background: "var(--border-soft)", margin: "6px 14px" }} />
 
         <AttrInput label="Min. zamówienie (MOQ)" suffix="szt" type="number"
@@ -1427,7 +1441,7 @@ export function DimensionsCard({
         </div>
 
         <div style={{ margin: "6px 0 0", padding: "8px 14px 10px", borderTop: "1px solid var(--border-soft)", fontSize: 10, color: "var(--text-lo)", lineHeight: 1.5 }}>
-          CBM zasila zajętość kontenera. Lead time wpływa na termin „zamów do" w prognozie stanu.
+          CBM zasila zajętość kontenera, waga brutto — podział kosztów odprawy. Lead time wpływa na termin „zamów do" w prognozie stanu.
           {(product.moq || product.zaokraglaj_karton) ? " MOQ i zaokrąglanie są na razie informacyjne — nie zmieniają jeszcze listy zakupów." : ""}
         </div>
       </div>

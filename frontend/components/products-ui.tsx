@@ -51,6 +51,8 @@ export type Product = {
   szt_w_kartonie?: number | null;        // null = 1 (produkt pakowany pojedynczo)
   moq?: number | null;                   // minimalna ilość zamówienia — na razie informacyjnie
   zaokraglaj_karton?: boolean;           // zaokrąglanie do pełnych kartonów — informacyjnie
+  waga_brutto_kg?: number | null;        // waga brutto z opakowaniem na sztukę (kg) — klucz podziału frachtu w SAD
+  kod_cn?: string | null;                // kod CN ze zgłoszenia celnego (same cyfry)
   photo_id?: number | null;              // zdjęcie główne
   photo_hash?: string | null;
   manufacturer_id: number | null;
