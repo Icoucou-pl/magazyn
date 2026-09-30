@@ -34,9 +34,11 @@ Jak liczy się koszt
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from itertools import product as iloczyn
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from services.sad import Odprawa, PozycjaSAD
 
@@ -60,6 +62,7 @@ class PozycjaTowaru:
     waga_brutto_kg: Optional[float] = None   # z karty produktu, na sztukę
     cbm: Optional[float] = None              # z karty produktu, na sztukę
     kod_cn: Optional[str] = None             # z karty produktu
+    nazwa: Optional[str] = None              # nazwa z katalogu — do dopasowania po opisie pozycji
 
 
 @dataclass
@@ -126,14 +129,57 @@ class Rachunek:
         return round((self.suma_logistyka + self.suma_clo) / self.suma_towar * 100, 1)
 
 
+# ===== dopasowanie po nazwie =====
+
+def _slowa(tekst: str) -> Set[str]:
+    """Rdzenie słów z tekstu: bez ogonków, od 4 liter, przycięte do 6 znaków.
+
+    Przycięcie zastępuje odmianę: „materac", „materace" i „materaca" dają ten sam rdzeń,
+    a „przescieradlo" i „przescieradla" — „przesc". Wystarczy, żeby opis pozycji celnej
+    spotkał się z nazwą z katalogu, a jest odporniejsze niż porównywanie całych słów.
+    """
+    if not tekst:
+        return set()
+    bez = unicodedata.normalize("NFKD", tekst.lower()).replace("\u0142", "l")
+    bez = "".join(c for c in bez if not unicodedata.combining(c))
+    return {w[:6] for w in re.findall(r"[a-z]{4,}", bez)}
+
+
+def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
+                       do_ulozenia: List[str]) -> Dict[str, int]:
+    """SKU → nr pozycji SAD, tam gdzie nazwa towaru jednoznacznie wskazuje pozycję.
+
+    Agencja opisuje pozycję po polsku („PODUSZKA KOSMETYCZNA WYKONANA Z PIANKI"),
+    a katalog ma swoją nazwę („Poduszka kosmetyczna czarna") — wspólne słowa mówią
+    o przynależności DUŻO więcej niż sama wartość. Dopasowanie po wartości potrafi
+    rozstawić towar zupełnie wbrew temu, czym on jest: przy odprawie AMH 1797 wsadziło
+    materace do poduszek, a prześcieradła do pokrowców PVC, bo ceny planowane pochodziły
+    sprzed dostawy i sumy „wychodziły" lepiej.
+
+    Decydujemy tylko przy ŚCISŁEJ przewadze jednej pozycji. Remis zostawiamy wartości —
+    lepiej nie zgadywać niż zgadnąć pewnym siebie tonem.
+    """
+    opisy = {p.nr: _slowa(p.opis) for p in odprawa.pozycje}
+    wynik: Dict[str, int] = {}
+    for sku in do_ulozenia:
+        tekst = " ".join(filter(None, [grupy[sku][0].nazwa, sku]))
+        moje = _slowa(tekst)
+        if not moje:
+            continue
+        punkty = sorted(((len(moje & opisy[p.nr]), p.nr) for p in odprawa.pozycje), reverse=True)
+        if punkty[0][0] > 0 and (len(punkty) == 1 or punkty[0][0] > punkty[1][0]):
+            wynik[sku] = punkty[0][1]
+    return wynik
+
+
 # ===== dopasowanie =====
 
 def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru],
-            margines: Optional[List[float]] = None) -> Dict[int, int]:
-    """Zwraca {item_id: nr pozycji SAD}. Najpierw po kodzie CN, reszta po wartości.
+            slady: Optional[Dict[str, Any]] = None) -> Dict[int, int]:
+    """Zwraca {item_id: nr pozycji SAD}. Kolejno: kod CN, nazwa towaru, wartość.
 
-    `margines` (opcjonalna lista) dostaje odstęp między najlepszym a drugim układem —
-    `policz` zamienia go na ostrzeżenie, gdy dopasowanie jest niepewne.
+    `slady` (opcjonalny słownik) dostaje informacje o tym, CZYM rozstrzygnięto każde SKU
+    i jak pewne było dopasowanie po wartości — `policz` zamienia to na ostrzeżenia.
     """
     if not towar or not odprawa.pozycje:
         return {}
@@ -150,18 +196,40 @@ def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru],
 
     wynik: Dict[int, int] = {}
     nierozstrzygniete: List[str] = []
+    zrodlo: Dict[str, str] = {}
     for sku, sztuki in grupy.items():
         kod = next((s.kod_cn for s in sztuki if s.kod_cn), None)
         if kod and kod in nr_po_cn:
             for s in sztuki:
                 wynik[s.item_id] = nr_po_cn[kod]
+            zrodlo[sku] = "cn"
         else:
             nierozstrzygniete.append(sku)
 
+    # Nazwa przed wartością: mówi, CZYM towar jest, a nie tylko ile kosztował.
     if nierozstrzygniete:
-        wynik.update(_dopasuj_po_wartosci(odprawa, grupy, nierozstrzygniete, wynik, margines))
-    elif margines is not None:
-        margines.append(1.0)   # wszystko po kodzie CN — nie ma czego zgadywać
+        po_nazwie = _dopasuj_po_nazwie(odprawa, grupy, nierozstrzygniete)
+        for sku, nr in po_nazwie.items():
+            for s in grupy[sku]:
+                wynik[s.item_id] = nr
+            zrodlo[sku] = "nazwa"
+        nierozstrzygniete = [s for s in nierozstrzygniete if s not in po_nazwie]
+
+    pewnosc: Optional[float] = None
+    zachlannie = False
+    if nierozstrzygniete:
+        pomoc: Dict[str, Any] = {}
+        wynik.update(_dopasuj_po_wartosci(odprawa, grupy, nierozstrzygniete, wynik, pomoc))
+        for sku in nierozstrzygniete:
+            zrodlo[sku] = "wartosc"
+        pewnosc = pomoc.get("margines")
+        zachlannie = bool(pomoc.get("zachlannie"))
+
+    if slady is not None:
+        slady["zrodlo"] = zrodlo
+        slady["margines"] = pewnosc
+        slady["zachlannie"] = zachlannie
+        slady["po_wartosci"] = list(nierozstrzygniete)
     return wynik
 
 
@@ -170,7 +238,7 @@ def _dopasuj_po_wartosci(
     grupy: Dict[str, List[PozycjaTowaru]],
     do_ulozenia: List[str],
     juz: Dict[int, int],
-    margines: Optional[List[float]] = None,
+    pomoc: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, int]:
     kurs = odprawa.kurs_celny or 1.0
     poz = odprawa.pozycje
@@ -217,10 +285,15 @@ def _dopasuj_po_wartosci(
         # Odstęp do drugiego najlepszego układu. Blisko zera znaczy, że wartości pozycji
         # NIE rozstrzygają dopasowania — ceny planowane bywają stare i dwa układy wychodzą
         # prawie tak samo. Wtedy nie udajemy pewności, tylko prosimy o sprawdzenie.
-        if margines is not None:
-            margines.append(drugi - naj if drugi < float("inf") else 1.0)
+        if pomoc is not None:
+            pomoc["margines"] = drugi - naj if drugi < float("inf") else 1.0
     else:
         # Zachłannie: najdroższe SKU sadzamy pierwsze, bo one decydują o dopasowaniu.
+        # Ta ścieżka NIE daje gwarancji optimum, więc zawsze prosimy o sprawdzenie —
+        # wcześniej milczała, bo margines liczył się wyłącznie przy pełnym przeglądzie,
+        # a to właśnie duże odprawy trafiają tutaj i najbardziej potrzebują kontroli.
+        if pomoc is not None:
+            pomoc["zachlannie"] = True
         najlepszy = [0] * n
         for i in sorted(range(n), key=lambda i: -wartosci[i]):
             naj, wybor = float("inf"), 0
@@ -258,9 +331,9 @@ def policz(
     `ceny_reczne` to {item_id: cena na sztukę w walucie odprawy} — wpisywane z faktury
     dostawcy tam, gdzie jedna pozycja SAD obejmuje kilka SKU i podział jest szacunkiem.
     """
-    margines: List[float] = []
+    slady: Dict[str, Any] = {}
     auto = przypisanie is None
-    przypisanie = dict(przypisanie or dopasuj(odprawa, towar, margines))
+    przypisanie = dict(przypisanie or dopasuj(odprawa, towar, slady))
     fx_t = kurs_towaru or odprawa.kurs_celny
     fx_k = kurs_kosztow or odprawa.kurs_celny
     ceny_reczne = ceny_reczne or {}
@@ -409,14 +482,8 @@ def policz(
         else:
             uwagi.append(Uwaga("blad", f"Pozycja {nr} bez towaru nie ma wskazanego produktu", ""))
 
-    # Próg 0,05 to 5% wartości jednej pozycji rozłożone na całe zgłoszenie — poniżej
-    # tego dwa układy są praktycznie nieodróżnialne przy cenach planowanych sprzed dostawy.
-    if auto and margines and margines[0] < 0.05:
-        uwagi.append(Uwaga(
-            "ostrzezenie",
-            "Dopasowanie SKU do pozycji zgłoszenia jest niepewne — sprawdź je przed zapisem",
-            "ceny planowane nie rozstrzygają; po pierwszym potwierdzeniu zadecyduje kod CN",
-        ))
+    if auto:
+        uwagi.extend(_uwagi_o_dopasowaniu(slady, odprawa, w_pozycji, wyniki))
 
     pozycje = list(wyniki.values())
     r = Rachunek(
@@ -475,3 +542,54 @@ def _dopisz_uwagi_ogolne(r: Rachunek, odprawa: Odprawa, wg_item: Dict[int, Pozyc
             "info", "Brak wagi w karcie produktu — uzupełni się przy zapisie odprawy",
             ", ".join(bez_wagi),
         ))
+
+
+def _uwagi_o_dopasowaniu(slady: Dict[str, Any], odprawa: Odprawa,
+                         w_pozycji: Dict[int, List[PozycjaTowaru]],
+                         wyniki: Dict[int, WynikPozycji]) -> List[Uwaga]:
+    """Mówi wprost, czym rozstrzygnięto dopasowanie i gdzie warto je sprawdzić.
+
+    Bez tego rachunek wygląda tak samo pewnie niezależnie od tego, czy SKU trafiło na
+    miejsce po kodzie CN (pewne), po nazwie (prawdopodobne) czy po samej wartości
+    (zgadywanie na starych cenach planowanych).
+    """
+    uwagi: List[Uwaga] = []
+    zrodlo: Dict[str, str] = slady.get("zrodlo") or {}
+    po_wartosci = [s for s, z in zrodlo.items() if z == "wartosc"]
+    po_nazwie = [s for s, z in zrodlo.items() if z == "nazwa"]
+
+    if po_nazwie:
+        uwagi.append(Uwaga(
+            "info", "Dopasowane po nazwie towaru i opisie pozycji zgłoszenia",
+            ", ".join(sorted(po_nazwie)),
+        ))
+
+    if po_wartosci:
+        # Zachłanna ścieżka nie gwarantuje najlepszego układu, a mały margines znaczy,
+        # że drugi układ był niemal równie dobry — w obu wypadkach prosimy o sprawdzenie.
+        margines = slady.get("margines")
+        niepewne = bool(slady.get("zachlannie")) or (margines is not None and margines < 0.05)
+        uwagi.append(Uwaga(
+            "ostrzezenie" if niepewne else "info",
+            ("Dopasowanie po samej wartości — sprawdź je przed zapisem"
+             if niepewne else "Dopasowane po wartości pozycji"),
+            ", ".join(sorted(po_wartosci)),
+        ))
+
+    # Rozjazd wartości to najczytelniejszy sygnał, że coś stoi w złej pozycji albo że
+    # ceny planowane są nieaktualne. 25% to próg, poniżej którego stare ceny same z siebie
+    # potrafią się rozjechać i alarm byłby szumem.
+    kurs = odprawa.kurs_celny or 1.0
+    for p in odprawa.pozycje:
+        lista = w_pozycji.get(p.nr) or []
+        if not lista or not p.wartosc:
+            continue
+        plan = sum(t.ilosc * t.cena_planowana for t in lista) / kurs
+        odchylka = (plan - p.wartosc) / p.wartosc
+        if abs(odchylka) > 0.25:
+            uwagi.append(Uwaga(
+                "ostrzezenie",
+                f"Poz. {p.nr}: towar wyceniony na {plan / p.wartosc * 100:.0f}% wartości ze zgłoszenia",
+                f"{', '.join(sorted({t.sku for t in lista}))} — złe dopasowanie albo stare ceny planowane",
+            ))
+    return uwagi
