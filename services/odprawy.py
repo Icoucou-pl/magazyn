@@ -15,7 +15,10 @@ a my musimy powiedzieć, która pozycja kontenera należy do której pozycji SAD
 Kolejność źródeł dopasowania, od najpewniejszego:
   1. KOD CN zapisany w karcie produktu (app_product_attrs.kod_cn) — po pierwszym
      potwierdzeniu odprawy kolejne dostawy tego SKU trafiają na miejsce same.
-  2. WARTOŚĆ: grupujemy SKU tak, żeby suma ilość × cena planowana zgadzała się
+  2. NAZWA TOWARU zestawiona z opisem pozycji celnej („POKROWCE PVC" vs „Pokrowiec PVC
+     70L") — mówi, CZYM towar jest, więc bije wartość, która przy cenach planowanych
+     sprzed dostawy potrafi rozstawić towar zupełnie wbrew rzeczywistości.
+  3. WARTOŚĆ: grupujemy SKU tak, żeby suma ilość × cena planowana zgadzała się
      z wartością pozycji. Uwaga nauczona na odprawie Acti: ten sam SKU MUSI trafić
      w całości do jednej pozycji, choćby leżał w dwóch kontenerach. Bez tego
      dopasowanie po wartości rozbija Mc_YSzp1 na dwie pozycje i wychodzi bzdura,
@@ -131,43 +134,84 @@ class Rachunek:
 
 # ===== dopasowanie po nazwie =====
 
-def _slowa(tekst: str) -> Set[str]:
-    """Rdzenie słów z tekstu: bez ogonków, od 4 liter, przycięte do 6 znaków.
+PROG_NAZWY = 0.15
+"""Poniżej tego podobieństwa nie rozstrzygamy nazwą — jedno przypadkowe słowo
+w dziesięciowyrazowym opisie celnym to za mało, żeby przesądzić o pozycji."""
 
-    Przycięcie zastępuje odmianę: „materac", „materace" i „materaca" dają ten sam rdzeń,
-    a „przescieradlo" i „przescieradla" — „przesc". Wystarczy, żeby opis pozycji celnej
+
+def _slowa(tekst: str) -> List[str]:
+    """Rdzenie słów z tekstu: bez ogonków, od 4 liter, przycięte do 6 znaków, bez powtórzeń.
+
+    Przycięcie zastępuje odmianę: „materac”, „materace” i „materaca” dają ten sam rdzeń,
+    a „przescieradlo” i „przescieradla” — „przesc”. Wystarczy, żeby opis pozycji celnej
     spotkał się z nazwą z katalogu, a jest odporniejsze niż porównywanie całych słów.
+
+    Zwracamy listę, nie zbiór, bo długość opisu jest potem częścią miary podobieństwa,
+    a zachowana kolejność ułatwia podejrzenie, co właściwie dostaliśmy.
     """
     if not tekst:
-        return set()
-    bez = unicodedata.normalize("NFKD", tekst.lower()).replace("\u0142", "l")
+        return []
+    bez = unicodedata.normalize("NFKD", tekst.lower()).replace("ł", "l")
     bez = "".join(c for c in bez if not unicodedata.combining(c))
-    return {w[:6] for w in re.findall(r"[a-z]{4,}", bez)}
+    return list(dict.fromkeys(w[:6] for w in re.findall(r"[a-z]{4,}", bez)))
+
+
+def _zbiezne(a: str, b: str) -> bool:
+    """Czy dwa rdzenie mówią o tym samym słowie — z tolerancją na krótszy zapis.
+
+    Symbol „PRZE5S” daje rdzeń „prze”, a opis celny „PRZEŚCIERADŁO” daje „przesc”.
+    Przy porównaniu całych rdzeni nigdy by się nie spotkały, choć dla człowieka to
+    oczywista para. Wystarczy, że jeden jest początkiem drugiego.
+    """
+    return a.startswith(b) or b.startswith(a)
+
+
+def _podobienstwo(opis: Sequence[str], nazwa: Sequence[str]) -> float:
+    """Miara Dice'a na rdzeniach: 2 × wspólne ÷ (długość opisu + długość nazwy).
+
+    Symetria jest tu sednem sprawy. Gdybyśmy patrzyli tylko, JAKA CZĘŚĆ OPISU CELNEGO
+    się pokryła, wygrywałby zawsze opis najkrótszy: „POKROWCE PVC” zgarniałoby wszystko,
+    w czym stoi słowo „pokrowiec”. Gdybyśmy patrzyli tylko na część nazwy z katalogu,
+    wygrywałby opis najdłuższy, bo w dziewięciu słowach zawsze coś się trafi. Dice karze
+    obie rozbieżności naraz, więc „Pokrowiec PVC 70L” idzie do „POKROWCE PVC”, a
+    „Poszewka na poduszkę welurowa” do pozycji zbiorczej o poszewkach — mimo że słowo
+    „poduszka” stoi również w pozycji z poduszkami kosmetycznymi.
+    """
+    if not opis or not nazwa:
+        return 0.0
+    trafione = sum(1 for w in nazwa if any(_zbiezne(w, o) for o in opis))
+    return 2.0 * trafione / (len(opis) + len(nazwa))
 
 
 def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
                        do_ulozenia: List[str]) -> Dict[str, int]:
     """SKU → nr pozycji SAD, tam gdzie nazwa towaru jednoznacznie wskazuje pozycję.
 
-    Agencja opisuje pozycję po polsku („PODUSZKA KOSMETYCZNA WYKONANA Z PIANKI"),
-    a katalog ma swoją nazwę („Poduszka kosmetyczna czarna") — wspólne słowa mówią
+    Agencja opisuje pozycję po polsku („PODUSZKA KOSMETYCZNA WYKONANA Z PIANKI”),
+    a katalog ma swoją nazwę („Poduszka kosmetyczna czarna”) — wspólne słowa mówią
     o przynależności DUŻO więcej niż sama wartość. Dopasowanie po wartości potrafi
     rozstawić towar zupełnie wbrew temu, czym on jest: przy odprawie AMH 1797 wsadziło
     materace do poduszek, a prześcieradła do pokrowców PVC, bo ceny planowane pochodziły
-    sprzed dostawy i sumy „wychodziły" lepiej.
+    sprzed dostawy i sumy „wychodziły” lepiej.
 
-    Decydujemy tylko przy ŚCISŁEJ przewadze jednej pozycji. Remis zostawiamy wartości —
-    lepiej nie zgadywać niż zgadnąć pewnym siebie tonem.
+    Decydujemy tylko przy ŚCISŁEJ przewadze jednej pozycji i powyżej PROG_NAZWY.
+    Remis zostawiamy wartości — lepiej nie zgadywać niż zgadnąć pewnym siebie tonem.
+    Zostaje wtedy jedna ręczna poprawka, ale jednorazowa: po zapisie odprawy kod CN
+    wraca na kartę produktu i następna dostawa tego SKU trafia na miejsce sama.
     """
     opisy = {p.nr: _slowa(p.opis) for p in odprawa.pozycje}
     wynik: Dict[str, int] = {}
     for sku in do_ulozenia:
-        tekst = " ".join(filter(None, [grupy[sku][0].nazwa, sku]))
-        moje = _slowa(tekst)
+        # Symbol dokładamy do nazwy, bo sam bywa mówiący („PRZE5S” → prześcieradło),
+        # a w katalogu zdarzają się pozycje nazwane jednym słowem albo wcale.
+        moje = _slowa(" ".join(filter(None, [grupy[sku][0].nazwa, sku])))
         if not moje:
             continue
-        punkty = sorted(((len(moje & opisy[p.nr]), p.nr) for p in odprawa.pozycje), reverse=True)
-        if punkty[0][0] > 0 and (len(punkty) == 1 or punkty[0][0] > punkty[1][0]):
+        punkty = sorted(((_podobienstwo(opisy[p.nr], moje), p.nr) for p in odprawa.pozycje),
+                        reverse=True)
+        if punkty[0][0] < PROG_NAZWY:
+            continue
+        if len(punkty) == 1 or punkty[0][0] > punkty[1][0]:
             wynik[sku] = punkty[0][1]
     return wynik
 
