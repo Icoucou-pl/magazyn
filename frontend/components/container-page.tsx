@@ -27,8 +27,9 @@ import OrderPdfModal from "./order-pdf";
 import type { Manufacturer, Product } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
-import { can, useUser } from "@/lib/permissions";
+import { can, canSeeLandedCost, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
+import LandedCostTab from "./container-landed-cost";
 
 const norm = (s?: string | null) => (s || "").trim().toLocaleLowerCase("pl-PL");
 
@@ -64,6 +65,8 @@ export default function ContainerPage({
 }) {
   const user = useUser();
   const canPO = can(user, "generatePO");
+  const pokazKoszt = canSeeLandedCost(user);
+  const [tab, setTab] = useState<"przeglad" | "koszt">("przeglad");
   const [container, setContainer] = useState<Container | null>(null);
   const [nieZnaleziono, setNieZnaleziono] = useState(false);
 
@@ -194,6 +197,23 @@ export default function ContainerPage({
     </div>
   );
 
+  // Zakładka „Koszt jednostkowy" pojawia się TYLKO przy uprawnieniu — bez niego pasek
+  // ma jedną pozycję i nikt się nie dowie, że rozliczenie odprawy w ogóle istnieje.
+  const paskZakladek = pokazKoszt ? (
+    <div style={{ display: "flex", gap: 2, marginBottom: 14, borderBottom: "1px solid var(--border-soft)" }}>
+      {([["przeglad", "Przegląd"], ["koszt", "Koszt jednostkowy"]] as const).map(([k, label]) => (
+        <button key={k} onClick={() => setTab(k)}
+          style={{
+            border: 0, background: "none", font: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer",
+            padding: "9px 13px", marginBottom: -1, color: tab === k ? "var(--text-hi)" : "var(--text-lo)",
+            borderBottom: `2px solid ${tab === k ? "var(--accent)" : "transparent"}`,
+          }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
   if (nieZnaleziono) {
     return (
       <div className="fade-in">
@@ -224,6 +244,10 @@ export default function ContainerPage({
     <div className="fade-in" style={{ paddingBottom: 80, opacity: booting ? 0.85 : 1, transition: "opacity .15s" }}>
       <ContainersStyles />
       {pasek}
+      {paskZakladek}
+      {tab === "koszt" && pokazKoszt ? (
+        <LandedCostTab containerId={container.id} onSaved={() => { void reload(); }} />
+      ) : (
       <ContainerCard
         container={container}
         pinned
@@ -238,6 +262,7 @@ export default function ContainerPage({
         onProductClick={onOpenProduct}
         highlightSku={highlightSku}
       />
+      )}
 
       {formOpen && (
         <ContainerFormModal
