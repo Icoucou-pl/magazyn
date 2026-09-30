@@ -9,7 +9,7 @@
 // Układ:
 //   • nagłówek stały dla wszystkich zakładek: SKU, producent, plakietki
 //     (status, sample, nowość, obserwowany, nie zamawiamy), nazwa, stan,
-//     koszt netto, EAN; po prawej obserwuj / nie dozamawiamy
+//     koszt netto, EAN; po prawej nowość / obserwuj / nie dozamawiamy
 //   • Logistyka  — KPI stanu, prognoza 270 dni, kontenery z tym SKU
 //   • Sprzedaż   — KPI i rotacja z Finansów, sezon do sezonu, kanały
 //                  (canSeeProductSales: viewProductSales ORAZ viewFinancials)
@@ -34,7 +34,7 @@ import {
 } from "./products-ui";
 import {
   LogistykaKpi, Section, StockProjectionChart, buildProjection, ContainersSection,
-  AttributesCard, DimensionsCard, DeleteZone, iconBtnHeader,
+  AttributesCard, DimensionsCard, DeleteZone, iconBtnHeader, fmtDay,
   type ApiProjPoint, type Projection, type DeleteCheck,
 } from "./product-modal";
 import { ProductSalesTab } from "./finance";
@@ -133,6 +133,7 @@ export default function ProductPage({
   // zanim backend w ogóle powie, czy historia istnieje.
   const [hasHistory, setHasHistory] = useState<boolean | null>(null);
   const [delChk, setDelChk] = useState<DeleteCheck | null>(null);
+  const [nowoscOpen, setNowoscOpen] = useState(false);
 
   const [tab, setTabState] = useState<ProductTab>(() => czytajTabZAdresu() || "logistyka");
   const setTab = (t: ProductTab) => { setTabState(t); onTabChange(t); };
@@ -414,7 +415,10 @@ export default function ProductPage({
 
       {pasekGorny}
 
-      {/* ── Nagłówek (stały dla wszystkich zakładek) ── */}
+      {/* ── Nagłówek (stały dla wszystkich zakładek) ──
+          Zewnętrzny wrapper trzyma popover nowości: sam nagłówek ma overflow: hidden
+          (pasek statusu po lewej), więc popover w środku zostałby przycięty. */}
+      <div style={{ position: "relative" }}>
       <div style={{ position: "relative", overflow: "hidden", background: "var(--bg-elevated)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-md) var(--r-md) 0 0" }}>
         <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: statusDot }} />
         <div className="pp-head" style={{ padding: "16px 20px" }}>
@@ -430,7 +434,13 @@ export default function ProductPage({
               <StatusPillExt status={statusKey} size="md" />
               {product.is_favorite && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">OBSERWOWANY</Pill>}
               {product.is_sample && <SampleBadge size="sm" />}
-              {product.is_new && <NewBadge until={product.new_until} size="sm" />}
+              {product.is_new && (
+                canEditProducts
+                  ? <button onClick={() => setNowoscOpen((v) => !v)} aria-haspopup="dialog" title="Nowość — szczegóły" style={{ background: "none", border: 0, padding: 0, margin: 0, cursor: "pointer", display: "inline-flex" }}>
+                      <NewBadge until={product.new_until} size="sm" />
+                    </button>
+                  : <NewBadge until={product.new_until} size="sm" />
+              )}
               {product.no_reorder && <Pill bg="var(--info-soft)" fg="var(--info)" dot="var(--info)" size="sm">NIE ZAMAWIAMY</Pill>}
             </div>
             <div style={{ fontSize: 14, color: "var(--text-mid)", marginTop: 4 }}>{product.name}</div>
@@ -465,6 +475,13 @@ export default function ProductPage({
 
           <div className="pp-actions">
             {canEditProducts && (
+              <button onClick={() => setNowoscOpen((v) => !v)} aria-haspopup="dialog" aria-expanded={nowoscOpen}
+                style={product.is_new ? { ...iconBtnHeader, background: "var(--ok-soft)", color: "var(--ok)" } : iconBtnHeader}
+                title={product.is_new ? "Nowość — zmień" : "Oznacz jako nowość"}>
+                <I.Sparkles size={16} />
+              </button>
+            )}
+            {canEditProducts && (
               <button onClick={toggleFav} style={iconBtnHeader} title={product.is_favorite ? "Usuń z obserwowanych" : "Obserwuj"}>
                 {product.is_favorite ? <I.StarFill size={16} /> : <I.Star size={16} />}
               </button>
@@ -478,6 +495,11 @@ export default function ProductPage({
             )}
           </div>
         </div>
+      </div>
+
+      {nowoscOpen && canEditProducts && (
+        <NowoscPopover product={product} sku={skuZapisu} onClose={() => setNowoscOpen(false)} onSaved={applyUpdate} />
+      )}
       </div>
 
       {/* ── Zakładki ── */}
@@ -581,6 +603,115 @@ export default function ProductPage({
     </div>
   );
 }
+
+// ── Nowość ustawiona ręcznie ───────────────────────────────
+// Tylko znacznik NOWOŚĆ i filtr „Nowości" — status produktu liczy się normalnie.
+// Sampel w okresie nowości ma ją automatycznie: tu tylko informacja, bez edycji
+// (kończy się ją odznaczeniem Sample w zakładce Dane).
+function isoDzien(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function zaMiesiecy(m: number): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() + m);
+  return isoDzien(d);
+}
+
+function NowoscPopover({ product, sku, onClose, onSaved }: {
+  product: Product; sku: string; onClose: () => void; onSaved: (p: Product) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const manual = product.manual_new_until || null;
+  const sampelNowy = Boolean(product.is_new && !manual && product.is_sample);
+  const [until, setUntil] = useState<string>(manual || zaMiesiecy(6));
+  const [busy, setBusy] = useState(false);
+  const jutro = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return isoDzien(d); })();
+
+  // Zamknięcie: klik poza popoverem i Escape. Klik w ikonkę ✨ przełącza sam.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (ref.current?.contains(t) || t.closest("[aria-haspopup='dialog']")) return;
+      onClose();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [onClose]);
+
+  const zapisz = async (value: string | null) => {
+    if (busy) return;
+    if (value && value < jutro) { toast("Data końca musi być w przyszłości", "warning"); return; }
+    setBusy(true);
+    try {
+      const u = (await api.put(`/products/${encodeURIComponent(sku)}/new-until`, { until: value })) as Product;
+      onSaved(u);
+      toast(value ? `Oznaczono jako nowość do ${fmtDay(value)}` : "Zdjęto nowość", "ok");
+      onClose();
+    } catch {
+      toast("Nie udało się zapisać nowości", "warning");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div ref={ref} role="dialog" aria-label="Nowość" className="fade-in" style={popBox}>
+      {sampelNowy ? (
+        <>
+          <div style={popTitle}>Nowość</div>
+          <p style={popText}>Produkt wszedł jako sampel, więc nowość liczy się sama.</p>
+          <div style={popInfo}>
+            {product.first_arrival_date
+              ? <>Dotarł {fmtDay(product.first_arrival_date)}, nowość do {fmtDay(product.new_until || "")}.</>
+              : <>W drodze od {fmtDay(product.first_transit_date || "")}, 6 mies. liczone od dostawy.</>}
+            <br />Żeby ją zakończyć wcześniej, odznacz Sample w zakładce Dane.
+          </div>
+          <div style={popBtns}><button onClick={onClose} style={popBtn}>Zamknij</button></div>
+        </>
+      ) : (
+        <>
+          <div style={popTitle}>{manual ? "Nowość" : "Oznacz jako nowość"}</div>
+          <p style={popText}>Znacznik i filtr Nowości. Status produktu liczy się normalnie.</p>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {[3, 6, 12].map((m) => (
+              <button key={m} onClick={() => setUntil(zaMiesiecy(m))} style={popChip}>{m} mies.</button>
+            ))}
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontSize: 12, color: "var(--text-lo)" }}>
+            Do
+            <input type="date" value={until} min={jutro} onChange={(e) => setUntil(e.target.value)}
+              className="mono" style={popDate} />
+          </label>
+          <div style={popBtns}>
+            {manual
+              ? <button onClick={() => zapisz(null)} disabled={busy} style={{ ...popBtn, color: "var(--critical)" }}>Zdejmij nowość</button>
+              : <button onClick={onClose} style={popBtn}>Anuluj</button>}
+            <button onClick={() => zapisz(until || null)} disabled={busy || !until} style={popBtnPri}>
+              {busy ? "Zapisuję…" : manual ? "Zapisz" : "Oznacz jako nowość"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const popBox: React.CSSProperties = {
+  position: "absolute", right: 14, top: 54, zIndex: 20, width: "min(340px, calc(100% - 28px))",
+  background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-md)",
+  padding: 14, boxShadow: "0 16px 40px oklch(0 0 0 / 0.45)",
+};
+const popTitle: React.CSSProperties = { fontSize: 14, fontWeight: 600, color: "var(--text-hi)", marginBottom: 4 };
+const popText: React.CSSProperties = { margin: "0 0 12px", fontSize: 12, color: "var(--text-lo)" };
+const popInfo: React.CSSProperties = { background: "var(--surface-2)", borderRadius: "var(--r-sm)", padding: "9px 10px", fontSize: 12, color: "var(--text-mid)", marginBottom: 12, lineHeight: 1.5 };
+const popBtns: React.CSSProperties = { display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" };
+const popBtn: React.CSSProperties = { font: "inherit", fontSize: 13, padding: "7px 12px", borderRadius: "var(--r-sm)", border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text-mid)", cursor: "pointer" };
+const popBtnPri: React.CSSProperties = { ...popBtn, background: "var(--accent)", color: "var(--accent-ink)", borderColor: "transparent", fontWeight: 600 };
+const popChip: React.CSSProperties = { font: "inherit", fontSize: 12, padding: "4px 10px", borderRadius: 99, border: "1px solid var(--border)", background: "var(--surface-1)", color: "var(--text-mid)", cursor: "pointer" };
+const popDate: React.CSSProperties = { flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", color: "var(--text-hi)", fontSize: 13, padding: "6px 8px", colorScheme: "dark" };
 
 function Meta({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
