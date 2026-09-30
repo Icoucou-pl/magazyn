@@ -379,6 +379,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
             c.balance_kwota, c.balance_waluta, c.balance_termin, c.zaplacono_data, c.delivered_date, c.expected_delivery_date,
             c.subiekt_wbite, c.subiekt_wbite_at,
+            odp.status AS koszt_status,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
@@ -391,6 +392,16 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
         FROM {settings.TABLE_CONTAINERS} c
         LEFT JOIN {settings.TABLE_CONTAINER_TYPES} ct ON ct.id = c.container_type_id
         LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
+        -- Stan rozliczenia odprawy na plakietkę listy. LATERAL, bo jedna odprawa potrafi
+        -- objąć dwa kontenery, a nas interesuje tylko najświeższa dla tego kontenera.
+        LEFT JOIN LATERAL (
+            SELECT o.status
+              FROM app_odprawa_kontenery ok
+              JOIN app_odprawy o ON o.id = ok.odprawa_id
+             WHERE ok.container_id = c.id
+             ORDER BY o.id DESC
+             LIMIT 1
+        ) odp ON TRUE
         LEFT JOIN {settings.TABLE_CONTAINER_ITEMS} ci ON ci.container_id = c.id
         LEFT JOIN prod_names pn ON pn.sku_canon = LOWER(TRIM(ci.sku))
         LEFT JOIN prod_prices pp ON pp.sku_canon = LOWER(TRIM(ci.sku))
@@ -433,6 +444,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "koszt_spedycji": (float(row["koszt_spedycji"]) if row["koszt_spedycji"] is not None else None),
                 "oplata_spedycji": None,   # liczone niżej: koszt_spedycji − koszt_transportu
                 "koszt_transportu_magazyn": (float(row["koszt_transportu_magazyn"]) if row["koszt_transportu_magazyn"] is not None else None),
+                "koszt_status": row["koszt_status"],
                 "folder": row["folder"],
                 "subiekt_nr": row["subiekt_nr"],
                 "mrn": row["mrn"],
