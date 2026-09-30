@@ -322,7 +322,7 @@ async def _zloz(
             towar=round(w.towar, 2), logistyka=round(w.logistyka, 2), clo=round(w.clo, 2),
             gratisy=round(w.gratisy, 2), transport_krajowy=round(w.transport_krajowy, 2),
             koszt_jednostkowy=w.koszt_jednostkowy, zmiana_proc=w.zmiana_proc,
-            szacunek=w.szacunek, poz_sad=rachunek.przypisanie.get(w.item_id),
+            szacunek=w.szacunek, reczna=w.reczna, poz_sad=rachunek.przypisanie.get(w.item_id),
         ) for w in rachunek.pozycje],
         koszty=linie,
         kontrole=[OdprawaKontrolaOut(nazwa=k.nazwa, ok=k.ok, wyliczone=k.wyliczone, z_pliku=k.z_pliku)
