@@ -51,6 +51,12 @@ export type Odprawa = {
   fv_spedytora: string | null; fv_spedytora_data: string | null;
   suma_towar: number; suma_logistyka: number; suma_clo: number; narzut_proc: number | null;
   mozna_zapisac: boolean; status: string;
+  zapisane?: {
+    odprawa_id: number; status: string; klucz_podzialu: string | null;
+    kurs_towaru: number | null; kurs_kosztow: number | null;
+    fv_spedytora: string | null; fv_spedytora_data: string | null;
+    koszty: Linia[]; ceny_reczne: Record<string, number>; przypisanie: Record<string, number>;
+  } | null;
   zapis?: {
     odprawa_id: number; pozycji_z_kosztem: number; mrn_uzupelniony: string[];
     kontenery_zaktualizowane: string[]; produkty_waga: string[]; produkty_kod_cn: string[];
@@ -112,6 +118,8 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   // przełącznik Waga/CBM pokazywał jedno, a rachunek szedł drugim kluczem, a świeżo
   // wpisane kwoty z faktury w ogóle nie wchodziły do sumy. Ref jest zawsze aktualny.
   const ustawieniaRef = useRef<Record<string, unknown>>({});
+  // Czy ustawienia z poprzedniego zapisu zostały już odtworzone dla tego pliku.
+  const odtworzone = useRef(false);
 
   const ustawienia = useCallback(() => ({
     klucz_podzialu: klucz,
@@ -141,9 +149,27 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
       const z = (await api.post(url, fd)) as Odprawa;
       setDane(z);
       setPlik(f);
-      if (!koszty.length) setKoszty(z.koszty ?? []);
-      if (!fxTowar) setFxTowar(String(z.kurs_celny));
-      if (!fxKoszty) setFxKoszty(String(z.kurs_celny));
+      // Wypełniamy TYLKO puste pola — z poprzedniego zapisu tej odprawy, jeśli jakiś był.
+      // Dzięki temu dołożenie faktury spedytora kilka dni później nie znaczy przepisywania
+      // od zera cen z faktury dostawcy. Aktualizatory są funkcyjne, żeby nie czytać stanu
+      // z domknięcia — ten bywa starszy niż ostatnie naciśnięcie klawisza.
+      const zap = z.zapisane ?? null;
+      setKoszty((k) => (k.length ? k : (zap?.koszty?.length ? zap.koszty : z.koszty ?? [])));
+      setFxTowar((v) => v || String(zap?.kurs_towaru ?? z.kurs_celny));
+      setFxKoszty((v) => v || String(zap?.kurs_kosztow ?? z.kurs_celny));
+      // Odtwarzamy raz na wczytany plik. Klucz podziału ma niepustą wartość domyślną,
+      // więc po „pole jest puste" nie da się poznać, czy użytkownik już go wybrał —
+      // decyduje moment, nie zawartość.
+      if (zap && !odtworzone.current) {
+        odtworzone.current = true;
+        setFvNr((v) => v || zap.fv_spedytora || "");
+        setFvData((v) => v || zap.fv_spedytora_data || "");
+        if (zap.klucz_podzialu === "cbm" || zap.klucz_podzialu === "waga") setKlucz(zap.klucz_podzialu);
+        setCenyReczne((c) => (Object.keys(c).length ? c : Object.fromEntries(
+          Object.entries(zap.ceny_reczne ?? {}).map(([k, v]) => [k, String(v)]))));
+        setPrzypisanie((pr) => (Object.keys(pr).length ? pr : Object.fromEntries(
+          Object.entries(zap.przypisanie ?? {}).map(([k, v]) => [Number(k), v]))));
+      }
       if (zapis) { toast("Zapisano koszt jednostkowy", "ok"); onSaved?.(); }
     } catch (e) {
       const m = e instanceof Error && e.message ? e.message : "Nie udało się wczytać zgłoszenia";
@@ -238,7 +264,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
               // Ręczne poprawki są kluczowane po item_id, a te potrafią się powtórzyć w innym
               // zgłoszeniu — zostawione przykleiłyby się do cudzej pozycji. Czyścimy wszystko.
               setDane(null); setPlik(null); setKoszty([]);
-              setCenyReczne({}); setPrzypisanie({}); setGratisy({});
+              setCenyReczne({}); setPrzypisanie({}); setGratisy({}); odtworzone.current = false;
             }} style={btnSec}>
               {zapisany ? "Wczytaj ponownie" : "Zmień plik"}
             </button>
@@ -348,11 +374,8 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                           )}
                         </td>
                         <td style={{ ...td, textAlign: "left" }}>
-                          {/* W zapisanej odprawie nie wiadomo, czy cenę wpisano ręcznie, czy
-                              wyliczono proporcją — baza trzyma sam wynik. „Z SAD" byłoby wtedy
-                              nieprawdą, więc mówimy tylko tyle, ile wiemy: że to zatwierdzona kwota. */}
-                          <span style={{ ...tag, ...(zapisany ? infoStyl : t.szacunek ? ostrzStyl : t.reczna ? infoStyl : okStyl) }}>
-                            {zapisany ? "ZAPISANA" : t.szacunek ? "SZACUNEK" : t.reczna ? "RĘCZNA" : "Z SAD"}
+                          <span style={{ ...tag, ...(t.szacunek ? ostrzStyl : t.reczna ? infoStyl : okStyl) }}>
+                            {t.szacunek ? "SZACUNEK" : t.reczna ? "RĘCZNA" : "Z SAD"}
                           </span>
                         </td>
                         <td style={{ ...td, fontFamily: "var(--font-mono)" }}>{pl(t.clo)} zł</td>
