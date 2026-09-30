@@ -6,7 +6,7 @@ Python używał późniejszej definicji. Tu zostają TYLKO efektywne wersje (te 
 """
 
 from datetime import date, datetime
-from typing import List, Optional, Literal, Dict
+from typing import Any, List, Optional, Literal, Dict
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -941,3 +941,128 @@ class AssistantToolUsed(BaseModel):
 class AssistantChatResponse(BaseModel):
     answer: str
     tools: List[AssistantToolUsed] = []   # które narzędzia odpalił model (do chipów w UI)
+
+# ============================================================
+# Odprawa celna — rozliczenie kosztu jednostkowego kontenera
+# ============================================================
+# Podgląd NIC nie zapisuje: parsuje plik, dopasowuje pozycje i liczy koszt.
+# Zapis dostaje TEN SAM plik jeszcze raz (multipart) plus ustawienia — dzięki temu
+# backend jest bezstanowy, a sam XML i tak nigdy nie ląduje w bazie ani w załącznikach.
+
+
+class OdprawaLiniaKosztuIn(BaseModel):
+    """Linia z faktury spedytora albo transport krajowy (wtedy z container_id i w PLN)."""
+    lp: Optional[int] = None
+    nazwa: str
+    kwota: float = 0
+    waluta: str = "USD"
+    klucz: str = "fizyczny"            # "fizyczny" (waga/CBM) | "wartosc"
+    container_id: Optional[int] = None
+
+
+class OdprawaUstawieniaIn(BaseModel):
+    klucz_podzialu: str = "waga"       # "waga" | "cbm"
+    kurs_towaru: Optional[float] = None
+    kurs_kosztow: Optional[float] = None
+    fv_spedytora: Optional[str] = None
+    fv_spedytora_data: Optional[date] = None
+    koszty: List[OdprawaLiniaKosztuIn] = []
+    # item_id → nr pozycji SAD; puste = zostaw dopasowanie automatyczne
+    przypisanie: Dict[int, int] = {}
+    # nr pozycji SAD bez towaru → item_id, który przejmuje jej cło i logistykę
+    gratisy: Dict[int, int] = {}
+    # item_id → cena na sztukę w walucie odprawy (z faktury dostawcy, przy pozycjach mieszanych)
+    ceny_reczne: Dict[int, float] = {}
+
+
+class OdprawaKontrolaOut(BaseModel):
+    nazwa: str
+    ok: bool
+    wyliczone: float
+    z_pliku: float
+
+
+class OdprawaUwagaOut(BaseModel):
+    poziom: str                        # "blad" | "ostrzezenie" | "info"
+    tresc: str
+    szczegol: str = ""
+
+
+class OdprawaPozycjaOut(BaseModel):
+    nr: int
+    kod_cn: Optional[str] = None
+    opis: str = ""
+    wartosc: float
+    masa_brutto: float
+    clo_stawka: float
+    clo_pln: float
+    vat_stawka: float
+    vat_metoda: Optional[str] = None
+    liczba_opakowan: Optional[int] = None
+    szt_uzup: Optional[float] = None
+    kontenery: List[str] = []
+    item_ids: List[int] = []           # pozycje kontenera przypisane do tej pozycji SAD
+    gratis_item_id: Optional[int] = None
+
+
+class OdprawaTowarOut(BaseModel):
+    item_id: int
+    container_id: int
+    container_number: str
+    sku: str
+    ilosc: int
+    cena_planowana: float
+    cena_zakupu_waluta: float
+    towar: float
+    logistyka: float
+    clo: float
+    gratisy: float
+    transport_krajowy: float
+    koszt_jednostkowy: float
+    zmiana_proc: Optional[float] = None
+    szacunek: bool = False
+    poz_sad: Optional[int] = None
+
+
+class OdprawaZapisOut(BaseModel):
+    """Co zmienił zapis — to samo, co pokazuje zakładka po kliknięciu „Zapisz"."""
+    odprawa_id: int
+    pozycji_z_kosztem: int
+    mrn_uzupelniony: List[str] = []
+    kontenery_zaktualizowane: List[str] = []
+    produkty_waga: List[str] = []
+    produkty_kod_cn: List[str] = []
+
+
+class OdprawaOut(BaseModel):
+    mrn: Optional[str] = None
+    data_zgloszenia: Optional[date] = None
+    dostawca: Optional[str] = None
+    importer: Optional[str] = None
+    nip_importera: Optional[str] = None
+    firma_slug: Optional[str] = None
+    incoterms: Optional[str] = None
+    waluta: str = "USD"
+    kurs_celny: float = 0
+    kursy: Dict[str, float] = {}
+    wartosc_faktur: float = 0
+    masa_brutto: float = 0
+    clo_suma: float = 0
+    vat_suma: float = 0
+    faktury_dostawcy: List[str] = []
+    kontenery: List[str] = []
+    kontenery_w_aplikacji: List[int] = []
+    doliczenia: List[Dict[str, Any]] = []
+    pozycje: List[OdprawaPozycjaOut] = []
+    towar: List[OdprawaTowarOut] = []
+    koszty: List[OdprawaLiniaKosztuIn] = []
+    kontrole: List[OdprawaKontrolaOut] = []
+    uwagi: List[OdprawaUwagaOut] = []
+    klucz_podzialu: str = "waga"
+    suma_towar: float = 0
+    suma_logistyka: float = 0
+    suma_clo: float = 0
+    narzut_proc: Optional[float] = None
+    mozna_zapisac: bool = False
+    status: str = "podglad"            # "podglad" | "szkic" | "zapisana"
+    zapis: Optional[OdprawaZapisOut] = None
