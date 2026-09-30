@@ -82,6 +82,7 @@ class WynikPozycji:
     gratisy: float = 0.0              # doliczone koszty pozycji SAD bez towaru
     transport_krajowy: float = 0.0
     szacunek: bool = False            # cena rozdzielona proporcją, nie wprost z SAD
+    reczna: bool = False              # cena wpisana z faktury dostawcy, nie wyliczona
 
     @property
     def razem(self) -> float:
@@ -419,6 +420,7 @@ def policz(
             w.cena_zakupu_waluta = round(wartosc / t.ilosc, 4) if t.ilosc else 0.0
             w.towar = wartosc * fx_t
             w.szacunek = mieszana and reczna is None
+            w.reczna = reczna is not None
         if mieszana and not wszystkie_reczne:
             uwagi.append(Uwaga(
                 "ostrzezenie",
