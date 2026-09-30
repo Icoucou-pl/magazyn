@@ -127,7 +127,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
 @router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
 async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     sku = await _sku_atrybutow(db, sku)
-    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
+    existing = await db.execute(text(f"SELECT cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton, waga_brutto_kg, kod_cn FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
     e = existing.first()
     cbm = payload.cbm_per_unit if payload.cbm_per_unit is not None else (float(e.cbm_per_unit) if e else 0)
     # manufacturer_id: 0 = odepnij producenta; None = nie zmieniaj; >0 = ustaw
@@ -201,10 +201,20 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
     moq       = _int(payload.moq,            e.moq            if e else None)
     zaokr     = payload.zaokraglaj_karton if payload.zaokraglaj_karton is not None else (bool(e.zaokraglaj_karton) if e else False)
 
+    # Dane odprawy celnej. Waga brutto trzyma 3 miejsca (grama widać przy drobnicy typu filtr 0,406 kg).
+    waga = _num(payload.waga_brutto_kg, e.waga_brutto_kg if e else None, precyzja=3)
+    # Kod CN: same cyfry. Agencja pisze go w SAD bez spacji (94029000), na wydruku ze spacjami
+    # (9402 90 00) — normalizujemy, żeby dopasowanie pozycji odprawy do SKU nie zależało od zapisu.
+    if payload.kod_cn is not None:
+        cyfry = "".join(ch for ch in payload.kod_cn if ch.isdigit())[:10]
+        kod_cn = cyfry or None
+    else:
+        kod_cn = (e.kod_cn if e else None)
+
     await db.execute(
         text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton, updated_at)
-            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, :is_sample, :sample_stock, :dl, :sz, :wy, :szt_kart, :moq, :zaokr, CURRENT_TIMESTAMP)
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cbm_per_unit, manufacturer_id, firma_id, seasonality_enabled, ean, forced_status, cena_zakupu, name_override, is_sample, sample_stock, dlugosc_cm, szerokosc_cm, wysokosc_cm, szt_w_kartonie, moq, zaokraglaj_karton, waga_brutto_kg, kod_cn, updated_at)
+            VALUES (:sku, :cbm, :mfr, :firma, :seas, :ean, :forced, :cena, :name_ov, :is_sample, :sample_stock, :dl, :sz, :wy, :szt_kart, :moq, :zaokr, :waga, :kod_cn, CURRENT_TIMESTAMP)
             ON CONFLICT (sku) DO UPDATE SET
                 cbm_per_unit = EXCLUDED.cbm_per_unit,
                 manufacturer_id = EXCLUDED.manufacturer_id,
@@ -222,11 +232,14 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
                 szt_w_kartonie = EXCLUDED.szt_w_kartonie,
                 moq = EXCLUDED.moq,
                 zaokraglaj_karton = EXCLUDED.zaokraglaj_karton,
+                waga_brutto_kg = EXCLUDED.waga_brutto_kg,
+                kod_cn = EXCLUDED.kod_cn,
                 updated_at = CURRENT_TIMESTAMP
         """),
         {"sku": sku, "cbm": cbm, "mfr": mfr, "firma": firma, "seas": seas, "ean": ean, "forced": forced,
          "cena": cena, "name_ov": name_ov, "is_sample": is_sample, "sample_stock": sample_stock,
-         "dl": dlugosc, "sz": szerokosc, "wy": wysokosc, "szt_kart": szt_kart, "moq": moq, "zaokr": zaokr}
+         "dl": dlugosc, "sz": szerokosc, "wy": wysokosc, "szt_kart": szt_kart, "moq": moq, "zaokr": zaokr,
+         "waga": waga, "kod_cn": kod_cn}
     )
     await db.commit()
     return _mask_financials([await get_product(db, sku)], user)[0]
