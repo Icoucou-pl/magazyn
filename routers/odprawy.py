@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import get_db
 from models import (
-    CurrentUser, OdprawaKontrolaOut, OdprawaLiniaKosztuIn, OdprawaOut,
+    CurrentUser, OdprawaKontrolaOut, OdprawaLiniaKosztuIn, OdprawaOut, OdprawaZapisaneOut,
     OdprawaPozycjaOut, OdprawaTowarOut, OdprawaUstawieniaIn, OdprawaUwagaOut,
     OdprawaZapisOut,
 )
@@ -173,6 +173,52 @@ async def _firma_kontenera(db: AsyncSession, container_id: int) -> Optional[str]
 # Złożenie podglądu
 # ============================================================
 
+async def _zapisane_ustawienia(db: AsyncSession, istniejaca) -> Optional[OdprawaZapisaneOut]:
+    """Ustawienia i ceny ręczne z poprzedniego zapisu tej odprawy — albo None.
+
+    Podgląd jest bezstanowy: liczy z pliku i z tego, co przyśle front. Dopóki nie oddawał
+    zapisanego stanu, dołożenie faktury spedytora kilka dni po odprawie znaczyło
+    przepisywanie od zera wszystkich cen z faktury dostawcy. Teraz front ma czym wypełnić
+    puste pola, a co z tym zrobi, zostaje jego decyzją.
+
+    Przywracamy WYŁĄCZNIE ceny wpisane ręcznie. Ceny rozdzielone proporcją mają się
+    przeliczyć od nowa — gdyby wróciły jako ręczne, zamroziłyby stary podział nawet po
+    zmianie przypisania pozycji.
+    """
+    if not istniejaca:
+        return None
+    koszty = (await db.execute(
+        text("SELECT lp, nazwa, kwota, waluta, klucz, zrodlo, container_id "
+             "  FROM app_odprawa_koszty WHERE odprawa_id = :id ORDER BY lp NULLS LAST, id"),
+        {"id": istniejaca["id"]},
+    )).mappings().all()
+    itemy = (await db.execute(
+        text(f"""
+            SELECT id, cena_zakupu_waluta, cena_reczna, odprawa_poz_nr
+              FROM {settings.TABLE_CONTAINER_ITEMS}
+             WHERE koszt_odprawa_id = :id
+        """),
+        {"id": istniejaca["id"]},
+    )).mappings().all()
+    return OdprawaZapisaneOut(
+        odprawa_id=istniejaca["id"],
+        status=istniejaca["status"] or "szkic",
+        klucz_podzialu=istniejaca["klucz_podzialu"],
+        kurs_towaru=_f(istniejaca["kurs_towaru"]) or None,
+        kurs_kosztow=_f(istniejaca["kurs_kosztow"]) or None,
+        fv_spedytora=istniejaca["fv_spedytora"],
+        fv_spedytora_data=istniejaca["fv_spedytora_data"],
+        koszty=[OdprawaLiniaKosztuIn(
+            lp=k["lp"], nazwa=k["nazwa"], kwota=_f(k["kwota"]), waluta=k["waluta"],
+            klucz=k["klucz"], zrodlo=k["zrodlo"], container_id=k["container_id"],
+        ) for k in koszty],
+        ceny_reczne={i["id"]: _f(i["cena_zakupu_waluta"]) for i in itemy
+                     if i["cena_reczna"] and i["cena_zakupu_waluta"] is not None},
+        przypisanie={i["id"]: int(i["odprawa_poz_nr"]) for i in itemy
+                     if i["odprawa_poz_nr"] is not None},
+    )
+
+
 def _linie_kosztow(odprawa: Odprawa, ustawienia: OdprawaUstawieniaIn,
                    kontenery: Sequence[Dict[str, Any]]) -> List[OdprawaLiniaKosztuIn]:
     """Domyślny zestaw linii: fracht, THC i ubezpieczenie z doliczeń SAD, reszta pusta.
@@ -274,8 +320,12 @@ async def _zloz(
                            f"{odprawa.waluta} {odprawa.kurs_celny}"))
 
     istniejaca = (await db.execute(
-        text(f"SELECT id, status FROM app_odprawy WHERE mrn = :mrn"), {"mrn": odprawa.mrn},
+        text("SELECT id, status, klucz_podzialu, kurs_towaru, kurs_kosztow, "
+             "       fv_spedytora, fv_spedytora_data "
+             "  FROM app_odprawy WHERE mrn = :mrn"),
+        {"mrn": odprawa.mrn},
     )).mappings().first()
+    zapisane = await _zapisane_ustawienia(db, istniejaca)
 
     kontr = kontrole(odprawa)
     zle_kontrole = [k for k in kontr if not k.ok]
@@ -335,6 +385,7 @@ async def _zloz(
         narzut_proc=rachunek.narzut_proc,
         mozna_zapisac=not any(u.poziom == "blad" for u in uwagi),
         status=(istniejaca["status"] if istniejaca else "podglad"),
+        zapisane=zapisane,
     )
     return out, odprawa, rachunek, kontenery, towar
 
@@ -423,7 +474,7 @@ async def pobierz(
             SELECT ci.id AS item_id, ci.container_id, c.container_number, ci.sku, ci.quantity,
                    ci.unit_cost, ci.cena_zakupu_pln, ci.cena_zakupu_waluta, ci.koszt_jednostkowy,
                    ci.koszt_logistyka_pln, ci.koszt_clo_pln, ci.koszt_gratisy_pln,
-                   ci.koszt_transport_pln, ci.odprawa_poz_nr
+                   ci.koszt_transport_pln, ci.odprawa_poz_nr, ci.cena_reczna
               FROM {settings.TABLE_CONTAINER_ITEMS} ci
               JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
              WHERE ci.koszt_odprawa_id = :id
@@ -443,9 +494,11 @@ async def pobierz(
     suma_clo = sum(_f(i["koszt_clo_pln"]) for i in itemy)
     narzut = round((suma_log + suma_clo) / suma_towar * 100, 1) if suma_towar else None
     po_pozycji: Dict[int, List[int]] = {}
+    sku_w_pozycji: Dict[int, set] = {}
     for i in itemy:
         if i["odprawa_poz_nr"] is not None:
             po_pozycji.setdefault(int(i["odprawa_poz_nr"]), []).append(i["item_id"])
+            sku_w_pozycji.setdefault(int(i["odprawa_poz_nr"]), set()).add(i["sku"])
 
     return OdprawaOut(
         mrn=row["mrn"], data_zgloszenia=row["data_zgloszenia"], dostawca=row["dostawca"],
@@ -468,6 +521,11 @@ async def pobierz(
             item_ids=sorted(po_pozycji.get(p["nr"], [])),
         ) for p in pozycje],
         towar=[OdprawaTowarOut(
+            reczna=bool(i["cena_reczna"]),
+            # „Szacunek" znaczy: cena rozdzielona proporcją, a nie wzięta wprost.
+            # Odtwarzamy to samo kryterium co przy liczeniu — pozycja z kilkoma SKU
+            # i cena, której nikt ręcznie nie wpisał.
+            szacunek=(not i["cena_reczna"] and len(sku_w_pozycji.get(i["odprawa_poz_nr"], ())) > 1),
             item_id=i["item_id"], container_id=i["container_id"],
             container_number=i["container_number"], sku=i["sku"], ilosc=int(i["quantity"] or 0),
             cena_planowana=_f(i["unit_cost"]),
@@ -511,7 +569,7 @@ async def usun(
     await db.execute(
         text(f"""
             UPDATE {settings.TABLE_CONTAINER_ITEMS}
-               SET koszt_jednostkowy = NULL, cena_zakupu_pln = NULL,
+               SET koszt_jednostkowy = NULL, cena_zakupu_pln = NULL, cena_reczna = FALSE,
                    koszt_odprawa_id = NULL, koszt_zrodlo = NULL, koszt_updated_at = NULL
              WHERE koszt_odprawa_id = :id
         """),
@@ -666,7 +724,7 @@ async def _zapisz_wszystko(
             text(f"""
                 UPDATE {settings.TABLE_CONTAINER_ITEMS}
                    SET cena_zakupu_pln = :zakup, cena_zakupu_waluta = :zakup_wal,
-                       koszt_jednostkowy = :koszt,
+                       cena_reczna = :reczna, koszt_jednostkowy = :koszt,
                        koszt_logistyka_pln = :log, koszt_clo_pln = :clo,
                        koszt_gratisy_pln = :gratis, koszt_transport_pln = :transport,
                        odprawa_poz_nr = CAST(:poz AS SMALLINT),
@@ -675,7 +733,7 @@ async def _zapisz_wszystko(
             """),
             {
                 "zakup": round(w.towar / w.ilosc, 2) if w.ilosc else 0,
-                "zakup_wal": round(w.cena_zakupu_waluta, 4),
+                "zakup_wal": round(w.cena_zakupu_waluta, 4), "reczna": w.reczna,
                 "koszt": w.koszt_jednostkowy,
                 "log": round(w.logistyka, 2), "clo": round(w.clo, 2),
                 "gratis": round(w.gratisy, 2), "transport": round(w.transport_krajowy, 2),
