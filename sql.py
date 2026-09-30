@@ -232,6 +232,9 @@ SELECT
     pa.szt_w_kartonie::int AS szt_w_kartonie,
     pa.moq::int            AS moq,
     COALESCE(pa.zaokraglaj_karton, FALSE) AS zaokraglaj_karton,
+    -- Dane odprawy celnej: waga brutto na sztukę (klucz podziału frachtu w SAD) i kod CN.
+    pa.waga_brutto_kg::float AS waga_brutto_kg,
+    pa.kod_cn                AS kod_cn,
     mp.photo_id::int   AS photo_id,
     mp.photo_hash      AS photo_hash,
     pa.manufacturer_id,

@@ -148,6 +148,11 @@ class ProductSummary(BaseModel):
     szt_w_kartonie: Optional[int] = None    # None = 1 (produkt pakowany pojedynczo)
     moq: Optional[int] = None               # minimalna ilość zamówienia — na razie informacyjnie
     zaokraglaj_karton: bool = False         # zaokrąglanie listy zakupów do pełnych kartonów — informacyjnie
+    # Dane odprawy celnej. Waga brutto = z opakowaniem, na SZTUKĘ — tym kluczem agencja celna
+    # rozbija fracht w SAD, więc to ona (nie netto) wchodzi do kosztu jednostkowego kontenera.
+    # Kod CN wiąże SKU z pozycją zgłoszenia: raz potwierdzony, dopasowuje kolejne dostawy bez zgadywania.
+    waga_brutto_kg: Optional[float] = None
+    kod_cn: Optional[str] = None
     photo_id: Optional[int] = None          # zdjęcie główne; bajty pod /api/product-photos/{id}/{hash}/...
     photo_hash: Optional[str] = None
     manufacturer_id: Optional[int]
@@ -210,6 +215,8 @@ class ProductAttrsUpdate(BaseModel):
     szt_w_kartonie: Optional[int] = Field(None, ge=0)   # 0 = wyczyść (→ traktowane jak 1)
     moq: Optional[int] = Field(None, ge=0)              # 0 = wyczyść
     zaokraglaj_karton: Optional[bool] = None
+    waga_brutto_kg: Optional[float] = Field(None, ge=0)  # waga brutto/szt w kg; <=0 = wyczyść
+    kod_cn: Optional[str] = None                        # None = nie zmieniaj; "" = wyczyść; cyfry CN/TARIC
     manufacturer_id: Optional[int] = None
     firma_id: Optional[int] = None
     seasonality_enabled: Optional[bool] = None
