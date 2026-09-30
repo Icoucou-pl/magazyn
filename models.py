@@ -1038,6 +1038,27 @@ class OdprawaZapisOut(BaseModel):
     produkty_kod_cn: List[str] = []
 
 
+class OdprawaZapisaneOut(BaseModel):
+    """Co dla tego MRN leży już w bazie — front wypełnia tym pola po ponownym wczytaniu.
+
+    Bez tego dołożenie faktury spedytora kilka dni po odprawie znaczyło przepisywanie
+    od nowa wszystkich cen z faktury dostawcy, bo podgląd jest bezstanowy i nic o
+    poprzednim zapisie nie wiedział.
+    """
+    odprawa_id: int
+    status: str = "szkic"
+    klucz_podzialu: Optional[str] = None
+    kurs_towaru: Optional[float] = None
+    kurs_kosztow: Optional[float] = None
+    fv_spedytora: Optional[str] = None
+    fv_spedytora_data: Optional[date] = None
+    koszty: List[OdprawaLiniaKosztuIn] = []
+    # Tylko ceny WPISANE RĘCZNIE — wyliczonych proporcją nie przywracamy, bo mają się
+    # przeliczyć na nowo, gdyby zmieniło się przypisanie pozycji.
+    ceny_reczne: Dict[int, float] = {}
+    przypisanie: Dict[int, int] = {}
+
+
 class OdprawaOut(BaseModel):
     mrn: Optional[str] = None
     data_zgloszenia: Optional[date] = None
@@ -1074,5 +1095,6 @@ class OdprawaOut(BaseModel):
     suma_clo: float = 0
     narzut_proc: Optional[float] = None
     mozna_zapisac: bool = False
+    zapisane: Optional[OdprawaZapisaneOut] = None
     status: str = "podglad"            # "podglad" | "szkic" | "zapisana"
     zapis: Optional[OdprawaZapisOut] = None
