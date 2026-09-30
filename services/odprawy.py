@@ -436,6 +436,10 @@ def policz(
 
     # ── 2. Logistyka ──────────────────────────────────────────────────────────
     pula_gratisow: Dict[int, float] = {}
+    # Cło pozycji bez towaru trzymamy osobno, choć na sztuce ląduje w tej samej kolumnie:
+    # kafelek CŁO ma pokazywać to, co zgłoszenie każe zapłacić, a nie tylko tę część,
+    # która trafiła na pozycje z towarem.
+    pula_gratisow_clo: Dict[int, float] = {}
     brak_klucza: set[str] = set()
 
     # Gęstość odprawy: ile m³ przypada na kilogram w pozycjach, które mają komplet CBM.
@@ -509,7 +513,7 @@ def policz(
     for p in odprawa.pozycje:
         lista = w_pozycji[p.nr]
         if not lista:
-            pula_gratisow[p.nr] = pula_gratisow.get(p.nr, 0.0) + p.clo_pln
+            pula_gratisow_clo[p.nr] = pula_gratisow_clo.get(p.nr, 0.0) + p.clo_pln
             continue
         suma = sum(wyniki[t.item_id].towar for t in lista) or 1.0
         for t in lista:
@@ -517,14 +521,18 @@ def policz(
 
     # ── 4. Gratisy ────────────────────────────────────────────────────────────
     gratisy = dict(gratisy or {})
-    if pula_gratisow and towar:
+    wszystkie = {nr: pula_gratisow.get(nr, 0.0) + pula_gratisow_clo.get(nr, 0.0)
+                 for nr in set(pula_gratisow) | set(pula_gratisow_clo)}
+    if wszystkie and towar:
         domyslny = max(towar, key=lambda t: t.ilosc * t.cena_planowana).item_id
-        for nr in pula_gratisow:
+        for nr in wszystkie:
             gratisy.setdefault(nr, domyslny)
-    for nr, kwota in pula_gratisow.items():
+    clo_gratisow = 0.0
+    for nr, kwota in wszystkie.items():
         cel = gratisy.get(nr)
         if cel in wyniki:
             wyniki[cel].gratisy += kwota
+            clo_gratisow += pula_gratisow_clo.get(nr, 0.0)
         else:
             uwagi.append(Uwaga("blad", f"Pozycja {nr} bez towaru nie ma wskazanego produktu", ""))
 
@@ -538,8 +546,9 @@ def policz(
         gratisy=gratisy,
         uwagi=uwagi,
         suma_towar=round(sum(w.towar for w in pozycje), 2),
-        suma_logistyka=round(sum(w.logistyka + w.gratisy + w.transport_krajowy for w in pozycje), 2),
-        suma_clo=round(sum(w.clo for w in pozycje), 2),
+        suma_logistyka=round(
+            sum(w.logistyka + w.gratisy + w.transport_krajowy for w in pozycje) - clo_gratisow, 2),
+        suma_clo=round(sum(w.clo for w in pozycje) + clo_gratisow, 2),
     )
     _dopisz_uwagi_ogolne(r, odprawa, wg_item)
     return r
