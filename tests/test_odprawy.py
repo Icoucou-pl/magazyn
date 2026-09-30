@@ -495,6 +495,27 @@ def test_remis_podobienstwa_nie_jest_rozstrzygany_nazwa():
     dopasuj(o, towar, slady)
     assert slady["zrodlo"] == {"MAT": "wartosc"}
 
+
+def test_waga_obiecana_tylko_przy_pozycji_z_jednym_sku():
+    """Zapis dopisuje wagę wyłącznie z pozycji obejmującej jedno SKU.
+
+    Komunikat obiecywał to wcześniej wszystkim brakom naraz, także tym z pozycji
+    mieszanych, gdzie z masy pozycji nie da się wyliczyć masy sztuki. Akurat tam brak
+    wagi kosztuje najwięcej: logistyka dzieli się wtedy wewnątrz pozycji po wartości,
+    więc droższa sztuka płaci wyższy fracht, choćby ważyła tyle samo.
+    """
+    o = parsuj(SAD_ZBIORCZY)
+    towar = [
+        PozycjaTowaru(51, 301, "POK70L", 10, 100.0, nazwa="Pokrowiec PVC 70L"),
+        PozycjaTowaru(52, 301, "PRZE5S", 10, 100.0, nazwa="Prześcieradło welurowe"),
+        PozycjaTowaru(53, 301, "POSZ_w", 10, 100.0, nazwa="Poszewka na poduszkę welurowa"),
+    ]
+    r = policz(o, towar, [LiniaKosztu("Fracht morski", 100.0, lp=1)], klucz=KLUCZ_WAGA)
+    obietnice = [u for u in r.uwagi if "uzupełni się przy zapisie" in u.tresc]
+    recznie = [u for u in r.uwagi if "wpisz ją ręcznie" in u.tresc]
+    assert len(obietnice) == 1 and obietnice[0].szczegol == "POK70L", [u.szczegol for u in obietnice]
+    assert len(recznie) == 1 and recznie[0].szczegol == "POSZ_w, PRZE5S", [u.szczegol for u in recznie]
+
 if __name__ == "__main__":
     zle = 0
     for nazwa, fn in sorted(globals().items()):
