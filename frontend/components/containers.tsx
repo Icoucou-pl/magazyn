@@ -68,7 +68,7 @@ type MonthBucket = {
   containers: Container[]; totalValue: number; totalUnits: number; statusCounts: Record<string, number>;
 };
 
-export default function ContainersView({ density, openId, onOpenedId, onDeepLinkClose, openNewAutoSuggest, onOpenedNewAutoSuggest, autoSuggestMfrId }: { density?: string; openId?: number | null; onOpenedId?: () => void; onDeepLinkClose?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void; autoSuggestMfrId?: number | null }) {
+export default function ContainersView({ density, openId, onOpenedId, onDeepLinkClose, openNewAutoSuggest, onOpenedNewAutoSuggest, autoSuggestMfrId, onOpenContainerPage }: { density?: string; openId?: number | null; onOpenedId?: () => void; onDeepLinkClose?: () => void; openNewAutoSuggest?: boolean; onOpenedNewAutoSuggest?: () => void; autoSuggestMfrId?: number | null; onOpenContainerPage?: (c: Container) => void }) {
   const gap = density === "compact" ? 10 : 14;
   const showFin = can(useUser(), "viewFinancials");
   const canPO = can(useUser(), "generatePO");
@@ -451,6 +451,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
                     onSetDelivered={(d) => setDelivered(c, d)}
                     onToggleSubiekt={(lotId, value) => toggleSubiekt(c, lotId, value)}
                     onManufacturerClick={(id) => setMfrModalId(id)}
+                    onOpenPage={onOpenContainerPage ? () => onOpenContainerPage(c) : undefined}
                   />
                 ))}
               </MonthGroup>

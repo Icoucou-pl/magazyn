@@ -12,7 +12,7 @@ import { btnPrimary, btnSecondary } from "./products-ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { PhotoHover } from "./photo-hover";
 import { download } from "@/lib/api";
-import { canEdit, can, useUser } from "@/lib/permissions";
+import { canEdit, can, canSeeLandedCost, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { trackingUrl, carrierLabel } from "@/lib/tracking";
 
@@ -85,7 +85,9 @@ export type Container = {
   koszt_transportu?: number | null;
   koszt_spedycji?: number | null;
   oplata_spedycji?: number | null;
-  koszt_transportu_magazyn?: number | null;   // PLN — z portu do magazynu
+  koszt_transportu_magazyn?: number | null;
+  /** Stan rozliczenia odprawy: "zapisana" | "szkic" | null (patrz services/containers.py). */
+  koszt_status?: string | null;   // PLN — z portu do magazynu
   folder?: string | null;
   subiekt_nr?: string | null;
   mrn?: string | null;                        // odprawa celna (kontener nieskonsolidowany)
@@ -511,7 +513,7 @@ export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggl
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
   container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
-  pinned = false, onProductClick, highlightSku,
+  pinned = false, onProductClick, highlightSku, onOpenPage,
 }: {
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
@@ -525,10 +527,14 @@ export function ContainerCard({
   onProductClick?: (sku: string) => void;
   /** SKU, z którego karty przyszliśmy — podświetlony na liście pozycji. */
   highlightSku?: string | null;
+  /** Przejście na pełną kartę kontenera (/kontenery/NR). Bez propa przycisku nie ma —
+   *  na samej karcie prowadziłby sam do siebie. */
+  onOpenPage?: () => void;
 }) {
   const eStatus = eff(c);
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
   const showFin = can(useUser(), "viewFinancials");
+  const pokazKoszt = canSeeLandedCost(useUser());
   const Icon = meta.icon;
   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
   const isDelivered = eStatus === "DELIVERED";
@@ -590,6 +596,15 @@ export function ContainerCard({
               {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
               {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
               {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa celna" : "auto"}</Pill>}
+              {/* Stan rozliczenia odprawy — tylko dla uprawnionych. Reszta zespołu nie widzi
+                  nawet tego, że koszt jednostkowy w ogóle istnieje. */}
+              {pokazKoszt && (
+                c.koszt_status === "zapisana"
+                  ? <Pill bg="var(--ok-soft)" fg="var(--ok)" size="sm">koszt policzony</Pill>
+                  : c.koszt_status === "szkic"
+                    ? <Pill bg="var(--warning-soft)" fg="var(--warning)" size="sm">koszt — szkic</Pill>
+                    : <Pill bg="var(--surface-2)" fg="var(--text-lo)" size="sm">bez kosztu</Pill>
+              )}
             </div>
 
             {/* DESKTOP: jedna linia meta (nr · FV · pozycje · szt · wartość) */}
@@ -659,14 +674,14 @@ export function ContainerCard({
         )}
       </div>
 
-      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} onManufacturerClick={onManufacturerClick} onProductClick={onProductClick} highlightSku={highlightSku} />}
+      {expanded && <ContainerCardBody container={c} fillColor={fillColor} nextStatus={nextStatus} onEdit={onEdit} onAdvance={onAdvance} onGeneratePO={onGeneratePO} onSetDelivered={onSetDelivered} onToggleSubiekt={onToggleSubiekt} onManufacturerClick={onManufacturerClick} onProductClick={onProductClick} highlightSku={highlightSku} onOpenPage={onOpenPage} />}
     </div>
   );
 }
 
 function ContainerCardBody({
   container: c, fillColor, nextStatus, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
-  onProductClick, highlightSku,
+  onProductClick, highlightSku, onOpenPage,
 }: {
   container: Container; fillColor: string; nextStatus?: string;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
@@ -675,6 +690,7 @@ function ContainerCardBody({
   onManufacturerClick?: (id: number) => void;
   onProductClick?: (sku: string) => void;
   highlightSku?: string | null;
+  onOpenPage?: () => void;
 }) {
   const user = useUser();
   const showEdit = canEdit(user);
@@ -955,7 +971,16 @@ function ContainerCardBody({
           {onGeneratePO && (
             <button onClick={onGeneratePO} style={{ ...btnSecondary, color: "var(--accent)", borderColor: "color-mix(in oklch, var(--accent) 40%, var(--border))" }}><I.External size={12} /> Generuj PO</button>
           )}
-          <button onClick={onEdit} style={btnPrimary}><I.Settings size={12} /> {showEdit ? "Edytuj kontener" : "Pokaż szczegóły"}</button>
+          {/* Na liście głównym działaniem jest wejście na pełną kartę; edycja zostaje obok,
+              bo bywa częsta i chowanie jej za przeładowaniem strony tylko by przeszkadzało. */}
+          <button onClick={onEdit} style={onOpenPage ? btnSecondary : btnPrimary}>
+            <I.Settings size={12} /> {showEdit ? "Edytuj kontener" : "Pokaż szczegóły"}
+          </button>
+          {onOpenPage && (
+            <button onClick={onOpenPage} style={btnPrimary}>
+              <I.External size={12} /> Zobacz szczegóły
+            </button>
+          )}
         </div>
       </div>
     </div>

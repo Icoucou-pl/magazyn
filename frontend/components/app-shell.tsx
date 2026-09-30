@@ -581,6 +581,10 @@ export default function AppShell() {
             openNewAutoSuggest={pendingAutoSuggestNew}
             autoSuggestMfrId={pendingAutoSuggestMfr}
             onOpenedNewAutoSuggest={() => { setPendingAutoSuggestNew(false); setPendingAutoSuggestMfr(null); }}
+            onOpenContainerPage={(c) => openContainerPage(containerSlug({
+              id: c.id, container_number: c.container_number, order_number: c.order_number,
+              lot_order_numbers: (c.lots ?? []).map((l) => l.order_number),
+            }))}
           />
         ) : view === "calendar" ? (
           <Calendar density={t.density} onOpenContainer={(id) => goContainers(id, "calendar")} />

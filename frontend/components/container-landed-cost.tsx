@@ -92,6 +92,12 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     return () => { zyje = false; };
   }, [containerId]);
 
+  // Ustawienia trzymamy też w ref. Handler zdarzenia pamięta stan z renderu, w którym
+  // powstał, więc „zmień pole i od razu przelicz" wysyłało wartości SPRZED zmiany:
+  // przełącznik Waga/CBM pokazywał jedno, a rachunek szedł drugim kluczem, a świeżo
+  // wpisane kwoty z faktury w ogóle nie wchodziły do sumy. Ref jest zawsze aktualny.
+  const ustawieniaRef = useRef<Record<string, unknown>>({});
+
   const ustawienia = useCallback(() => ({
     klucz_podzialu: klucz,
     kurs_towaru: fxTowar ? Number(fxTowar.replace(",", ".")) : null,
@@ -108,12 +114,14 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     ),
   }), [klucz, fxTowar, fxKoszty, fvNr, fvData, koszty, przypisanie, gratisy, cenyReczne]);
 
-  const wyslij = useCallback(async (f: File, zapis: boolean) => {
+  ustawieniaRef.current = ustawienia();
+
+  const wyslij = useCallback(async (f: File, zapis: boolean, nadpisz: Record<string, unknown> = {}) => {
     setBusy(true); setBlad(null);
     try {
       const fd = new FormData();
       fd.append("plik", f);
-      fd.append("ustawienia", JSON.stringify(ustawienia()));
+      fd.append("ustawienia", JSON.stringify({ ...ustawieniaRef.current, ...nadpisz }));
       const url = `/kontenery/${containerId}/odprawa${zapis ? "" : "/podglad"}`;
       const z = (await api.post(url, fd)) as Odprawa;
       setDane(z);
@@ -127,10 +135,20 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
       setBlad(m);
       if (zapis) toast(m, "warning");
     } finally { setBusy(false); }
-  }, [containerId, ustawienia, koszty.length, fxTowar, fxKoszty, onSaved]);
+  }, [containerId, koszty.length, fxTowar, fxKoszty, onSaved]);
 
-  // Zmiana ustawienia przelicza podgląd na tym samym pliku — bez ponownego wybierania.
-  const przelicz = useCallback(() => { if (plik) void wyslij(plik, false); }, [plik, wyslij]);
+  // Każda zmiana ustawień przelicza podgląd na tym samym pliku. Robi to efekt, a nie
+  // onBlur poszczególnych pól: zdarzenie potrafi wyprzedzić render i wysłać stary stan.
+  // Pół sekundy zwłoki, żeby wpisywanie kwoty nie strzelało żądaniem po każdej cyfrze.
+  const wyslijRef = useRef(wyslij);
+  wyslijRef.current = wyslij;
+  const pierwszy = useRef(true);
+  useEffect(() => {
+    if (!plik) return;
+    if (pierwszy.current) { pierwszy.current = false; return; }
+    const t = setTimeout(() => { void wyslijRef.current(plik, false); }, 500);
+    return () => clearTimeout(t);
+  }, [plik, klucz, koszty, fxTowar, fxKoszty, przypisanie, gratisy, cenyReczne]);
 
   const wybierz = (f: File | null | undefined) => {
     if (!f) return;
@@ -274,7 +292,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                           </span>
                           {canEdit ? (
                             <select value={gratisy[p.nr] ?? p.gratis_item_id ?? ""} style={select}
-                              onChange={(e) => { setGratisy((g) => ({ ...g, [p.nr]: Number(e.target.value) })); przelicz(); }}>
+                              onChange={(e) => setGratisy((g) => ({ ...g, [p.nr]: Number(e.target.value) }))}>
                               {dane.towar.map((t) => (
                                 <option key={t.item_id} value={t.item_id}>{t.sku} ({t.container_number})</option>
                               ))}
@@ -301,8 +319,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                             <input type="number" step="0.01" style={input}
                               placeholder={pl(t.cena_zakupu_waluta)}
                               value={cenyReczne[t.item_id] ?? ""}
-                              onChange={(e) => setCenyReczne((c) => ({ ...c, [t.item_id]: e.target.value }))}
-                              onBlur={przelicz} />
+                              onChange={(e) => setCenyReczne((c) => ({ ...c, [t.item_id]: e.target.value }))} />
                           ) : (
                             <span className="mono">{pl(t.cena_zakupu_waluta)}</span>
                           )}
@@ -316,7 +333,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                         {canEdit && (
                           <td style={{ ...td, textAlign: "left" }}>
                             <select value={przypisanie[t.item_id] ?? t.poz_sad ?? ""} style={select}
-                              onChange={(e) => { setPrzypisanie((p2) => ({ ...p2, [t.item_id]: Number(e.target.value) })); przelicz(); }}>
+                              onChange={(e) => setPrzypisanie((p2) => ({ ...p2, [t.item_id]: Number(e.target.value) }))}>
                               {dane.pozycje.map((q) => <option key={q.nr} value={q.nr}>poz. {q.nr} · {q.kod_cn}</option>)}
                             </select>
                           </td>
@@ -336,7 +353,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
         <Naglowek tytul="Koszty" action={canEdit && (
           <div style={{ display: "inline-flex", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 999, padding: 3 }}>
             {(["waga", "cbm"] as const).map((k) => (
-              <button key={k} onClick={() => { setKlucz(k); przelicz(); }}
+              <button key={k} onClick={() => setKlucz(k)}
                 style={{ ...segBtn, ...(klucz === k ? segOn : null) }}>{k === "waga" ? "Waga" : "CBM"}</button>
             ))}
           </div>
@@ -345,8 +362,8 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", padding: "10px 16px", borderBottom: "1px solid var(--border-soft)" }}>
             <Wpis etykieta="Nr faktury spedytora" v={fvNr} set={setFvNr} szer={160} />
             <Wpis etykieta="Data sprzedaży" v={fvData} set={setFvData} szer={120} placeholder="2026-08-26" />
-            <Wpis etykieta="Kurs kosztów" v={fxKoszty} set={setFxKoszty} szer={100} onBlur={przelicz} />
-            <Wpis etykieta="Kurs towaru" v={fxTowar} set={setFxTowar} szer={100} onBlur={przelicz} />
+            <Wpis etykieta="Kurs kosztów" v={fxKoszty} set={setFxKoszty} szer={100} />
+            <Wpis etykieta="Kurs towaru" v={fxTowar} set={setFxTowar} szer={100} />
             <span style={{ fontSize: 11.5, color: "var(--text-lo)", alignSelf: "flex-end", flex: 1, minWidth: 180 }}>
               Kurs NBP jest w nagłówku faktury, w zdaniu o przeliczeniu VAT.
             </span>
@@ -366,7 +383,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                   <td style={td}>
                     {canEdit ? (
                       <input type="number" step="0.01" style={input} value={l.kwota || ""} placeholder="0"
-                        onChange={(e) => zmienKoszt(i, e.target.value)} onBlur={przelicz} />
+                        onChange={(e) => zmienKoszt(i, e.target.value)} />
                     ) : <span className="mono">{pl(l.kwota)}</span>}{" "}
                     <span style={{ color: "var(--text-lo)", fontSize: 11 }}>{l.waluta}</span>
                   </td>
