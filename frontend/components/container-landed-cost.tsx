@@ -58,6 +58,9 @@ export type Odprawa = {
 const pl = (n: number | null | undefined, d = 2) =>
   (n ?? 0).toLocaleString("pl-PL", { minimumFractionDigits: d, maximumFractionDigits: d });
 
+/** Pola kursów i cen wpisuje się po polsku, z przecinkiem — Number() sam tego nie przeczyta. */
+const liczba = (s: string): number => Number((s || "").replace(",", ".").trim());
+
 export default function LandedCostTab({ containerId, onSaved }: { containerId: number; onSaved?: () => void }) {
   const canEdit = canEditLandedCost(useUser());
   const [dane, setDane] = useState<Odprawa | null>(null);
@@ -100,8 +103,8 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
 
   const ustawienia = useCallback(() => ({
     klucz_podzialu: klucz,
-    kurs_towaru: fxTowar ? Number(fxTowar.replace(",", ".")) : null,
-    kurs_kosztow: fxKoszty ? Number(fxKoszty.replace(",", ".")) : null,
+    kurs_towaru: fxTowar ? liczba(fxTowar) : null,
+    kurs_kosztow: fxKoszty ? liczba(fxKoszty) : null,
     fv_spedytora: fvNr || null,
     fv_spedytora_data: fvData || null,
     koszty,
@@ -109,8 +112,8 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     gratisy,
     ceny_reczne: Object.fromEntries(
       Object.entries(cenyReczne)
-        .filter(([, v]) => v !== "" && !Number.isNaN(Number(v.replace(",", "."))))
-        .map(([k, v]) => [k, Number(v.replace(",", "."))]),
+        .filter(([, v]) => v !== "" && !Number.isNaN(liczba(v)))
+        .map(([k, v]) => [k, liczba(v)]),
     ),
   }), [klucz, fxTowar, fxKoszty, fvNr, fvData, koszty, przypisanie, gratisy, cenyReczne]);
 
@@ -159,7 +162,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   const zapisz = () => { if (plik) void wyslij(plik, true); };
 
   const zmienKoszt = (idx: number, kwota: string) => {
-    setKoszty((k) => k.map((l, i) => (i === idx ? { ...l, kwota: Number(kwota.replace(",", ".")) || 0 } : l)));
+    setKoszty((k) => k.map((l, i) => (i === idx ? { ...l, kwota: liczba(kwota) || 0 } : l)));
   };
 
   if (ladowanie) return <div className="pulse-soft" style={{ height: 200, background: "var(--surface-1)", borderRadius: "var(--r-md)" }} />;
@@ -403,7 +406,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
 
       {/* Podsumowanie */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-        <Kafel l="Towar" v={`${pl(dane.suma_towar, 0)} zł`} n={`po kursie ${pl(Number(fxTowar) || dane.kurs_celny, 4)}`} />
+        <Kafel l="Towar" v={`${pl(dane.suma_towar, 0)} zł`} n={`po kursie ${pl(liczba(fxTowar) || dane.kurs_celny, 4)}`} />
         <Kafel l="Logistyka" v={`${pl(dane.suma_logistyka, 0)} zł`} n="fracht, opłaty, transport" />
         <Kafel l="Cło" v={`${pl(dane.suma_clo, 0)} zł`} n="z SAD, do zapłaty" />
         <Kafel l="Narzut na towar" v={dane.narzut_proc != null ? `+${pl(dane.narzut_proc, 1)}%` : "—"} n="cała odprawa" akcent />
