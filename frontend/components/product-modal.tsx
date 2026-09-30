@@ -435,7 +435,7 @@ export default function ProductModal({
                 <button onClick={toggleNoReorder}
                   style={product.no_reorder ? { ...iconBtnHeader, background: "var(--info-soft)", color: "var(--info)" } : iconBtnHeader}
                   title={product.no_reorder ? "Przywróć do zamawiania (pokaż w pożarach)" : "Nie dozamawiamy — ukryj z pożarów i zamawiania"}>
-                  <I.Flame size={16} />
+                  <I.Ban size={16} />
                 </button>
               )}
               <button onClick={onClose} style={iconBtnHeader} title="Zamknij"><I.Close size={16} /></button>
