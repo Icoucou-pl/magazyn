@@ -1062,6 +1062,12 @@ class OdprawaOut(BaseModel):
     kontrole: List[OdprawaKontrolaOut] = []
     uwagi: List[OdprawaUwagaOut] = []
     klucz_podzialu: str = "waga"
+    # Ustawienia rachunku odtworzone z zapisu — front wypełnia nimi pola nagłówka faktury
+    # po odświeżeniu zakładki, żeby nie trzeba było wpisywać ich drugi raz.
+    kurs_towaru: Optional[float] = None
+    kurs_kosztow: Optional[float] = None
+    fv_spedytora: Optional[str] = None
+    fv_spedytora_data: Optional[date] = None
     suma_towar: float = 0
     suma_logistyka: float = 0
     suma_clo: float = 0
