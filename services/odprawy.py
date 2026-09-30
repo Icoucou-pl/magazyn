@@ -582,12 +582,33 @@ def _dopisz_uwagi_ogolne(r: Rachunek, odprawa: Odprawa, wg_item: Dict[int, Pozyc
             "info", "Pozycje SAD bez towaru na kontenerach — rozliczone jako gratis",
             ", ".join(f"poz. {n}" for n in puste),
         ))
-    bez_wagi = sorted({t.sku for t in wg_item.values() if t.waga_brutto_kg is None})
+    bez_wagi = {t.sku for t in wg_item.values() if t.waga_brutto_kg is None}
     if bez_wagi:
-        r.uwagi.append(Uwaga(
-            "info", "Brak wagi w karcie produktu — uzupełni się przy zapisie odprawy",
-            ", ".join(bez_wagi),
-        ))
+        # Zapis dopisze wagę TYLKO z pozycji obejmującej jedno SKU — bo tylko tam wiadomo,
+        # ile z masy pozycji przypada na sztukę. Obiecywanie tego przy pozycji mieszanej
+        # byłoby nieprawdą, a właśnie tam brak wagi boli: logistyka dzieli się wtedy
+        # wewnątrz pozycji po wartości, czyli droższa sztuka płaci wyższy fracht,
+        # choćby ważyła tyle samo.
+        sku_pozycji: Dict[int, Set[str]] = {}
+        for item_id, nr in r.przypisanie.items():
+            t = wg_item.get(item_id)
+            if t is not None:
+                sku_pozycji.setdefault(nr, set()).add(t.sku)
+        samotne = {s for komplet in sku_pozycji.values() if len(komplet) == 1 for s in komplet}
+        uzupelni = sorted(bez_wagi & samotne)
+        recznie = sorted(bez_wagi - samotne)
+        if uzupelni:
+            r.uwagi.append(Uwaga(
+                "info", "Brak wagi w karcie produktu — uzupełni się przy zapisie odprawy",
+                ", ".join(uzupelni),
+            ))
+        if recznie:
+            r.uwagi.append(Uwaga(
+                "info",
+                "Brak wagi w karcie produktu — pozycja obejmuje kilka SKU, więc wpisz ją ręcznie; "
+                "do tego czasu logistyka dzieli się w pozycji po wartości",
+                ", ".join(recznie),
+            ))
 
 
 def _uwagi_o_dopasowaniu(slady: Dict[str, Any], odprawa: Odprawa,
