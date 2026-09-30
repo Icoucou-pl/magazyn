@@ -287,14 +287,213 @@ def test_niepewne_dopasowanie_daje_ostrzezenie():
     o = parsuj(xml)
     towar = [PozycjaTowaru(21, 201, "A", 10, 380.0), PozycjaTowaru(22, 201, "B", 10, 370.0)]
     r = policz(o, towar, [LiniaKosztu("Fracht morski", 100.0, lp=1)], klucz=KLUCZ_WAGA)
-    assert [u for u in r.uwagi if "niepewne" in u.tresc], "bliski remis musi zapalić ostrzeżenie"
+    assert [u for u in r.uwagi if u.poziom == "ostrzezenie" and "sprawdź" in u.tresc], \
+        "bliski remis musi zapalić ostrzeżenie o dopasowaniu"
 
 
 def test_pewne_dopasowanie_bez_ostrzezenia():
     o = parsuj(SAD_PUSTA_POZYCJA)
     r = policz(o, TOWAR_PUSTA, [LiniaKosztu("Fracht morski", 1000.0, lp=1)], klucz=KLUCZ_WAGA)
-    assert not [u for u in r.uwagi if "niepewne" in u.tresc]
+    assert not [u for u in r.uwagi if u.poziom == "ostrzezenie" and "sprawdź" in u.tresc]
 
+
+# Odprawa AMH 1797 w pigułce: cztery pozycje opisane po polsku i towar, którego nazwy
+# mówią wprost, do której pozycji należy — a ceny planowane są sprzed dostawy i mylą
+# dopasowanie po wartości. Bez kroku „po nazwie" materace lądowały w poduszkach,
+# a prześcieradła w pokrowcach PVC.
+SAD_OPISOWY = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-05-11"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="10000" P35BruttoZestawu="1000" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST03"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="800" P38MasaNetto="780" P42WartoscPozycji="8000" P47WartCelna="32000">
+    <P31ZnakiINumery OpisTowaru="MATERAC ANATOMICZNY WYKONANY Z PIANKI MEMORY"><Opakowania RodzOpak="CT" LiczbaOpak="80"/>
+      <Kontenery Numer="TEST4444444"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94042190"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+    <P47Oplaty Typ="B00" Stawka="23" Kwota="7360" MP="G"><Skladowe KwotaOplaty="7360"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="200" P38MasaNetto="190" P42WartoscPozycji="2000" P47WartCelna="8000">
+    <P31ZnakiINumery OpisTowaru="PODUSZKA KOSMETYCZNA WYKONANA Z PIANKI TAPICERSKIEJ"><Opakowania RodzOpak="CT" LiczbaOpak="20"/>
+      <Kontenery Numer="TEST4444444"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94049090"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+    <P47Oplaty Typ="B00" Stawka="23" Kwota="1840" MP="G"><Skladowe KwotaOplaty="1840"/></P47Oplaty>
+  </PozycjeSADu>
+</SADUE>"""
+
+# Ceny planowane celowo przestawione: materac wyceniony nisko, poduszka wysoko —
+# sama wartość wskazałaby odwrotne przypisanie niż prawda.
+TOWAR_OPISOWY = [
+    PozycjaTowaru(31, 301, "MC_60", 100, 80.0, waga_brutto_kg=8.0, nazwa="Materac EKO 60 z pianki"),
+    PozycjaTowaru(32, 301, "PDcz", 100, 320.0, waga_brutto_kg=2.0, nazwa="Poduszka kosmetyczna czarna"),
+]
+
+
+def test_nazwa_towaru_wygrywa_ze_zwodnicza_wartoscia():
+    o = parsuj(SAD_OPISOWY)
+    p = dopasuj(o, TOWAR_OPISOWY)
+    assert p[31] == 1, "materac ma trafić do pozycji o materacach, mimo niższej ceny planowanej"
+    assert p[32] == 2, "poduszka do pozycji o poduszkach"
+
+
+def test_dopasowanie_po_nazwie_jest_odnotowane():
+    o = parsuj(SAD_OPISOWY)
+    slady = {}
+    dopasuj(o, TOWAR_OPISOWY, slady)
+    assert slady["zrodlo"] == {"MC_60": "nazwa", "PDcz": "nazwa"}
+    assert not slady["po_wartosci"], "nic nie powinno zostać do zgadywania po wartości"
+
+
+def test_kod_cn_ma_pierwszenstwo_przed_nazwa():
+    o = parsuj(SAD_OPISOWY)
+    # Nazwa mówi „materac", ale karta produktu niesie kod CN poduszek — kod wygrywa,
+    # bo pochodzi z potwierdzonej wcześniej odprawy, a nie z podobieństwa słów.
+    towar = [PozycjaTowaru(33, 301, "MC_X", 10, 100.0, kod_cn="94049090", nazwa="Materac testowy")]
+    slady = {}
+    assert dopasuj(o, towar, slady)[33] == 2
+    assert slady["zrodlo"] == {"MC_X": "cn"}
+
+
+def test_remis_nazw_zostawia_sprawe_wartosci():
+    o = parsuj(SAD_OPISOWY)
+    # „Pokrowiec" nie występuje w żadnym opisie — nazwa nie rozstrzyga, decyduje wartość.
+    towar = [PozycjaTowaru(34, 301, "POK", 10, 100.0, nazwa="Pokrowiec PVC")]
+    slady = {}
+    dopasuj(o, towar, slady)
+    assert slady["zrodlo"] == {"POK": "wartosc"}
+
+
+def test_rozjazd_wartosci_pozycji_zapala_ostrzezenie():
+    o = parsuj(SAD_OPISOWY)
+    # Materac wyceniony w katalogu na ułamek tego, co zgłoszono; poduszka trafia w punkt.
+    # Ostrzeżenie ma dotyczyć tylko tej pozycji, która się rozjeżdża.
+    towar = [
+        PozycjaTowaru(35, 301, "MC_60", 100, 8.0, nazwa="Materac EKO 60 z pianki"),
+        PozycjaTowaru(36, 301, "PDcz", 100, 80.0, nazwa="Poduszka kosmetyczna czarna"),
+    ]
+    r = policz(o, towar, [LiniaKosztu("Fracht morski", 100.0, lp=1)], klucz=KLUCZ_WAGA)
+    rozjazdy = [u for u in r.uwagi if "wartości ze zgłoszenia" in u.tresc]
+    assert len(rozjazdy) == 1 and "Poz. 1" in rozjazdy[0].tresc, [u.tresc for u in rozjazdy]
+
+
+def test_duza_odprawa_zawsze_prosi_o_sprawdzenie():
+    """Ścieżka zachłanna (zbyt wiele układów na pełny przegląd) nie gwarantuje optimum.
+
+    Wcześniej milczała: margines liczył się wyłącznie przy pełnym przeglądzie, więc
+    największe odprawy — te, które najbardziej potrzebują kontroli — nie dostawały
+    żadnego ostrzeżenia.
+    """
+    o = parsuj(SAD_OPISOWY)
+    # 2 pozycje i 20 SKU bez nazw = 2^20 układów, czyli ponad limit pełnego przeglądu.
+    towar = [PozycjaTowaru(100 + i, 301, f"X{i}", 10, 50.0) for i in range(20)]
+    slady = {}
+    dopasuj(o, towar, slady)
+    assert slady["zachlannie"] is True
+    r = policz(o, towar, [LiniaKosztu("Fracht morski", 100.0, lp=1)], klucz=KLUCZ_WAGA)
+    assert [u for u in r.uwagi if u.poziom == "ostrzezenie" and "sprawdź" in u.tresc]
+
+
+
+# Dwie pozycje, które biją się o to samo słowo: krótka „POKROWCE PVC" i zbiorcza,
+# w której „pokrowiec" jest rzeczownikiem drugoplanowym. Tak wygląda odprawa AMH 1797
+# i tak wykładało się liczenie samych wspólnych słów: opis zbiorczy miał ich więcej,
+# więc zgarniał pokrowce PVC, choć to nie o nim mowa.
+SAD_ZBIORCZY = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-05-11"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="5000" P35BruttoZestawu="500" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST04"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="100" P38MasaNetto="95" P42WartoscPozycji="1000" P47WartCelna="4000">
+    <P31ZnakiINumery OpisTowaru="POKROWCE PVC"><Opakowania RodzOpak="CT" LiczbaOpak="10"/>
+      <Kontenery Numer="TEST5555555"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="39269097"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="400" P38MasaNetto="380" P42WartoscPozycji="4000" P47WartCelna="16000">
+    <P31ZnakiINumery OpisTowaru="POSZEWKA NA PODUSZKĘ, PRZEŚCIERADŁO - POKROWIEC NA MATERAC WYKONANE Z JEDWABIU SYNTETYCZNEGO/WELUR"><Opakowania RodzOpak="CT" LiczbaOpak="40"/>
+      <Kontenery Numer="TEST5555555"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="63023290"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+</SADUE>"""
+
+
+def test_krotki_opis_nie_przegrywa_z_dluzszym_o_ten_sam_towar():
+    """Pokrowiec PVC ma trafić do pozycji o pokrowcach PVC, nie do zbiorczej.
+
+    Liczenie samych wspólnych słów dawało tu 1:1 albo przewagę pozycji zbiorczej
+    (bo „pokrowiec" stoi i tam), a miara Dice'a patrzy na dopasowanie z obu stron:
+    dla pozycji krótkiej pokrywa się CAŁY jej opis, dla zbiorczej jedna dziewiąta.
+    """
+    o = parsuj(SAD_ZBIORCZY)
+    towar = [PozycjaTowaru(41, 301, "POK70L", 10, 100.0, nazwa="Pokrowiec PVC 70L")]
+    slady = {}
+    assert dopasuj(o, towar, slady)[41] == 1
+    assert slady["zrodlo"] == {"POK70L": "nazwa"}
+
+
+def test_nazwa_z_dwoma_rzeczownikami_idzie_do_pozycji_zbiorczej():
+    """Odwrotny kierunek tej samej miary — nie wystarczy faworyzować krótkich opisów.
+
+    „Poszewka na poduszkę welurowa" pokrywa trzy słowa opisu zbiorczego, więc wygrywa
+    z pozycją o pokrowcach PVC, z którą nie ma wspólnego ani jednego.
+    """
+    o = parsuj(SAD_ZBIORCZY)
+    towar = [PozycjaTowaru(42, 301, "POSZ_w", 10, 100.0, nazwa="Poszewka na poduszkę welurowa")]
+    assert dopasuj(o, towar)[42] == 2
+
+
+def test_symbol_krotszy_niz_slowo_w_opisie_tez_dopasowuje():
+    """Symbol „PRZE5S" daje rdzeń „prze", a opis celny „przesc" — to ta sama rzecz.
+
+    Przy porównaniu całych rdzeni nie spotykały się nigdy, więc towar bez opisowej
+    nazwy w katalogu spadał do zgadywania po wartości.
+    """
+    o = parsuj(SAD_ZBIORCZY)
+    towar = [PozycjaTowaru(43, 301, "PRZE5S", 10, 100.0)]
+    slady = {}
+    assert dopasuj(o, towar, slady)[43] == 2
+    assert slady["zrodlo"] == {"PRZE5S": "nazwa"}
+
+
+SAD_BLIZNIACZY = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-05-11"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="2000" P35BruttoZestawu="200" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST05"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="100" P38MasaNetto="95" P42WartoscPozycji="1000" P47WartCelna="4000">
+    <P31ZnakiINumery OpisTowaru="MATERAC PIANKA"><Opakowania RodzOpak="CT" LiczbaOpak="10"/>
+      <Kontenery Numer="TEST6666666"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94042190"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="100" P38MasaNetto="95" P42WartoscPozycji="1000" P47WartCelna="4000">
+    <P31ZnakiINumery OpisTowaru="PIANKA MATERAC"><Opakowania RodzOpak="CT" LiczbaOpak="10"/>
+      <Kontenery Numer="TEST6666666"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94042990"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+</SADUE>"""
+
+
+def test_remis_podobienstwa_nie_jest_rozstrzygany_nazwa():
+    """Dwie pozycje opisane tymi samymi słowami — nazwa nie ma prawa wybrać.
+
+    Wymagamy ŚCISŁEJ przewagi. Bez tego decydowałaby kolejność pozycji w pliku,
+    czyli nic, a wynik wyglądałby na przemyślany.
+    """
+    o = parsuj(SAD_BLIZNIACZY)
+    towar = [PozycjaTowaru(44, 301, "MAT", 10, 100.0, nazwa="Materac piankowy")]
+    slady = {}
+    dopasuj(o, towar, slady)
+    assert slady["zrodlo"] == {"MAT": "wartosc"}
 
 if __name__ == "__main__":
     zle = 0
