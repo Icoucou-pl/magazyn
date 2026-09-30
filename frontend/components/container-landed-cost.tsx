@@ -47,6 +47,8 @@ export type Odprawa = {
   doliczenia: { kod: string; kwota: number; klucz: string; do_wartosci_celnej: boolean }[];
   pozycje: PozycjaSad[]; towar: Towar[]; koszty: Linia[];
   kontrole: Kontrola[]; uwagi: Uwaga[]; klucz_podzialu: string;
+  kurs_towaru: number | null; kurs_kosztow: number | null;
+  fv_spedytora: string | null; fv_spedytora_data: string | null;
   suma_towar: number; suma_logistyka: number; suma_clo: number; narzut_proc: number | null;
   mozna_zapisac: boolean; status: string;
   zapis?: {
@@ -88,7 +90,17 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     (async () => {
       try {
         const z = (await api.get(`/kontenery/${containerId}/odprawa`)) as Odprawa | null;
-        if (zyje && z) { setDane(z); setKlucz(z.klucz_podzialu === "cbm" ? "cbm" : "waga"); setKoszty(z.koszty ?? []); }
+        if (zyje && z) {
+          // Odtwarzamy też USTAWIENIA rachunku, nie tylko wynik — bez tego po odświeżeniu
+          // pola nagłówka faktury i kursy byłyby puste i trzeba by je wpisywać drugi raz.
+          setDane(z);
+          setKlucz(z.klucz_podzialu === "cbm" ? "cbm" : "waga");
+          setKoszty(z.koszty ?? []);
+          setFxTowar(z.kurs_towaru != null ? String(z.kurs_towaru) : String(z.kurs_celny || ""));
+          setFxKoszty(z.kurs_kosztow != null ? String(z.kurs_kosztow) : String(z.kurs_celny || ""));
+          setFvNr(z.fv_spedytora ?? "");
+          setFvData(z.fv_spedytora_data ?? "");
+        }
       } catch { /* brak odprawy to normalny stan, nie błąd */ }
       finally { if (zyje) setLadowanie(false); }
     })();
