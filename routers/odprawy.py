@@ -413,7 +413,9 @@ async def pobierz(
     itemy = (await db.execute(
         text(f"""
             SELECT ci.id AS item_id, ci.container_id, c.container_number, ci.sku, ci.quantity,
-                   ci.unit_cost, ci.cena_zakupu_pln, ci.koszt_jednostkowy
+                   ci.unit_cost, ci.cena_zakupu_pln, ci.cena_zakupu_waluta, ci.koszt_jednostkowy,
+                   ci.koszt_logistyka_pln, ci.koszt_clo_pln, ci.koszt_gratisy_pln,
+                   ci.koszt_transport_pln, ci.odprawa_poz_nr
               FROM {settings.TABLE_CONTAINER_ITEMS} ci
               JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
              WHERE ci.koszt_odprawa_id = :id
@@ -421,6 +423,21 @@ async def pobierz(
         """),
         {"id": row["id"]},
     )).mappings().all()
+
+    def _f(v) -> float:
+        return float(v) if v is not None else 0.0
+
+    # Sumy liczymy z zapisanego rozbicia, a nie z nowego rachunku — dzięki temu kafelki
+    # po odświeżeniu pokazują to samo, co w chwili zapisu.
+    suma_towar = sum(_f(i["cena_zakupu_pln"]) * int(i["quantity"] or 0) for i in itemy)
+    suma_log = sum(_f(i["koszt_logistyka_pln"]) + _f(i["koszt_gratisy_pln"])
+                   + _f(i["koszt_transport_pln"]) for i in itemy)
+    suma_clo = sum(_f(i["koszt_clo_pln"]) for i in itemy)
+    narzut = round((suma_log + suma_clo) / suma_towar * 100, 1) if suma_towar else None
+    po_pozycji: Dict[int, List[int]] = {}
+    for i in itemy:
+        if i["odprawa_poz_nr"] is not None:
+            po_pozycji.setdefault(int(i["odprawa_poz_nr"]), []).append(i["item_id"])
 
     return OdprawaOut(
         mrn=row["mrn"], data_zgloszenia=row["data_zgloszenia"], dostawca=row["dostawca"],
@@ -440,21 +457,34 @@ async def pobierz(
             liczba_opakowan=p["liczba_opakowan"],
             szt_uzup=float(p["szt_uzup"]) if p["szt_uzup"] is not None else None,
             gratis_item_id=p["gratis_item_id"],
+            item_ids=sorted(po_pozycji.get(p["nr"], [])),
         ) for p in pozycje],
         towar=[OdprawaTowarOut(
             item_id=i["item_id"], container_id=i["container_id"],
             container_number=i["container_number"], sku=i["sku"], ilosc=int(i["quantity"] or 0),
-            cena_planowana=float(i["unit_cost"] or 0),
-            cena_zakupu_waluta=0.0,
-            towar=float(i["cena_zakupu_pln"] or 0) * int(i["quantity"] or 0),
-            logistyka=0.0, clo=0.0, gratisy=0.0, transport_krajowy=0.0,
-            koszt_jednostkowy=float(i["koszt_jednostkowy"] or 0),
+            cena_planowana=_f(i["unit_cost"]),
+            cena_zakupu_waluta=_f(i["cena_zakupu_waluta"]),
+            towar=_f(i["cena_zakupu_pln"]) * int(i["quantity"] or 0),
+            logistyka=_f(i["koszt_logistyka_pln"]), clo=_f(i["koszt_clo_pln"]),
+            gratisy=_f(i["koszt_gratisy_pln"]), transport_krajowy=_f(i["koszt_transport_pln"]),
+            koszt_jednostkowy=_f(i["koszt_jednostkowy"]),
+            zmiana_proc=(round((_f(i["koszt_jednostkowy"]) / _f(i["unit_cost"]) - 1) * 100, 1)
+                         if _f(i["unit_cost"]) else None),
+            poz_sad=int(i["odprawa_poz_nr"]) if i["odprawa_poz_nr"] is not None else None,
         ) for i in itemy],
         koszty=[OdprawaLiniaKosztuIn(
             lp=k["lp"], nazwa=k["nazwa"], kwota=float(k["kwota"] or 0), waluta=k["waluta"],
             klucz=k["klucz"], container_id=k["container_id"],
         ) for k in koszty],
         klucz_podzialu=row["klucz_podzialu"],
+        kurs_towaru=_f(row["kurs_towaru"]) or None,
+        kurs_kosztow=_f(row["kurs_kosztow"]) or None,
+        fv_spedytora=row["fv_spedytora"],
+        fv_spedytora_data=row["fv_spedytora_data"],
+        suma_towar=round(suma_towar, 2),
+        suma_logistyka=round(suma_log, 2),
+        suma_clo=round(suma_clo, 2),
+        narzut_proc=narzut,
         status=row["status"],
     )
 
@@ -512,6 +542,7 @@ async def _zapisz_wszystko(
     user_id: Optional[int],
 ) -> OdprawaZapisOut:
     teraz = datetime.now(timezone.utc)
+    przypisanie_zapisu = rachunek.przypisanie
     firma_id = None
     if out.firma_slug:
         row = (await db.execute(
@@ -619,18 +650,29 @@ async def _zapisz_wszystko(
         )
 
     # ── Koszt na pozycjach kontenera ─────────────────────────────────────────
+    # Zapisujemy CAŁE rozbicie, nie tylko wynik. Odczyt zapisanej odprawy ma pokazać
+    # dokładnie to, co zatwierdzono — odtwarzanie rachunku przy każdym wejściu dałoby
+    # inne liczby, gdy ceny planowane albo wagi produktów zmienią się później.
     for w in rachunek.pozycje:
         await db.execute(
             text(f"""
                 UPDATE {settings.TABLE_CONTAINER_ITEMS}
-                   SET cena_zakupu_pln = :zakup, koszt_jednostkowy = :koszt,
+                   SET cena_zakupu_pln = :zakup, cena_zakupu_waluta = :zakup_wal,
+                       koszt_jednostkowy = :koszt,
+                       koszt_logistyka_pln = :log, koszt_clo_pln = :clo,
+                       koszt_gratisy_pln = :gratis, koszt_transport_pln = :transport,
+                       odprawa_poz_nr = CAST(:poz AS SMALLINT),
                        koszt_odprawa_id = :oid, koszt_zrodlo = 'odprawa', koszt_updated_at = :teraz
                  WHERE id = :item
             """),
             {
                 "zakup": round(w.towar / w.ilosc, 2) if w.ilosc else 0,
-                "koszt": w.koszt_jednostkowy, "oid": odprawa_id,
-                "teraz": teraz, "item": w.item_id,
+                "zakup_wal": round(w.cena_zakupu_waluta, 4),
+                "koszt": w.koszt_jednostkowy,
+                "log": round(w.logistyka, 2), "clo": round(w.clo, 2),
+                "gratis": round(w.gratisy, 2), "transport": round(w.transport_krajowy, 2),
+                "poz": przypisanie_zapisu.get(w.item_id),
+                "oid": odprawa_id, "teraz": teraz, "item": w.item_id,
             },
         )
 
