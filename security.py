@@ -136,6 +136,13 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # i /historia-firmy). Domyślnie TYLKO ADMIN; super-admin wchodzi zawsze
 # (routers/product_history.py::require_view_history).
 #
+# viewLandedCost / editLandedCost — zakładka „Koszt jednostkowy" na karcie kontenera.
+# viewLandedCost jest KONIUNKCYJNE z viewFinancials (patrz can_view_landed_cost): zakładka
+# pokazuje ceny zakupu, cło i marżę, więc ktoś z zamaskowanymi finansami nie zobaczy jej tędy.
+# editLandedCost to osobne prawo NA WIERZCHU podglądu (patrz can_edit_landed_cost): wczytanie
+# XML odprawy, wpisywanie kwot z faktury spedytora i zapis kosztu na pozycje kontenera.
+# Bez viewLandedCost samo editLandedCost nic nie daje — nie ma czego edytować.
+#
 # viewPurchasePrice — sama cena zakupu (koszt netto / szt) dla osób BEZ viewFinancials.
 # Odczytywane w routers/products.py::_mask_financials — cena zostaje w odpowiedzi,
 # reszta pól finansowych (wartość stanu) dalej jest zerowana.
@@ -150,9 +157,9 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # z viewFinancials (patrz can_see_calendar_payments) — kalendarz pokazuje kwoty zobowiązań,
 # więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy tylnymi drzwiami.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False},
 }
 
 
@@ -210,6 +217,37 @@ async def require_bank_view(user: CurrentUser = Depends(get_current_user)) -> Cu
 async def require_bank_edit(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if not can_edit_bank(user):
         raise HTTPException(403, "Brak uprawnienia: editBankBalances")
+    return user
+
+
+def can_view_landed_cost(user: CurrentUser) -> bool:
+    """Zakładka „Koszt jednostkowy" = viewLandedCost ORAZ viewFinancials.
+
+    Koniunkcja, jak przy banku i płatnościach w kalendarzu: rozliczenie odprawy niesie ceny
+    zakupu, cło i marżę na sztuce, więc bez viewFinancials nie ma prawa się pokazać.
+    Lustro na froncie: permissions.js → canSeeLandedCost.
+    """
+    return has_perm(user, "viewLandedCost") and has_perm(user, "viewFinancials")
+
+
+def can_edit_landed_cost(user: CurrentUser) -> bool:
+    """Wczytanie odprawy, wpisywanie kwot z faktury spedytora i zapis kosztu.
+
+    Prawo NA WIERZCHU podglądu: komuś, kto ma tylko viewLandedCost, zakładka pokazuje
+    wyliczenia, ale bez pól do wpisania i bez przycisku zapisu.
+    """
+    return can_view_landed_cost(user) and has_perm(user, "editLandedCost")
+
+
+async def require_landed_cost_view(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_view_landed_cost(user):
+        raise HTTPException(403, "Brak uprawnienia: viewLandedCost")
+    return user
+
+
+async def require_landed_cost_edit(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_edit_landed_cost(user):
+        raise HTTPException(403, "Brak uprawnienia: editLandedCost")
     return user
 
 
