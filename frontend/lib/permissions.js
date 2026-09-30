@@ -31,6 +31,8 @@ export const PERMISSIONS = [
   { key: "viewProductHistory", label: "Historia produktu", desc: "Zakładka „Historia produktu” na karcie produktu: przyjęcia, koszt zakupu w czasie, narzut logistyczny", group: "Widoczność" },
   { key: "viewPurchasePrice", label: "Cena zakupu produktu", desc: "Koszt netto za sztukę na karcie produktu — bez dostępu do pozostałych danych finansowych", group: "Widoczność" },
   { key: "viewProductSales", label: "Sprzedaż na karcie produktu", desc: "Zakładka „Sprzedaż” na karcie produktu: przychód, marża, kanały (wymaga też Dane finansowe)", group: "Widoczność" },
+  { key: "viewLandedCost", label: "Koszt jednostkowy kontenera", desc: "Zakładka „Koszt jednostkowy” na karcie kontenera: cło, fracht i koszt sztuki po odprawie (wymaga też Dane finansowe)", group: "Widoczność" },
+  { key: "editLandedCost", label: "Liczenie kosztu jednostkowego", desc: "Wczytanie odprawy z XML, wpisywanie kwot z faktury spedytora i zapis kosztu na pozycje kontenera", group: "Dane" },
 ];
 
 // Domyślne uprawnienia per rola — nadpisywalne per użytkownik
@@ -46,6 +48,10 @@ export const PERMISSIONS = [
 // viewProductHistory — zakładka „Historia produktu" na karcie. Domyślnie TYLKO ADMIN
 // (wcześniej wyłącznie super-admin — ten dalej widzi ją zawsze, patrz canSeeProductHistory).
 //
+// viewLandedCost / editLandedCost — rozliczenie odprawy na karcie kontenera. Sprawdzaj przez
+// canSeeLandedCost() / canEditLandedCost(): podgląd jest koniunkcyjny z viewFinancials, a edycja
+// leży na wierzchu podglądu. Ktoś z samym podglądem widzi wyliczenia, ale nic nie wpisze.
+//
 // viewPurchasePrice — sama cena zakupu (koszt netto / szt) dla osób BEZ viewFinancials,
 // np. obsługa, która musi znać cenę jednostkową, ale nie ma widzieć przychodów i marż.
 // Sprawdzaj przez canSeePurchasePrice() — viewFinancials i tak ją obejmuje.
@@ -58,9 +64,9 @@ export const PERMISSIONS = [
 // IMPORT/VIEWER dostają je wyłącznie ręcznym ptaszkiem. Sprawdzaj przez canSeeCalendarPayments(),
 // nie przez samo can() — uprawnienie jest koniunkcyjne z viewFinancials.
 export const ROLE_PERMS = {
-  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true,  viewProductHistory: true },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false },
+  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true,  viewProductHistory: true,  viewLandedCost: true,  editLandedCost: true },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
@@ -91,6 +97,11 @@ export const canSeeProductSales = (u) => can(u, "viewProductSales") && can(u, "v
 export const canSeePurchasePrice = (u) => can(u, "viewFinancials") || can(u, "viewPurchasePrice");
 export const canSeeProductHistory = (u) =>
   Boolean(u?.is_super_admin || u?.isSuper) || can(u, "viewProductHistory");
+
+// Rozliczenie odprawy na karcie kontenera. Lustro w security.py →
+// can_view_landed_cost / can_edit_landed_cost. Bez podglądu zakładki nie ma w pasku w ogóle.
+export const canSeeLandedCost = (u) => can(u, "viewLandedCost") && can(u, "viewFinancials");
+export const canEditLandedCost = (u) => canSeeLandedCost(u) && can(u, "editLandedCost");
 
 // Efektywna mapa uprawnień użytkownika (domyślne z roli + override)
 export const effectivePerms = (u) => {
