@@ -239,16 +239,19 @@ def _faktury_lotow(odprawa: Odprawa, loty: Sequence[Dict[str, Any]], towar_lotu:
     faktury = list(odprawa.faktury_dostawcy)
     wynik: Dict[int, "tuple[str, str]"] = {}
     wolne = set(faktury)
-    for lot in loty:
-        nr = _numer(lot.get("order_number"))
-        if len(nr) < 5:
-            continue
-        for fv in sorted(wolne):
-            n_fv = _numer(fv)
-            if nr == n_fv or (len(n_fv) >= 5 and (nr in n_fv or n_fv in nr)):
-                wynik[lot["id"]] = (fv, "numer")
-                wolne.discard(fv)
-                break
+    # Dwa przejścia: najpierw numer identyczny, dopiero potem zawieranie się. Inaczej
+    # zamówienie „CXH20260211" zgarnia fakturę „CXH20260211-1" przed jej właściwym lotem.
+    for dokladnie in (True, False):
+        for lot in loty:
+            nr = _numer(lot.get("order_number"))
+            if len(nr) < 5 or lot["id"] in wynik:
+                continue
+            for fv in sorted(wolne):
+                n_fv = _numer(fv)
+                if nr == n_fv or (not dokladnie and len(n_fv) >= 5 and (nr in n_fv or n_fv in nr)):
+                    wynik[lot["id"]] = (fv, "numer")
+                    wolne.discard(fv)
+                    break
 
     kurs = odprawa.kurs_celny or 1.0
     wart_fv: Dict[str, float] = {}
@@ -293,18 +296,28 @@ def _wybierz_loty(
         lid = meta.get(t.item_id, {}).get("lot_id")
         if lid is not None:
             towar_lotu.setdefault(lid, []).append(t)
-    faktury = _faktury_lotow(odprawa, [l for l in loty if l["id"] in towar_lotu], towar_lotu)
     slug_sad = ((firma_sad or {}).get("slug") or "").lower() or None
     mrn_sad = (odprawa.mrn or "").strip().upper()
 
-    wynik: List[OdprawaLotOut] = []
-    for lot in loty:
+    def stan(lot):
         lista = towar_lotu.get(lot["id"], [])
         firmy = Counter(meta[t.item_id]["firma"] for t in lista)
         firma = firmy.most_common(1)[0][0] if firmy else None
         odprawy = Counter(meta[t.item_id]["odprawa_id"] for t in lista if meta[t.item_id]["odprawa_id"])
         inna = next((oid for oid, _ in odprawy.most_common() if oid != ta_odprawa_id), None)
         mrn_lotu = (lot.get("mrn") or "").strip().upper()
+        wolny = (bool(lista) and not (slug_sad and firma and firma != slug_sad)
+                 and not (mrn_lotu and mrn_sad and mrn_lotu != mrn_sad) and inna is None)
+        return lista, firma, odprawy, inna, mrn_lotu, wolny
+
+    # Faktury dopasowujemy tylko do lotów, które mogą wejść do tego zgłoszenia. Inaczej lot
+    # innej spółki potrafił „zabrać" fakturę: MEDU1028983 — lot AMH z zamówieniem CXH20260211
+    # łapał fakturę Veluxy CXH20260211-1, a lot Veluxy zostawał bez faktury.
+    faktury = _faktury_lotow(odprawa, [l for l in loty if stan(l)[5]], towar_lotu)
+
+    wynik: List[OdprawaLotOut] = []
+    for lot in loty:
+        lista, firma, odprawy, inna, mrn_lotu, _ = stan(lot)
 
         blokada, powod = False, ""
         if not lista:
