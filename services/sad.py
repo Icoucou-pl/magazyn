@@ -41,12 +41,25 @@ from typing import Any, Dict, List, Optional
 # Klucz podziału doliczeń, tak jak zapisuje go WinSAD w RozbijWg.
 KLUCZ_ROZBICIA = {"1": "wartosc", "2": "waga_brutto"}
 
-# Kody doliczeń z pola 44. 031W/032W wchodzą do wartości celnej (a więc do podstawy
-# cła), 071V dolicza się dopiero do podstawy VAT — to koszt już po wejściu do UE.
+# Kody doliczeń z pola 44. Kody 03xW wchodzą do wartości celnej (a więc do podstawy
+# cła): 031W transport, 032W ubezpieczenie, 033W załadunek i obsługa do granicy UE.
+# 071V dolicza się dopiero do podstawy VAT — to koszt już po wejściu do UE.
+#
+# 033W pojawił się przy Dongguanie (MEDU5327848, SAD 1/2): „Container FOB cost" 1050 USD
+# z faktury dostawcy, rozbity po wadze. Bez niego wartość celna żadnej pozycji się nie
+# spinała, a koszt umykał z rachunku.
 KOD_FRACHT = "031W"
 KOD_UBEZPIECZENIE = "032W"
+KOD_ZALADUNEK = "033W"
 KOD_PO_GRANICY = "071V"
-KODY_DO_WARTOSCI_CELNEJ = (KOD_FRACHT, KOD_UBEZPIECZENIE)
+KODY_DO_WARTOSCI_CELNEJ = (KOD_FRACHT, KOD_UBEZPIECZENIE, KOD_ZALADUNEK)
+
+
+def do_wartosci_celnej(kod: Optional[str]) -> bool:
+    """Czy doliczenie zwiększa wartość celną. Znane kody wprost, a nieznane 03xW też —
+    to ta sama rodzina (doliczenia do wartości celnej), więc kontrola i tak je policzy."""
+    kod = (kod or "").upper()
+    return kod in KODY_DO_WARTOSCI_CELNEJ or (kod.startswith("03") and kod.endswith("W"))
 
 
 class BladSAD(ValueError):
@@ -222,7 +235,7 @@ def parsuj(zrodlo: Any) -> Odprawa:
             kod=d.get("KodKorekty"),
             kwota=_f(d.get("WartKorekty")),
             klucz=KLUCZ_ROZBICIA.get(d.get("RozbijWg"), "wartosc"),
-            do_wartosci_celnej=d.get("KodKorekty") in KODY_DO_WARTOSCI_CELNEJ,
+            do_wartosci_celnej=do_wartosci_celnej(d.get("KodKorekty")),
         )
         for d in _dzieci(root, "KorektyZbiorcze")
     ]
@@ -332,7 +345,7 @@ def kontrole(o: Odprawa) -> List[Kontrola]:
                 d.kwota * baza(p) / suma_bazy, p.doliczenia.get(d.kod, 0.0), tol=0.02)
 
     for p in o.pozycje:
-        podstawa = p.wartosc + sum(p.doliczenia.get(k, 0.0) for k in KODY_DO_WARTOSCI_CELNEJ)
+        podstawa = p.wartosc + sum(v for k, v in p.doliczenia.items() if do_wartosci_celnej(k))
         chk(f"Wartość celna poz. {p.nr} odtworzona z pozycji i doliczeń",
             podstawa * o.kurs_celny, p.wartosc_celna_pln, tol=0.5)
         chk(f"Cło poz. {p.nr} = stawka × wartość celna",
