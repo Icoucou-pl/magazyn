@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from collections import Counter
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import text
@@ -962,12 +963,23 @@ async def _pokrycie_lotow(db: AsyncSession, container_id: int, odprawa_id: int) 
         return []
     towar, meta = await _towar(db, [container_id])
     mrn = await _mrn_odpraw(db, list({m["odprawa_id"] for m in meta.values() if m["odprawa_id"]}))
-    wynik: List[OdprawaLotOut] = []
+
+    # Który lot rozliczyła która odprawa — liczone raz, żeby potem dopasować faktury.
+    towar_lotu: Dict[int, List[PozycjaTowaru]] = {}
+    odprawa_lotu: Dict[int, Optional[int]] = {}
     for lot in loty:
         lista = [t for t in towar if meta[t.item_id]["lot_id"] == lot["id"]]
-        firmy = Counter(meta[t.item_id]["firma"] for t in lista)
+        towar_lotu[lot["id"]] = lista
         odprawy = Counter(meta[t.item_id]["odprawa_id"] for t in lista if meta[t.item_id]["odprawa_id"])
-        oid = odprawy.most_common(1)[0][0] if odprawy else None
+        odprawa_lotu[lot["id"]] = odprawy.most_common(1)[0][0] if odprawy else None
+    faktury = await _faktury_zapisanych(db, loty, towar_lotu, odprawa_lotu)
+
+    wynik: List[OdprawaLotOut] = []
+    for lot in loty:
+        lista = towar_lotu[lot["id"]]
+        firmy = Counter(meta[t.item_id]["firma"] for t in lista)
+        oid = odprawa_lotu[lot["id"]]
+        fv = faktury.get(lot["id"])
         wynik.append(OdprawaLotOut(
             lot_id=lot["id"], container_id=container_id, dostawca=lot.get("dostawca"),
             zamowienie=lot.get("order_number"), mrn=lot.get("mrn"),
@@ -977,8 +989,49 @@ async def _pokrycie_lotow(db: AsyncSession, container_id: int, odprawa_id: int) 
             powod=("Rozliczony tą odprawą." if oid == odprawa_id
                    else f"Rozliczony odprawą {mrn.get(oid, oid)}." if oid
                    else "Czeka na zgłoszenie."),
+            faktura=fv[0] if fv else None, dopasowanie=fv[1] if fv else None,
             odprawa_id=oid, odprawa_mrn=mrn.get(oid) if oid else None,
         ))
+    return wynik
+
+
+async def _faktury_zapisanych(
+    db: AsyncSession,
+    loty: Sequence[Dict[str, Any]],
+    towar_lotu: Dict[int, List[PozycjaTowaru]],
+    odprawa_lotu: Dict[int, Optional[int]],
+) -> Dict[int, "tuple[str, str]"]:
+    """Faktura z SAD dla lotów już rozliczonych — z pozycji zapisanej odprawy.
+
+    Pliku SAD po zapisie nie mamy, ale każda pozycja trzyma swoje faktury (N935)
+    i wartość, a to wystarcza _faktury_lotow: najpierw numer zamówienia, potem wartość.
+    Loty dopasowujemy w obrębie ich własnej odprawy, więc lot Veluxy dostaje fakturę
+    z odprawy Veluxy, nawet gdy oglądamy odprawę Acti.
+    """
+    oids = sorted({o for o in odprawa_lotu.values() if o})
+    if not oids:
+        return {}
+    kursy = {r["id"]: float(r["kurs_celny"] or 0) or 1.0 for r in (await db.execute(
+        text("SELECT id, kurs_celny FROM app_odprawy WHERE id = ANY(:ids)"), {"ids": oids},
+    )).mappings().all()}
+    pozycje: Dict[int, List[SimpleNamespace]] = {}
+    for r in (await db.execute(
+        text("SELECT odprawa_id, wartosc, faktury FROM app_odprawa_pozycje "
+             "WHERE odprawa_id = ANY(:ids) ORDER BY odprawa_id, nr"), {"ids": oids},
+    )).mappings().all():
+        pozycje.setdefault(r["odprawa_id"], []).append(SimpleNamespace(
+            wartosc=float(r["wartosc"] or 0),
+            faktury_dostawcy=[f.strip() for f in (r["faktury"] or "").split(",") if f.strip()],
+        ))
+    wynik: Dict[int, "tuple[str, str]"] = {}
+    for oid in oids:
+        poz = pozycje.get(oid, [])
+        faktury_odprawy = list(dict.fromkeys(f for p in poz for f in p.faktury_dostawcy))
+        if not faktury_odprawy:
+            continue
+        odprawa = SimpleNamespace(faktury_dostawcy=faktury_odprawy, pozycje=poz, kurs_celny=kursy.get(oid, 1.0))
+        jej = [l for l in loty if odprawa_lotu.get(l["id"]) == oid]
+        wynik.update(_faktury_lotow(odprawa, jej, towar_lotu))  # type: ignore[arg-type]
     return wynik
 
 
