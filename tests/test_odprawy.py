@@ -553,6 +553,129 @@ def test_clo_pozycji_gratis_liczy_sie_do_cla_a_nie_do_logistyki():
     w = r.pozycje[0]
     assert round(w.razem, 2) == round(1000 * 4.0 + 400.0 + 20.0, 2)
 
+
+# ── Kontener skonsolidowany ─────────────────────────────────────────────────
+# Zgłoszenie budowane z listy pozycji: (wartość USD, masa kg, faktura dostawcy, opis).
+# Odwzorowuje SAD 1/2 konsolidacji Acti CORU2068476 — trzy faktury, a jedna pozycja
+# (próbka) nie ma towaru na kontenerze.
+def _sad_z_pozycji(pozycje, mrn="26PL00000000TEST07"):
+    poz_xml = []
+    for wart, masa, fv, opis in pozycje:
+        poz_xml.append(f"""
+  <PozycjeSADu P35MasaBrutto="{masa}" P38MasaNetto="{masa}" P42WartoscPozycji="{wart}" P47WartCelna="{wart * 4}">
+    <P31ZnakiINumery OpisTowaru="{opis}"><Opakowania RodzOpak="CT" LiczbaOpak="1"/>
+      <Kontenery Numer="TEST8888888"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94029000"/>
+    <P44DodInfo><DokumWymag KodDokum="N935" NrDokum="{fv}"/></P44DodInfo>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>""")
+    suma = sum(p[0] for p in pozycje)
+    masa = sum(p[1] for p in pozycje)
+    return f"""<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-04-15"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="{suma}" P35BruttoZestawu="{masa}" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="{mrn}"/></ZestawySADu>{''.join(poz_xml)}
+</SADUE>"""
+
+
+SAD_KONSOLIDACJA = _sad_z_pozycji([
+    (2000, 200, "FV-A", "LOZKA SZPITALNE"),         # 1: dostawca A
+    (1580, 80, "FV-B", "MATA PLAZOWA"),             # 2: dostawca B
+    (890, 63, "FV-B", "WOZEK ELEKTRYCZNY PROBKA"),  # 3: dostawca B — próbki nie ma na kontenerze
+    (1784, 94, "FV-B", "WOZKI BEZ NAPEDU"),         # 4: dostawca B
+    (2630, 800, "FV-C", "STOLIK PRZYLOZKOWY"),      # 5: dostawca C
+])
+TOWAR_KONSOLIDACJA = [
+    PozycjaTowaru(71, 501, "LOZ", 2, 4000.0, waga_brutto_kg=100.0),
+    PozycjaTowaru(72, 501, "MATA", 1, 6320.0, waga_brutto_kg=80.0),
+    PozycjaTowaru(73, 501, "WPA", 1, 3340.0, waga_brutto_kg=30.0),
+    PozycjaTowaru(74, 501, "WP", 1, 2396.0, waga_brutto_kg=25.0),
+    PozycjaTowaru(75, 501, "KRZ", 1, 1400.0, waga_brutto_kg=39.0),
+    PozycjaTowaru(76, 501, "STOL", 100, 105.2, waga_brutto_kg=8.0),
+]
+FAKTURY_KONSOLIDACJA = {"LOZ": {"FV-A"}, "MATA": {"FV-B"}, "WPA": {"FV-B"}, "WP": {"FV-B"},
+                        "KRZ": {"FV-B"}, "STOL": {"FV-C"}}
+
+
+def test_faktura_dostawcy_zawęża_dopasowanie_do_jej_pozycji():
+    """SKU od dostawcy A nie może trafić do pozycji faktury B, choćby wartość pasowała."""
+    o = parsuj(SAD_KONSOLIDACJA)
+    p = dopasuj(o, TOWAR_KONSOLIDACJA, faktury_sku=FAKTURY_KONSOLIDACJA)
+    assert p[71] == 1, "jedyna pozycja faktury A — tu nie ma czego zgadywać"
+    assert p[76] == 5, "jedyna pozycja faktury C"
+    for item in (72, 73, 74, 75):
+        assert p[item] in (2, 3, 4), f"towar dostawcy B poza pozycjami faktury B: {item} -> {p[item]}"
+
+
+def test_reczna_zmiana_pozycji_nie_wyrzuca_reszty_towaru():
+    """Lista „Pozycja SAD" wysyła tylko przestawione SKU.
+
+    Rachunek brał to za kompletne przypisanie i cała reszta towaru zostawała bez pozycji:
+    bez ceny zakupu, a pozycje SAD szły w gratisy. Ręczna zmiana ma NADPISYWAĆ automat.
+    """
+    o = parsuj(SAD_KONSOLIDACJA)
+    r = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Fracht morski", 100.0, lp=1)],
+               klucz=KLUCZ_WAGA, przypisanie={73: 4}, faktury_sku=FAKTURY_KONSOLIDACJA)
+    assert r.przypisanie[73] == 4, "ręczna zmiana musi zostać"
+    assert all(w.towar > 0 for w in r.pozycje), [w.sku for w in r.pozycje if not w.towar]
+
+
+def test_pelne_przypisanie_z_formularza_nic_nie_przestawia():
+    """Front po każdej zmianie wysyła cały układ — wtedy nic nie ma prawa się ruszyć."""
+    o = parsuj(SAD_KONSOLIDACJA)
+    uklad = {71: 1, 72: 2, 73: 4, 74: 4, 75: 4, 76: 5}
+    r = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Fracht morski", 100.0, lp=1)],
+               klucz=KLUCZ_WAGA, przypisanie=uklad, faktury_sku=FAKTURY_KONSOLIDACJA)
+    assert {k: r.przypisanie[k] for k in uklad} == uklad
+
+
+def test_gratis_idzie_na_towar_z_tej_samej_faktury():
+    """Próbka od dostawcy B obciąża towar B, a nie najdroższy towar całego kontenera."""
+    o = parsuj(SAD_KONSOLIDACJA)
+    uklad = {71: 1, 72: 2, 73: 4, 74: 4, 75: 4, 76: 5}   # pozycja 3 bez towaru
+    r = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Fracht morski", 100.0, lp=1)],
+               klucz=KLUCZ_WAGA, przypisanie=uklad, faktury_sku=FAKTURY_KONSOLIDACJA)
+    assert r.gratisy[3] == 72, f"gratis na MATA (najdroższy towar faktury B), a jest {r.gratisy[3]}"
+    bez = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Fracht morski", 100.0, lp=1)],
+                 klucz=KLUCZ_WAGA, przypisanie=uklad)
+    assert bez.gratisy[3] == 76, "bez faktur zostaje dawna reguła: najdroższy towar odprawy"
+
+
+def test_transport_krajowy_bierze_tylko_udzial_odprawy():
+    """Jedna ciężarówka na kontener — odprawa z 40% wagi niesie 40% transportu."""
+    o = parsuj(SAD_KONSOLIDACJA)
+    uklad = {71: 1, 72: 2, 73: 4, 74: 4, 75: 4, 76: 5}
+    r = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Transport krajowy", 1000.0, waluta="PLN", container_id=501)],
+               klucz=KLUCZ_WAGA, przypisanie=uklad, udzial_kontenera={501: 0.4})
+    assert abs(sum(w.transport_krajowy for w in r.pozycje) - 400.0) < 0.01
+
+
+def test_duza_odprawa_z_dokladnymi_cenami_uklada_sie_poprawnie():
+    """Ścieżka zachłanna: 12 SKU w 6 pozycjach (6^12 układów, ponad limit pełnego przeglądu).
+
+    Wcześniej SKU jeszcze nieułożone liczyły się tak, jakby leżały w pozycji 1, więc
+    pierwsze decyzje szły pod sztucznie przepełnioną pozycję i przy cenach zgodnych
+    z fakturą co do procenta trafiało mniej niż połowa.
+    """
+    wartosci = [(1000, "A"), (2600, "B"), (450, "C"), (5200, "D"), (175, "E"), (3300, "F")]
+    o = parsuj(_sad_z_pozycji([(w, 10, "FV-" + n, "TOWAR " + n) for w, n in wartosci]))
+    # Każda pozycja to dwa SKU o różnych cenach; ceny planowane (PLN) = cena USD × kurs 4.
+    sklad = {1: (600, 400), 2: (1500, 1100), 3: (250, 200), 4: (3000, 2200), 5: (100, 75), 6: (2000, 1300)}
+    towar, prawda, i = [], {}, 200
+    for nr, (a, b) in sklad.items():
+        for usd in (a, b):
+            towar.append(PozycjaTowaru(i, 501, f"S{i}", 1, usd * 4.0))
+            prawda[i] = nr
+            i += 1
+    slady = {}
+    p = dopasuj(o, towar, slady)
+    assert slady["zachlannie"] is True
+    zle = {k: (p[k], v) for k, v in prawda.items() if p[k] != v}
+    assert not zle, zle
+
 if __name__ == "__main__":
     zle = 0
     for nazwa, fn in sorted(globals().items()):
