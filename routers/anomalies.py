@@ -304,8 +304,10 @@ async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: Asy
     anomalies = []
 
     for p in products:
-        prev_3m_total = p.sales_2m * 2 + p.sales_3m * 3 + p.sales_4m * 4 - p.sales_1m
-        prev_avg = max(p.sales_3m, 1)
+        # Średnia z 3 POPRZEDNICH miesięcy (2.–4.), bez bieżącego: sales_4m to średnia
+        # z 4 miesięcy, więc 4×sales_4m − sales_1m = suma miesięcy 2.–4. Porównanie z
+        # sales_3m (która zawiera bieżący miesiąc) tłumiło skoki i spadki.
+        prev_avg = max(round(max(p.sales_4m * 4 - p.sales_1m, 0) / 3, 1), 1)
 
         # SPIKE
         if p.sales_1m >= 5 and p.sales_1m > prev_avg * 1.5:
@@ -313,7 +315,7 @@ async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: Asy
             sev = "high" if change_pct > 100 else "medium"
             anomalies.append(Anomaly(
                 sku=p.sku, name=p.name, severity=sev, type="sales_spike",
-                message=f"Sprzedaż wzrosła z {prev_avg}/mies do {p.sales_1m}/mies (+{change_pct:.0f}%)",
+                message=f"Sprzedaż wzrosła z {prev_avg:g}/mies do {p.sales_1m}/mies (+{change_pct:.0f}%)",
                 sales_1m=p.sales_1m, sales_3m_avg=prev_avg, change_pct=round(change_pct, 1),
             ))
         # DROP
@@ -322,7 +324,7 @@ async def detect_anomalies(shop: str = "", favorites_only: bool = False, db: Asy
             sev = "high" if change_pct < -70 else "medium"
             anomalies.append(Anomaly(
                 sku=p.sku, name=p.name, severity=sev, type="sales_drop",
-                message=f"Sprzedaż spadła z {prev_avg}/mies do {p.sales_1m}/mies ({change_pct:.0f}%)",
+                message=f"Sprzedaż spadła z {prev_avg:g}/mies do {p.sales_1m}/mies ({change_pct:.0f}%)",
                 sales_1m=p.sales_1m, sales_3m_avg=prev_avg, change_pct=round(change_pct, 1),
             ))
         # STOCK DRAIN
