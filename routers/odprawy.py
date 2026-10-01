@@ -173,6 +173,13 @@ async def _firma_kontenera(db: AsyncSession, container_id: int) -> Optional[str]
 # Złożenie podglądu
 # ============================================================
 
+def _kwota(v) -> float:
+    """Liczba z bazy (Decimal albo NULL) jako float. Na poziomie modułu — pomocnik `_f`
+    żyje wewnątrz endpointu odczytu i stąd go nie widać, co przy ponownym wczytaniu
+    zapisanej odprawy kończyło się błędem 500 („Failed to fetch" w przeglądarce)."""
+    return float(v) if v is not None else 0.0
+
+
 async def _zapisane_ustawienia(db: AsyncSession, istniejaca) -> Optional[OdprawaZapisaneOut]:
     """Ustawienia i ceny ręczne z poprzedniego zapisu tej odprawy — albo None.
 
@@ -204,15 +211,15 @@ async def _zapisane_ustawienia(db: AsyncSession, istniejaca) -> Optional[Odprawa
         odprawa_id=istniejaca["id"],
         status=istniejaca["status"] or "szkic",
         klucz_podzialu=istniejaca["klucz_podzialu"],
-        kurs_towaru=_f(istniejaca["kurs_towaru"]) or None,
-        kurs_kosztow=_f(istniejaca["kurs_kosztow"]) or None,
+        kurs_towaru=_kwota(istniejaca["kurs_towaru"]) or None,
+        kurs_kosztow=_kwota(istniejaca["kurs_kosztow"]) or None,
         fv_spedytora=istniejaca["fv_spedytora"],
         fv_spedytora_data=istniejaca["fv_spedytora_data"],
         koszty=[OdprawaLiniaKosztuIn(
-            lp=k["lp"], nazwa=k["nazwa"], kwota=_f(k["kwota"]), waluta=k["waluta"],
-            klucz=k["klucz"], zrodlo=k["zrodlo"], container_id=k["container_id"],
+            lp=k["lp"], nazwa=k["nazwa"] or "", kwota=_kwota(k["kwota"]), waluta=k["waluta"] or "USD",
+            klucz=k["klucz"] or "fizyczny", container_id=k["container_id"],
         ) for k in koszty],
-        ceny_reczne={i["id"]: _f(i["cena_zakupu_waluta"]) for i in itemy
+        ceny_reczne={i["id"]: _kwota(i["cena_zakupu_waluta"]) for i in itemy
                      if i["cena_reczna"] and i["cena_zakupu_waluta"] is not None},
         przypisanie={i["id"]: int(i["odprawa_poz_nr"]) for i in itemy
                      if i["odprawa_poz_nr"] is not None},
