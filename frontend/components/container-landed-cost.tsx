@@ -30,8 +30,16 @@ type PozycjaSad = {
   nr: number; kod_cn: string | null; opis: string; wartosc: number; masa_brutto: number;
   clo_stawka: number; clo_pln: number; vat_stawka: number; vat_metoda: string | null;
   liczba_opakowan: number | null; szt_uzup: number | null; kontenery: string[];
-  item_ids: number[]; gratis_item_id: number | null;
+  item_ids: number[]; gratis_item_id: number | null; faktury?: string[];
 };
+// Kontener skonsolidowany: lot (dostawca) i to, czy obejmuje go ta odprawa.
+type Lot = {
+  lot_id: number; container_id: number; dostawca: string | null; zamowienie: string | null;
+  mrn: string | null; firma: string | null; sku: string[]; sztuk: number;
+  wybrany: boolean; blokada: boolean; faktura: string | null; dopasowanie: string | null;
+  powod: string; odprawa_id: number | null; odprawa_mrn: string | null;
+};
+type OdprawaKontenera = { id: number; mrn: string; data_zgloszenia: string | null; importer: string | null; status: string; pozycji: number };
 type Towar = {
   item_id: number; container_id: number; container_number: string; sku: string; ilosc: number;
   cena_planowana: number; cena_zakupu_waluta: number; towar: number; logistyka: number; clo: number;
@@ -51,6 +59,7 @@ export type Odprawa = {
   fv_spedytora: string | null; fv_spedytora_data: string | null;
   suma_towar: number; suma_logistyka: number; suma_clo: number; narzut_proc: number | null;
   mozna_zapisac: boolean; status: string; zrodlo_erp?: string | null;
+  odprawa_id?: number | null; loty?: Lot[]; odprawy_kontenera?: OdprawaKontenera[];
   zapisane?: {
     odprawa_id: number; status: string; klucz_podzialu: string | null;
     kurs_towaru: number | null; kurs_kosztow: number | null;
@@ -89,17 +98,39 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   const [przypisanie, setPrzypisanie] = useState<Record<number, number>>({});
   const [gratisy, setGratisy] = useState<Record<number, number>>({});
   const [cenyReczne, setCenyReczne] = useState<Record<number, string>>({});
+  // Loty objęte zgłoszeniem (kontener skonsolidowany). null = wybór automatyczny backendu.
+  const [loty, setLoty] = useState<number[] | null>(null);
+  // Która z zapisanych odpraw kontenera jest otwarta. null = ostatnia.
+  const [odprawaId, setOdprawaId] = useState<number | null>(null);
+  const [odswiez, setOdswiez] = useState(0);
+  // Odprawy kontenera i loty czekające na zgłoszenie — pamiętane też wtedy, gdy wrzucamy
+  // kolejny plik, żeby z ekranu wrzucania dało się wrócić do zapisanej odprawy.
+  const [odprawyKont, setOdprawyKont] = useState<OdprawaKontenera[]>([]);
+  const [czekaLotow, setCzekaLotow] = useState(0);
+
+  // Każda odpowiedź backendu niesie listę odpraw kontenera i stan lotów. Pamiętamy je
+  // osobno, żeby pasek odpraw został także na ekranie wrzucania kolejnego pliku.
+  const ustawDane = (z: Odprawa) => {
+    setDane(z);
+    if (z.odprawy_kontenera) setOdprawyKont(z.odprawy_kontenera);
+    // Czeka: lot bez żadnej odprawy i spoza tego, co obejmuje bieżące zgłoszenie.
+    if (z.loty) setCzekaLotow(z.loty.filter((l) => !l.wybrany && l.odprawa_id == null).length);
+  };
+  const ustawDaneRef = useRef(ustawDane);
+  useEffect(() => { ustawDaneRef.current = ustawDane; });
 
   // Zapisana odprawa tego kontenera — jeśli jest, pokazujemy ją bez wrzucania pliku.
   useEffect(() => {
     let zyje = true;
     (async () => {
       try {
-        const z = (await api.get(`/kontenery/${containerId}/odprawa`)) as Odprawa | null;
+        const z = (await api.get(
+          `/kontenery/${containerId}/odprawa${odprawaId ? `?odprawa_id=${odprawaId}` : ""}`,
+        )) as Odprawa | null;
         if (zyje && z) {
           // Odtwarzamy też USTAWIENIA rachunku, nie tylko wynik — bez tego po odświeżeniu
           // pola nagłówka faktury i kursy byłyby puste i trzeba by je wpisywać drugi raz.
-          setDane(z);
+          ustawDaneRef.current(z);
           setKlucz(z.klucz_podzialu === "cbm" ? "cbm" : "waga");
           setKoszty(z.koszty ?? []);
           setFxTowar(z.kurs_towaru != null ? String(z.kurs_towaru) : String(z.kurs_celny || ""));
@@ -111,7 +142,8 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
       finally { if (zyje) setLadowanie(false); }
     })();
     return () => { zyje = false; };
-  }, [containerId]);
+  }, [containerId, odprawaId, odswiez]);
+
 
   // Ustawienia trzymamy też w ref. Handler zdarzenia pamięta stan z renderu, w którym
   // powstał, więc „zmień pole i od razu przelicz" wysyłało wartości SPRZED zmiany:
@@ -130,12 +162,13 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     koszty,
     przypisanie,
     gratisy,
+    loty,
     ceny_reczne: Object.fromEntries(
       Object.entries(cenyReczne)
         .filter(([, v]) => v !== "" && !Number.isNaN(liczba(v)))
         .map(([k, v]) => [k, liczba(v)]),
     ),
-  }), [klucz, fxTowar, fxKoszty, fvNr, fvData, koszty, przypisanie, gratisy, cenyReczne]);
+  }), [klucz, fxTowar, fxKoszty, fvNr, fvData, koszty, przypisanie, gratisy, cenyReczne, loty]);
 
   ustawieniaRef.current = ustawienia();
 
@@ -147,7 +180,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
       fd.append("ustawienia", JSON.stringify({ ...ustawieniaRef.current, ...nadpisz }));
       const url = `/kontenery/${containerId}/odprawa${zapis ? "" : "/podglad"}`;
       const z = (await api.post(url, fd)) as Odprawa;
-      setDane(z);
+      ustawDaneRef.current(z);
       setPlik(f);
       // Wypełniamy TYLKO puste pola — z poprzedniego zapisu tej odprawy, jeśli jakiś był.
       // Dzięki temu dołożenie faktury spedytora kilka dni później nie znaczy przepisywania
@@ -189,7 +222,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     if (pierwszy.current) { pierwszy.current = false; return; }
     const t = setTimeout(() => { void wyslijRef.current(plik, false); }, 500);
     return () => clearTimeout(t);
-  }, [plik, klucz, koszty, fxTowar, fxKoszty, przypisanie, gratisy, cenyReczne]);
+  }, [plik, klucz, koszty, fxTowar, fxKoszty, przypisanie, gratisy, cenyReczne, loty]);
 
   const wybierz = (f: File | null | undefined) => {
     if (!f) return;
@@ -198,6 +231,54 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   };
 
   const zapisz = () => { if (plik) void wyslij(plik, true); };
+
+  // Wyjście z bieżącego zgłoszenia: do wrzucenia pliku albo do innej zapisanej odprawy.
+  // Ręczne poprawki są kluczowane po item_id, a te potrafią się powtórzyć w innym
+  // zgłoszeniu — zostawione przykleiłyby się do cudzej pozycji. Czyścimy wszystko.
+  const wyczysc = () => {
+    setDane(null); setPlik(null); setKoszty([]);
+    setCenyReczne({}); setPrzypisanie({}); setGratisy({}); setLoty(null);
+    setFvNr(""); setFvData(""); setFxTowar(""); setFxKoszty("");
+    odtworzone.current = false; pierwszy.current = true;
+  };
+  const otworzOdprawe = (id: number) => { wyczysc(); setLadowanie(true); setOdprawaId(id); setOdswiez((n) => n + 1); };
+
+  // Pasek odpraw kontenera. Nie liczymy „ile będzie zgłoszeń" — pokazujemy, które są
+  // zapisane i czy na kontenerze został towar bez zgłoszenia.
+  const pasekOdpraw = (odprawyKont.length > 1 || (odprawyKont.length > 0 && czekaLotow > 0) || (!dane && odprawyKont.length > 0)) ? (
+    <div style={{ ...karta, padding: "10px 14px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)", marginRight: 4 }}>
+        Odprawy kontenera
+      </span>
+      {odprawyKont.map((o) => {
+        const aktywna = !!dane && dane.odprawa_id === o.id && !plik;
+        return (
+          <button key={o.id} onClick={() => otworzOdprawe(o.id)} disabled={aktywna}
+            style={{ ...chip, ...(aktywna ? chipOn : {}) }} title={o.importer ?? ""}>
+            <span className="mono" style={{ fontSize: 11.5 }}>{o.mrn}</span>
+            <span style={{ fontSize: 10.5, color: "var(--text-lo)" }}>{o.data_zgloszenia ?? ""} · {o.pozycji} poz.</span>
+          </button>
+        );
+      })}
+      {czekaLotow > 0 && (
+        <span style={{ ...tag, ...ostrzStyl, fontSize: 10 }}>
+          {czekaLotow === 1 ? "1 lot czeka na zgłoszenie" : `${czekaLotow} loty czekają na zgłoszenie`}
+        </span>
+      )}
+      {canEdit && dane && !plik && (
+        <button onClick={wyczysc} style={{ ...btnSec, marginLeft: "auto" }}>Wczytaj kolejne zgłoszenie</button>
+      )}
+    </div>
+  ) : null;
+
+  const przelaczLot = (id: number) => {
+    if (!dane?.loty) return;
+    setLoty((prev) => {
+      const zbior = new Set(prev ?? dane.loty!.filter((l) => l.wybrany).map((l) => l.lot_id));
+      if (zbior.has(id)) zbior.delete(id); else zbior.add(id);
+      return Array.from(zbior);
+    });
+  };
 
   const zmienKoszt = (idx: number, kwota: string) => {
     setKoszty((k) => k.map((l, i) => (i === idx ? { ...l, kwota: liczba(kwota) || 0 } : l)));
@@ -209,6 +290,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   if (!dane) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {pasekOdpraw}
         {blad && <Komunikat poziom="blad" tresc={blad} />}
         {canEdit ? (
           <div
@@ -220,7 +302,9 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
               background: drag ? "var(--accent-soft)" : "var(--surface-1)", padding: "44px 20px", textAlign: "center",
             }}
           >
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Nie ma jeszcze rachunku dla tej odprawy</div>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
+              {odprawyKont.length ? "Wczytaj kolejne zgłoszenie tego kontenera" : "Nie ma jeszcze rachunku dla tej odprawy"}
+            </div>
             <p style={{ margin: "0 auto", maxWidth: "58ch", fontSize: 12.5, color: "var(--text-lo)", lineHeight: 1.6 }}>
               Wrzuć plik XML zgłoszenia celnego z maila od agencji. Aplikacja odczyta z niego pozycje,
               cło i doliczenia. Plik nie trafi do załączników kontenera.
@@ -244,6 +328,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {pasekOdpraw}
       {blad && <Komunikat poziom="blad" tresc={blad} />}
 
       {/* Nagłówek odprawy */}
@@ -260,12 +345,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
             {zapisany ? "zapisana" : bledy.length ? `${bledy.length} do poprawy` : "gotowa do zapisu"}
           </span>
           {canEdit && (
-            <button onClick={() => {
-              // Ręczne poprawki są kluczowane po item_id, a te potrafią się powtórzyć w innym
-              // zgłoszeniu — zostawione przykleiłyby się do cudzej pozycji. Czyścimy wszystko.
-              setDane(null); setPlik(null); setKoszty([]);
-              setCenyReczne({}); setPrzypisanie({}); setGratisy({}); odtworzone.current = false;
-            }} style={btnSec}>
+            <button onClick={wyczysc} style={btnSec}>
               {zapisany ? "Wczytaj ponownie" : "Zmień plik"}
             </button>
           )}
@@ -295,6 +375,54 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
         </div>
       )}
 
+      {!!dane.loty?.length && (
+        <div style={karta}>
+          <Naglowek tytul={zapisany ? "Loty kontenera" : "Loty objęte tym zgłoszeniem"}
+            hint={zapisany ? "który towar rozliczyła ta odprawa, a który czeka na swoje zgłoszenie"
+              : "koszt liczymy tylko dla zaznaczonych — reszta kontenera czeka na swoją odprawę"} />
+          <div style={{ overflowX: "auto" }}>
+            <table style={tabela}>
+              <thead><tr>
+                {!zapisany && <Th l>{""}</Th>}<Th l>Dostawca</Th><Th l>SKU</Th><Th>Szt.</Th><Th l>Firma</Th>
+                <Th l>Faktura w SAD</Th><Th l>{zapisany ? "Stan" : "Skąd wiemy"}</Th>
+              </tr></thead>
+              <tbody>
+                {dane.loty.map((l) => (
+                  <tr key={l.lot_id} style={{ opacity: l.wybrany ? 1 : 0.6 }}>
+                    {!zapisany && (
+                      <td style={{ ...td, textAlign: "left", width: 28 }}>
+                        <input type="checkbox" checked={l.wybrany} aria-label={`Lot ${l.dostawca ?? l.lot_id}`}
+                          disabled={!canEdit || busy || (l.blokada && !l.wybrany)}
+                          onChange={() => przelaczLot(l.lot_id)} style={{ accentColor: "var(--accent)" }} />
+                      </td>
+                    )}
+                    <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>
+                      {l.dostawca ?? "—"}
+                      {l.zamowienie && <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--text-lo)", fontFamily: "var(--font-mono)" }}>{l.zamowienie}</div>}
+                    </td>
+                    <td style={{ ...td, textAlign: "left", whiteSpace: "normal", maxWidth: 320 }}>
+                      <span className="mono" style={{ fontSize: 11.5 }}>{l.sku.join(", ")}</span>
+                    </td>
+                    <td style={{ ...td, fontFamily: "var(--font-mono)" }}>{l.sztuk}</td>
+                    <td style={{ ...td, textAlign: "left" }}>
+                      {l.firma && <span style={{ ...tag, ...(l.blokada && !zapisany ? zlyStyl : infoStyl) }}>{l.firma.toUpperCase()}</span>}
+                    </td>
+                    <td style={{ ...td, textAlign: "left", fontFamily: "var(--font-mono)", fontSize: 11.5 }}>{l.faktura ?? "—"}</td>
+                    <td style={{ ...td, textAlign: "left", whiteSpace: "normal", fontSize: 11.5, color: "var(--text-mid)", maxWidth: 340 }}>
+                      {zapisany
+                        ? (l.wybrany ? <span style={{ ...tag, ...okStyl }}>TA ODPRAWA</span>
+                          : l.odprawa_id ? <span>odprawa <span className="mono">{l.odprawa_mrn}</span></span>
+                          : <span style={{ ...tag, ...ostrzStyl }}>CZEKA NA ZGŁOSZENIE</span>)
+                        : l.powod}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {dane.uwagi.map((u, i) => <Komunikat key={i} poziom={u.poziom} tresc={u.tresc} szczegol={u.szczegol} />)}
 
       {/* Pozycje SAD i przypisany towar */}
@@ -317,6 +445,11 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                       <td colSpan={3} style={{ ...td, textAlign: "left", whiteSpace: "normal" }}>
                         <b>Poz. {p.nr}</b> <span className="mono" style={{ color: "var(--text-lo)", fontSize: 11 }}>{p.kod_cn}</span>{" "}
                         <span style={{ color: "var(--text-mid)", fontSize: 11.5 }}>{p.opis.slice(0, 90)}</span>
+                        {!!p.faktury?.length && (
+                          <span className="mono" style={{ marginLeft: 8, fontSize: 10.5, color: "var(--text-lo)" }}>
+                            FV {p.faktury.join(", ")}
+                          </span>
+                        )}
                       </td>
                       <td style={td} />
                       <td style={{ ...td, fontFamily: "var(--font-mono)" }}>{pl(p.wartosc)}</td>
@@ -382,7 +515,20 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                         {canEdit && (
                           <td style={{ ...td, textAlign: "left" }}>
                             <select value={przypisanie[t.item_id] ?? t.poz_sad ?? ""} style={select}
-                              onChange={(e) => setPrzypisanie((p2) => ({ ...p2, [t.item_id]: Number(e.target.value) }))}>
+                              onChange={(e) => {
+                                // Zamrażamy cały bieżący układ i dopiero na nim zmieniamy jedno SKU.
+                                // Sama zmiana przestawiała resztę: automat układał ją od nowa wokół
+                                // poprawionej pozycji i SKU skakały po tabeli przy każdej poprawce.
+                                const nr = Number(e.target.value);
+                                setPrzypisanie((p2) => {
+                                  const caly: Record<number, number> = {};
+                                  for (const x of dane.towar) {
+                                    const v = p2[x.item_id] ?? x.poz_sad;
+                                    if (v) caly[x.item_id] = v;
+                                  }
+                                  return { ...caly, [t.item_id]: nr };
+                                });
+                              }}>
                               {dane.pozycje.map((q) => <option key={q.nr} value={q.nr}>poz. {q.nr} · {q.kod_cn}</option>)}
                             </select>
                           </td>
@@ -618,6 +764,11 @@ const segBtn: React.CSSProperties = { border: 0, background: "transparent", colo
 const segOn: React.CSSProperties = { background: "var(--accent)", color: "var(--accent-ink, #201400)" };
 const plakietka: React.CSSProperties = { fontSize: 10.5, fontWeight: 600, padding: "3px 10px", borderRadius: 999, whiteSpace: "nowrap" };
 const tag: React.CSSProperties = { fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", padding: "2px 6px", borderRadius: 4 };
+const chip: React.CSSProperties = {
+  display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 1, padding: "6px 10px",
+  border: "1px solid var(--border)", borderRadius: 7, background: "var(--surface-1)", cursor: "pointer", font: "inherit",
+};
+const chipOn: React.CSSProperties = { borderColor: "var(--accent)", background: "var(--accent-soft)", cursor: "default" };
 const okStyl = { background: "var(--ok-soft)", color: "var(--ok)" };
 const ostrzStyl = { background: "var(--warning-soft)", color: "var(--warning)" };
 const zlyStyl = { background: "var(--critical-soft)", color: "var(--critical)" };
