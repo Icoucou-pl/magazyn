@@ -470,14 +470,20 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                             Brak tej pozycji w kontenerach — cło i logistyka trafią na:{" "}
                           </span>
                           {canEdit ? (
-                            <select value={gratisy[p.nr] ?? p.gratis_item_id ?? ""} style={select}
+                            // 0 = rozłóż na cały towar z tej samej faktury dostawcy (domyślnie).
+                            <select value={gratisy[p.nr] ?? p.gratis_item_id ?? 0} style={select}
                               onChange={(e) => setGratisy((g) => ({ ...g, [p.nr]: Number(e.target.value) }))}>
+                              <option value={0}>
+                                {p.faktury?.length ? `cały towar z faktury ${p.faktury.join(", ")} (po wartości)` : "cały towar odprawy (po wartości)"}
+                              </option>
                               {dane.towar.map((t) => (
-                                <option key={t.item_id} value={t.item_id}>{t.sku} ({t.container_number})</option>
+                                <option key={t.item_id} value={t.item_id}>tylko {t.sku} ({t.container_number})</option>
                               ))}
                             </select>
                           ) : (
-                            <b>{dane.towar.find((t) => t.item_id === p.gratis_item_id)?.sku ?? "—"}</b>
+                            <b>{p.gratis_item_id
+                              ? dane.towar.find((t) => t.item_id === p.gratis_item_id)?.sku ?? "—"
+                              : p.faktury?.length ? `cały towar z faktury ${p.faktury.join(", ")}` : "cały towar odprawy"}</b>
                           )}
                         </td>
                       </tr>
