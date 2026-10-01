@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import OperationalError, InterfaceError
 
 import audit
-from audit_opisy import f_bool, f_data, f_kwota, f_num, f_status, f_txt, f_zl, plural
+from audit_opisy import (etykieta_kontenera, f_bool, f_data, f_kwota, f_nr_kontenera, f_num, f_status,
+                         f_txt, f_zl, plural)
 from config import settings
 from database import get_db, SessionLocal
 from models import (
@@ -531,7 +532,7 @@ async def get_container(cid: int, db: AsyncSession = Depends(get_db), user: Curr
 # Dziennik audytu: stan kontenera przed i po zmianie
 # ============================================================
 POLA_KONTENERA = {
-    "container_number": ("Numer kontenera", f_txt),
+    "container_number": ("Numer kontenera", f_nr_kontenera),
     "status": ("Status", f_status),
     "manufacturer": ("Producent", f_txt),
     "typ": ("Typ kontenera", f_txt),
@@ -589,6 +590,11 @@ async def _stan_do_audytu(db: AsyncSession, cid: int) -> Optional[dict]:
         f"WHERE container_id = :id GROUP BY sku"
     ), {"id": cid})).all()
     d["_pozycje"] = {r.sku: int(r.q or 0) for r in poz}
+    fv_lotu = (await db.execute(text(
+        f"SELECT order_number FROM {settings.TABLE_CONTAINER_LOTS} "
+        f"WHERE container_id = :id AND NULLIF(TRIM(order_number), '') IS NOT NULL ORDER BY position, id LIMIT 1"
+    ), {"id": cid})).scalar()
+    d["_fv"] = (d.get("order_number") or "").strip() or fv_lotu
     return d
 
 
@@ -607,8 +613,8 @@ def _zmiany_pozycji(stare: dict, nowe: dict) -> List[dict]:
 
 
 def _nazwa_kontenera(d: Optional[dict], cid: int) -> str:
-    nr = (d or {}).get("container_number")
-    return f"{nr} (#{cid})" if nr else f"#{cid}"
+    d = d or {}
+    return etykieta_kontenera(d.get("container_number"), d.get("_fv"), cid)
 
 
 @router.post("/containers", response_model=ContainerOut, status_code=201)
@@ -892,7 +898,13 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
     po = await _stan_do_audytu(db, cid)
     if przed and po:
         ch = audit.zmiany(przed, po, POLA_KONTENERA) + _zmiany_pozycji(przed["_pozycje"], po["_pozycje"])
-        audit.note_zmiany(f"kontenera {_nazwa_kontenera(po, cid)}", ch, resource_id=cid)
+        nadany = next((c for c in ch if c["pole"] == "Numer kontenera" and c["bylo"] == "—"), None)
+        if nadany and len(ch) == 1:
+            # Pierwszy prawdziwy numer w miejsce roboczego — mówimy, któremu kontenerowi (po FV).
+            audit.note(f"nadał numer {nadany['jest']} kontenerowi {_nazwa_kontenera(przed, cid)}",
+                       changes=ch, resource_id=cid)
+        else:
+            audit.note_zmiany(f"kontenera {_nazwa_kontenera(po, cid)}", ch, resource_id=cid)
     return await get_container_by_id(db, cid)
 
 
@@ -939,9 +951,7 @@ async def set_subiekt_wbite(cid: int, payload: SubiektWbiteIn, db: AsyncSession 
             {"v": payload.value, "cid": cid},
         )
     await db.commit()
-    nr = (await db.execute(text(f"SELECT container_number FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
-                           {"id": cid})).scalar()
-    gdzie = f"kontenera {nr or '#' + str(cid)}" + (f" (lot #{payload.lot_id})" if payload.lot_id is not None else "")
+    gdzie = f"kontenera {await audit.nazwa_kontenera(db, cid)}" + (f" (lot #{payload.lot_id})" if payload.lot_id is not None else "")
     audit.note(f"oznaczył towar {gdzie} jako dodany do Subiektu" if payload.value
                else f"cofnął znacznik „dodano do Subiektu” {gdzie}",
                changes=[{"pole": "Dodano do Subiektu", "bylo": f_bool(not payload.value), "jest": f_bool(payload.value)}],
@@ -996,9 +1006,8 @@ async def add_attachment(cid: int, file: UploadFile = File(...), user: CurrentUs
                 r = await db.execute(sql, params)
                 row = r.first()
                 await db.commit()
-                nr = (await db.execute(text(f"SELECT container_number FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
-                                       {"id": cid})).scalar()
-                audit.note(f"dodał załącznik „{fname}” ({fsize}) do kontenera {nr or '#' + str(cid)}", resource_id=cid)
+                audit.note(f"dodał załącznik „{fname}” ({fsize}) do kontenera {await audit.nazwa_kontenera(db, cid)}",
+                           resource_id=cid)
                 return AttachmentOut(id=row.id, filename=fname, file_type=ftype, file_size=fsize, uploaded_at=row.uploaded_at)
         except (OperationalError, InterfaceError) as e:
             last_err = e
@@ -1029,12 +1038,11 @@ async def download_attachment(aid: int, db: AsyncSession = Depends(get_db), user
 @router.delete("/attachments/{aid}", status_code=204)
 async def delete_attachment(aid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     zal = (await db.execute(text(
-        f"SELECT a.filename, a.container_id, c.container_number FROM {settings.TABLE_ATTACHMENTS} a "
-        f"LEFT JOIN {settings.TABLE_CONTAINERS} c ON c.id = a.container_id WHERE a.id = :id"
+        f"SELECT filename, container_id FROM {settings.TABLE_ATTACHMENTS} WHERE id = :id"
     ), {"id": aid})).mappings().first()
     if zal:
         audit.note(f"usunął załącznik „{zal['filename']}” z kontenera "
-                   f"{zal['container_number'] or '#' + str(zal['container_id'])}", resource_id=zal["container_id"])
+                   f"{await audit.nazwa_kontenera(db, zal['container_id'])}", resource_id=zal["container_id"])
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_ATTACHMENTS} WHERE id = :id"), {"id": aid})
     await db.commit()
     if r.rowcount == 0:

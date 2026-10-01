@@ -202,6 +202,19 @@ def zmiany(stare: Optional[dict], nowe: dict, pola: dict) -> List[dict]:
     return out
 
 
+async def nazwa_kontenera(db, cid: int) -> str:
+    """Nr kontenera, a dopóki jest roboczy „Draft-…” — nr FV (w konsolidacji FV pierwszego lotu)."""
+    r = (await db.execute(text(f"""
+        SELECT c.container_number,
+               COALESCE(NULLIF(TRIM(c.order_number), ''),
+                        (SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
+                          WHERE l.container_id = c.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
+                          ORDER BY l.position, l.id LIMIT 1)) AS fv
+        FROM {settings.TABLE_CONTAINERS} c WHERE c.id = :id
+    """), {"id": cid})).mappings().first()
+    return opisy.etykieta_kontenera(r["container_number"] if r else None, r["fv"] if r else None, cid)
+
+
 def ile_pol(lista: List[dict]) -> str:
     n = len(lista)
     return f"{n} {opisy.plural(n, 'pole', 'pola', 'pól')}"

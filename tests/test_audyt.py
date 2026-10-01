@@ -62,3 +62,11 @@ def test_formatery():
     assert o.plural(1, "pole", "pola", "pól") == "pole"
     assert o.plural(3, "pole", "pola", "pól") == "pola"
     assert o.plural(12, "pole", "pola", "pól") == "pól"
+
+
+def test_kontener_bez_numeru_to_nr_fv_nigdy_draft():
+    assert o.etykieta_kontenera("MSKU7345120", "SK2605042", 7) == "MSKU7345120"
+    assert o.etykieta_kontenera("Draft-Youngcoln3", "SK2605042", 7) == "FV SK2605042"
+    assert o.etykieta_kontenera("Draft-Youngcoln3", None, 7) == "#7"
+    assert o.f_nr_kontenera("Draft-Youngcoln3") == "—"
+    assert o.f_nr_kontenera("MSKU7345120") == "MSKU7345120"

@@ -104,6 +104,24 @@ def f_status_produktu(v) -> str:
     return STATUSY_PRODUKTU.get(v, f_txt(v))
 
 
+def _robocze(nr) -> bool:
+    return bool(nr) and str(nr).strip().lower().startswith("draft-")
+
+
+def f_nr_kontenera(v) -> str:
+    """Roboczy „Draft-…” to brak numeru — w dzienniku go nie pokazujemy."""
+    return PUSTE if _robocze(v) else f_txt(v)
+
+
+def etykieta_kontenera(nr: Optional[str], fv: Optional[str], cid) -> str:
+    """Jak containerSlug na froncie: prawdziwy nr kontenera, inaczej nr FV, inaczej #id."""
+    nr = (nr or "").strip()
+    if nr and not _robocze(nr):
+        return nr
+    fv = (fv or "").strip()
+    return f"FV {fv}" if fv else f"#{cid}"
+
+
 ROLE = {"ADMIN": "Admin", "IMPORT": "Import", "VIEWER": "Viewer"}
 
 # Etykiety jak w frontend/lib/permissions.js — dziennik ma mówić tym samym językiem co UI.

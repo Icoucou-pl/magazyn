@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from audit import log_audit
+from audit import log_audit, nazwa_kontenera
 from audit_opisy import f_data, f_kwota
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
@@ -399,8 +399,7 @@ async def move_payment_termin(
 
     await db.commit()
 
-    nr = (await db.execute(text(f"SELECT container_number FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
-                           {"id": payload.container_id})).scalar()
+    nr = await nazwa_kontenera(db, payload.container_id)
     await log_audit(
         db, user, "MOVE_PAYMENT_TERMIN", "payment", res_id,
         details=(f"{kind} {kwota} {waluta or 'USD'} · termin "
@@ -408,7 +407,7 @@ async def move_payment_termin(
                  f"{payload.termin.isoformat() if payload.termin else 'brak'} "
                  f"(kontener {payload.container_id})"),
         message=(f"przesunął termin płatności ({kind}, {f_kwota(waluta or 'USD')(kwota)}) kontenera "
-                 f"{nr or '#' + str(payload.container_id)}: {f_data(old_termin)} → {f_data(payload.termin)}"),
+                 f"{nr}: {f_data(old_termin)} → {f_data(payload.termin)}"),
         changes=[{"pole": "Termin płatności", "bylo": f_data(old_termin), "jest": f_data(payload.termin)}],
     )
 
