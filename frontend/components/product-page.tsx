@@ -15,6 +15,8 @@
 //                  (canSeeProductSales: viewProductSales ORAZ viewFinancials)
 //   • Historia produktu — bez zmian względem modala (super-admin + SKU z historią)
 //   • Dane       — atrybuty, zdjęcia, wymiary; strefa usuwania dla super-admina
+//   • Cena       — koszt FIFO / średni z kontenerów, dostawy, kalkulator ceny sprzedaży
+//                  (canSeeProductPrice: viewProductPrice ORAZ viewFinancials)
 //
 // Klocki są WSPÓLNE z modalem (eksporty z product-modal.tsx i finance.tsx),
 // więc obie drogi pokazują te same liczby tak samo policzone.
@@ -42,15 +44,16 @@ import ManufacturerModal from "./manufacturer-modal";
 import Breadcrumbs, { type Trail } from "./breadcrumbs";
 import { containerSlug } from "@/lib/routes";
 import LifecycleTabV2 from "./product-lifecycle-v2";
+import ProductPriceTab from "./product-price-tab";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { ProductThumb } from "./photo-hover";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
-import { can, canSeeProductHistory, canSeeProductSales, canSeePurchasePrice, useUser } from "@/lib/permissions";
+import { can, canSeeProductHistory, canSeeProductPrice, canSeeProductSales, canSeePurchasePrice, useUser } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
-export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane";
+export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "cena";
 
 // Prognoza na pełnej karcie: 180 dni z modala + 90. Endpoint przyjmuje dowolne `days`.
 const HORYZONT_DNI = 270;
@@ -60,6 +63,7 @@ const TAB_LABELS: Record<ProductTab, string> = {
   sprzedaz: "Sprzedaż",
   historia: "Historia produktu",
   dane: "Dane",
+  cena: "Cena",
 };
 
 function czytajTabZAdresu(): ProductTab | null {
@@ -99,6 +103,7 @@ export default function ProductPage({
   const showFin = can(user, "viewFinancials");
   const canEditProducts = can(user, "editProducts");
   const salesAllowed = canSeeProductSales(user);
+  const priceAllowed = canSeeProductPrice(user);
   // Cena jednostkowa w nagłówku: finanse ALBO osobne „Cena zakupu produktu" —
   // są osoby, które mają znać koszt sztuki, ale nie przychody i marże.
   const showPrice = canSeePurchasePrice(user);
@@ -282,8 +287,9 @@ export default function ProductPage({
     if (salesAllowed) out.push("sprzedaz");
     if (historyAllowed && hasHistory) out.push("historia");
     out.push("dane");
+    if (priceAllowed) out.push("cena");
     return out;
-  }, [salesAllowed, historyAllowed, hasHistory]);
+  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed]);
 
   // Zakładka z linku, do której ktoś nie ma dostępu (albo historia, której
   // SKU nie ma) → Logistyka. Dla historii czekamy na odpowiedź sondy.
@@ -571,6 +577,14 @@ export default function ProductPage({
 
         {tab === "historia" && historyAllowed && hasHistory && (
           <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />
+        )}
+
+        {tab === "cena" && priceAllowed && (
+          <ProductPriceTab
+            sku={product.sku}
+            shop={shop}
+            onOpenContainer={onOpenContainerPage}
+          />
         )}
 
         {tab === "dane" && (

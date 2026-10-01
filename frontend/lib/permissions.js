@@ -33,6 +33,8 @@ export const PERMISSIONS = [
   { key: "viewProductSales", label: "Sprzedaż na karcie produktu", desc: "Zakładka „Sprzedaż” na karcie produktu: przychód, marża, kanały (wymaga też Dane finansowe)", group: "Widoczność" },
   { key: "viewLandedCost", label: "Koszt jednostkowy kontenera", desc: "Zakładka „Koszt jednostkowy” na karcie kontenera: cło, fracht i koszt sztuki po odprawie (wymaga też Dane finansowe)", group: "Widoczność" },
   { key: "editLandedCost", label: "Liczenie kosztu jednostkowego", desc: "Wczytanie odprawy z XML, wpisywanie kwot z faktury spedytora i zapis kosztu na pozycje kontenera", group: "Dane" },
+  { key: "viewProductPrice", label: "Cena na karcie produktu", desc: "Zakładka „Cena” na karcie produktu: koszt FIFO i średni z kontenerów, dostawy, kalkulator ceny (wymaga też Dane finansowe)", group: "Widoczność" },
+  { key: "editProductPrice", label: "Zapis sugerowanej ceny", desc: "Zapisywanie ceny dla sklepów i dropów w zakładce „Cena”", group: "Dane" },
 ];
 
 // Domyślne uprawnienia per rola — nadpisywalne per użytkownik
@@ -64,9 +66,9 @@ export const PERMISSIONS = [
 // IMPORT/VIEWER dostają je wyłącznie ręcznym ptaszkiem. Sprawdzaj przez canSeeCalendarPayments(),
 // nie przez samo can() — uprawnienie jest koniunkcyjne z viewFinancials.
 export const ROLE_PERMS = {
-  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true,  viewProductHistory: true,  viewLandedCost: true,  editLandedCost: true },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false },
+  ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true,  viewProductHistory: true,  viewLandedCost: true,  editLandedCost: true,  viewProductPrice: true,  editProductPrice: true },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false, viewProductPrice: false, editProductPrice: false },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false, viewProductPrice: false, editProductPrice: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
@@ -102,6 +104,11 @@ export const canSeeProductHistory = (u) =>
 // can_view_landed_cost / can_edit_landed_cost. Bez podglądu zakładki nie ma w pasku w ogóle.
 export const canSeeLandedCost = (u) => can(u, "viewLandedCost") && can(u, "viewFinancials");
 export const canEditLandedCost = (u) => canSeeLandedCost(u) && can(u, "editLandedCost");
+
+// Zakładka „Cena" na karcie produktu. Lustro w security.py →
+// can_view_product_price / can_edit_product_price. Zapis leży na wierzchu podglądu.
+export const canSeeProductPrice = (u) => can(u, "viewProductPrice") && can(u, "viewFinancials");
+export const canEditProductPrice = (u) => canSeeProductPrice(u) && can(u, "editProductPrice");
 
 // Efektywna mapa uprawnień użytkownika (domyślne z roli + override)
 export const effectivePerms = (u) => {
