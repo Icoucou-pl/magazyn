@@ -45,7 +45,6 @@ import Breadcrumbs, { type Trail } from "./breadcrumbs";
 import { containerSlug } from "@/lib/routes";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 import ProductPriceTab from "./product-price-tab";
-import VatCard from "./product-vat-card";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { ProductThumb } from "./photo-hover";
 import { api } from "@/lib/api";
@@ -593,7 +592,6 @@ export default function ProductPage({
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
               <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} onPhotosChanged={refreshProduct} />
               <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
-              <VatCard sku={product.sku} shop={shop} />
             </div>
             {delChk && (
               <DeleteZone

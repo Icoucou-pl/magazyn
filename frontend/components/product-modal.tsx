@@ -26,6 +26,7 @@ import { fmtPLN, fmtNum } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
 import LifecycleTabV2 from "./product-lifecycle-v2";
+import VatRow from "./product-vat-row";
 
 export type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
@@ -1124,6 +1125,7 @@ export function AttributesCard({
   // tylko przy finansach — backend (PUT attrs) i tak przyjmuje ją wyłącznie
   // od viewFinancials, więc osoba z samym podglądem widzi ją tylko do odczytu.
   const showPrice = canSeePurchasePrice(user);
+  const { shop } = useShop();
   const init = () => ({
     nazwa: product.name_override_manual ?? "",
     ean: product.ean ?? "",
@@ -1193,7 +1195,7 @@ export function AttributesCard({
         <AttrInput label="Kod CN" value={draft.kodCn || (editing ? "" : "—")} editing={editing} mono
           placeholder="94029000" onChange={(v) => setDraft({ ...draft, kodCn: v })} />
         <div style={attrRowStyle}>
-          <span style={attrLabelStyle}>Cena zakupu</span>
+          <span style={attrLabelStyle}>Cena zakupu netto</span>
           {!showPrice ? (
             <span className="num" style={{ fontSize: 12, color: "var(--text-mid)", fontWeight: 500 }}>•••••</span>
           ) : editing && showFin ? (
@@ -1221,6 +1223,7 @@ export function AttributesCard({
             </span>
           )}
         </div>
+        <VatRow sku={product.sku} shop={shop} editing={editing} rowStyle={attrRowStyle} labelStyle={attrLabelStyle} />
         <AttrSelect label="Producent (dostawca)" value={draft.mfrId} editing={editing} onChange={(v) => setDraft({ ...draft, mfrId: v })} options={mfrOptions}
           renderDisplay={() => (curMfr ? <MfrChip name={curMfr.name} color={curMfr.color} size="sm" /> : <span style={{ color: "var(--text-disabled)" }}>—</span>)} />
         <AttrSelect label="Firma (magazyn źródłowy)" value={draft.firmaId} editing={editing} onChange={(v) => setDraft({ ...draft, firmaId: v })} options={firmaOptions}
