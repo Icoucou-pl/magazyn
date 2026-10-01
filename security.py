@@ -143,6 +143,12 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # XML odprawy, wpisywanie kwot z faktury spedytora i zapis kosztu na pozycje kontenera.
 # Bez viewLandedCost samo editLandedCost nic nie daje — nie ma czego edytować.
 #
+# viewProductPrice / editProductPrice — zakładka „Cena" na pełnej karcie produktu (koszt FIFO,
+# średnia ważona, dostawy z kosztem jednostkowym, kalkulator ceny sprzedaży). Domyślnie TYLKO ADMIN.
+# viewProductPrice jest KONIUNKCYJNE z viewFinancials (patrz can_view_product_price) — zakładka
+# pokazuje marże i koszty importu. editProductPrice (zapis sugerowanej ceny) działa tylko
+# NA WIERZCHU podglądu (can_edit_product_price).
+#
 # viewPurchasePrice — sama cena zakupu (koszt netto / szt) dla osób BEZ viewFinancials.
 # Odczytywane w routers/products.py::_mask_financials — cena zostaje w odpowiedzi,
 # reszta pól finansowych (wartość stanu) dalej jest zerowana.
@@ -157,9 +163,9 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # z viewFinancials (patrz can_see_calendar_payments) — kalendarz pokazuje kwoty zobowiązań,
 # więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy tylnymi drzwiami.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True,  "viewProductPrice": True,  "editProductPrice": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False},
 }
 
 
@@ -248,6 +254,28 @@ async def require_landed_cost_view(user: CurrentUser = Depends(get_current_user)
 async def require_landed_cost_edit(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if not can_edit_landed_cost(user):
         raise HTTPException(403, "Brak uprawnienia: editLandedCost")
+    return user
+
+
+def can_view_product_price(user: CurrentUser) -> bool:
+    """Zakładka „Cena" = viewProductPrice ORAZ viewFinancials (lustro: permissions.js → canSeeProductPrice)."""
+    return has_perm(user, "viewProductPrice") and has_perm(user, "viewFinancials")
+
+
+def can_edit_product_price(user: CurrentUser) -> bool:
+    """Zapis sugerowanej ceny — prawo na wierzchu podglądu zakładki."""
+    return can_view_product_price(user) and has_perm(user, "editProductPrice")
+
+
+async def require_product_price_view(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_view_product_price(user):
+        raise HTTPException(403, "Brak uprawnienia: viewProductPrice")
+    return user
+
+
+async def require_product_price_edit(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_edit_product_price(user):
+        raise HTTPException(403, "Brak uprawnienia: editProductPrice")
     return user
 
 

@@ -1142,3 +1142,85 @@ class OdprawaOut(BaseModel):
     odprawy_kontenera: List[OdprawaKontenerOut] = []
     status: str = "podglad"            # "podglad" | "szkic" | "zapisana"
     zapis: Optional[OdprawaZapisOut] = None
+
+
+# ===== ZAKŁADKA „CENA" NA KARCIE PRODUKTU =====
+# Koszt zakupu z kontenerów (landed cost / szacunek), rozkład stanu na dostawy
+# i zapisane sugerowane ceny sprzedaży. Logika: services/cena.py, endpointy: routers/cena.py.
+
+class CenaDostawaOut(BaseModel):
+    item_id: int
+    container_id: int
+    container_number: str
+    order_number: Optional[str] = None        # PO kontenera — front składa z niego adres karty
+    lot_order_number: Optional[str] = None
+    manufacturer_name: Optional[str] = None
+    data: Optional[date] = None               # wejście na magazyn
+    data_zrodlo: str = "estimate"             # 'delivered' | 'expected' | 'estimate'
+    status: str = "w_drodze"                  # 'u_nas' | 'w_drodze'
+    szt: int
+    na_stanie: int = 0
+    cena_fv_pln: Optional[float] = None
+    cena_fv_waluta: Optional[float] = None
+    waluta: Optional[str] = None
+    koszt: Optional[float] = None             # koszt / szt: landed cost albo szacunek
+    szacunek: bool = False
+    narzut_proc: Optional[float] = None       # koszt ÷ cena z FV − 1
+    rozliczenie: str = "brak"                 # 'odprawa' | 'brak'
+    odstaje: bool = False                     # narzut daleko od pozostałych dostaw — sprawdzić kontener
+    fifo: bool = False
+
+
+class CenaZapisanaOut(BaseModel):
+    kanal: str                                # 'sklepy' | 'dropy'
+    baza: str                                 # 'fifo' | 'srednia' | 'ostatnia' | 'reczna'
+    koszt_bazy: float
+    tryb: str                                 # 'marza' | 'narzut'
+    procent: float
+    wysylka: float = 0
+    prowizja: float = 0
+    vat: float = 23
+    cena_netto: float
+    cena_brutto: float
+    shop: Optional[str] = None
+    zapisal: Optional[str] = None
+    zapisano: Optional[datetime] = None
+
+
+class CenaZapisIn(BaseModel):
+    kanal: Literal["sklepy", "dropy"]
+    baza: Literal["fifo", "srednia", "ostatnia", "reczna"]
+    koszt_bazy: float = Field(..., gt=0)
+    tryb: Literal["marza", "narzut"]
+    procent: float = Field(..., ge=0, lt=1000)
+    wysylka: float = Field(0, ge=0)
+    prowizja: float = Field(0, ge=0, lt=100)
+    vat: float = Field(23, ge=0, le=100)
+    shop: Optional[str] = None
+
+
+class CenaProduktuOut(BaseModel):
+    sku: str
+    shop: str = ""
+    stan: int = 0                             # magazyn główny + wbite do „w drodze"
+    poza_dostawami: int = 0
+    # Koszt z ERP do porównania: Subiekt (AMH — FV + Lenmar, bez SAD) albo Fakturownia (goła FV).
+    erp_zrodlo: Optional[str] = None          # 'subiekt' | 'fakturownia'
+    erp_cena: Optional[float] = None
+    fifo: Optional[float] = None
+    fifo_item_id: Optional[int] = None
+    srednia: Optional[float] = None
+    srednia_szt: int = 0
+    srednia_szacunek: bool = False
+    ostatnia: Optional[float] = None
+    ostatnia_item_id: Optional[int] = None
+    min: Optional[float] = None
+    min_item_id: Optional[int] = None
+    max: Optional[float] = None
+    max_item_id: Optional[int] = None
+    sredni_narzut_proc: Optional[float] = None
+    narzut_zrodlo: Optional[str] = None       # 'sku' | 'wszystkie'
+    dostawy: List[CenaDostawaOut] = []
+    zapisane: List[CenaZapisanaOut] = []
+    uwagi: List[str] = []
+    moze_zapisac: bool = False
