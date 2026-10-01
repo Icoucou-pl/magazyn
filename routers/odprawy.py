@@ -1137,7 +1137,7 @@ async def _zapisz_wszystko(
                 "wc": p.wartosc_celna_pln, "cs": p.clo_stawka, "cp": p.clo_pln,
                 "cw": p.clo_wyliczone, "vs": p.vat_stawka, "vp": p.vat_pln, "vm": p.vat_metoda,
                 "opak": p.liczba_opakowan, "szt": p.szt_uzup,
-                "dol": json.dumps(p.doliczenia), "gratis": rachunek.gratisy.get(p.nr),
+                "dol": json.dumps(p.doliczenia), "gratis": rachunek.gratisy.get(p.nr) or None,  # 0 = rozłożone
                 "faktury": ", ".join(p.faktury_dostawcy) or None,
             },
         )
