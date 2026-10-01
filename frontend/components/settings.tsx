@@ -3,12 +3,14 @@
 // MAGAZYN — Ustawienia (rozbudowa). Port settings.jsx + users-panel.jsx → .tsx.
 //   Producenci      GET/POST/PATCH/DELETE /manufacturers  (+ osoba kontaktowa, liczniki SKU/zamówień)
 //   Typy kontenerów GET/POST/PATCH/DELETE /container-types
-//   Użytkownicy     /users (ADMIN): inline rola, 4 ikony akcji, edytor uprawnień, reset hasła
+//   Użytkownicy     /users (ADMIN): lista wg ról, filtr/szukaj, zaznaczanie + zmiany masowe (POST /users/bulk),
+//                   macierz uprawnień, inline rola, 4 ikony akcji, edytor uprawnień, reset hasła
 //   Moje konto      profil + PUT /auth/me/password + aktywne sesje (/auth/me/sessions)
 //   Dziennik audytu GET /audit-log (super-admin): zdania, filtry, zmiany było → jest, eksport CSV
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { I, Card, Pill, Avatar } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { api } from "@/lib/api";
@@ -1038,12 +1040,75 @@ function FirmaCard({ item, mfrs, editing, onEdit, onSaved, onCancel, showEdit }:
 // ============================================================
 // UŻYTKOWNICY (tylko ADMIN)
 // ============================================================
+// ── Użytkownicy: kolejność, zależności, pakiety ──────────────
+// Lista i macierz idą rolami: najpierw Admin, potem Import, na końcu Viewer.
+const ROLE_ORDER = ["ADMIN", "IMPORT", "VIEWER"] as const;
+const ROLE_RANK: Record<string, number> = { ADMIN: 0, IMPORT: 1, VIEWER: 2 };
+
+// Uprawnienia koniunkcyjne — bez wymaganego klucza dane uprawnienie nic nie pokaże.
+// Lustro reguł z lib/permissions.js (canSee*) i security.py (can_*).
+const PERM_REQUIRES: Record<string, string[]> = {
+  viewProductPrice: ["viewFinancials"],
+  editProductPrice: ["viewProductPrice", "viewFinancials"],
+  viewProductSales: ["viewFinancials"],
+  viewLandedCost: ["viewFinancials"],
+  editLandedCost: ["viewLandedCost", "viewFinancials"],
+  viewCalendarPayments: ["viewFinancials"],
+  viewBankBalances: ["viewFinancials"],
+  editBankBalances: ["viewBankBalances", "viewFinancials"],
+};
+
+// Gotowe pakiety do zmiany masowej („Nadaj” na wszystkich kluczach pakietu).
+const PERM_PRESETS: { id: string; label: string; perms: string[] }[] = [
+  { id: "cena",     label: "Cena produktu (podgląd)",            perms: ["viewFinancials", "viewProductPrice"] },
+  { id: "cenaEdit", label: "Cena produktu + zapis",              perms: ["viewFinancials", "viewProductPrice", "editProductPrice"] },
+  { id: "produkt",  label: "Karta produktu: historia + sprzedaż", perms: ["viewFinancials", "viewProductHistory", "viewProductSales"] },
+  { id: "koszt",    label: "Koszt kontenera",                    perms: ["viewFinancials", "viewLandedCost"] },
+];
+
+// Kolejność grup uprawnień w macierzy i w panelu masowym
+const PERM_GROUP_ORDER = ["Widoczność", "Dane", "Zamówienia", "Administracja"];
+const permsByGroup = (): [string, PermDef[]][] => {
+  const g: Record<string, PermDef[]> = {};
+  PERMS.forEach(p => { (g[p.group] = g[p.group] || []).push(p); });
+  const known = PERM_GROUP_ORDER.filter(n => g[n]);
+  const rest = Object.keys(g).filter(n => !PERM_GROUP_ORDER.includes(n));
+  return [...known, ...rest].map(n => [n, g[n]]);
+};
+
+type BulkOp = "grant" | "revoke" | "default";
+type BulkBody = { user_ids: number[]; perms?: Record<string, boolean | null>; role?: string; is_active?: boolean; show_onboarding?: boolean };
+
+const hasOwn = (o: object | null | undefined, k: string) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+const roleDefault = (role: string, key: string) => !!(ROLE_DEF[role] || {})[key];
+const effPerm = (u: UserRowT, key: string) => hasOwn(u.perms, key) ? !!u.perms![key] : roleDefault(u.role, key);
+const isOverride = (u: UserRowT, key: string) => hasOwn(u.perms, key) && !!u.perms![key] !== roleDefault(u.role, key);
+const overridesOf = (u: UserRowT) => u.perms ? Object.keys(u.perms).filter(k => isOverride(u, k)).length : 0;
+const nameOf = (u: UserRowT) => (u.full_name && u.full_name.trim()) || u.email;
+const pl = (n: number, one: string, few: string, many: string) => {
+  if (n === 1) return one;
+  const d = n % 10, h = n % 100;
+  return d >= 2 && d <= 4 && (h < 10 || h >= 20) ? few : many;
+};
+const sortUsers = (a: UserRowT, b: UserRowT) =>
+  (ROLE_RANK[a.role] ?? 9) - (ROLE_RANK[b.role] ?? 9)
+  || Number(b.is_super_admin) - Number(a.is_super_admin)
+  || Number(b.is_active) - Number(a.is_active)
+  || nameOf(a).localeCompare(nameOf(b), "pl");
+
 function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
   const viewerSuper = isSuperUser(useUser() as CtxUser);
   const [items, setItems] = useState<UserRowT[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [expanded, setExpanded] = useState<{ id: number; mode: "perms" | "reset" } | null>(null);
+  const [roleFilter, setRoleFilter] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [showInactive, setShowInactive] = useState(true);
+  const [view, setView] = useState<"list" | "matrix">("list");
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  const [bulkModal, setBulkModal] = useState<null | "perms" | "role">(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = async () => {
     try {
@@ -1060,12 +1125,67 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
     return () => { clearInterval(dataTimer); clearInterval(tickTimer); };
   }, []);
 
+  const isSelfU = (u: UserRowT) => String(u.id) === String(currentUserId);
+  // Reguła: kontami ADMIN zarządza tylko super-admin (backend pilnuje tego samego).
+  const lockedBase = (u: UserRowT) => !viewerSuper && u.role === "ADMIN";
+  // Zaznaczyć (i ruszać masowo / w macierzy) można każde konto poza własnym i zablokowanymi.
+  const selectable = (u: UserRowT) => !lockedBase(u) && !isSelfU(u);
+
+  // Po odświeżeniu listy wyrzuć z zaznaczenia konta, których już nie ma albo nie wolno ruszać.
+  useEffect(() => {
+    setSelected(prev => {
+      if (!prev.size) return prev;
+      const ok = new Set(items.filter(selectable).map(u => u.id));
+      const next = new Set([...prev].filter(id => ok.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const counts = useMemo(() => items.reduce<Record<string, number>>((a, u) => { a[u.role] = (a[u.role] || 0) + 1; return a; }, {}), [items]);
+  const inactiveCount = items.filter(u => !u.is_active).length;
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items
+      .filter(u => (!roleFilter || u.role === roleFilter)
+        && (showInactive || u.is_active)
+        && (!q || nameOf(u).toLowerCase().includes(q) || u.email.toLowerCase().includes(q)))
+      .sort(sortUsers);
+  }, [items, roleFilter, query, showInactive]);
+  const groups = useMemo(() => ROLE_ORDER
+    .map(role => ({ role: role as string, users: visible.filter(u => u.role === role) }))
+    .concat([{ role: "_other", users: visible.filter(u => !(u.role in ROLE_RANK)) }])
+    .filter(g => g.users.length), [visible]);
+  const selectedUsers = useMemo(() => items.filter(u => selected.has(u.id)), [items, selected]);
+
+  const toggleSel = (id: number) => setSelected(prev => {
+    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
+  });
+  const toggleGroup = (users: UserRowT[]) => {
+    const sel = users.filter(selectable);
+    const all = sel.length > 0 && sel.every(u => selected.has(u.id));
+    setSelected(prev => { const n = new Set(prev); sel.forEach(u => all ? n.delete(u.id) : n.add(u.id)); return n; });
+  };
 
   const patchUser = async (id: number, body: Record<string, unknown>, okMsg: string) => {
     try { await api.patch(`/users/${id}`, body); toast(okMsg, "ok"); load(); }
     catch { toast("Nie udało się zapisać", "error"); }
   };
+  const runBulk = async (body: BulkBody, okMsg: (updated: number) => string): Promise<boolean> => {
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/users/bulk", body) as { updated?: number } | null;
+      toast(okMsg(r?.updated ?? 0), "ok");
+      await load();
+      return true;
+    } catch (e) {
+      toast(e instanceof Error && e.message ? e.message : "Nie udało się zapisać zmian", "error");
+      return false;
+    } finally { setBulkBusy(false); }
+  };
+  const changedMsg = (verb: string) => (n: number) =>
+    n ? `${verb} — zmiana u ${n} ${pl(n, "osoby", "osób", "osób")}` : "Bez zmian — wszyscy mieli już takie ustawienie";
+
   const changeRole = (u: UserRowT, role: string) => patchUser(u.id, { role }, "Zmieniono rolę");
   const toggleActive = (u: UserRowT) => patchUser(u.id, { is_active: !u.is_active }, u.is_active ? "Dezaktywowano konto" : "Aktywowano konto");
   const remove = async (u: UserRowT) => {
@@ -1076,85 +1196,210 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
   const toggleMode = (id: number, mode: "perms" | "reset") =>
     setExpanded(e => (e?.id === id && e.mode === mode) ? null : { id, mode });
 
+  // „Włącz/Wyłącz wprowadzenie wszystkim” — wszystkie konta, którymi wolno zarządzać.
   const onboardingAll = async (val: boolean) => {
     const what = val ? "włączyć wprowadzenie wszystkim" : "wyłączyć wprowadzenie wszystkim";
     if (!window.confirm(`Na pewno ${what}? Zmiana obejmie wszystkie konta — każdy zobaczy (lub przestanie widzieć) ekran powitalny przy następnym logowaniu.`)) return;
-    try {
-      const r = await api.post(`/users/onboarding/${val ? "enable" : "disable"}-all`) as { updated?: number } | null;
-      toast(`${val ? "Włączono" : "Wyłączono"} wprowadzenie — ${r?.updated ?? 0} kont`, "ok");
-      load();
-    } catch { toast("Nie udało się zmienić ustawienia wprowadzenia", "error"); }
+    const ids = items.filter(u => !lockedBase(u)).map(u => u.id);
+    if (!ids.length) return;
+    await runBulk({ user_ids: ids, show_onboarding: val }, changedMsg(val ? "Włączono wprowadzenie" : "Wyłączono wprowadzenie"));
   };
 
+  // ── akcje masowe ──
+  const ids = () => selectedUsers.map(u => u.id);
+  const bulkOnboarding = () => runBulk({ user_ids: ids(), show_onboarding: true }, changedMsg("Włączono wprowadzenie"));
+  const bulkActive = async (val: boolean) => {
+    const n = selectedUsers.length;
+    if (!val && !window.confirm(`Dezaktywować ${n} ${pl(n, "konto", "konta", "kont")}? Te osoby nie zalogują się, dopóki ich nie aktywujesz.`)) return;
+    const ok = await runBulk({ user_ids: ids(), is_active: val }, changedMsg(val ? "Aktywowano" : "Dezaktywowano"));
+    if (ok && !val) setSelected(new Set());
+  };
+  const bulkRole = async (role: string) => {
+    const ok = await runBulk({ user_ids: ids(), role }, changedMsg(`Zmieniono rolę na ${ROLE_META[role]?.label || role}`));
+    if (ok) setBulkModal(null);
+  };
+  const bulkPerms = async (ops: Record<string, BulkOp>) => {
+    const perms: Record<string, boolean | null> = {};
+    Object.entries(ops).forEach(([k, op]) => { perms[k] = op === "grant" ? true : op === "revoke" ? false : null; });
+    const ok = await runBulk({ user_ids: ids(), perms }, changedMsg("Zapisano uprawnienia"));
+    if (ok) setBulkModal(null);
+  };
+  // Pojedyncza komórka macierzy — ten sam endpoint, jedna osoba, jeden klucz.
+  const toggleCell = (u: UserRowT, key: string, label: string) => {
+    const nv = !effPerm(u, key);
+    runBulk({ user_ids: [u.id], perms: { [key]: nv } }, () => `${nv ? "Włączono" : "Wyłączono"} „${label}” — ${nameOf(u)}`);
+  };
+
+  const anyActiveSel = selectedUsers.some(u => u.is_active);
+  const anyInactiveSel = selectedUsers.some(u => !u.is_active);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingBottom: selected.size ? 72 : 0 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
-        <RoleStat label="Admin"  count={counts.ADMIN || 0}  color={ROLE_META.ADMIN.color}/>
-        <RoleStat label="Import" count={counts.IMPORT || 0} color={ROLE_META.IMPORT.color}/>
-        <RoleStat label="Viewer" count={counts.VIEWER || 0} color={ROLE_META.VIEWER.color}/>
+        {ROLE_ORDER.map(r => (
+          <RoleStat key={r} label={ROLE_META[r].label} count={counts[r] || 0} color={ROLE_META[r].color}
+            active={roleFilter === r} onClick={() => setRoleFilter(f => f === r ? null : r)}/>
+        ))}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
           <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{items.length}</span> użytkowników w systemie
+          {roleFilter && <> · filtr: <b style={{ color: ROLE_META[roleFilter]?.color }}>{ROLE_META[roleFilter]?.label}</b> <button onClick={() => setRoleFilter(null)} style={{ ...btnGhostMini, padding: "1px 7px", marginLeft: 4 }}>pokaż wszystkich</button></>}
         </span>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button onClick={() => onboardingAll(true)} style={btnSecondary} title="Pokaż wprowadzenie wszystkim przy następnym logowaniu">Włącz wprowadzenie wszystkim</button>
-          <button onClick={() => onboardingAll(false)} style={btnGhostMini}>Wyłącz</button>
+          <button onClick={() => onboardingAll(true)} disabled={bulkBusy} style={btnSecondary} title="Pokaż wprowadzenie wszystkim przy następnym logowaniu">Włącz wprowadzenie wszystkim</button>
+          <button onClick={() => onboardingAll(false)} disabled={bulkBusy} style={btnGhostMini}>Wyłącz</button>
           <button onClick={() => setCreating(true)} style={btnPrimary}><I.Plus size={12}/> Dodaj użytkownika</button>
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", minWidth: 0 }}>
+          <I.Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-lo)" }}/>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Szukaj po imieniu lub e-mailu…"
+            style={{ ...inputStyle, paddingLeft: 30, background: "var(--surface-1)" }} name="users-search" autoComplete="off"/>
+        </div>
+        <div style={{ display: "inline-flex", background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 8, padding: 2 }}>
+          {([["list", "Lista"], ["matrix", "Macierz uprawnień"]] as const).map(([v, label]) => (
+            <button key={v} onClick={() => setView(v)} style={{
+              background: view === v ? "var(--surface-3)" : "transparent", color: view === v ? "var(--text-hi)" : "var(--text-mid)",
+              border: "none", fontSize: 12, fontWeight: 500, padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
+            }}>{label}</button>
+          ))}
+        </div>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-mid)", cursor: "pointer" }}>
+          <SelectBox checked={showInactive} onChange={() => setShowInactive(v => !v)} label="Pokaż nieaktywne"/>
+          Pokaż nieaktywne{inactiveCount ? <span className="num" style={{ color: "var(--text-lo)" }}> ({inactiveCount})</span> : null}
+        </label>
+      </div>
+
       {creating && <NewUserForm viewerSuper={viewerSuper} onSaved={() => { setCreating(false); load(); }} onCancel={() => setCreating(false)}/>}
 
-      <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "hidden" }}>
-        {loading && !items.length ? (
-          <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
-        ) : items.map((u, i) => {
-          const isSelf = String(u.id) === String(currentUserId);
-          const exp = expanded?.id === u.id ? expanded.mode : null;
-          return (
-            <div key={u.id} style={{ borderBottom: i === items.length - 1 ? "none" : "1px solid var(--border-soft)" }}>
-              <UserRow u={u} isSelf={isSelf} viewerSuper={viewerSuper} permsOpen={exp === "perms"}
-                onChangeRole={(r) => changeRole(u, r)}
-                onToggleActive={() => toggleActive(u)}
-                onResetPassword={() => toggleMode(u.id, "reset")}
-                onDelete={() => remove(u)}
-                onPerms={() => toggleMode(u.id, "perms")}/>
-              {exp && (
-                <div style={{ padding: "0 14px 14px" }}>
-                  {exp === "perms"
-                    ? <PermissionsEditor user={u} isSelf={isSelf} onCancel={() => setExpanded(null)} onSaved={() => { setExpanded(null); load(); }}/>
-                    : <ResetPasswordForm user={u} onCancel={() => setExpanded(null)} onDone={() => setExpanded(null)}/>}
+      {view === "matrix" ? (
+        <PermMatrix groups={groups} isLocked={(u) => !selectable(u)} busy={bulkBusy} onToggle={toggleCell}/>
+      ) : (
+        <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "hidden" }}>
+          {loading && !items.length ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
+          ) : !groups.length ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Brak użytkowników dla tego filtra.</div>
+          ) : groups.map(g => {
+            const meta = ROLE_META[g.role] || { label: "Inne", color: "var(--text-lo)", soft: "var(--surface-3)" };
+            const sel = g.users.filter(selectable);
+            const nSel = sel.filter(u => selected.has(u.id)).length;
+            const active = g.users.filter(u => u.is_active).length;
+            return (
+              <div key={g.role}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)" }}>
+                  <SelectBox checked={nSel > 0 && nSel === sel.length} indeterminate={nSel > 0 && nSel < sel.length}
+                    disabled={!sel.length} onChange={() => toggleGroup(g.users)} label={`Zaznacz grupę ${meta.label}`}/>
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: meta.color }}>{meta.label}</span>
+                  <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{g.users.length} · {active} {pl(active, "aktywny", "aktywnych", "aktywnych")}</span>
+                  {g.role === "ADMIN" && !viewerSuper && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-disabled)" }}>Kontami admin zarządza tylko super-admin</span>}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                {g.users.map(u => {
+                  const isSelf = isSelfU(u);
+                  const exp = expanded?.id === u.id ? expanded.mode : null;
+                  return (
+                    <div key={u.id} style={{ borderBottom: "1px solid var(--border-soft)" }}>
+                      <UserRow u={u} isSelf={isSelf} viewerSuper={viewerSuper} permsOpen={exp === "perms"}
+                        selectable={selectable(u)} selected={selected.has(u.id)} onSelect={() => toggleSel(u.id)}
+                        onChangeRole={(r) => changeRole(u, r)}
+                        onToggleActive={() => toggleActive(u)}
+                        onResetPassword={() => toggleMode(u.id, "reset")}
+                        onDelete={() => remove(u)}
+                        onPerms={() => toggleMode(u.id, "perms")}/>
+                      {exp && (
+                        <div style={{ padding: "0 14px 14px" }}>
+                          {exp === "perms"
+                            ? <PermissionsEditor user={u} isSelf={isSelf} onCancel={() => setExpanded(null)} onSaved={() => { setExpanded(null); load(); }}/>
+                            : <ResetPasswordForm user={u} onCancel={() => setExpanded(null)} onDone={() => setExpanded(null)}/>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {selectedUsers.length > 0 && typeof document !== "undefined" && createPortal(
+        <div style={{
+          position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: 16, zIndex: 900,
+          width: "min(880px, calc(100% - 32px))", background: "var(--surface-2)", border: "1px solid var(--accent)",
+          borderRadius: 12, boxShadow: "0 12px 40px oklch(0 0 0 / 0.5)",
+          display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "10px 12px",
+        }}>
+          <span className="num" style={{ fontWeight: 700, fontSize: 13, color: "var(--text-hi)" }}>{selectedUsers.length}</span>
+          <span style={{ flex: "1 1 120px", minWidth: 0, fontSize: 11, color: "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {selectedUsers.map(u => nameOf(u).split(" ")[0]).join(", ")}
+          </span>
+          <button onClick={() => setBulkModal("perms")} disabled={bulkBusy} style={btnPrimary}><ShieldIcon size={12}/> Uprawnienia…</button>
+          <button onClick={() => setBulkModal("role")} disabled={bulkBusy} style={btnSecondary}>Zmień rolę…</button>
+          <button onClick={bulkOnboarding} disabled={bulkBusy} style={btnSecondary}>Pokaż wprowadzenie</button>
+          {anyInactiveSel && <button onClick={() => bulkActive(true)} disabled={bulkBusy} style={{ ...btnSecondary, color: "var(--ok)" }}>Aktywuj</button>}
+          {anyActiveSel && <button onClick={() => bulkActive(false)} disabled={bulkBusy} style={{ ...btnSecondary, color: "var(--critical)" }}>Dezaktywuj</button>}
+          <button onClick={() => setSelected(new Set())} style={btnGhost}>Wyczyść</button>
+        </div>,
+        document.body,
+      )}
+
+      {bulkModal === "perms" && selectedUsers.length > 0 && (
+        <BulkPermsModal users={selectedUsers} busy={bulkBusy} onClose={() => setBulkModal(null)} onApply={bulkPerms}/>
+      )}
+      {bulkModal === "role" && selectedUsers.length > 0 && (
+        <BulkRoleModal count={selectedUsers.length} viewerSuper={viewerSuper} busy={bulkBusy} onClose={() => setBulkModal(null)} onPick={bulkRole}/>
+      )}
     </div>
   );
 }
 
-function RoleStat({ label, count, color }: { label: string; count: number; color: string }) {
+function RoleStat({ label, count, color, active, onClick }: { label: string; count: number; color: string; active?: boolean; onClick?: () => void }) {
   return (
-    <div style={{ padding: 14, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+    <button onClick={onClick} title={active ? "Pokaż wszystkie role" : `Pokaż tylko: ${label}`} style={{
+      padding: 14, textAlign: "left", fontFamily: "inherit", cursor: "pointer", color: "inherit",
+      background: active ? `color-mix(in oklch, ${color} 8%, var(--surface-1))` : "var(--surface-1)",
+      border: `1px solid ${active ? color : "var(--border-soft)"}`, borderRadius: 10, transition: "border-color 0.12s",
+    }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ width: 8, height: 8, borderRadius: 99, background: color }}/>
         <span style={{ fontSize: 11, color: "var(--text-lo)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
       </div>
       <div className="num" style={{ fontSize: 24, fontWeight: 600, color: "var(--text-hi)", marginTop: 6, letterSpacing: "-0.02em" }}>{count}</div>
-    </div>
+    </button>
   );
 }
 
-function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActive, onResetPassword, onDelete, onPerms }: {
+// Checkbox w stylu aplikacji (z obsługą stanu „część zaznaczona”).
+function SelectBox({ checked, indeterminate, disabled, onChange, label }: {
+  checked: boolean; indeterminate?: boolean; disabled?: boolean; onChange: () => void; label: string;
+}) {
+  const on = checked || indeterminate;
+  return (
+    <button type="button" role="checkbox" aria-checked={indeterminate ? "mixed" : checked} aria-label={label} title={disabled ? undefined : label}
+      disabled={disabled} onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!disabled) onChange(); }}
+      style={{
+        width: 16, height: 16, flexShrink: 0, padding: 0, borderRadius: 4,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: checked ? "var(--accent)" : indeterminate ? "var(--accent-soft)" : "transparent",
+        border: `1px solid ${on ? "var(--accent)" : "var(--border-strong)"}`,
+        color: checked ? "var(--accent-ink)" : "var(--accent)", fontSize: 11, fontWeight: 800, lineHeight: 1,
+        cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.25 : 1,
+      }}>{checked ? "✓" : indeterminate ? "–" : ""}</button>
+  );
+}
+
+function UserRow({ u, isSelf, viewerSuper, permsOpen, selectable, selected, onSelect, onChangeRole, onToggleActive, onResetPassword, onDelete, onPerms }: {
   u: UserRowT; isSelf: boolean; viewerSuper: boolean; permsOpen: boolean;
+  selectable: boolean; selected: boolean; onSelect: () => void;
   onChangeRole: (r: string) => void; onToggleActive: () => void;
   onResetPassword: () => void; onDelete: () => void; onPerms: () => void;
 }) {
   const meta = ROLE_META[u.role] || ROLE_META.VIEWER;
-  const overrideCount = u.perms ? Object.keys(u.perms).length : 0;
+  const overrideCount = overridesOf(u);
 
   // Reguła: kontami ADMIN zarządza tylko super-admin. Zwykły admin nie tknie żadnego admina.
   // (super-admin jest dla innych "zwykłym" ADMINEM, więc i tak wpada w tę blokadę.)
@@ -1166,16 +1411,20 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActi
 
   // Opcje roli: rolę ADMIN może nadawać wyłącznie super-admin
   const roleOptions = viewerSuper ? ["ADMIN", "IMPORT", "VIEWER"] : ["IMPORT", "VIEWER"];
+  const restBg = selected ? "color-mix(in oklch, var(--accent) 7%, var(--surface-1))"
+    : !u.is_active ? "color-mix(in oklch, var(--critical) 5%, var(--surface-1))" : "transparent";
 
   return (
     <div style={{
-      display: "grid", gridTemplateColumns: "auto minmax(0, 1fr) auto auto", gap: 12, alignItems: "center",
+      display: "grid", gridTemplateColumns: "auto auto minmax(0, 1fr) auto auto", gap: 12, alignItems: "center",
       padding: "12px 14px",
-      background: !u.is_active ? "color-mix(in oklch, var(--critical) 5%, var(--surface-1))" : "transparent",
+      background: restBg,
       opacity: u.is_active ? 1 : 0.7, transition: "background 0.12s",
     }}
-      onMouseEnter={(e) => { if (u.is_active) e.currentTarget.style.background = "var(--surface-2)"; }}
-      onMouseLeave={(e) => { if (u.is_active) e.currentTarget.style.background = "transparent"; }}>
+      onMouseEnter={(e) => { if (u.is_active && !selected) e.currentTarget.style.background = "var(--surface-2)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = restBg; }}>
+      <SelectBox checked={selected} disabled={!selectable} onChange={onSelect}
+        label={isSelf ? "To Twoje konto" : !selectable ? "Brak uprawnień" : `Zaznacz: ${nameOf(u)}`}/>
       <Avatar initials={initialsOf(u.full_name, u.email)} size={36}/>
 
       <div style={{ minWidth: 0 }}>
@@ -1184,7 +1433,7 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActi
           {u.is_super_admin && <Pill bg="var(--accent-soft)" fg="var(--accent)" dot="var(--accent)" size="sm">SUPER</Pill>}
           {isSelf && <Pill bg="var(--info-soft)" fg="var(--info)" size="sm">TY</Pill>}
           {!u.is_active && <Pill bg="var(--critical-soft)" fg="var(--critical)" size="sm">NIEAKTYWNE</Pill>}
-          {overrideCount > 0 && <Pill bg="var(--anomaly-soft)" fg="var(--anomaly)" size="sm">{overrideCount} wyjątki</Pill>}
+          {overrideCount > 0 && <Pill bg="var(--anomaly-soft)" fg="var(--anomaly)" size="sm">{overrideCount} {pl(overrideCount, "wyjątek", "wyjątki", "wyjątków")}</Pill>}
           {(u.company_scope?.length ?? 0) > 0 && (
             <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">
               {SCOPE_FIRMY.filter(f => u.company_scope!.includes(f.slug)).map(f => f.label).join(" + ")}
@@ -1226,6 +1475,281 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, onChangeRole, onToggleActi
         <button onClick={() => !lockDelete && onDelete()} title="Usuń" disabled={lockDelete} style={userActionBtn("var(--critical)", false, lockDelete)}><TrashIcon size={12}/></button>
       </div>
     </div>
+  );
+}
+
+// ── Macierz uprawnień: osoby × uprawnienia ──────────────────
+function PermMatrix({ groups, isLocked, busy, onToggle }: {
+  groups: { role: string; users: UserRowT[] }[];
+  isLocked: (u: UserRowT) => boolean; busy: boolean;
+  onToggle: (u: UserRowT, key: string, label: string) => void;
+}) {
+  const permGroups = useMemo(permsByGroup, []);
+  const cols = permGroups.flatMap(([, p]) => p);
+  const th: React.CSSProperties = { position: "sticky", top: 0, background: "var(--bg-elevated)", fontSize: 10, fontWeight: 600, color: "var(--text-lo)", borderBottom: "1px solid var(--border-soft)" };
+  const firstCol: React.CSSProperties = { position: "sticky", left: 0, background: "var(--surface-1)", zIndex: 1, textAlign: "left" };
+  if (!groups.length) {
+    return <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12, background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }}>Brak użytkowników dla tego filtra.</div>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--text-lo)", alignItems: "center" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><MatrixDot on/> ma uprawnienie</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><MatrixDot on={false}/> nie ma</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><MatrixDot on ovr/> wyjątek względem roli</span>
+        <span>Kliknięcie w komórkę przełącza uprawnienie tej osobie.</span>
+      </div>
+      <div style={{ overflowX: "auto", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 11.5, minWidth: "100%" }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, ...firstCol, background: "var(--bg-elevated)", zIndex: 3 }}/>
+              {permGroups.map(([g, p]) => (
+                <th key={g} colSpan={p.length} style={{ ...th, padding: "6px 6px 2px", textAlign: "left", letterSpacing: "0.06em", textTransform: "uppercase", borderLeft: "1px solid var(--border-soft)", borderBottom: "none" }}>{g}</th>
+              ))}
+            </tr>
+            <tr>
+              <th style={{ ...th, ...firstCol, background: "var(--bg-elevated)", zIndex: 3, padding: "8px 12px", verticalAlign: "bottom" }}>Użytkownik</th>
+              {cols.map(p => (
+                <th key={p.key} title={p.desc} style={{ ...th, padding: "8px 4px", height: 150, verticalAlign: "bottom", whiteSpace: "nowrap" }}>
+                  <span style={{ writingMode: "vertical-rl", transform: "rotate(180deg)", display: "inline-block" }}>{p.label}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(g => {
+              const meta = ROLE_META[g.role] || { label: "Inne", color: "var(--text-lo)" };
+              return (
+                <React.Fragment key={g.role}>
+                  <tr>
+                    <td colSpan={cols.length + 1} style={{ padding: "6px 12px", background: "var(--bg-elevated)", fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: meta.color, borderBottom: "1px solid var(--border-soft)" }}>{meta.label}</td>
+                  </tr>
+                  {g.users.map(u => {
+                    const locked = isLocked(u);
+                    return (
+                      <tr key={u.id} style={{ opacity: u.is_active ? 1 : 0.55 }}>
+                        <td style={{ ...firstCol, padding: "7px 12px", borderBottom: "1px solid var(--border-soft)", whiteSpace: "nowrap", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <span style={{ fontWeight: 600, color: "var(--text-hi)" }}>{nameOf(u)}</span>
+                        </td>
+                        {cols.map(p => {
+                          const on = effPerm(u, p.key), ovr = isOverride(u, p.key);
+                          return (
+                            <td key={p.key} style={{ padding: "6px 4px", textAlign: "center", borderBottom: "1px solid var(--border-soft)" }}>
+                              <button type="button" disabled={locked || busy} onClick={() => onToggle(u, p.key, p.label)}
+                                title={`${nameOf(u)} · ${p.label}: ${on ? "tak" : "nie"}${ovr ? " (wyjątek)" : ""}`}
+                                style={{ background: "none", border: "none", padding: 2, cursor: locked ? "not-allowed" : busy ? "wait" : "pointer", opacity: locked ? 0.35 : 1 }}>
+                                <MatrixDot on={on} ovr={ovr}/>
+                              </button>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MatrixDot({ on, ovr }: { on: boolean; ovr?: boolean }) {
+  return (
+    <span style={{
+      width: 18, height: 18, borderRadius: 5, display: "inline-flex", alignItems: "center", justifyContent: "center", verticalAlign: "middle",
+      background: on ? "var(--ok-soft)" : "transparent",
+      border: `1px solid ${ovr ? "var(--anomaly)" : on ? "var(--ok)" : "var(--border)"}`,
+      boxShadow: ovr ? "0 0 0 2px var(--anomaly-soft)" : "none",
+    }}>
+      {on && <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--ok)" }}/>}
+    </span>
+  );
+}
+
+// ── Modal (portal do body, z-index 1000 — wzorzec z tech-notes) ──
+function UsersModal({ onClose, width, children }: { onClose: () => void; width: number; children: React.ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} style={{
+      position: "fixed", inset: 0, zIndex: 1000, background: "oklch(0 0 0 / 0.55)",
+      display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto",
+    }}>
+      <div className="fade-in" role="dialog" style={{
+        width: `min(${width}px, 100%)`, background: "var(--surface-1)", border: "1px solid var(--border)",
+        borderRadius: 14, padding: 18, display: "flex", flexDirection: "column", gap: 14,
+      }}>{children}</div>
+    </div>,
+    document.body,
+  );
+}
+
+function BulkPermsModal({ users, busy, onClose, onApply }: {
+  users: UserRowT[]; busy: boolean; onClose: () => void; onApply: (ops: Record<string, BulkOp>) => void;
+}) {
+  const [ops, setOps] = useState<Record<string, BulkOp>>({});
+  const n = users.length;
+  const permGroups = useMemo(permsByGroup, []);
+  const labelOf = (k: string) => PERMS.find(p => p.key === k)?.label || k;
+  const roles = [...new Set(users.map(u => ROLE_META[u.role]?.label || u.role))];
+
+  const setOp = (k: string, op: BulkOp | null) => setOps(prev => {
+    const next = { ...prev }; if (op) next[k] = op; else delete next[k]; return next;
+  });
+  const applyPreset = (keys: string[]) => setOps(prev => {
+    const next = { ...prev }; keys.forEach(k => { next[k] = "grant"; }); return next;
+  });
+
+  // Brakujące zależności: nadajemy X, a część osób nie ma (lub traci) tego, czego X wymaga.
+  const missing = useMemo(() => {
+    const m = new Set<string>();
+    Object.entries(ops).forEach(([k, op]) => {
+      if (op !== "grant") return;
+      (PERM_REQUIRES[k] || []).forEach(req => {
+        if (ops[req] === "grant") return;
+        const after = (u: UserRowT) => ops[req] === "revoke" ? false : ops[req] === "default" ? roleDefault(u.role, req) : effPerm(u, req);
+        if (users.some(u => !after(u))) m.add(req);
+      });
+    });
+    return [...m];
+  }, [ops, users]);
+
+  // Ile ustawień faktycznie się zmieni (tak jak policzy backend).
+  const { changes, touched } = useMemo(() => {
+    let changes = 0; const touched = new Set<number>();
+    users.forEach(u => Object.entries(ops).forEach(([k, op]) => {
+      const def = roleDefault(u.role, k);
+      const nv = op === "grant" ? true : op === "revoke" ? false : def;
+      const willStore = op !== "default" && nv !== def;
+      const changed = effPerm(u, k) !== nv || hasOwn(u.perms, k) !== willStore;
+      if (changed) { changes++; touched.add(u.id); }
+    }));
+    return { changes, touched: touched.size };
+  }, [ops, users]);
+
+  const planned = Object.entries(ops);
+  const opBtn = (k: string, op: BulkOp | null, label: string, fg: string, bg: string) => {
+    const on = (ops[k] ?? null) === op;
+    return (
+      <button key={label} type="button" onClick={() => setOp(k, op)} title={op === "default" ? "Usuń wyjątek — wróć do ustawień roli" : undefined} style={{
+        fontFamily: "inherit", fontSize: 10.5, fontWeight: 600, padding: "4px 7px", border: "none", borderLeft: op === null ? "none" : "1px solid var(--border)",
+        background: on ? bg : "transparent", color: on ? fg : "var(--text-lo)", cursor: "pointer",
+      }}>{label}</button>
+    );
+  };
+
+  return (
+    <UsersModal onClose={onClose} width={780}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <ShieldIcon size={15} color="var(--accent)"/>
+        <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text-hi)" }}>Uprawnienia dla {n} {pl(n, "osoby", "osób", "osób")}</span>
+        <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm">{roles.join(" + ")}</Pill>
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--text-mid)", margin: 0, lineHeight: 1.55 }}>
+        Ustawiasz tylko to, co chcesz zmienić — reszta zostaje jak jest u każdej osoby. „Nadaj” i „Odbierz” zapisują wyjątek
+        (o ile różni się od roli), „Domyślne” usuwa wyjątek i wraca do ustawień roli. Przy każdym uprawnieniu widać, ile zaznaczonych osób ma je teraz.
+      </p>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", marginRight: 4 }}>Pakiety</span>
+        {PERM_PRESETS.map(p => (
+          <button key={p.id} type="button" onClick={() => applyPreset(p.perms)} title={p.perms.map(labelOf).join(" + ")} style={{
+            fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, padding: "5px 10px", borderRadius: 99,
+            border: "1px dashed var(--border-strong)", background: "transparent", color: "var(--text-mid)", cursor: "pointer",
+          }}>{p.label}</button>
+        ))}
+      </div>
+
+      {missing.length > 0 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "9px 12px", borderRadius: 8, fontSize: 11.5, color: "var(--text-mid)", background: "var(--warning-soft)", border: "1px solid color-mix(in oklch, var(--warning) 45%, transparent)" }}>
+          <span style={{ flex: "1 1 260px" }}>
+            <b style={{ color: "var(--warning)" }}>Brakuje zależności.</b>{" "}
+            {missing.map(k => `„${labelOf(k)}”`).join(", ")} — bez tego nadawane uprawnienia nic nie pokażą części osób.
+          </span>
+          <button type="button" onClick={() => applyPreset(missing)} style={btnSecondary}>Nadaj też</button>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
+        {permGroups.map(([group, perms]) => (
+          <div key={group} style={{ border: "1px solid var(--border-soft)", borderRadius: 9, overflow: "hidden", minWidth: 0 }}>
+            <div style={{ padding: "7px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)" }}>{group}</div>
+            {perms.map((p, i) => {
+              const has = users.filter(u => effPerm(u, p.key)).length;
+              const changed = !!ops[p.key];
+              return (
+                <div key={p.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: i ? "1px solid var(--border-soft)" : "none", background: changed ? "color-mix(in oklch, var(--accent) 6%, transparent)" : "transparent" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-hi)" }} title={p.desc}>{p.label}</div>
+                    <div className="num" style={{ fontSize: 10, color: "var(--text-lo)", marginTop: 1 }}>ma {has}/{n}</div>
+                  </div>
+                  <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+                    {opBtn(p.key, null, "—", "var(--text-hi)", "var(--surface-3)")}
+                    {opBtn(p.key, "grant", "Nadaj", "var(--ok)", "var(--ok-soft)")}
+                    {opBtn(p.key, "revoke", "Odbierz", "var(--critical)", "var(--critical-soft)")}
+                    {opBtn(p.key, "default", "Domyślne", "var(--info)", "var(--info-soft)")}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-soft)", borderRadius: 9, padding: "10px 12px", fontSize: 12, color: "var(--text-mid)", lineHeight: 1.6 }}>
+        {planned.length ? (
+          <>
+            Zmiana: {planned.map(([k, op], i) => (
+              <React.Fragment key={k}>{i ? ", " : ""}<b style={{ color: "var(--text-hi)" }}>{op === "grant" ? "+" : op === "revoke" ? "−" : "↺"} {labelOf(k)}</b></React.Fragment>
+            ))}
+            <br/>Faktycznie zmieni się <b className="num" style={{ color: "var(--text-hi)" }}>{changes}</b> {pl(changes, "ustawienie", "ustawienia", "ustawień")} u <b className="num" style={{ color: "var(--text-hi)" }}>{touched}</b> {pl(touched, "osoby", "osób", "osób")}. W dzienniku audytu: jeden wpis na osobę.
+          </>
+        ) : "Nic jeszcze nie wybrano — kliknij „Nadaj”, „Odbierz” albo pakiet."}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={onClose} disabled={busy} style={btnSecondary}>Anuluj</button>
+        <button onClick={() => onApply(ops)} disabled={busy || !changes} style={{ ...btnPrimary, opacity: busy || !changes ? 0.5 : 1 }}>
+          {busy ? "Zapisywanie…" : `Zapisz u ${touched} ${pl(touched, "osoby", "osób", "osób")}`}
+        </button>
+      </div>
+    </UsersModal>
+  );
+}
+
+function BulkRoleModal({ count, viewerSuper, busy, onClose, onPick }: {
+  count: number; viewerSuper: boolean; busy: boolean; onClose: () => void; onPick: (role: string) => void;
+}) {
+  const options = viewerSuper ? [...ROLE_ORDER] : ROLE_ORDER.filter(r => r !== "ADMIN");
+  return (
+    <UsersModal onClose={onClose} width={460}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-hi)" }}>Zmień rolę: {count} {pl(count, "osoba", "osoby", "osób")}</div>
+      <p style={{ fontSize: 11.5, color: "var(--text-mid)", margin: 0, lineHeight: 1.55 }}>
+        Wyjątki w uprawnieniach zostają bez zmian.{!viewerSuper && " Rolę Admin może nadać tylko super-admin."}
+      </p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {options.map(r => {
+          const m = ROLE_META[r];
+          return (
+            <button key={r} disabled={busy} onClick={() => onPick(r)} style={{
+              fontFamily: "inherit", padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 7, cursor: busy ? "wait" : "pointer",
+              background: m.soft, color: m.color, border: `1px solid ${m.color}`,
+            }}>{m.label}</button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={onClose} disabled={busy} style={btnSecondary}>Anuluj</button>
+      </div>
+    </UsersModal>
   );
 }
 

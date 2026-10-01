@@ -7,6 +7,7 @@ Reguły dostępu:
 """
 
 import json
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -16,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import get_db
 from security import (hash_password, validate_password_strength, require_admin,
-                      parse_company_scope, serialize_company_scope)
-from models import CurrentUser, UserCreate, UserUpdate, UserOut, AdminPasswordReset
+                      parse_company_scope, serialize_company_scope, ROLE_PERMS)
+from models import CurrentUser, UserCreate, UserUpdate, UsersBulkUpdate, UserOut, AdminPasswordReset
 from audit import log_audit, skip
 from audit_opisy import ROLE, UPRAWNIENIA, f_bool, f_txt
 
@@ -228,6 +229,95 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     else:
         skip()      # zapis bez zmian — bez wpisu
     return _row_to_user_out(dict(u._mapping), reveal_super=_is_super(admin.email))
+
+
+_PERM_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9]{1,48}$")
+
+
+@router.post("/users/bulk")
+async def bulk_update_users(payload: UsersBulkUpdate, admin: CurrentUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Zmiana masowa: uprawnienia (nadaj/odbierz/wg roli), rola, aktywność, onboarding.
+
+    Wszystko albo nic: najpierw sprawdzamy reguły dla każdej osoby, dopiero potem zapis
+    w jednej transakcji. Uprawnienia ruszamy tylko te podane — pozostałe wyjątki zostają.
+    Wartość równa domyślnej z roli nie jest zapisywana jako wyjątek (jak w edytorze pojedynczym).
+    W dzienniku audytu: jeden wpis na osobę, tylko gdy coś się faktycznie zmieniło."""
+    ids = list(dict.fromkeys(payload.user_ids))
+    perms_ops = payload.perms or {}
+    bad = [k for k in perms_ops if not _PERM_KEY.match(k)]
+    if bad:
+        raise HTTPException(400, f"Nieznane uprawnienie: {', '.join(bad)}")
+    if not (perms_ops or payload.role is not None or payload.is_active is not None
+            or payload.show_onboarding is not None):
+        raise HTTPException(400, "Nie wybrano żadnej zmiany")
+
+    requester_super = _is_super(admin.email)
+    if payload.role == "ADMIN" and not requester_super:
+        raise HTTPException(403, "Tylko super-administrator może nadać rolę administratora")
+    if admin.id in ids and payload.role is not None and payload.role != "ADMIN":
+        raise HTTPException(400, "Nie możesz odebrać sobie roli admina!")
+    if admin.id in ids and payload.is_active is False:
+        raise HTTPException(400, "Nie możesz deaktywować własnego konta!")
+
+    r = await db.execute(text(f"SELECT {USER_COLS} FROM {settings.TABLE_USERS} WHERE id = ANY(:ids)"), {"ids": ids})
+    przed_map = {row["id"]: dict(row) for row in r.mappings()}
+    for uid in ids:
+        m = przed_map.get(uid)
+        # konto super-admina dla nie-super jest niewidoczne → 404, jak w _guard_target
+        if not m or (_is_super(m["email"]) and not requester_super):
+            raise HTTPException(404, f"Użytkownik #{uid} nie znaleziony")
+        if m["role"] == "ADMIN" and not requester_super and not _is_super(m["email"]):
+            raise HTTPException(403, "Tylko super-administrator może zarządzać kontami administratorów")
+
+    for uid in ids:
+        m = przed_map[uid]
+        updates, params = [], {"id": uid}
+        new_role = payload.role or m["role"]
+        if payload.role is not None:
+            updates.append("role = :role")
+            params["role"] = payload.role
+        if payload.is_active is not None:
+            updates.append("is_active = :active")
+            params["active"] = payload.is_active
+        if payload.show_onboarding is not None:
+            updates.append("show_onboarding = :onb")
+            params["onb"] = payload.show_onboarding
+        if perms_ops:
+            try:
+                cur = json.loads(m.get("permissions") or "null") or {}
+            except (ValueError, TypeError):
+                cur = {}
+            defaults = ROLE_PERMS.get(new_role, {})
+            for k, v in perms_ops.items():
+                if v is None or bool(v) == bool(defaults.get(k, False)):
+                    cur.pop(k, None)
+                else:
+                    cur[k] = bool(v)
+            updates.append("permissions = :perms")
+            params["perms"] = json.dumps(cur) if cur else None
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET {', '.join(updates)} WHERE id = :id"), params)
+    await db.commit()
+
+    r = await db.execute(text(f"SELECT {USER_COLS} FROM {settings.TABLE_USERS} WHERE id = ANY(:ids)"), {"ids": ids})
+    po_map = {row["id"]: dict(row) for row in r.mappings()}
+    zmienieni = 0
+    for uid in ids:
+        ch = _zmiany_usera(przed_map[uid], po_map.get(uid, {}))
+        if not ch:
+            continue
+        zmienieni += 1
+        kogo = przed_map[uid]["email"]
+        if len(ch) == 1:
+            msg = f"zmienił „{ch[0]['pole']}” użytkownika {kogo}: {ch[0]['bylo']} → {ch[0]['jest']} (zmiana masowa)"
+        else:
+            msg = f"zmienił ustawienia użytkownika {kogo} ({len(ch)} zmian, zmiana masowa)"
+        await log_audit(db, admin, "USER_UPDATED", "user", str(uid),
+                        str(payload.model_dump(exclude_none=True, exclude={"user_ids"})),
+                        message=msg, changes=ch)
+    if not zmienieni:
+        skip()
+    return {"selected": len(ids), "updated": zmienieni}
 
 
 @router.put("/users/{uid}/password", status_code=204)

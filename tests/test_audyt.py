@@ -70,3 +70,8 @@ def test_kontener_bez_numeru_to_nr_fv_nigdy_draft():
     assert o.etykieta_kontenera("Draft-Youngcoln3", None, 7) == "#7"
     assert o.f_nr_kontenera("Draft-Youngcoln3") == "—"
     assert o.f_nr_kontenera("MSKU7345120") == "MSKU7345120"
+
+
+def test_zmiana_masowa_userow_ma_wlasne_zdanie():
+    op = o.opis_sciezki("POST", "/api/users/bulk")
+    assert (op.obszar, op.orzeczenie) == ("Użytkownicy", "zmienił kilku użytkowników naraz")

@@ -240,6 +240,7 @@ TRASY = [
     # Użytkownicy i konto
     ("POST", r"^/api/users$", "Użytkownicy", "dodał użytkownika", "USER_CREATED", "user"),
     ("PATCH", rf"^/api/users/{_ID}$", "Użytkownicy", "zmienił użytkownika #{id}", "USER_UPDATED", "user"),
+    ("POST", r"^/api/users/bulk$", "Użytkownicy", "zmienił kilku użytkowników naraz", "USER_UPDATED", "user"),
     ("DELETE", rf"^/api/users/{_ID}$", "Użytkownicy", "usunął użytkownika #{id}", "USER_DELETED", "user"),
     ("PUT", rf"^/api/users/{_ID}/password$", "Użytkownicy", "zresetował hasło użytkownika #{id}", "PASSWORD_RESET_BY_ADMIN", "user"),
     ("DELETE", rf"^/api/auth/me/sessions/{_ID}$", "Logowania", "usunął sesję logowania z listy", "SESSION_DELETED", "session"),

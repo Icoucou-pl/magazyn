@@ -47,6 +47,17 @@ class UserUpdate(BaseModel):
     company_scope: Optional[List[str]] = None
 
 
+class UsersBulkUpdate(BaseModel):
+    """Zmiana masowa z panelu Użytkownicy. Każde pole None = nie zmieniaj.
+    perms: klucz → True (nadaj) / False (odbierz) / None (usuń wyjątek, wróć do roli).
+    Ruszane są TYLKO podane klucze — pozostałe wyjątki każdej osoby zostają."""
+    user_ids: List[int] = Field(..., min_length=1, max_length=500)
+    perms: Optional[Dict[str, Optional[bool]]] = None
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+    show_onboarding: Optional[bool] = None
+
+
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
