@@ -344,6 +344,86 @@ def _resolve_lot(lot_ref: Optional[int], lot_ids: List[int]) -> Optional[int]:
     return None
 
 
+# Kolumny WYNIKU rachunku odprawy na pozycji kontenera. Przy zmianie ilości kasujemy je,
+# bo podział frachtu i cła zależał od ilości — pokazywanie starej liczby byłoby kłamstwem.
+# Wejścia (cena z faktury dostawcy, pozycja SAD, powiązanie z odprawą) zostają, żeby
+# ponowne wczytanie zgłoszenia miało co przywrócić.
+_KOSZT_WYNIK = (
+    "koszt_jednostkowy", "cena_zakupu_pln", "koszt_logistyka_pln",
+    "koszt_clo_pln", "koszt_gratisy_pln", "koszt_transport_pln",
+)
+
+
+def _kanon(sku: Optional[str]) -> str:
+    return (sku or "").strip().lower()
+
+
+async def _uzgodnij_pozycje(db: AsyncSession, cid: int, items, lot_ids: List[int], use_lots: bool) -> None:
+    """Zapisuje pozycje kontenera, ZACHOWUJĄC istniejące wiersze tam, gdzie to ten sam towar.
+
+    Dotąd edycja kontenera kasowała wszystkie pozycje i wstawiała je od nowa. Każde
+    „Edytuj kontener → Zapisz" — choćby po to, żeby poprawić datę albo numer faktury —
+    zmieniało więc id pozycji i gubiło wszystko, co na nich zapisano poza SKU, ilością
+    i ceną: cały koszt jednostkowy z odprawy, ceny wpisane z faktury dostawcy i
+    powiązanie z rachunkiem. Zapisana odprawa pokazywała potem zera i pustą tabelę,
+    a ponowne wczytanie SAD-u nie miało czego przywrócić, bo ceny ręczne są
+    przypisane do id pozycji. To ten sam błąd, który wcześniej gasił „zieloną kropkę"
+    na lotach (patrz _replace_lots) — tam rozwiązany snapshotem, tutaj uzgadnianiem.
+
+    Formularz nie odsyła id pozycji, więc parujemy po SKU: najpierw wiersze o tej samej
+    ilości (dwa loty z tym samym SKU dają się wtedy rozróżnić), potem resztę po kolei.
+    Wiersz bez pary w formularzu znika, pozycja bez pary w bazie dochodzi.
+    """
+    stare = (await db.execute(
+        text(f"SELECT id, sku, quantity FROM {settings.TABLE_CONTAINER_ITEMS} "
+             f"WHERE container_id = :c ORDER BY id"),
+        {"c": cid},
+    )).mappings().all()
+    pula: dict = {}
+    for r in stare:
+        pula.setdefault(_kanon(r["sku"]), []).append(dict(r))
+
+    przydzial: List[Optional[dict]] = [None] * len(items)
+    for i, it in enumerate(items):
+        kubel = pula.get(_kanon(it.sku), [])
+        for r in kubel:
+            if r["quantity"] == it.quantity:
+                przydzial[i] = r
+                kubel.remove(r)
+                break
+    for i, it in enumerate(items):
+        if przydzial[i] is None:
+            kubel = pula.get(_kanon(it.sku), [])
+            if kubel:
+                przydzial[i] = kubel.pop(0)
+
+    for i, it in enumerate(items):
+        lid = _resolve_lot(it.lot_ref, lot_ids) if use_lots else None
+        r = przydzial[i]
+        if r is None:
+            await db.execute(
+                text(f"INSERT INTO {settings.TABLE_CONTAINER_ITEMS} (container_id, sku, quantity, unit_cost, lot_id) "
+                     f"VALUES (:c, :s, :q, :u, :l)"),
+                {"c": cid, "s": it.sku, "q": it.quantity, "u": it.unit_cost, "l": lid},
+            )
+            continue
+        zeruj = ""
+        if r["quantity"] != it.quantity:
+            zeruj = ", " + ", ".join(f"{k} = NULL" for k in _KOSZT_WYNIK)
+        await db.execute(
+            text(f"UPDATE {settings.TABLE_CONTAINER_ITEMS} "
+                 f"SET sku = :s, quantity = :q, unit_cost = :u, lot_id = :l{zeruj} WHERE id = :id"),
+            {"s": it.sku, "q": it.quantity, "u": it.unit_cost, "l": lid, "id": r["id"]},
+        )
+
+    zbedne = [r["id"] for kubel in pula.values() for r in kubel]
+    if zbedne:
+        await db.execute(
+            text(f"DELETE FROM {settings.TABLE_CONTAINER_ITEMS} WHERE id = ANY(:ids)"),
+            {"ids": zbedne},
+        )
+
+
 @router.get("/containers/export/csv")
 async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_export)):
     """Eksport kontenerów do Excela (XLSX)."""
@@ -671,18 +751,20 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
         await _insert_advances(db, advances=container_advs, container_id=cid)
 
     if payload.items is not None:
-        await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_ITEMS} WHERE container_id = :cid"), {"cid": cid})
         # cons=True → wstaw przysłane loty; cons=False → wyczyść loty (sieroty nie zostają);
         # cons=None (częściowa aktualizacja) → ruszamy loty tylko gdy front je przysłał.
         use_lots = bool(cons) if cons is not None else (payload.lots is not None)
         rebuild = (cons is not None) or (payload.lots is not None)
-        lot_ids = await _replace_lots(db, cid, payload.lots if use_lots else [], inherit_from=cur) if rebuild else []
-        for item in payload.items:
-            lid = _resolve_lot(item.lot_ref, lot_ids) if use_lots else None
+        if rebuild:
+            # Loty są kasowane i wstawiane od nowa. Pozycje zostają (patrz _uzgodnij_pozycje),
+            # więc najpierw je odpinamy — inaczej DELETE lotów zderzyłby się z kluczem obcym
+            # albo, przy kaskadzie, zabrał pozycje razem z lotem.
             await db.execute(
-                text(f"INSERT INTO {settings.TABLE_CONTAINER_ITEMS} (container_id, sku, quantity, unit_cost, lot_id) VALUES (:c, :s, :q, :u, :l)"),
-                {"c": cid, "s": item.sku, "q": item.quantity, "u": item.unit_cost, "l": lid}
+                text(f"UPDATE {settings.TABLE_CONTAINER_ITEMS} SET lot_id = NULL WHERE container_id = :c"),
+                {"c": cid},
             )
+        lot_ids = await _replace_lots(db, cid, payload.lots if use_lots else [], inherit_from=cur) if rebuild else []
+        await _uzgodnij_pozycje(db, cid, payload.items, lot_ids, use_lots)
     elif payload.lots is not None:
         await _replace_lots(db, cid, payload.lots, inherit_from=cur)
 
