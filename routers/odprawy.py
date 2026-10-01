@@ -609,11 +609,16 @@ async def _zloz(
     )).mappings().first()
 
     towar_wszystko, meta = await _towar(db, [k["id"] for k in kontenery])
+    # Zgoda na importera innego niż firma towaru: zaznaczona teraz albo przy wcześniejszym
+    # zapisie tej odprawy (zapisana odprawa przeszła już tę bramkę — dołożenie faktury
+    # spedytora kilka dni później nie powinno pytać drugi raz).
+    inny_importer = bool(ustawienia.inny_importer or istniejaca)
     loty_out: List[OdprawaLotOut] = []
     towar = towar_wszystko
     if konsolidacja:
         mrn_odpraw = await _mrn_odpraw(db, list({m["odprawa_id"] for m in meta.values() if m["odprawa_id"]}))
-        loty_out = _wybierz_loty(odprawa, loty_db, towar_wszystko, meta, firma_sad,
+        loty_out = _wybierz_loty(odprawa, loty_db, towar_wszystko, meta,
+                                 None if ustawienia.inny_importer else firma_sad,
                                  istniejaca["id"] if istniejaca else None, mrn_odpraw, ustawienia.loty)
         wybrane = {l.lot_id for l in loty_out if l.wybrany}
         towar = [t for t in towar_wszystko if meta[t.item_id]["lot_id"] is None
@@ -624,7 +629,9 @@ async def _zloz(
     # trzy loty Acti i odprawa Acti nie dałaby się wczytać.
     firmy = Counter(meta[t.item_id]["firma"] for t in towar)
     firma_kont = firmy.most_common(1)[0][0] if firmy else None
-    if firma_sad and firma_kont and firma_sad["slug"].lower() != firma_kont:
+    obcy_importer = bool(firma_sad and firma_kont and firma_sad["slug"].lower() != firma_kont)
+    if obcy_importer and not inny_importer:
+        # Początek komunikatu jest umową z frontem — po nim pokazuje „Rozlicz mimo to".
         raise HTTPException(400, (
             f"Importerem w SAD jest {firma_sad['name']} (NIP {odprawa.nip_importera}), "
             f"a towar w kontenerze należy do firmy {firma_kont.upper()}."
@@ -653,6 +660,11 @@ async def _zloz(
     )
 
     uwagi = list(rachunek.uwagi)
+    if obcy_importer:
+        uwagi.append(Uwaga(
+            "ostrzezenie", "Importer inny niż firma towaru — rozliczone świadomie",
+            f"w SAD {firma_sad['name']}, towar {(firma_kont or '').upper()}; koszt z ERP pokazany dla importera",
+        ))
     if konsolidacja:
         for l in loty_out:
             if l.wybrany and l.blokada:
