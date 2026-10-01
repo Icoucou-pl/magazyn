@@ -500,7 +500,6 @@ export default function AppShell() {
             onContainerClick={(c) => goContainers(c.id)}
             onAutoSuggest={() => { setPendingAutoSuggestMfr(null); setPendingAutoSuggestNew(true); setView("containers"); }}
             onSimulator={openSimulator}
-            onCreateContainer={(mfrId) => { setPendingAutoSuggestMfr(mfrId); setPendingAutoSuggestNew(true); setView("containers"); }}
             onOpenMoneyEntries={goMoneyEntries}
           />
         ) : view === "products" || view === "manufacturers" || view === "containerPage" ? (
