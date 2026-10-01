@@ -511,6 +511,9 @@ async def _zapisane_ustawienia(db: AsyncSession, istniejaca) -> Optional[Odprawa
     )
 
 
+LP_ZALADUNEK = 6  # linia „Załadunek u dostawcy (033W)"
+
+
 def _linie_kosztow(odprawa: Odprawa, ustawienia: OdprawaUstawieniaIn,
                    kontenery: Sequence[Dict[str, Any]]) -> List[OdprawaLiniaKosztuIn]:
     """Domyślny zestaw linii: fracht, THC i ubezpieczenie z doliczeń SAD, reszta pusta.
@@ -533,7 +536,7 @@ def _linie_kosztow(odprawa: Odprawa, ustawienia: OdprawaUstawieniaIn,
     if d.get("033W"):
         # Załadunek po stronie dostawcy (np. „Container FOB cost") — płacony dostawcy,
         # więc nie ma go na fakturze spedytora, a do kosztu towaru należy.
-        linie.append(OdprawaLiniaKosztuIn(lp=6, nazwa="Załadunek u dostawcy (033W)",
+        linie.append(OdprawaLiniaKosztuIn(lp=LP_ZALADUNEK, nazwa="Załadunek u dostawcy (033W)",
                                           kwota=d["033W"], waluta=odprawa.waluta))
     for k in kontenery:
         linie.append(OdprawaLiniaKosztuIn(
@@ -1145,7 +1148,9 @@ async def _zapisz_wszystko(
     # Liczony przed zapisem, bo trafia do app_odprawa_kontenery: karta kontenera dostaje
     # SUMĘ udziałów ze wszystkich jego odpraw (konsolidacja = kilka zgłoszeń na kontener).
     fracht = next((float(l.kwota or 0) for l in out.koszty if l.lp == 1), 0.0)
-    razem_fv = sum(float(l.kwota or 0) for l in out.koszty if l.container_id is None)
+    # Karta kontenera trzyma rachunek SPEDYTORA. Załadunek 033W płacimy dostawcy,
+    # więc do kosztu towaru wchodzi, ale do „kosztu spedycji" na karcie już nie.
+    razem_fv = sum(float(l.kwota or 0) for l in out.koszty if l.container_id is None and l.lp != LP_ZALADUNEK)
     masy = {k["id"]: sum((t.waga_brutto_kg or 0) * t.ilosc for t in towar if t.container_id == k["id"])
             for k in kontenery}
     masa_razem = sum(masy.values())
@@ -1200,7 +1205,7 @@ async def _zapisz_wszystko(
             },
         )
 
-    z_sad = {1: "031W", 2: "071V", 4: "032W", 6: "033W"}
+    z_sad = {1: "031W", 2: "071V", 4: "032W", LP_ZALADUNEK: "033W"}
     dolicz = {d.kod: d.kwota for d in odprawa.doliczenia}
 
     def zrodlo(l) -> str:
