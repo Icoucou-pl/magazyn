@@ -163,12 +163,22 @@ def test_rachunek_spina_sie_co_do_grosza():
     assert abs(razem - (40000 + 4600 + 437)) < 0.01
 
 
-def test_pozycja_bez_towaru_trafia_na_najdrozszy_produkt():
+def test_pozycja_bez_towaru_rozklada_sie_na_towar_po_wartosci():
+    """Domyślnie koszty pozycji bez towaru idą na cały towar, proporcjonalnie do wartości."""
     o = parsuj(SAD_XML)
     r = policz(o, TOWAR, KOSZTY, klucz=KLUCZ_WAGA)
+    assert r.gratisy[3] == 0, "0 = rozłożone"
+    pula = sum(w.gratisy for w in r.pozycje)
+    towar = sum(w.towar for w in r.pozycje)
+    for w in r.pozycje:
+        assert abs(w.gratisy - pula * w.towar / towar) < 0.01, w.sku
+
+
+def test_gratis_mozna_przypiac_do_jednego_produktu():
+    o = parsuj(SAD_XML)
+    r = policz(o, TOWAR, KOSZTY, klucz=KLUCZ_WAGA, gratisy={3: 1})
     przejmuje = [w for w in r.pozycje if w.gratisy > 0]
-    assert len(przejmuje) == 1 and przejmuje[0].sku == "KRZ", "gratis idzie na największą wartościowo pozycję"
-    assert r.gratisy[3] == 1
+    assert len(przejmuje) == 1 and przejmuje[0].item_id == 1
 
 
 def test_cena_reczna_nadpisuje_szacunek_w_pozycji_mieszanej():
@@ -275,7 +285,10 @@ def test_wlasna_pozycja_niesie_wlasne_clo():
     assert round(duzy.clo, 2) == 0.0
     # Gratis to cło pozycji 2 (11 zł) ORAZ jej udział we frachcie — część zamienna też
     # zajęła miejsce w kontenerze, więc nie jeździ za darmo.
-    assert duzy.gratisy > 11.0 and wysieg.gratisy == 0.0
+    # Bez faktur dostawcy gratis rozkłada się na cały towar po wartości ze zgłoszenia:
+    # DUZY (pozycja za 9000 USD) niesie 18/19 puli, WYSIEG (500 USD) 1/19.
+    pula = duzy.gratisy + wysieg.gratisy
+    assert pula > 11.0 and abs(duzy.gratisy / pula - 9000 / 9500) < 0.001
     razem = sum(w.razem for w in r.pozycje)
     assert abs(razem - (38000 + 1000 * 4 + 141)) < 0.01, f"towar + fracht + cło, wyszło {razem}"
     assert not any(w.szacunek for w in r.pozycje), "każda pozycja ma jedno SKU — bez szacowania"
@@ -632,16 +645,19 @@ def test_pelne_przypisanie_z_formularza_nic_nie_przestawia():
     assert {k: r.przypisanie[k] for k in uklad} == uklad
 
 
-def test_gratis_idzie_na_towar_z_tej_samej_faktury():
-    """Próbka od dostawcy B obciąża towar B, a nie najdroższy towar całego kontenera."""
+def test_gratis_rozklada_sie_na_towar_tej_samej_faktury():
+    """Próbka od dostawcy B obciąża cały towar B po wartości — nic nie idzie na A ani C."""
     o = parsuj(SAD_KONSOLIDACJA)
     uklad = {71: 1, 72: 2, 73: 4, 74: 4, 75: 4, 76: 5}   # pozycja 3 bez towaru
     r = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Fracht morski", 100.0, lp=1)],
                klucz=KLUCZ_WAGA, przypisanie=uklad, faktury_sku=FAKTURY_KONSOLIDACJA)
-    assert r.gratisy[3] == 72, f"gratis na MATA (najdroższy towar faktury B), a jest {r.gratisy[3]}"
-    bez = policz(o, TOWAR_KONSOLIDACJA, [LiniaKosztu("Fracht morski", 100.0, lp=1)],
-                 klucz=KLUCZ_WAGA, przypisanie=uklad)
-    assert bez.gratisy[3] == 76, "bez faktur zostaje dawna reguła: najdroższy towar odprawy"
+    w = {x.item_id: x for x in r.pozycje}
+    assert w[71].gratisy == 0 and w[76].gratisy == 0, "towar innych faktur nie płaci za próbkę B"
+    b = [w[i] for i in (72, 73, 74, 75)]
+    pula = sum(x.gratisy for x in b)
+    assert pula > 0
+    for x in b:
+        assert abs(x.gratisy - pula * x.towar / sum(y.towar for y in b)) < 0.01, x.sku
 
 
 def test_transport_krajowy_bierze_tylko_udzial_odprawy():
