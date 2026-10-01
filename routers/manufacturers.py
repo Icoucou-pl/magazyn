@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import f_txt
 from config import settings, INCLUDED_STATUS_FILTER
 from database import get_db
 from models import ManufacturerIn, ManufacturerOut, SeasonPoint, CurrentUser
@@ -208,6 +210,19 @@ async def forecast_seasonality(db: AsyncSession = Depends(get_db), user: Current
     return {"global": global_curve, "curves": curves, "sources": sources, "count": len(curves)}
 
 
+POLA_PRODUCENTA = {
+    "name": ("Nazwa", f_txt), "email": ("E-mail", f_txt), "contact": ("Kontakt", f_txt),
+    "default_currency": ("Waluta domyślna", f_txt), "color": ("Kolor", f_txt), "notes": ("Notatki", f_txt),
+}
+
+
+async def _producent(db: AsyncSession, mid: int):
+    r = (await db.execute(text(
+        f"SELECT name, color, notes, email, contact, default_currency FROM {settings.TABLE_MANUFACTURERS} WHERE id = :id"
+    ), {"id": mid})).mappings().first()
+    return dict(r) if r else None
+
+
 @router.post("/manufacturers", response_model=ManufacturerOut, status_code=201)
 async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(
@@ -216,21 +231,29 @@ async def create_manufacturer(payload: ManufacturerIn, db: AsyncSession = Depend
     )
     new_id = r.scalar_one()
     await db.commit()
+    audit.note(f"dodał producenta {payload.name}",
+               changes=audit.zmiany(None, payload.model_dump(), POLA_PRODUCENTA), resource_id=new_id)
     return ManufacturerOut(id=new_id, **payload.model_dump())
 
 
 @router.patch("/manufacturers/{mid}", response_model=ManufacturerOut)
 async def update_manufacturer(mid: int, payload: ManufacturerIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
+    przed = await _producent(db, mid)
     await db.execute(
         text(f"UPDATE {settings.TABLE_MANUFACTURERS} SET name=:n, color=:c, notes=:no, email=:e, contact=:ct, default_currency=:dc WHERE id=:id"),
         {"n": payload.name, "c": payload.color, "no": payload.notes, "e": payload.email, "ct": payload.contact, "dc": payload.default_currency, "id": mid}
     )
     await db.commit()
+    audit.note_zmiany(f"producenta {(przed or {}).get('name') or payload.name}",
+                      audit.zmiany(przed, payload.model_dump(), POLA_PRODUCENTA), resource_id=mid)
     return ManufacturerOut(id=mid, **payload.model_dump())
 
 
 @router.delete("/manufacturers/{mid}", status_code=204)
 async def delete_manufacturer(mid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
+    przed = await _producent(db, mid)
+    if przed:
+        audit.note(f"usunął producenta {przed['name']}", resource_id=mid)
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_MANUFACTURERS} WHERE id=:id"), {"id": mid})
     await db.commit()
     if r.rowcount == 0:

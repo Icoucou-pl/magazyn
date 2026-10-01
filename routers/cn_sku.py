@@ -13,6 +13,8 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import plural
 from config import settings
 from database import get_db
 from models import CnSkuIn, CnSkuOut, CnSkuBulkIn, CnSkuBulkResult, CurrentUser
@@ -121,12 +123,16 @@ async def create_cn_sku(payload: CnSkuIn, db: AsyncSession = Depends(get_db),
     out = await _fetch_one(db, row_id)
     if out is None:
         raise HTTPException(500, "Zapis nie powiódł się")
+    audit.note(f"przypisał produktowi {payload.sku.strip()} chińskie SKU {payload.cn_sku.strip()}",
+               resource_id=payload.sku.strip())
     return out
 
 
 @router.patch("/cn-sku/{row_id}", response_model=CnSkuOut)
 async def update_cn_sku(row_id: int, payload: CnSkuIn, db: AsyncSession = Depends(get_db),
                         user: CurrentUser = Depends(require_generate_po)):
+    przed = (await db.execute(text(f"SELECT sku, cn_sku, en_name FROM {settings.TABLE_CN_SKU} WHERE id = :id"),
+                              {"id": row_id})).mappings().first()
     r = await db.execute(
         text(f"""UPDATE {settings.TABLE_CN_SKU}
                     SET sku = :sku, cn_sku = :cn, en_name = :en, updated_at = CURRENT_TIMESTAMP
@@ -140,12 +146,21 @@ async def update_cn_sku(row_id: int, payload: CnSkuIn, db: AsyncSession = Depend
     out = await _fetch_one(db, row_id)
     if out is None:
         raise HTTPException(404)
+    audit.note_zmiany(f"chińskiego SKU produktu {payload.sku.strip()}", audit.zmiany(
+        dict(przed) if przed else None,
+        {"sku": payload.sku.strip(), "cn_sku": payload.cn_sku.strip(), "en_name": (payload.en_name or "").strip() or None},
+        {"sku": ("SKU", audit.opisy.f_txt), "cn_sku": ("Chińskie SKU", audit.opisy.f_txt),
+         "en_name": ("Nazwa EN", audit.opisy.f_txt)}), resource_id=payload.sku.strip())
     return out
 
 
 @router.delete("/cn-sku/{row_id}", status_code=204)
 async def delete_cn_sku(row_id: int, db: AsyncSession = Depends(get_db),
                         user: CurrentUser = Depends(require_generate_po)):
+    przed = (await db.execute(text(f"SELECT sku, cn_sku FROM {settings.TABLE_CN_SKU} WHERE id = :id"),
+                              {"id": row_id})).mappings().first()
+    if przed:
+        audit.note(f"usunął chińskie SKU {przed['cn_sku']} produktu {przed['sku']}", resource_id=przed["sku"])
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_CN_SKU} WHERE id = :id"), {"id": row_id})
     await db.commit()
     if r.rowcount == 0:
@@ -168,4 +183,6 @@ async def bulk_cn_sku(payload: CnSkuBulkIn, db: AsyncSession = Depends(get_db),
         else:
             updated += 1
     await db.commit()
+    audit.note(f"wkleił listę chińskich SKU — {inserted} {plural(inserted, 'nowe', 'nowe', 'nowych')}, "
+               f"{updated} {plural(updated, 'zaktualizowane', 'zaktualizowane', 'zaktualizowanych')}")
     return CnSkuBulkResult(inserted=inserted, updated=updated)

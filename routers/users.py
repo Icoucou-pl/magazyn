@@ -18,7 +18,8 @@ from database import get_db
 from security import (hash_password, validate_password_strength, require_admin,
                       parse_company_scope, serialize_company_scope)
 from models import CurrentUser, UserCreate, UserUpdate, UserOut, AdminPasswordReset
-from audit import log_audit
+from audit import log_audit, skip
+from audit_opisy import ROLE, UPRAWNIENIA, f_bool, f_txt
 
 router = APIRouter(prefix="/api", tags=["users"])
 
@@ -56,6 +57,37 @@ def _row_to_user_out(m: dict, reveal_super: bool = False) -> UserOut:
         show_onboarding=bool(m.get("show_onboarding")),
         is_super_admin=bool(reveal_super and _is_super(m["email"])),
     )
+
+
+def _zmiany_usera(przed: dict, po: dict) -> list:
+    """Dziennik: rola, aktywność, nazwa, zakres firm i każde ruszone uprawnienie (było → jest)."""
+    def perms(m):
+        try:
+            return json.loads(m.get("permissions") or "null") or {}
+        except (ValueError, TypeError):
+            return {}
+
+    def wartosc_perm(d, k):
+        return PERM_STAN.get(d.get(k))
+
+    out = []
+    for k, etykieta, fmt in (("role", "Rola", lambda v: ROLE.get(v, f_txt(v))),
+                             ("is_active", "Konto aktywne", f_bool),
+                             ("full_name", "Nazwa", f_txt),
+                             ("company_scope", "Firmy", lambda v: ", ".join(parse_company_scope(v) or []) or "wszystkie"),
+                             ("show_onboarding", "Onboarding", f_bool)):
+        a, b = fmt(przed.get(k)), fmt(po.get(k))
+        if a != b:
+            out.append({"pole": etykieta, "bylo": a, "jest": b})
+    pa, pb = perms(przed), perms(po)
+    for k in sorted(set(pa) | set(pb), key=lambda k: UPRAWNIENIA.get(k, k)):
+        a, b = wartosc_perm(pa, k), wartosc_perm(pb, k)
+        if a != b:
+            out.append({"pole": UPRAWNIENIA.get(k, k), "bylo": a, "jest": b})
+    return out
+
+
+PERM_STAN = {True: "włączone", False: "wyłączone", None: "wg roli"}
 
 
 async def _guard_target(db: AsyncSession, uid: int, admin: CurrentUser, *, for_delete: bool = False):
@@ -127,7 +159,8 @@ async def create_user(payload: UserCreate, admin: CurrentUser = Depends(require_
     u = r.first()
     await db.commit()
 
-    await log_audit(db, admin, "USER_CREATED", "user", str(u.id), f"{payload.email} ({payload.role})")
+    await log_audit(db, admin, "USER_CREATED", "user", str(u.id), f"{payload.email} ({payload.role})",
+                    message=f"dodał użytkownika {payload.email.strip()} z rolą {ROLE.get(payload.role, payload.role)}")
     return _row_to_user_out(dict(u._mapping), reveal_super=_is_super(admin.email))
 
 
@@ -148,6 +181,8 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     if payload.role == "ADMIN" and not _is_super(admin.email):
         raise HTTPException(403, "Tylko super-administrator może nadać rolę administratora")
 
+    przed = (await db.execute(text(f"SELECT {USER_COLS} FROM {settings.TABLE_USERS} WHERE id = :id"),
+                              {"id": uid})).mappings().first()
     updates = []
     params = {"id": uid}
     if payload.full_name is not None:
@@ -181,7 +216,17 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     if not u:
         raise HTTPException(404, "Użytkownik nie znaleziony")
 
-    await log_audit(db, admin, "USER_UPDATED", "user", str(uid), str(payload.model_dump(exclude_none=True)))
+    ch = _zmiany_usera(dict(przed) if przed else {}, dict(u._mapping))
+    if ch:
+        kogo = u.email
+        if len(ch) == 1:
+            msg = f"zmienił „{ch[0]['pole']}” użytkownika {kogo}: {ch[0]['bylo']} → {ch[0]['jest']}"
+        else:
+            msg = f"zmienił ustawienia użytkownika {kogo} ({len(ch)} zmian)"
+        await log_audit(db, admin, "USER_UPDATED", "user", str(uid), str(payload.model_dump(exclude_none=True)),
+                        message=msg, changes=ch)
+    else:
+        skip()      # zapis bez zmian — bez wpisu
     return _row_to_user_out(dict(u._mapping), reveal_super=_is_super(admin.email))
 
 
@@ -201,7 +246,8 @@ async def reset_user_password(uid: int, payload: AdminPasswordReset, admin: Curr
     )
     await db.commit()
 
-    await log_audit(db, admin, "PASSWORD_RESET_BY_ADMIN", "user", str(uid), f"reset hasła dla: {target_email}")
+    await log_audit(db, admin, "PASSWORD_RESET_BY_ADMIN", "user", str(uid), f"reset hasła dla: {target_email}",
+                    message=f"zresetował hasło użytkownika {target_email}")
 
 
 @router.delete("/users/{uid}", status_code=204)
@@ -215,4 +261,5 @@ async def delete_user(uid: int, admin: CurrentUser = Depends(require_admin), db:
     await db.execute(text(f"DELETE FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": uid})
     await db.commit()
 
-    await log_audit(db, admin, "USER_DELETED", "user", str(uid), f"usunięto: {target_email}")
+    await log_audit(db, admin, "USER_DELETED", "user", str(uid), f"usunięto: {target_email}",
+                    message=f"usunął użytkownika {target_email}")

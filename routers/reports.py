@@ -24,6 +24,7 @@ from security import get_current_user, has_perm, resolve_scope
 from services.containers import fetch_containers
 from services.snapshots import store_snapshot, build_kpi_rows, build_stock_rows, SLOTS
 from audit import log_audit
+from audit_opisy import f_num
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -781,7 +782,10 @@ async def occupancy_config_save(
 
     await db.commit()
     await log_audit(db, user, "OCCUPANCY_CONFIG_SAVED", "reports", "occupancy",
-                    f"caps={payload.caps}")
+                    f"caps={payload.caps}",
+                    message="zapisał konfigurację raportu zajętości magazynu",
+                    changes=[{"pole": f"Pojemność {k}", "bylo": "", "jest": f_num("m³", 2)(v)}
+                             for k, v in (payload.caps or {}).items()])
     return {"caps": {k: round(float(v or 0), 2) for k, v in (await _occ_caps(db)).items()},
             "thresholds": await _occ_thresholds(db)}
 

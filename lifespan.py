@@ -183,6 +183,19 @@ async def _run_snapshot(slot: str, why: str):
         print(f"[snapshot] błąd ({why}, {slot}): {e}")
 
 
+async def _audit_retention_loop():
+    """Raz na dobę (i zaraz po starcie) kasuje wpisy dziennika starsze niż 12 miesięcy."""
+    from audit import usun_stare_wpisy, RETENCJA_MIESIECY
+    while True:
+        try:
+            n = await usun_stare_wpisy()
+            if n:
+                print(f"[audit] retencja {RETENCJA_MIESIECY} mies.: usunięto {n} wpisów", flush=True)
+        except Exception as e:
+            print(f"[audit] retencja nieudana (pomijam): {e}")
+        await asyncio.sleep(24 * 60 * 60)
+
+
 async def _snapshot_loop():
     """Snapshoty KPI + stanów 2× dziennie (7:05 i 20:05), po synchronizacji z Subiektem.
 
@@ -481,6 +494,10 @@ async def lifespan(app: FastAPI):
         """))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_user ON {settings.TABLE_AUDIT_LOG}(user_id)"))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_audit_log_created ON {settings.TABLE_AUDIT_LOG}(created_at DESC)"))
+        # Dziennik po ludzku (sql/2026-10-dziennik-audytu.sql): zdanie, zmiany „było → jest”, obszar.
+        await add_column_if_missing(conn, settings.TABLE_AUDIT_LOG, "message", "TEXT")
+        await add_column_if_missing(conn, settings.TABLE_AUDIT_LOG, "changes", "JSONB")
+        await add_column_if_missing(conn, settings.TABLE_AUDIT_LOG, "area", "VARCHAR(30)")
 
         # Kursy walut NBP (tabela A) → PLN. Composite PK (currency, rate_date) służy też
         # jako indeks pod zapytanie sezonowe: WHERE currency=X AND rate_date<D ORDER BY rate_date DESC.
@@ -577,11 +594,12 @@ async def lifespan(app: FastAPI):
     sellasist_task = asyncio.create_task(_sellasist_auto_loop())
     snapshot_task = asyncio.create_task(_snapshot_loop())
     dropy_push_task = asyncio.create_task(_dropy_push_loop())
+    audit_task = asyncio.create_task(_audit_retention_loop())
 
     yield
 
     # Sprzątanie przy zamknięciu
-    for _t in (fx_task, sellasist_task, snapshot_task, dropy_push_task):
+    for _t in (fx_task, sellasist_task, snapshot_task, dropy_push_task, audit_task):
         _t.cancel()
         try:
             await _t

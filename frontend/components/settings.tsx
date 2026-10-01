@@ -5,7 +5,7 @@
 //   Typy kontenerów GET/POST/PATCH/DELETE /container-types
 //   Użytkownicy     /users (ADMIN): inline rola, 4 ikony akcji, edytor uprawnień, reset hasła
 //   Moje konto      profil + PUT /auth/me/password + aktywne sesje (/auth/me/sessions)
-//   Dziennik audytu GET /audit-log (super-admin) + eksport CSV
+//   Dziennik audytu GET /audit-log (super-admin): zdania, filtry, zmiany było → jest, eksport CSV
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -39,10 +39,15 @@ type UserRowT = {
   // Zakres firmowy: lista slugów z backendu. null/[] = wszystkie firmy.
   company_scope?: string[] | null;
 };
+type AuditChange = { pole: string; bylo: string; jest: string };
 type AuditRow = {
   id: number; user_id?: number | null; user_email?: string | null;
   action: string; resource_type?: string | null; resource_id?: string | null;
   details?: string | null; created_at: string;
+  message: string;            // gotowe zdanie z backendu
+  changes: AuditChange[];     // było → jest
+  area: string;               // obszar (filtr)
+  legacy: boolean;            // wpis sprzed przebudowy dziennika
 };
 type SessionT = { id: number; device?: string | null; ip?: string | null; created_at: string; current: boolean };
 
@@ -74,7 +79,7 @@ const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "cn_sku",          label: "Chińskie SKU",    icon: I.Scan,     desc: "Odpowiedniki SKU dla fabryk — pod zamówienia (PO)" },
   { id: "users",           label: "Użytkownicy",     icon: I.Activity, desc: "Konta, role, uprawnienia" },
   { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
-  { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Historia zmian w systemie" },
+  { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Kto, co i kiedy zmienił w Magazynie" },
   { id: "freshness",       label: "Świeżość danych", icon: I.Refresh,  desc: "Ostatnie pobrania i dziennik synchronizacji" },
   { id: "usage",           label: "Zużycie API",     icon: I.Wallet,   desc: "Koszty asystenta AI — tokeny i saldo" },
 ];
@@ -1636,113 +1641,267 @@ function SessionsPanel() {
 // ============================================================
 // DZIENNIK AUDYTU (tylko super-admin)
 // ============================================================
-// Zamiana surowego wpisu audytu na opis po polsku
-const RES_LABELS: Record<string, string> = {
-  products: "produkt", containers: "kontener", "container-types": "typ kontenera",
-  manufacturers: "producent", users: "użytkownik", auth: "konto", attachments: "załącznik",
-};
-function parsePyDict(s?: string | null): Record<string, unknown> | null {
-  if (!s) return null;
-  try {
-    const j = s.replace(/'/g, '"').replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false").replace(/\bNone\b/g, "null");
-    const v = JSON.parse(j);
-    return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
-  } catch { return null; }
-}
-const permLabel = (k: string) => PERMS.find(p => p.key === k)?.label || k;
+// Backend oddaje gotowe zdania (message) i zmiany „było → jest” (changes) — tu tylko je
+// pokazujemy. Wpisy sprzed przebudowy mają zdanie odtworzone przy odczycie (legacy).
+type AuditPage = { rows: AuditRow[]; more: boolean; users: string[]; obszary: string[] };
 
-function humanizeAudit(r: AuditRow): string {
-  const a = r.action || "";
-  switch (a) {
-    case "LOGIN": return "Zalogowanie do systemu";
-    case "LOGIN_FAILED": return "Nieudane logowanie";
-    case "LOGIN_BLOCKED": return "Logowanie zablokowane (konto nieaktywne)";
-    case "PASSWORD_CHANGED": return "Zmiana własnego hasła";
-    case "PASSWORD_RESET_BY_ADMIN": return "Reset hasła użytkownika";
-    case "USER_CREATED": return "Utworzenie użytkownika";
-    case "USER_DELETED": return "Usunięcie użytkownika";
-    case "USER_UPDATED": {
-      const d = parsePyDict(r.details);
-      if (!d) return "Zmiana ustawień użytkownika";
-      const parts: string[] = [];
-      if (typeof d.role === "string") parts.push(`nadano rolę ${ROLE_META[d.role]?.label || d.role}`);
-      if (typeof d.is_active === "boolean") parts.push(d.is_active ? "aktywacja konta" : "dezaktywacja konta");
-      if (typeof d.full_name === "string") parts.push("zmiana nazwy");
-      if (d.perms && typeof d.perms === "object") {
-        const pd = d.perms as Record<string, unknown>;
-        const keys = Object.keys(pd);
-        if (!keys.length) parts.push("przywrócono domyślne uprawnienia roli");
-        else keys.forEach(k => parts.push(`${pd[k] ? "włączono" : "wyłączono"} „${permLabel(k)}"`));
-      }
-      if (typeof d.show_onboarding === "boolean") parts.push(d.show_onboarding ? "włączono onboarding" : "wyłączono onboarding");
-      return parts.length ? `Zmiana ustawień: ${parts.join("; ")}` : "Zmiana ustawień użytkownika";
-    }
+const auditDay = (s: string) => {
+  const d = parseTs(s);
+  if (!d) return "—";
+  const dzien = (x: Date) => x.toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" });
+  const dzis = new Date();
+  const wczoraj = new Date(); wczoraj.setDate(dzis.getDate() - 1);
+  if (dzien(d) === dzien(dzis)) return `Dziś · ${dzien(d)}`;
+  if (dzien(d) === dzien(wczoraj)) return `Wczoraj · ${dzien(d)}`;
+  return d.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+};
+const zmianLabel = (n: number) =>
+  n === 1 ? "zmiana" : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) ? "zmiany" : "zmian";
+const auditTime = (s: string) => {
+  const d = parseTs(s);
+  return d ? d.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "—";
+};
+
+// Zdanie z wyróżnionym autorem (e-mail na początku) i obiektem (resource_id).
+function AuditMessage({ r }: { r: AuditRow }) {
+  let rest = r.message;
+  let who: string | null = null;
+  if (r.user_email && rest.startsWith(r.user_email + " ")) {
+    who = r.user_email;
+    rest = rest.slice(r.user_email.length);
   }
-  const m = a.match(/^([A-Z-]+)_(CREATED|UPDATED|DELETED)$/);
-  if (m) {
-    const verb = m[2] === "CREATED" ? "Dodano" : m[2] === "DELETED" ? "Usunięto" : "Zmieniono";
-    const res = RES_LABELS[m[1].toLowerCase()] || m[1].toLowerCase();
-    return `${verb}: ${res}`;
-  }
-  return "";
+  const obj = r.resource_id && r.resource_id.length > 1 ? r.resource_id : null;
+  const at = obj ? rest.indexOf(obj) : -1;
+  return (
+    <>
+      {who && <span style={{ fontWeight: 600, color: "var(--text-hi)" }}>{who}</span>}
+      {at < 0 ? rest : <>
+        {rest.slice(0, at)}
+        <span style={{ fontWeight: 500, color: "var(--text-hi)" }}>{obj}</span>
+        {rest.slice(at + (obj as string).length)}
+      </>}
+    </>
+  );
+}
+
+function AuditChanges({ changes }: { changes: AuditChange[] }) {
+  return (
+    <div style={{ marginTop: 8, border: "1px solid var(--border-soft)", borderRadius: 8, overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: "var(--surface-2)" }}>
+            {["Pole", "Było", "Jest"].map(h => (
+              <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontWeight: 500, fontSize: 11, color: "var(--text-lo)" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {changes.map((c, i) => (
+            <tr key={i} style={{ borderTop: "1px solid var(--border-soft)" }}>
+              <td style={{ padding: "6px 10px", color: "var(--text-mid)", whiteSpace: "nowrap" }}>{c.pole}</td>
+              <td className="num" style={{ padding: "6px 10px", color: c.bylo ? "var(--critical)" : "var(--text-lo)", wordBreak: "break-word" }}>{c.bylo}</td>
+              <td className="num" style={{ padding: "6px 10px", color: c.jest ? "var(--ok)" : "var(--text-lo)", wordBreak: "break-word" }}>{c.jest}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function AuditLogPanel() {
-  const [rows, setRows] = useState<AuditRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<AuditRow[] | null>(null);
+  const [more, setMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [users, setUsers] = useState<string[]>([]);
+  const [obszary, setObszary] = useState<string[]>([]);
+  const [email, setEmail] = useState("");
+  const [area, setArea] = useState("");
+  const [od, setOd] = useState("");
+  const [doo, setDo] = useState("");
+  const [q, setQ] = useState("");
+  const [qDeb, setQDeb] = useState("");
+  const [tech, setTech] = useState(false);
+  const [open, setOpen] = useState<Set<number>>(new Set());
+
+  // Szukajka strzela dopiero po chwili bez pisania, a nie na każdą literę.
+  useEffect(() => {
+    const t = setTimeout(() => setQDeb(q.trim()), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const fetchPage = async (offset: number, limit = 100) => {
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (email) qs.set("user_email", email);
+    if (area) qs.set("area", area);
+    if (od) qs.set("od", od);
+    if (doo) qs.set("do", doo);
+    if (qDeb) qs.set("q", qDeb);
+    return (await api.get(`/audit-log?${qs}`)) as AuditPage;
+  };
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const data = await api.get("/audit-log");
-        if (mounted) setRows(Array.isArray(data) ? (data as AuditRow[]) : []);
-      } catch { if (mounted) toast("Nie udało się pobrać dziennika audytu", "error"); }
-      finally { if (mounted) setLoading(false); }
-    })();
-    return () => { mounted = false; };
-  }, []);
+    let alive = true;
+    setRows(null);
+    fetchPage(0)
+      .then(p => {
+        if (!alive) return;
+        setRows(p.rows); setMore(p.more);
+        if (p.users?.length) setUsers(p.users);
+        if (p.obszary?.length) setObszary(p.obszary);
+      })
+      .catch(() => { if (alive) { toast("Nie udało się pobrać dziennika audytu", "error"); setRows([]); } });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email, area, od, doo, qDeb]);
 
-  const target = (r: AuditRow) => [r.resource_type, r.resource_id].filter(Boolean).join(" ") + (r.details ? ` — ${r.details}` : "");
-
-  const doExport = () => {
-    const cols: CsvColumn<AuditRow>[] = [
-      { label: "Czas", get: (r) => fmtDateTime(r.created_at) },
-      { label: "Uzytkownik", get: (r) => r.user_email || "" },
-      { key: "action", label: "Akcja" },
-      { label: "Opis", get: (r) => humanizeAudit(r) },
-      { label: "Obiekt", get: (r) => target(r) },
-    ];
-    exportCsv("audyt", cols, rows);
+  const loadMore = async () => {
+    if (!rows) return;
+    setLoadingMore(true);
+    try {
+      const p = await fetchPage(rows.length);
+      setRows([...rows, ...p.rows]);
+      setMore(p.more);
+    } catch { toast("Nie udało się doczytać starszych wpisów", "error"); }
+    finally { setLoadingMore(false); }
   };
+
+  const toggle = (id: number) => setOpen(prev => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+
+  // Eksport: wszystko, co pasuje do filtrów (do 500 najnowszych), nie tylko to, co już wczytane.
+  const doExport = async () => {
+    try {
+      const p = await fetchPage(0, 500);
+      const cols: CsvColumn<AuditRow>[] = [
+        { label: "Czas", get: (r) => fmtDateTime(r.created_at) },
+        { label: "Uzytkownik", get: (r) => r.user_email || "" },
+        { label: "Obszar", get: (r) => r.area },
+        { label: "Opis", get: (r) => r.message },
+        { label: "Zmiany", get: (r) => (r.changes || []).map(c => `${c.pole}: ${c.bylo || "—"} → ${c.jest || "—"}`).join("; ") },
+        { label: "Surowy zapis", get: (r) => `${r.action} ${r.details || ""}`.trim() },
+      ];
+      exportCsv("dziennik-audytu", cols, p.rows);
+    } catch { toast("Nie udało się wyeksportować dziennika", "error"); }
+  };
+
+  const filtered = !!(email || area || od || doo || qDeb);
+  const fieldStyle: React.CSSProperties = { ...inputStyle, width: "auto", fontSize: 12, padding: "7px 10px" };
+  const chip = (on: boolean): React.CSSProperties => ({
+    fontSize: 12, padding: "5px 11px", borderRadius: 999, cursor: "pointer", fontFamily: "inherit",
+    border: `1px solid ${on ? "var(--text-hi)" : "var(--border-soft)"}`,
+    background: on ? "var(--text-hi)" : "transparent", color: on ? "var(--surface-1)" : "var(--text-mid)",
+  });
 
   return (
     <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", overflow: "hidden" }}>
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
-          <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{rows.length}</span> zdarzeń
-        </span>
-        <button onClick={doExport} disabled={!rows.length} style={btnSecondary}><I.ArrowUp size={12}/> Eksport</button>
+      {/* Filtry */}
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <input id="audit-q" style={{ ...fieldStyle, flex: "1 1 220px" }} value={q} onChange={e => setQ(e.target.value)}
+               placeholder="Szukaj: SKU, nr kontenera, e-mail…"/>
+        <select id="audit-user" style={fieldStyle} value={email} onChange={e => setEmail(e.target.value)}>
+          <option value="">Wszyscy użytkownicy</option>
+          {users.map(u => <option key={u} value={u}>{u}</option>)}
+        </select>
+        <input id="audit-od" type="date" style={fieldStyle} value={od} onChange={e => setOd(e.target.value)} title="Od"/>
+        <input id="audit-do" type="date" style={fieldStyle} value={doo} onChange={e => setDo(e.target.value)} title="Do"/>
+        {filtered && (
+          <button style={btnGhostMini} onClick={() => { setEmail(""); setArea(""); setOd(""); setDo(""); setQ(""); }}>
+            Wyczyść
+          </button>
+        )}
       </div>
-      {loading ? (
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <button style={chip(!area)} onClick={() => setArea("")}>Wszystko</button>
+        {obszary.map(a => <button key={a} style={chip(area === a)} onClick={() => setArea(area === a ? "" : a)}>{a}</button>)}
+      </div>
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
+          <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{rows ? rows.length : "…"}</span>
+          {more ? "+" : ""} {rows && rows.length === 1 ? "zdarzenie" : "zdarzeń"}
+        </span>
+        <span style={{ flex: 1 }}/>
+        <label style={{ fontSize: 12, color: "var(--text-lo)", display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+          <input id="audit-tech" type="checkbox" checked={tech} onChange={e => setTech(e.target.checked)}/> Szczegóły techniczne
+        </label>
+        <button onClick={doExport} disabled={!rows?.length} style={btnSecondary}><I.ArrowUp size={12}/> Eksport CSV</button>
+      </div>
+
+      {rows === null ? (
         <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
       ) : !rows.length ? (
-        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Brak zdarzeń</div>
-      ) : rows.map((r, i) => (
-        <div key={r.id} style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 16, padding: "10px 16px", borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--border-soft)", transition: "background 0.12s" }}
-          onMouseEnter={(e) => e.currentTarget.style.background = "var(--surface-2)"}
-          onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
-          <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>{fmtDateTime(r.created_at)}</span>
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-            <div style={{ fontSize: 12 }}>
-              <span style={{ fontWeight: 600, color: "var(--text-hi)" }}>{r.user_email || "system"}</span>
-              <span style={{ color: "var(--text-mid)" }}> · {r.action}</span>
-              {humanizeAudit(r) && <span style={{ color: "var(--text-mid)" }}> — {humanizeAudit(r)}</span>}
-            </div>
-            <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{target(r)}</span>
-          </div>
+        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
+          {filtered ? "Nic nie pasuje do filtrów." : "Brak zdarzeń"}
         </div>
-      ))}
+      ) : (
+        <div>
+          {rows.map((r, i) => {
+            const day = auditDay(r.created_at);
+            const newDay = i === 0 || auditDay(rows[i - 1].created_at) !== day;
+            const ch = r.changes || [];
+            const expandable = ch.length > 0;
+            const isOpen = open.has(r.id);
+            const failed = r.action === "LOGIN_FAILED" || r.action === "LOGIN_BLOCKED";
+            return (
+              <React.Fragment key={r.id}>
+                {newDay && (
+                  <div style={{
+                    padding: "8px 16px", fontSize: 11, letterSpacing: ".06em", textTransform: "uppercase",
+                    color: "var(--text-lo)", background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)",
+                  }}>{day}</div>
+                )}
+                <div
+                  role={expandable ? "button" : undefined}
+                  tabIndex={expandable ? 0 : undefined}
+                  aria-expanded={expandable ? isOpen : undefined}
+                  onClick={() => expandable && toggle(r.id)}
+                  onKeyDown={e => { if (expandable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(r.id); } }}
+                  style={{
+                    display: "grid", gridTemplateColumns: "52px minmax(0,1fr) auto", gap: 14, alignItems: "start",
+                    padding: "10px 16px", borderBottom: "1px solid var(--border-soft)",
+                    cursor: expandable ? "pointer" : "default", transition: "background 0.12s",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2)"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                >
+                  <span className="num" style={{ fontSize: 12, color: "var(--text-lo)", paddingTop: 1 }}>{auditTime(r.created_at)}</span>
+                  <div style={{ minWidth: 0, fontSize: 12.5, lineHeight: 1.5, color: "var(--text-mid)" }}>
+                    <AuditMessage r={r}/>
+                    {expandable && (
+                      <span style={{ marginLeft: 6, fontSize: 11, color: "var(--text-lo)" }}>
+                        {isOpen ? "▾" : "▸"} {ch.length} {zmianLabel(ch.length)}
+                      </span>
+                    )}
+                    {(tech || r.legacy) && (
+                      <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 3, overflowWrap: "anywhere" }}>
+                        {r.action}{r.details ? ` · ${r.details}` : ""}
+                      </div>
+                    )}
+                    {isOpen && <AuditChanges changes={ch}/>}
+                  </div>
+                  <span style={{
+                    fontSize: 10.5, padding: "2px 8px", borderRadius: 999, whiteSpace: "nowrap",
+                    border: `1px ${r.legacy ? "dashed" : "solid"} ${failed ? "var(--critical)" : "var(--border-soft)"}`,
+                    color: failed ? "var(--critical)" : "var(--text-lo)",
+                  }} title={r.legacy ? "Wpis sprzed przebudowy dziennika — bez wartości było → jest" : undefined}>
+                    {r.legacy ? "wpis sprzed zmiany" : r.area}
+                  </span>
+                </div>
+              </React.Fragment>
+            );
+          })}
+          {more && (
+            <div style={{ padding: 12, display: "flex", justifyContent: "center" }}>
+              <button style={btnSecondary} onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? "Wczytuję…" : "Załaduj starsze"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

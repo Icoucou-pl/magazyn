@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import f_num, f_txt
 from config import settings
 from database import get_db
 from models import ContainerTypeIn, ContainerTypeOut, CurrentUser
@@ -22,6 +24,17 @@ async def list_container_types(db: AsyncSession = Depends(get_db), user: Current
                              sort_order=row._mapping["sort_order"]) for row in r]
 
 
+POLA_TYPU = {"name": ("Nazwa", f_txt), "capacity_cbm": ("Pojemność", f_num("m³", 2)),
+             "sort_order": ("Kolejność", f_num("", 0))}
+
+
+async def _typ(db: AsyncSession, tid: int):
+    r = (await db.execute(text(
+        f"SELECT name, capacity_cbm, sort_order FROM {settings.TABLE_CONTAINER_TYPES} WHERE id = :id"
+    ), {"id": tid})).mappings().first()
+    return dict(r) if r else None
+
+
 @router.post("/container-types", response_model=ContainerTypeOut, status_code=201)
 async def create_container_type(payload: ContainerTypeIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     r = await db.execute(
@@ -30,21 +43,28 @@ async def create_container_type(payload: ContainerTypeIn, db: AsyncSession = Dep
     )
     new_id = r.scalar_one()
     await db.commit()
+    audit.note(f"dodał typ kontenera {payload.name} ({f_num('m³', 2)(payload.capacity_cbm)})", resource_id=new_id)
     return ContainerTypeOut(id=new_id, **payload.model_dump())
 
 
 @router.patch("/container-types/{tid}", response_model=ContainerTypeOut)
 async def update_container_type(tid: int, payload: ContainerTypeIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
+    przed = await _typ(db, tid)
     await db.execute(
         text(f"UPDATE {settings.TABLE_CONTAINER_TYPES} SET name=:n, capacity_cbm=:c, sort_order=:s WHERE id=:id"),
         {"n": payload.name, "c": payload.capacity_cbm, "s": payload.sort_order, "id": tid}
     )
     await db.commit()
+    audit.note_zmiany(f"typu kontenera {(przed or {}).get('name') or payload.name}",
+                      audit.zmiany(przed, payload.model_dump(), POLA_TYPU), resource_id=tid)
     return ContainerTypeOut(id=tid, **payload.model_dump())
 
 
 @router.delete("/container-types/{tid}", status_code=204)
 async def delete_container_type(tid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
+    przed = await _typ(db, tid)
+    if przed:
+        audit.note(f"usunął typ kontenera {przed['name']}", resource_id=tid)
     r = await db.execute(text(f"DELETE FROM {settings.TABLE_CONTAINER_TYPES} WHERE id=:id"), {"id": tid})
     await db.commit()
     if r.rowcount == 0:

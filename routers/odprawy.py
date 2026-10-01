@@ -33,6 +33,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import f_data, f_kwota, f_num, f_txt, f_zl, plural
 from config import settings
 from database import get_db
 from models import (
@@ -832,12 +834,51 @@ async def zapisz(
     if not odprawa.mrn:
         raise HTTPException(400, "Zgłoszenie nie ma numeru MRN — bez niego nie ma czego zapisać.")
 
+    przed = (await db.execute(
+        text("SELECT data_zgloszenia, kurs_celny, wartosc_faktur, waluta, clo_suma, vat_suma, fv_spedytora "
+             "FROM app_odprawy WHERE mrn = :mrn"), {"mrn": odprawa.mrn},
+    )).mappings().first()
     out.zapis = await _zapisz_wszystko(
         db, odprawa, rachunek, kontenery, towar, out, ust,
         nazwa_pliku=plik.filename or "", user_id=getattr(user, "id", None),
     )
     out.status = "zapisana"
+    _opisz_zapis(container_id, out, dict(przed) if przed else None, ust)
     return out
+
+
+# Dziennik audytu: co z odprawy pokazujemy w „było → jest”.
+POLA_ODPRAWY = {
+    "data_zgloszenia": ("Data zgłoszenia", f_data),
+    "kurs_celny": ("Kurs celny", f_num("", 4)),
+    "wartosc": ("Wartość faktur", f_txt),
+    "clo_suma": ("Cło", f_zl),
+    "vat_suma": ("VAT importowy", f_zl),
+    "fv_spedytora": ("FV spedytora", f_txt),
+}
+
+
+def _opisz_zapis(container_id: int, out: OdprawaOut, przed: Optional[dict], ust) -> None:
+    def _wartosc(kwota, waluta):
+        return f_kwota(waluta or "USD")(kwota) if kwota is not None else None
+
+    po = {"data_zgloszenia": out.data_zgloszenia, "kurs_celny": out.kurs_celny,
+          "wartosc": _wartosc(out.wartosc_faktur, out.waluta), "clo_suma": out.clo_suma,
+          "vat_suma": out.vat_suma, "fv_spedytora": getattr(ust, "fv_spedytora", None)}
+    if przed:
+        przed["wartosc"] = _wartosc(przed.get("wartosc_faktur"), przed.get("waluta"))
+    ch = audit.zmiany(przed, po, POLA_ODPRAWY)
+    ch.append({"pole": "Logistyka (rozpisana)", "bylo": "", "jest": f_zl(out.suma_logistyka)})
+    if out.narzut_proc is not None:
+        ch.append({"pole": "Narzut na towar", "bylo": "", "jest": f_num("%", 1)(out.narzut_proc)})
+    n = out.zapis.pozycji_z_kosztem if out.zapis else 0
+    kont = ", ".join(out.kontenery) or f"#{container_id}"
+    audit.note(
+        f"{'zapisał ponownie' if przed else 'zapisał'} odprawę MRN {out.mrn} ({kont}) — "
+        f"cło {f_zl(out.clo_suma)}, VAT {f_zl(out.vat_suma)}, "
+        f"koszt rozpisany na {n} {plural(n, 'pozycję', 'pozycje', 'pozycji')}",
+        changes=ch, resource_id=container_id,
+    )
 
 
 @router.get("/kontenery/{container_id}/odprawa", response_model=Optional[OdprawaOut])
@@ -1079,7 +1120,8 @@ async def usun(
     Pola dopisane na kontenerze (MRN, koszty spedycji) ZOSTAJĄ — mogły zostać w międzyczasie
     poprawione ręcznie, a zerowanie ich przy cofaniu rachunku byłoby niespodzianką.
     """
-    await db.execute(
+    mrn = (await db.execute(text("SELECT mrn FROM app_odprawy WHERE id = :id"), {"id": odprawa_id})).scalar()
+    zdjete = await db.execute(
         text(f"""
             UPDATE {settings.TABLE_CONTAINER_ITEMS}
                SET koszt_jednostkowy = NULL, cena_zakupu_pln = NULL, cena_reczna = FALSE,
@@ -1092,6 +1134,9 @@ async def usun(
     await db.commit()
     if res.rowcount == 0:
         raise HTTPException(404, "Nie ma takiej odprawy")
+    n = zdjete.rowcount or 0
+    audit.note(f"cofnął odprawę MRN {mrn or '#' + str(odprawa_id)} — koszt zdjęty z {n} "
+               f"{plural(n, 'pozycji', 'pozycji', 'pozycji')}", resource_id=odprawa_id)
 
 
 # ============================================================

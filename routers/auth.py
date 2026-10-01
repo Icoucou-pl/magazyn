@@ -46,11 +46,13 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     )
     u = r.first()
     if not u or not verify_password(payload.password, u.password_hash):
-        await log_audit(db, None, "LOGIN_FAILED", "user", payload.email, "Nieprawidłowy email lub hasło")
+        await log_audit(db, None, "LOGIN_FAILED", "user", payload.email, "Nieprawidłowy email lub hasło",
+                        message=f"nieudane logowanie na konto {payload.email.strip()} — zły e-mail lub hasło")
         raise HTTPException(401, "Nieprawidłowy email lub hasło")
 
     if not u.is_active:
-        await log_audit(db, None, "LOGIN_BLOCKED", "user", payload.email, "Konto deaktywowane")
+        await log_audit(db, None, "LOGIN_BLOCKED", "user", payload.email, "Konto deaktywowane",
+                        message=f"zablokowane logowanie na konto {payload.email.strip()} — konto nieaktywne")
         raise HTTPException(403, "Konto zostało deaktywowane")
 
     # Update last_login
@@ -79,7 +81,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     )
 
     fake_user = CurrentUser(id=u.id, email=u.email, role=u.role, full_name=u.full_name)
-    await log_audit(db, fake_user, "LOGIN", "user", str(u.id))
+    await log_audit(db, fake_user, "LOGIN", "user", str(u.id), message="zalogował się")
 
     return LoginResponse(access_token=token, user=user_out)
 
@@ -135,7 +137,7 @@ async def change_my_password(payload: PasswordChange, user: CurrentUser = Depend
     await db.execute(text(f"UPDATE {settings.TABLE_USERS} SET password_hash = :h WHERE id = :id"), {"h": new_hash, "id": user.id})
     await db.commit()
 
-    await log_audit(db, user, "PASSWORD_CHANGED", "user", str(user.id))
+    await log_audit(db, user, "PASSWORD_CHANGED", "user", str(user.id), message="zmienił swoje hasło")
 
 
 @router.get("/auth/me/sessions", response_model=List[SessionOut])

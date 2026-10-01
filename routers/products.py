@@ -18,10 +18,48 @@ from models import (
 )
 from security import get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
+import audit
 from audit import log_audit
+from audit_opisy import f_bool, f_data, f_num, f_status_produktu, f_txt, f_zl
 from routers.product_history import require_super_admin   # ten sam guard co historia produktu
 
 router = APIRouter(prefix="/api", tags=["products"])
+
+
+# Pola karty produktu w dzienniku audytu: kolumna → (etykieta jak w UI, formater).
+POLA_ATRYBUTOW = {
+    "name_override": ("Nazwa", f_txt),
+    "manufacturer": ("Producent", f_txt),
+    "firma": ("Firma", f_txt),
+    "forced_status": ("Status", f_status_produktu),
+    "cena_zakupu": ("Cena zakupu", f_zl),
+    "ean": ("EAN", f_txt),
+    "kod_cn": ("Kod CN", f_txt),
+    "cbm_per_unit": ("CBM / szt.", f_num("m³", 4)),
+    "dlugosc_cm": ("Długość", f_num("cm", 1)),
+    "szerokosc_cm": ("Szerokość", f_num("cm", 1)),
+    "wysokosc_cm": ("Wysokość", f_num("cm", 1)),
+    "waga_brutto_kg": ("Waga brutto", f_num("kg", 3)),
+    "szt_w_kartonie": ("Szt. w kartonie", f_num("", 0)),
+    "moq": ("MOQ", f_num("szt.", 0)),
+    "zaokraglaj_karton": ("Zaokrąglaj do kartonu", f_bool),
+    "seasonality_enabled": ("Sezonowość", f_bool),
+    "is_sample": ("Sample", f_bool),
+    "sample_stock": ("Stan sampla", f_num("szt.", 0)),
+}
+
+
+async def _nazwy_atrybutow(db: AsyncSession, d: dict) -> dict:
+    """Do dziennika: id producenta/firmy → nazwa (w zdaniu ma być „Foshan Huayi”, nie „7”)."""
+    d = dict(d)
+    mid, fid = d.get("manufacturer_id"), d.get("firma_id")
+    d["manufacturer"] = (await db.execute(
+        text(f"SELECT name FROM {settings.TABLE_MANUFACTURERS} WHERE id = :id"), {"id": mid}
+    )).scalar() if mid else None
+    d["firma"] = (await db.execute(
+        text(f"SELECT name FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": fid}
+    )).scalar() if fid else None
+    return d
 
 
 async def _sku_atrybutow(db: AsyncSession, sku: str) -> str:
@@ -112,6 +150,9 @@ async def get_product_endpoint(sku: str, shop: str = Query(""), db: AsyncSession
 
 @router.put("/products/{sku:path}/lead-time", response_model=ProductSummary)
 async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession = Depends(get_db)):
+    stary = (await db.execute(
+        text(f"SELECT lead_time_days FROM {settings.TABLE_LEAD_TIMES} WHERE sku = :sku"), {"sku": sku}
+    )).scalar()
     await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_LEAD_TIMES} (sku, lead_time_days, updated_at)
@@ -121,6 +162,9 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
         {"sku": sku, "lt": payload.lead_time_days}
     )
     await db.commit()
+    audit.note_zmiany(f"produktu {sku}", audit.zmiany(
+        {"lt": stary}, {"lt": payload.lead_time_days}, {"lt": ("Czas dostawy", f_num("dni", 0))}),
+        resource_id=sku)
     return await get_product(db, sku)
 
 
@@ -242,6 +286,21 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
          "waga": waga, "kod_cn": kod_cn}
     )
     await db.commit()
+
+    nowe = {"cbm_per_unit": cbm, "manufacturer_id": mfr, "firma_id": firma, "seasonality_enabled": seas,
+            "ean": ean, "forced_status": forced, "cena_zakupu": cena, "name_override": name_ov,
+            "is_sample": is_sample, "sample_stock": sample_stock, "dlugosc_cm": dlugosc,
+            "szerokosc_cm": szerokosc, "wysokosc_cm": wysokosc, "szt_w_kartonie": szt_kart, "moq": moq,
+            "zaokraglaj_karton": zaokr, "waga_brutto_kg": waga, "kod_cn": kod_cn}
+    pola = dict(POLA_ATRYBUTOW)
+    if not has_perm(user, "viewFinancials"):
+        pola.pop("cena_zakupu")      # bez uprawnienia cena nie mogła się zmienić — nie pokazujemy jej
+    audit.note_zmiany(
+        f"produktu {sku}",
+        audit.zmiany(await _nazwy_atrybutow(db, dict(e._mapping)) if e else None,
+                     await _nazwy_atrybutow(db, nowe), pola),
+        resource_id=sku,
+    )
     return _mask_financials([await get_product(db, sku)], user)[0]
 
 
@@ -352,6 +411,10 @@ async def import_products(rows: List[ImportRow], db: AsyncSession = Depends(get_
             skipped += 1
 
     await db.commit()
+    audit.note(
+        f"zaimportował atrybuty {updated} {audit.opisy.plural(updated, 'produktu', 'produktów', 'produktów')} z pliku"
+        + (f" (pominięto {skipped})" if skipped else ""),
+    )
     return ImportResult(total=len(rows), updated=updated, skipped=skipped, errors=errors[:20])
 
 
@@ -439,6 +502,8 @@ async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db), user: Cu
         {"sku": sku, "fav": new_val}
     )
     await db.commit()
+    audit.note(f"dodał produkt {sku} do obserwowanych" if new_val else f"usunął produkt {sku} z obserwowanych",
+               resource_id=sku)
     return await get_product(db, sku)
 
 
@@ -461,6 +526,10 @@ async def toggle_no_reorder(sku: str, db: AsyncSession = Depends(get_db), user: 
         {"sku": sku, "nr": new_val}
     )
     await db.commit()
+    audit.note(f"oznaczył produkt {sku} jako „nie dozamawiamy”" if new_val
+               else f"zdjął z produktu {sku} oznaczenie „nie dozamawiamy”",
+               changes=[{"pole": "Nie dozamawiamy", "bylo": f_bool(not new_val), "jest": f_bool(new_val)}],
+               resource_id=sku)
     return await get_product(db, sku)
 
 
@@ -474,6 +543,9 @@ async def set_manual_new(sku: str, body: ManualNewUpdate, db: AsyncSession = Dep
     if body.until is not None and body.until > date.today() + timedelta(days=731):
         raise HTTPException(status_code=400, detail="Nowość można ustawić najwyżej na 2 lata")
     sku = await _sku_atrybutow(db, sku)
+    stara = (await db.execute(
+        text(f"SELECT manual_new_until FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku}
+    )).scalar()
     await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, manual_new_until, updated_at)
@@ -483,6 +555,12 @@ async def set_manual_new(sku: str, body: ManualNewUpdate, db: AsyncSession = Dep
         {"sku": sku, "until": body.until}
     )
     await db.commit()
+    ch = audit.zmiany({"u": stara}, {"u": body.until}, {"u": ("Nowość do", f_data)})
+    if not ch:
+        audit.skip()
+    else:
+        audit.note(f"oznaczył produkt {sku} jako nowość do {f_data(body.until)}" if body.until
+                   else f"zdjął ręczną nowość z produktu {sku}", changes=ch, resource_id=sku)
     return await get_product(db, sku)
 
 
@@ -597,6 +675,7 @@ async def create_sample(payload: SampleCreate, db: AsyncSession = Depends(get_db
         },
     )
     await db.commit()
+    audit.note(f"dodał sample {sku}", resource_id=sku)
     return _mask_financials([await get_product(db, sku)], user)[0]
 
 
@@ -759,5 +838,7 @@ async def delete_product(sku: str, db: AsyncSession = Depends(get_db), user: Cur
     await log_audit(
         db, user, "PRODUCT_DELETED", "product", sku,
         "usunięto: " + ", ".join(f"{k}={v}" for k, v in deleted.items() if v),
+        message=f"usunął produkt {sku} razem z danymi aplikacji",
+        area="Produkty",
     )
     return {"sku": sku, "deleted": deleted}

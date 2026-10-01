@@ -27,6 +27,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import f_data, f_zl
 from config import settings
 from database import get_db
 from models import (
@@ -136,6 +138,8 @@ async def upsert_balance(payload: BankBalanceIn, db: AsyncSession = Depends(get_
     )
     row = r.mappings().first()
     await db.commit()
+    audit.note(f"wpisał stan konta {s.upper()} na {f_data(payload.balance_date)}: {f_zl(payload.amount_pln)}",
+               resource_id=row["id"] if row else None)
     return _bal_out(row)
 
 
@@ -160,6 +164,8 @@ async def update_balance(bid: int, payload: BankBalanceIn, db: AsyncSession = De
     except IntegrityError:
         await db.rollback()
         raise HTTPException(409, "Na ten dzień jest już odczyt salda tej firmy")
+    audit.note(f"poprawił stan konta {s.upper()} na {f_data(payload.balance_date)}: {f_zl(payload.amount_pln)}",
+               resource_id=bid)
     return _bal_out(row)
 
 

@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import f_map, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
@@ -38,6 +40,20 @@ from services.products import _arrival_and_source, get_product
 router = APIRouter(prefix="/api", tags=["cena"])
 
 TABELA = "app_product_ceny"
+
+# Dziennik audytu: co z zapisanej ceny pokazujemy w „było → jest”.
+_BAZY = {"fifo": "FIFO", "srednia": "średnia", "ostatnia": "ostatnia dostawa", "reczna": "ręczna"}
+POLA_CENY = {
+    "cena_brutto": ("Cena brutto", f_zl),
+    "cena_netto": ("Cena netto", f_zl),
+    "baza": ("Baza kosztu", f_map(_BAZY)),
+    "koszt_bazy": ("Koszt / szt.", f_zl),
+    "tryb": ("Tryb", f_map({"marza": "marża", "narzut": "narzut"})),
+    "procent": ("Procent", f_proc),
+    "wysylka": ("Wysyłka", f_zl),
+    "prowizja": ("Prowizja", f_proc),
+    "vat": ("VAT", f_proc),
+}
 
 
 async def _dostawy(db: AsyncSession, sku: str) -> "tuple[List[Dostawa], Dict[int, dict]]":
@@ -182,6 +198,10 @@ async def zapisz_cene(sku: str, body: CenaZapisIn, db: AsyncSession = Depends(ge
     except BladCeny as e:
         raise HTTPException(422, str(e))
     shop = resolve_shop(body.shop or "", user)
+    stara = (await db.execute(
+        text(f"SELECT * FROM {TABELA} WHERE sku_canon = LOWER(TRIM(:sku)) AND kanal = :kanal"),
+        {"sku": sku, "kanal": body.kanal},
+    )).mappings().first()
     row = (await db.execute(
         text(f"""
             INSERT INTO {TABELA}
@@ -207,4 +227,11 @@ async def zapisz_cene(sku: str, body: CenaZapisIn, db: AsyncSession = Depends(ge
         },
     )).mappings().first()
     await db.commit()
+    ch = audit.zmiany(dict(stara) if stara else None, dict(row), POLA_CENY)
+    if not ch:
+        audit.skip()
+    else:
+        bylo = f" (było {f_zl(stara['cena_brutto'])})" if stara and stara["cena_brutto"] != row["cena_brutto"] else ""
+        audit.note(f"zapisał cenę „{body.kanal}” produktu {sku.strip()}: {f_zl(row['cena_brutto'])} brutto{bylo}",
+                   changes=ch, resource_id=sku.strip())
     return _zapisana(row)

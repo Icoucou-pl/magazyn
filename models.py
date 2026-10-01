@@ -104,6 +104,17 @@ class AuditLogOut(BaseModel):
     resource_id: Optional[str]
     details: Optional[str]
     created_at: datetime
+    message: str = ""                       # gotowe zdanie („ania@x.pl zmieniła …”)
+    changes: List[Dict[str, Any]] = []      # [{pole, bylo, jest}]
+    area: str = "Inne"
+    legacy: bool = False                    # wpis sprzed przebudowy — zdanie odtworzone przy odczycie
+
+
+class AuditLogPage(BaseModel):
+    rows: List[AuditLogOut]
+    more: bool                              # czy jest co doczytać („Załaduj starsze”)
+    users: List[str] = []                   # e-maile do filtra
+    obszary: List[str] = []
 
 
 # ===== PRODUKTY =====

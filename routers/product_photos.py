@@ -28,6 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
 from config import settings
 from database import get_db, SessionLocal
 from models import CurrentUser, ProductPhotoOut
@@ -261,6 +262,7 @@ async def delete_photo(pid: int, db: AsyncSession = Depends(get_db), user: Curre
         {"sku": row.sku},
     )
     await db.commit()
+    audit.note(f"usunął zdjęcie produktu {row.sku}", resource_id=row.sku)
 
 
 @router.put("/product-photos/{pid}/main", response_model=List[ProductPhotoOut])
@@ -286,6 +288,7 @@ async def set_main(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUs
         {"id": pid, "sku": row.sku},
     )
     await db.commit()
+    audit.note(f"ustawił nowe zdjęcie główne produktu {row.sku}", resource_id=row.sku)
 
     r2 = await db.execute(
         text(f"SELECT {_META_COLS} FROM {settings.TABLE_PRODUCT_PHOTOS} "

@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import audit
+from audit_opisy import f_num, f_txt, plural
 from config import settings
 from database import get_db
 from models import CurrentUser, FirmaOut, FirmaUpdate, FirmaAssignRequest
@@ -50,6 +52,7 @@ async def list_firmy(db: AsyncSession = Depends(get_db), user: CurrentUser = Dep
 
 @router.patch("/firmy/{fid}", response_model=FirmaOut)
 async def update_firma(fid: int, payload: FirmaUpdate, db: AsyncSession = Depends(get_db), admin: CurrentUser = Depends(require_admin)):
+    przed = (await db.execute(text(f"SELECT {_COLS} FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": fid})).mappings().first()
     fields, params = [], {"id": fid}
     for col in ("name", "color", "base_url", "sort_order"):
         val = getattr(payload, col)
@@ -62,6 +65,10 @@ async def update_firma(fid: int, payload: FirmaUpdate, db: AsyncSession = Depend
     row = (await db.execute(text(f"SELECT {_COLS} FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": fid})).mappings().first()
     if not row:
         raise HTTPException(404, "Firma nie znaleziona")
+    audit.note_zmiany(f"firmy {(przed or row)['name']}", audit.zmiany(
+        dict(przed) if przed else None, dict(row),
+        {"name": ("Nazwa", f_txt), "color": ("Kolor", f_txt), "base_url": ("Adres sklepu", f_txt),
+         "sort_order": ("Kolejność", f_num("", 0))}), resource_id=fid)
     return _to_out(row)
 
 
@@ -78,4 +85,10 @@ async def assign_products(fid: int, payload: FirmaAssignRequest, db: AsyncSessio
         {"fid": fid, "mfr": payload.manufacturer_id},
     )
     await db.commit()
-    return {"assigned": r.rowcount or 0}
+    n = r.rowcount or 0
+    firma = (await db.execute(text(f"SELECT name FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": fid})).scalar()
+    producent = (await db.execute(text(f"SELECT name FROM {settings.TABLE_MANUFACTURERS} WHERE id = :id"),
+                                  {"id": payload.manufacturer_id})).scalar()
+    audit.note(f"przypisał {n} {plural(n, 'produkt', 'produkty', 'produktów')} producenta "
+               f"{producent or '#' + str(payload.manufacturer_id)} do firmy {firma}", resource_id=fid)
+    return {"assigned": n}

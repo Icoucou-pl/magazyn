@@ -63,6 +63,7 @@ from models import CurrentUser
 from security import get_current_user, has_perm, resolve_scope
 from services.snapshots import build_stock_rows
 from audit import log_audit
+from audit_opisy import f_zl
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -560,5 +561,8 @@ async def economics_config_save(
 
     await db.commit()
     await log_audit(db, user, "ECONOMICS_CONFIG_SAVED", "reports", "economics",
-                    f"costs={[(c.firma_slug, c.monthly_cost_pln) for c in (payload.costs or [])]}")
+                    f"costs={[(c.firma_slug, c.monthly_cost_pln) for c in (payload.costs or [])]}",
+                    message="zapisał konfigurację ekonomiki SKU",
+                    changes=[{"pole": f"Koszt miesięczny {c.firma_slug}", "bylo": "", "jest": f_zl(c.monthly_cost_pln)}
+                             for c in (payload.costs or [])])
     return await economics_config(db, user)
