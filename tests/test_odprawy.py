@@ -705,3 +705,34 @@ if __name__ == "__main__":
             print(f"  BŁĄD  {nazwa}: {e}")
     print("wszystkie testy przeszły" if not zle else f"{zle} testów nie przeszło")
     raise SystemExit(1 if zle else 0)
+
+
+SAD_ZALADUNEK = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-05-21"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="4.0000" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="1000" P35BruttoZestawu="100" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST33"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="100" P38MasaNetto="90" P42WartoscPozycji="1000" P47WartCelna="4600">
+    <P31ZnakiINumery OpisTowaru="POCHLANIACZ"><Opakowania RodzOpak="CT" LiczbaOpak="1"/>
+      <Kontenery Numer="TEST8888888"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="84213925"/>
+    <P44DodInfo>
+      <KorektyZrodlowe KodKorekty="031W" WalutaKorekty="USD" RozbijWg="2" WartKorekty="100"/>
+      <KorektyZrodlowe KodKorekty="033W" WalutaKorekty="USD" RozbijWg="2" WartKorekty="50"/>
+    </P44DodInfo>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+  <KorektyZbiorcze ID="1" KodKorekty="031W" WalutaKorekty="USD" RozbijWg="2" WartKorekty="100"/>
+  <KorektyZbiorcze ID="2" KodKorekty="033W" WalutaKorekty="USD" RozbijWg="2" WartKorekty="50"/>
+</SADUE>"""
+
+
+def test_zaladunek_033w_wchodzi_do_wartosci_celnej():
+    """Dongguan MEDU5327848: „Container FOB cost" poszedł jako 033W. Bez niego wartość
+    celna pozycji się nie spinała i zapis był zablokowany."""
+    o = parsuj(SAD_ZALADUNEK)
+    d = {x.kod: x for x in o.doliczenia}
+    assert d["033W"].do_wartosci_celnej
+    assert all(k.ok for k in kontrole(o)), [k.nazwa for k in kontrole(o) if not k.ok]
