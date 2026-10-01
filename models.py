@@ -183,6 +183,7 @@ class ProductSummary(BaseModel):
     firma_id: Optional[int] = None          # firma-właściciel magazynu źródłowego (NULL = AMH)
     firma_name: Optional[str] = None
     firma_color: Optional[str] = None
+    firma_slug: str = "amh"               # slug właściciela (amh/acti/veluxa); brak przypisania = AMH
     # Tylko przy shop=auto: firma, w której backend FAKTYCZNIE znalazł produkt ("" = suma
     # wszystkich firm). Różna od firmy z atrybutów, gdy właściciel (np. Veluxa sprowadza)
     # nie ma tego towaru u siebie, bo stan i sprzedaż żyją w innej firmie (np. AMH).

@@ -81,6 +81,7 @@ type ShoppingProduct = {
   avg_monthly: number; recommended_quantity: number; status: string; days_until_empty: number;
   transfer_source_shop?: string | null; transfer_source_qty?: number;
   transfer_source_transit?: number; transfer_state?: string | null;
+  firma_slug?: string;
 };
 type ShoppingGroup = {
   manufacturer_id: number | null;
@@ -1186,12 +1187,16 @@ export default function Dashboard({
   }, [containers, shop]);
 
   // Pożary: pozycje z listy zakupów (KRYTYCZNY/ZAMÓW TERAZ) wg dni do końca — pełna lista,
-  // karta sama limituje do 5 wierszy i rozwija resztę w miejscu.
+  // karta sama limituje do 6 wierszy i rozwija resztę w miejscu.
+  // Na zakładce firmy tylko produkty, których ta firma jest właścicielem (magazyn źródłowy):
+  // towar Acti/Veluxy sprzedawany w AMH z marżą to nie jest pożar AMH — gasi go siostra.
+  // Na „Wszystkich" zostaje cała grupa.
   const fires = useMemo(() => {
     const all = shopping.flatMap((g) => g.products);
     return all.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ")
+      .filter((p) => !shop || (p.firma_slug ?? "amh") === shop)
       .sort((a, b) => a.days_until_empty - b.days_until_empty);
-  }, [shopping]);
+  }, [shopping, shop]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }} className="fade-in">
