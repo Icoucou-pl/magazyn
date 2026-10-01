@@ -98,6 +98,10 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   const [przypisanie, setPrzypisanie] = useState<Record<number, number>>({});
   const [gratisy, setGratisy] = useState<Record<number, number>>({});
   const [cenyReczne, setCenyReczne] = useState<Record<number, string>>({});
+  // Zgoda na importera innego niż firma towaru (np. AMH zapłaciło za towar Acti).
+  const [innyImporter, setInnyImporter] = useState(false);
+  // Plik odrzucony przez bramkę — żeby „Rozlicz mimo to" nie wymagało wybierania go drugi raz.
+  const [odrzucony, setOdrzucony] = useState<File | null>(null);
   // Loty objęte zgłoszeniem (kontener skonsolidowany). null = wybór automatyczny backendu.
   const [loty, setLoty] = useState<number[] | null>(null);
   // Która z zapisanych odpraw kontenera jest otwarta. null = ostatnia.
@@ -163,12 +167,13 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     przypisanie,
     gratisy,
     loty,
+    inny_importer: innyImporter,
     ceny_reczne: Object.fromEntries(
       Object.entries(cenyReczne)
         .filter(([, v]) => v !== "" && !Number.isNaN(liczba(v)))
         .map(([k, v]) => [k, liczba(v)]),
     ),
-  }), [klucz, fxTowar, fxKoszty, fvNr, fvData, koszty, przypisanie, gratisy, cenyReczne, loty]);
+  }), [klucz, fxTowar, fxKoszty, fvNr, fvData, koszty, przypisanie, gratisy, cenyReczne, loty, innyImporter]);
 
   ustawieniaRef.current = ustawienia();
 
@@ -182,6 +187,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
       const z = (await api.post(url, fd)) as Odprawa;
       ustawDaneRef.current(z);
       setPlik(f);
+      setOdrzucony(null);
       // Wypełniamy TYLKO puste pola — z poprzedniego zapisu tej odprawy, jeśli jakiś był.
       // Dzięki temu dołożenie faktury spedytora kilka dni później nie znaczy przepisywania
       // od zera cen z faktury dostawcy. Aktualizatory są funkcyjne, żeby nie czytać stanu
@@ -207,6 +213,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     } catch (e) {
       const m = e instanceof Error && e.message ? e.message : "Nie udało się wczytać zgłoszenia";
       setBlad(m);
+      setOdrzucony(f);
       if (zapis) toast(m, "warning");
     } finally { setBusy(false); }
   }, [containerId, koszty.length, fxTowar, fxKoszty, onSaved]);
@@ -239,8 +246,31 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     setDane(null); setPlik(null); setKoszty([]);
     setCenyReczne({}); setPrzypisanie({}); setGratisy({}); setLoty(null);
     setFvNr(""); setFvData(""); setFxTowar(""); setFxKoszty("");
+    setInnyImporter(false);
     odtworzone.current = false; pierwszy.current = true;
   };
+
+  // Bramka „importer ≠ firma towaru" to zwykle pomyłka (zły plik), ale bywa celowa —
+  // wtedy jedno kliknięcie przepuszcza zgłoszenie, a rachunek niesie ostrzeżenie.
+  const obcyImporter = !!blad && blad.startsWith("Importerem w SAD jest") && canEdit && !!odrzucony;
+  const rozliczMimoTo = () => {
+    if (!odrzucony) return;
+    setInnyImporter(true);
+    void wyslij(odrzucony, false, { inny_importer: true });
+  };
+  const blokBledu = blad && (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <Komunikat poziom="blad" tresc={blad} />
+      {obcyImporter && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "0 4px" }}>
+          <button onClick={rozliczMimoTo} disabled={busy} style={btnSec}>Rozlicz mimo to</button>
+          <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
+            Gdy inna spółka celowo zapłaciła za ten towar. Rachunek pokaże ostrzeżenie, a koszt z ERP — dla importera z SAD.
+          </span>
+        </div>
+      )}
+    </div>
+  );
   const otworzOdprawe = (id: number) => { wyczysc(); setLadowanie(true); setOdprawaId(id); setOdswiez((n) => n + 1); };
 
   // Pasek odpraw kontenera. Nie liczymy „ile będzie zgłoszeń" — pokazujemy, które są
@@ -291,7 +321,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {pasekOdpraw}
-        {blad && <Komunikat poziom="blad" tresc={blad} />}
+        {blokBledu}
         {canEdit ? (
           <div
             onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
@@ -329,7 +359,7 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {pasekOdpraw}
-      {blad && <Komunikat poziom="blad" tresc={blad} />}
+      {blokBledu}
 
       {/* Nagłówek odprawy */}
       <div style={{ ...karta, display: "flex", gap: 24, flexWrap: "wrap", padding: "12px 16px", alignItems: "flex-start" }}>
