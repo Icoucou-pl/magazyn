@@ -149,7 +149,8 @@ async def get_product_endpoint(sku: str, shop: str = Query(""), db: AsyncSession
 
 
 @router.put("/products/{sku:path}/lead-time", response_model=ProductSummary)
-async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession = Depends(get_db)):
+async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession = Depends(get_db),
+                           user: CurrentUser = Depends(require_perm("editProducts"))):
     stary = (await db.execute(
         text(f"SELECT lead_time_days FROM {settings.TABLE_LEAD_TIMES} WHERE sku = :sku"), {"sku": sku}
     )).scalar()
@@ -165,7 +166,7 @@ async def update_lead_time(sku: str, payload: LeadTimeUpdate, db: AsyncSession =
     audit.note_zmiany(f"produktu {sku}", audit.zmiany(
         {"lt": stary}, {"lt": payload.lead_time_days}, {"lt": ("Czas dostawy", f_num("dni", 0))}),
         resource_id=sku)
-    return await get_product(db, sku)
+    return _mask_financials([await get_product(db, sku, allowed=allowed_shops(user))], user)[0]
 
 
 @router.put("/products/{sku:path}/attrs", response_model=ProductSummary)
@@ -305,8 +306,9 @@ async def update_attrs(sku: str, payload: ProductAttrsUpdate, db: AsyncSession =
 
 
 @router.get("/products/{sku:path}/projection", response_model=List[StockProjectionPoint])
-async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_db)):
-    product = await get_product(db, sku)
+async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_db),
+                     user: CurrentUser = Depends(get_current_user)):
+    product = await get_product(db, sku, allowed=allowed_shops(user))
     today = date.today()
     base_daily = product.avg_monthly_weighted / 30
     # Dostawa wchodzi na dzień wejścia na magazyn (warehouse_delivery_date), nie na surową ETA.

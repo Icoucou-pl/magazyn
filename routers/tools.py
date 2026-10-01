@@ -9,14 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings, included_status_clause
 from sql import PRODUCT_NAMES_CTE
 from database import get_db
-from models import AutoSuggestRequest, AutoSuggestItem, AutoSuggestResponse, OrderPdfRequest
+from models import AutoSuggestRequest, AutoSuggestItem, AutoSuggestResponse, OrderPdfRequest, CurrentUser
+from security import get_current_user, require_perm
 from services.products import fetch_products
 
 router = APIRouter(prefix="/api", tags=["tools"])
 
 
 @router.post("/auto-suggest", response_model=AutoSuggestResponse)
-async def auto_suggest(payload: AutoSuggestRequest, db: AsyncSession = Depends(get_db)):
+async def auto_suggest(payload: AutoSuggestRequest, db: AsyncSession = Depends(get_db),
+                       user: CurrentUser = Depends(get_current_user)):
     """Algorytm proponuje skład kontenera dla danego producenta."""
     type_result = await db.execute(text(f"SELECT capacity_cbm FROM {settings.TABLE_CONTAINER_TYPES} WHERE id = :id"), {"id": payload.container_type_id})
     capacity_row = type_result.first()
@@ -68,7 +70,8 @@ async def auto_suggest(payload: AutoSuggestRequest, db: AsyncSession = Depends(g
 
 
 @router.get("/search/ean")
-async def search_ean(q: str = Query(..., min_length=2), db: AsyncSession = Depends(get_db)):
+async def search_ean(q: str = Query(..., min_length=2), db: AsyncSession = Depends(get_db),
+                     user: CurrentUser = Depends(get_current_user)):
     """Wyszukiwanie produktu po EAN lub SKU. Sprawdza zapisane EANy w app_product_attrs oraz historyczne w sellasist_order_items."""
     r = await db.execute(text(f"""
         SELECT DISTINCT
@@ -132,7 +135,8 @@ def _visible_products_clause(sku_raw_sql: str) -> str:
 
 @router.get("/search/global")
 async def search_global(q: str = Query(..., min_length=2), include_inactive: bool = False,
-                        only_watched: bool = False, db: AsyncSession = Depends(get_db)):
+                        only_watched: bool = False, db: AsyncSession = Depends(get_db),
+                        user: CurrentUser = Depends(get_current_user)):
     """Globalna wyszukiwarka po: SKU, nazwie produktu, EAN, producencie, numerze kontenera, MRN.
     Produkty INACTIVE (zero stanu i zero sprzedaży 12m) są domyślnie pomijane
     (_visible_products_clause). include_inactive=1 (z preferencji "Nieaktywne" we froncie)
@@ -323,7 +327,8 @@ async def search_global(q: str = Query(..., min_length=2), include_inactive: boo
 
 
 @router.post("/order-pdf-data")
-async def order_pdf_data(payload: OrderPdfRequest, db: AsyncSession = Depends(get_db)):
+async def order_pdf_data(payload: OrderPdfRequest, db: AsyncSession = Depends(get_db),
+                         user: CurrentUser = Depends(require_perm("generatePO"))):
     """
     Zwraca dane do wygenerowania PDF zamówienia.
     PDF generujemy po stronie frontendu (jsPDF) bo łatwiej kontrolować layout.

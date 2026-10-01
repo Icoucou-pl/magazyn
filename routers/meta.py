@@ -22,7 +22,7 @@ async def health():
 
 
 @router.get("/stats")
-async def stats(db: AsyncSession = Depends(get_db)):
+async def stats(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     r1 = await db.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_PRODUCTS}"))
     r2 = await db.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_STOCK} > 0"))
     r3 = await db.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_ORDERS} WHERE {settings.COL_ORDER_DATE} >= NOW() - INTERVAL '365 days'"))
@@ -30,7 +30,7 @@ async def stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/kpi/transit-warehouse")
-async def transit_warehouse(db: AsyncSession = Depends(get_db)):
+async def transit_warehouse(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Wartość „magazynu w drodze" — z drugiej tabeli subiektowej (AMH, świeże ceny).
     = Σ stan_magazyn_w_drodze × cena_jednostkowa. Liczone po WSZYSTKICH produktach."""
     r = await db.execute(text(f"""
