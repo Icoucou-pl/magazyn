@@ -979,6 +979,9 @@ class OdprawaUstawieniaIn(BaseModel):
     # Kontener skonsolidowany: id lotów objętych TYM zgłoszeniem. None = wybór automatyczny
     # (loty innej spółki, z innym MRN albo rozliczone inną odprawą odpadają same).
     loty: Optional[List[int]] = None
+    # Importer w SAD celowo inny niż firma towaru (np. AMH zapłaciło za towar Acti).
+    # Bez tej zgody odprawa zatrzymuje się na bramce „importer ≠ firma towaru".
+    inny_importer: bool = False
 
 
 class OdprawaKontrolaOut(BaseModel):
