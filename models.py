@@ -976,6 +976,9 @@ class OdprawaUstawieniaIn(BaseModel):
     gratisy: Dict[int, int] = {}
     # item_id → cena na sztukę w walucie odprawy (z faktury dostawcy, przy pozycjach mieszanych)
     ceny_reczne: Dict[int, float] = {}
+    # Kontener skonsolidowany: id lotów objętych TYM zgłoszeniem. None = wybór automatyczny
+    # (loty innej spółki, z innym MRN albo rozliczone inną odprawą odpadają same).
+    loty: Optional[List[int]] = None
 
 
 class OdprawaKontrolaOut(BaseModel):
@@ -1005,6 +1008,7 @@ class OdprawaPozycjaOut(BaseModel):
     szt_uzup: Optional[float] = None
     kontenery: List[str] = []
     item_ids: List[int] = []           # pozycje kontenera przypisane do tej pozycji SAD
+    faktury: List[str] = []            # faktury dostawcy podane w tej pozycji (N935)
     gratis_item_id: Optional[int] = None
 
 
@@ -1038,6 +1042,35 @@ class OdprawaZapisOut(BaseModel):
     kontenery_zaktualizowane: List[str] = []
     produkty_waga: List[str] = []
     produkty_kod_cn: List[str] = []
+
+
+class OdprawaLotOut(BaseModel):
+    """Lot kontenera skonsolidowanego widziany z odprawy: czy ją obejmuje i dlaczego."""
+    lot_id: int
+    container_id: int
+    dostawca: Optional[str] = None
+    zamowienie: Optional[str] = None
+    mrn: Optional[str] = None
+    firma: Optional[str] = None
+    sku: List[str] = []
+    sztuk: int = 0
+    wybrany: bool = False
+    blokada: bool = False            # nie może wejść do tej odprawy (inna spółka, inny MRN, inna odprawa)
+    faktura: Optional[str] = None    # faktura dostawcy ze zgłoszenia, którą przypisaliśmy lotowi
+    dopasowanie: Optional[str] = None  # "numer" | "wartosc" — skąd wiemy, że to ta faktura
+    powod: str = ""
+    odprawa_id: Optional[int] = None   # odprawa, która już rozliczyła towar tego lotu
+    odprawa_mrn: Optional[str] = None
+
+
+class OdprawaKontenerOut(BaseModel):
+    """Jedna z odpraw kontenera — do paska przełączania na karcie."""
+    id: int
+    mrn: str
+    data_zgloszenia: Optional[date] = None
+    importer: Optional[str] = None
+    status: str = "zapisana"
+    pozycji: int = 0
 
 
 class OdprawaZapisaneOut(BaseModel):
@@ -1099,5 +1132,10 @@ class OdprawaOut(BaseModel):
     mozna_zapisac: bool = False
     zapisane: Optional[OdprawaZapisaneOut] = None
     zrodlo_erp: Optional[str] = None     # "subiekt" | "fakturownia" — skąd koszt_erp
+    odprawa_id: Optional[int] = None
+    # Kontener skonsolidowany: loty i to, czy ta odprawa je obejmuje. Pusta lista = zwykły kontener.
+    loty: List[OdprawaLotOut] = []
+    # Wszystkie odprawy otwartego kontenera — pasek przełączania na karcie.
+    odprawy_kontenera: List[OdprawaKontenerOut] = []
     status: str = "podglad"            # "podglad" | "szkic" | "zapisana"
     zapis: Optional[OdprawaZapisOut] = None
