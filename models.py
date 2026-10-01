@@ -1026,6 +1026,8 @@ class OdprawaTowarOut(BaseModel):
     szacunek: bool = False
     reczna: bool = False
     poz_sad: Optional[int] = None
+    # Bieżący koszt zakupu w ERP importera (Subiekt dla AMH, Fakturownia dla Acti/Veluxy).
+    koszt_erp: Optional[float] = None
 
 
 class OdprawaZapisOut(BaseModel):
@@ -1096,5 +1098,6 @@ class OdprawaOut(BaseModel):
     narzut_proc: Optional[float] = None
     mozna_zapisac: bool = False
     zapisane: Optional[OdprawaZapisaneOut] = None
+    zrodlo_erp: Optional[str] = None     # "subiekt" | "fakturownia" — skąd koszt_erp
     status: str = "podglad"            # "podglad" | "szkic" | "zapisana"
     zapis: Optional[OdprawaZapisOut] = None
