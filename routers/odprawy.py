@@ -173,6 +173,67 @@ async def _firma_kontenera(db: AsyncSession, container_id: int) -> Optional[str]
 # Złożenie podglądu
 # ============================================================
 
+async def _koszt_erp(db: AsyncSession, slug: Optional[str],
+                    skus: Sequence[str]) -> "tuple[Optional[str], Dict[str, float]]":
+    """Bieżący koszt zakupu SKU w ERP spółki, która importuje ten kontener.
+
+    Kolumna „cena plan." z pozycji kontenera bywa nieaktualna — wpisuje się ją przy
+    zakładaniu kontenera i nikt jej potem nie poprawia. Do porównania z rachunkiem
+    odprawy bardziej miarodajny jest koszt, który dziś trzyma ERP.
+
+    Ten sam SKU potrafi mieć dwa koszty: AMH kupuje część towaru od Acti albo Veluxy
+    po cenie transferowej, więc Subiekt zna koszt AMH, a Fakturownia koszt spółki-matki.
+    Interesuje nas koszt IMPORTERA — a importera wskazuje samo zgłoszenie (NIP z SAD),
+    więc nie ma tu żadnego zgadywania:
+      · AMH (is_self)  → Subiekt (subiekt_dwa_magazyny, zapasowo stary katalog)
+      · Acti / Veluxa  → fakturownia_stock TEJ firmy (firma_id), nie dowolnej
+
+    Zwraca (źródło, {sku_canon: cena}). Ceny zerowe traktujemy jak brak — zero w tych
+    tabelach znaczy „nie wiem", a nie „za darmo".
+    """
+    klucze = sorted({(x or "").strip().lower() for x in skus if x})
+    if not klucze:
+        return None, {}
+    f = None
+    if slug:
+        f = (await db.execute(
+            text(f"SELECT id, is_self FROM {settings.TABLE_FIRMY} WHERE LOWER(slug) = :s"),
+            {"s": slug.strip().lower()},
+        )).mappings().first()
+    if f is None or f["is_self"]:
+        rows = (await db.execute(
+            text(f"""
+                SELECT k, cena FROM (
+                    SELECT LOWER(TRIM(sku)) AS k, MAX(NULLIF(cena_jednostkowa, 0))::float AS cena, 1 AS pri
+                      FROM {settings.TABLE_SUBIEKT_DWA}
+                     WHERE LOWER(TRIM(sku)) = ANY(:k)
+                     GROUP BY 1
+                    UNION ALL
+                    SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})),
+                           MAX(NULLIF({settings.COL_PRODUCT_PRICE}, 0))::float, 2
+                      FROM {settings.TABLE_PRODUCTS}
+                     WHERE LOWER(TRIM({settings.COL_PRODUCT_SKU})) = ANY(:k)
+                     GROUP BY 1
+                ) c
+                WHERE cena IS NOT NULL
+                ORDER BY pri DESC
+            """),
+            {"k": klucze},
+        )).mappings().all()
+        # ORDER BY pri DESC + nadpisywanie w słowniku = wygrywa nowy Subiekt (pri 1).
+        return "subiekt", {r["k"]: float(r["cena"]) for r in rows}
+    rows = (await db.execute(
+        text(f"""
+            SELECT sku_canon AS k, MAX(NULLIF(purchase_price_net, 0))::float AS cena
+              FROM {settings.TABLE_FAKTUROWNIA_STOCK}
+             WHERE firma_id = :fid AND sku_canon = ANY(:k)
+             GROUP BY 1
+        """),
+        {"fid": f["id"], "k": klucze},
+    )).mappings().all()
+    return "fakturownia", {r["k"]: float(r["cena"]) for r in rows if r["cena"] is not None}
+
+
 def _kwota(v) -> float:
     """Liczba z bazy (Decimal albo NULL) jako float. Na poziomie modułu — pomocnik `_f`
     żyje wewnątrz endpointu odczytu i stąd go nie widać, co przy ponownym wczytaniu
@@ -333,6 +394,8 @@ async def _zloz(
         {"mrn": odprawa.mrn},
     )).mappings().first()
     zapisane = await _zapisane_ustawienia(db, istniejaca)
+    zrodlo_erp, erp = await _koszt_erp(db, (firma_sad or {}).get("slug") or firma_kont,
+                                       [t.sku for t in towar])
 
     kontr = kontrole(odprawa)
     zle_kontrole = [k for k in kontr if not k.ok]
@@ -380,6 +443,7 @@ async def _zloz(
             gratisy=round(w.gratisy, 2), transport_krajowy=round(w.transport_krajowy, 2),
             koszt_jednostkowy=w.koszt_jednostkowy, zmiana_proc=w.zmiana_proc,
             szacunek=w.szacunek, reczna=w.reczna, poz_sad=rachunek.przypisanie.get(w.item_id),
+            koszt_erp=erp.get((w.sku or "").strip().lower()),
         ) for w in rachunek.pozycje],
         koszty=linie,
         kontrole=[OdprawaKontrolaOut(nazwa=k.nazwa, ok=k.ok, wyliczone=k.wyliczone, z_pliku=k.z_pliku)
@@ -393,6 +457,7 @@ async def _zloz(
         mozna_zapisac=not any(u.poziom == "blad" for u in uwagi),
         status=(istniejaca["status"] if istniejaca else "podglad"),
         zapisane=zapisane,
+        zrodlo_erp=zrodlo_erp,
     )
     return out, odprawa, rachunek, kontenery, towar
 
@@ -499,13 +564,30 @@ async def pobierz(
     suma_log = sum(_f(i["koszt_logistyka_pln"]) + _f(i["koszt_gratisy_pln"])
                    + _f(i["koszt_transport_pln"]) for i in itemy)
     suma_clo = sum(_f(i["koszt_clo_pln"]) for i in itemy)
-    narzut = round((suma_log + suma_clo) / suma_towar * 100, 1) if suma_towar else None
     po_pozycji: Dict[int, List[int]] = {}
     sku_w_pozycji: Dict[int, set] = {}
     for i in itemy:
         if i["odprawa_poz_nr"] is not None:
             po_pozycji.setdefault(int(i["odprawa_poz_nr"]), []).append(i["item_id"])
             sku_w_pozycji.setdefault(int(i["odprawa_poz_nr"]), set()).add(i["sku"])
+    # Cło pozycji bez towaru siedzi na sztuce w kolumnie „gratisy", więc w sumie wyżej
+    # wpadło do logistyki. Przenosimy je do kafelka CŁO — tak samo jak w podglądzie,
+    # inaczej po odświeżeniu kafelek pokazywałby co innego niż przed zapisem.
+    clo_gratisow = sum(float(p["clo_pln"] or 0) for p in pozycje
+                       if p["nr"] not in po_pozycji and p["gratis_item_id"] is not None)
+    suma_log -= clo_gratisow
+    suma_clo += clo_gratisow
+    narzut = round((suma_log + suma_clo) / suma_towar * 100, 1) if suma_towar else None
+
+    slug_importera = None
+    if row.get("firma_id") is not None:
+        r_f = (await db.execute(
+            text(f"SELECT slug FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": row["firma_id"]},
+        )).first()
+        slug_importera = r_f[0] if r_f else None
+    if slug_importera is None:
+        slug_importera = await _firma_kontenera(db, container_id)
+    zrodlo_erp, erp = await _koszt_erp(db, slug_importera, [i["sku"] for i in itemy])
 
     return OdprawaOut(
         mrn=row["mrn"], data_zgloszenia=row["data_zgloszenia"], dostawca=row["dostawca"],
@@ -544,6 +626,7 @@ async def pobierz(
             zmiana_proc=(round((_f(i["koszt_jednostkowy"]) / _f(i["unit_cost"]) - 1) * 100, 1)
                          if _f(i["unit_cost"]) else None),
             poz_sad=int(i["odprawa_poz_nr"]) if i["odprawa_poz_nr"] is not None else None,
+            koszt_erp=erp.get((i["sku"] or "").strip().lower()),
         ) for i in itemy],
         koszty=[OdprawaLiniaKosztuIn(
             lp=k["lp"], nazwa=k["nazwa"], kwota=float(k["kwota"] or 0), waluta=k["waluta"],
@@ -559,6 +642,7 @@ async def pobierz(
         suma_clo=round(suma_clo, 2),
         narzut_proc=narzut,
         status=row["status"],
+        zrodlo_erp=zrodlo_erp,
     )
 
 
