@@ -66,7 +66,21 @@ export default function ContainerPage({
   const user = useUser();
   const canPO = can(user, "generatePO");
   const pokazKoszt = canSeeLandedCost(user);
-  const [tab, setTab] = useState<"przeglad" | "koszt">("przeglad");
+  // Zakładka siedzi w adresie (?tab=koszt), żeby odświeżenie strony zostawiało na niej
+  // użytkownika — wcześniej F5 zawsze wyrzucało na Przegląd. Zmieniamy ją przez
+  // replaceState, nie pushState (jak na karcie produktu): „wstecz" ma cofać o widok,
+  // a nie przeklikiwać zakładki. Stan historii (sznurek breadcrumba) przenosimy bez zmian.
+  const [tab, setTabState] = useState<"przeglad" | "koszt">(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "koszt"
+      ? "koszt" : "przeglad");
+  const setTab = (t: "przeglad" | "koszt") => {
+    setTabState(t);
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search);
+    if (t === "koszt") q.set("tab", "koszt"); else q.delete("tab");
+    const qs = q.toString();
+    window.history.replaceState(window.history.state, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  };
   const [container, setContainer] = useState<Container | null>(null);
   const [nieZnaleziono, setNieZnaleziono] = useState(false);
 

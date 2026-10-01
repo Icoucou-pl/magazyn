@@ -36,7 +36,7 @@ type Towar = {
   item_id: number; container_id: number; container_number: string; sku: string; ilosc: number;
   cena_planowana: number; cena_zakupu_waluta: number; towar: number; logistyka: number; clo: number;
   gratisy: number; transport_krajowy: number; koszt_jednostkowy: number; zmiana_proc: number | null;
-  szacunek: boolean; reczna: boolean; poz_sad: number | null;
+  szacunek: boolean; reczna: boolean; poz_sad: number | null; koszt_erp?: number | null;
 };
 export type Odprawa = {
   mrn: string | null; data_zgloszenia: string | null; dostawca: string | null; importer: string | null;
@@ -50,7 +50,7 @@ export type Odprawa = {
   kurs_towaru: number | null; kurs_kosztow: number | null;
   fv_spedytora: string | null; fv_spedytora_data: string | null;
   suma_towar: number; suma_logistyka: number; suma_clo: number; narzut_proc: number | null;
-  mozna_zapisac: boolean; status: string;
+  mozna_zapisac: boolean; status: string; zrodlo_erp?: string | null;
   zapisane?: {
     odprawa_id: number; status: string; klucz_podzialu: string | null;
     kurs_towaru: number | null; kurs_kosztow: number | null;
@@ -461,12 +461,26 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
 
       {/* Wynik */}
       <div style={karta}>
-        <Naglowek tytul="Koszt jednostkowy" hint="ten sam SKU w dwóch kontenerach dostaje osobny koszt" />
+        {/* Porównanie z ERP importera zamiast z ceną planowaną z kontenera — ta wpisuje się
+            przy zakładaniu kontenera i potem nikt jej nie poprawia, więc „zmiana" mierzyła
+            głównie to, jak bardzo zestarzała się cena planowana. Sens różnicy zależy od
+            źródła, dlatego podpis mówi wprost, co porównujemy. */}
+        <Naglowek tytul="Koszt jednostkowy" hint={
+          dane.zrodlo_erp === "fakturownia"
+            ? "Fakturownia trzyma cenę od dostawcy bez frachtu i cła — różnica to narzut, którego tam nie widać"
+            : dane.zrodlo_erp === "subiekt"
+              ? "Subiekt liczy koszt razem z frachtem i cłem — różnica bliska zera znaczy, że rachunki się zgadzają"
+              : "ten sam SKU w dwóch kontenerach dostaje osobny koszt"
+        } />
         <div style={{ overflowX: "auto" }}>
           <table style={tabela}>
             <thead><tr>
               <Th l>SKU</Th><Th>Szt.</Th><Th>Towar/szt</Th><Th>Logistyka/szt</Th><Th>Cło/szt</Th>
-              <Th>Gratisy/szt</Th><Th>Transport/szt</Th><Th>Koszt jedn.</Th><Th>Cena plan.</Th><Th>Zmiana</Th>
+              <Th>Gratisy/szt</Th><Th>Transport/szt</Th><Th>Koszt jedn.</Th>
+              <Th><span title="Bieżący koszt zakupu w ERP spółki-importera — średnia z towaru na stanie, więc może obejmować też wcześniejsze dostawy.">
+                {dane.zrodlo_erp === "fakturownia" ? "Fakturownia" : "Subiekt"}
+              </span></Th>
+              <Th>Różnica</Th>
             </tr></thead>
             <tbody>
               {dane.towar.map((t) => (
@@ -482,10 +496,18 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
                   <td style={{ ...td, fontFamily: "var(--font-mono)", color: t.gratisy ? undefined : "var(--text-disabled)" }}>{pl(t.gratisy / (t.ilosc || 1))}</td>
                   <td style={{ ...td, fontFamily: "var(--font-mono)", color: t.transport_krajowy ? undefined : "var(--text-disabled)" }}>{pl(t.transport_krajowy / (t.ilosc || 1))}</td>
                   <td style={{ ...td, fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--accent)", background: "color-mix(in oklch, var(--accent) 7%, transparent)" }}>{pl(t.koszt_jednostkowy)}</td>
-                  <td style={{ ...td, fontFamily: "var(--font-mono)", color: "var(--text-lo)" }}>{pl(t.cena_planowana)}</td>
-                  <td style={{ ...td, fontFamily: "var(--font-mono)", color: (t.zmiana_proc ?? 0) >= 0 ? "var(--critical)" : "var(--ok)" }}>
-                    {t.zmiana_proc == null ? "—" : `${t.zmiana_proc >= 0 ? "+" : ""}${pl(t.zmiana_proc, 1)}%`}
-                  </td>
+                  {(() => {
+                    const erp = t.koszt_erp ?? null;
+                    const roznica = erp && t.koszt_jednostkowy ? (t.koszt_jednostkowy / erp - 1) * 100 : null;
+                    return (
+                      <>
+                        <td style={{ ...td, fontFamily: "var(--font-mono)", color: "var(--text-lo)" }}>{erp ? pl(erp) : "—"}</td>
+                        <td style={{ ...td, fontFamily: "var(--font-mono)", color: roznica == null ? "var(--text-disabled)" : roznica >= 0 ? "var(--critical)" : "var(--ok)" }}>
+                          {roznica == null ? "—" : `${roznica >= 0 ? "+" : ""}${pl(roznica, 1)}%`}
+                        </td>
+                      </>
+                    );
+                  })()}
                 </tr>
               ))}
             </tbody>

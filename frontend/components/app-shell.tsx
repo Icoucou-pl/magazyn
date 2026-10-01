@@ -377,7 +377,9 @@ export default function AppShell() {
   // bez nowego wpisu w historii.
   const onContainerCanonicalKey = (key: string) => {
     const nowe = { label: etykietaKontenera(key), path: pathForContainerPage(key), mono: true };
-    router.replace(pathForContainerPage(key), { scroll: false, trail: [...sznurek.slice(0, -1), nowe] });
+    // Zapytanie (?tab=koszt) przenosimy, inaczej podmiana klucza zgubiłaby otwartą zakładkę.
+    router.replace(pathForContainerPage(key) + window.location.search,
+      { scroll: false, trail: [...sznurek.slice(0, -1), nowe] });
   };
   // Na karcie kontenera podświetlamy SKU, z którego karty przyszliśmy.
   const poprzednieOgniwo = sznurek.length >= 2 ? sznurek[sznurek.length - 2] : null;
