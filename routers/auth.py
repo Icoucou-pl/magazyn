@@ -16,6 +16,7 @@ from security import (
 )
 from models import CurrentUser, LoginRequest, LoginResponse, UserOut, PasswordChange, SessionOut, OnboardingSet
 from audit import log_audit
+from services import login_limit
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -40,12 +41,20 @@ def _client_ip(request: Request) -> str:
 @router.post("/auth/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Logowanie - zwraca JWT token + dane użytkownika."""
+    ip = _client_ip(request)
+    czekaj = login_limit.retry_after(payload.email, ip)
+    if czekaj:
+        minuty = max(1, round(czekaj / 60))
+        raise HTTPException(429, f"Zbyt wiele nieudanych prób logowania. Spróbuj ponownie za ok. {minuty} min.",
+                            headers={"Retry-After": str(czekaj)})
+
     r = await db.execute(
         text(f"SELECT id, email, password_hash, full_name, role, is_active, created_at, last_login, permissions, company_scope, show_onboarding FROM {settings.TABLE_USERS} WHERE LOWER(email) = LOWER(:email)"),
         {"email": payload.email.strip()}
     )
     u = r.first()
     if not u or not verify_password(payload.password, u.password_hash):
+        login_limit.register_failure(payload.email, ip)
         await log_audit(db, None, "LOGIN_FAILED", "user", payload.email, "Nieprawidłowy email lub hasło",
                         message=f"nieudane logowanie na konto {payload.email.strip()} — zły e-mail lub hasło")
         raise HTTPException(401, "Nieprawidłowy email lub hasło")
@@ -55,6 +64,8 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
                         message=f"zablokowane logowanie na konto {payload.email.strip()} — konto nieaktywne")
         raise HTTPException(403, "Konto zostało deaktywowane")
 
+    login_limit.register_success(payload.email)
+
     # Update last_login
     await db.execute(
         text(f"UPDATE {settings.TABLE_USERS} SET last_login = CURRENT_TIMESTAMP WHERE id = :id"),
@@ -63,7 +74,6 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
 
     # Zapis sesji logowania (urządzenie/IP) - do podglądu w „Moje konto"
     device = (request.headers.get("user-agent") or "")[:400]
-    ip = _client_ip(request)
     await db.execute(
         text(f"INSERT INTO {settings.TABLE_SESSIONS} (user_id, device, ip) VALUES (:uid, :d, :ip)"),
         {"uid": u.id, "d": device, "ip": ip}
