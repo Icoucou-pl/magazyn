@@ -207,6 +207,23 @@ def _norm_mrn(v: Optional[str]) -> Optional[str]:
     return s or None
 
 
+async def _mrn_zapisanych_odpraw(db: AsyncSession, mrny) -> set:
+    """MRN-y, pod którymi stoi zapisana odprawa (zakładka „Koszt jednostkowy").
+
+    Taki MRN wpisała odprawa, nie formularz. Formularz kontenera otwarty na danych sprzed
+    zapisu odprawy wysyła pusty MRN — i zwykła poprawka SKU kasowała numer z lotu
+    (MEDU5327848: lot Fujian stracił MRN po zmianie L1_veluxa → L1b). Pusty MRN z
+    formularza nie zdejmuje więc numeru odprawy; zdejmuje go dopiero cofnięcie odprawy.
+    """
+    mrny = [m for m in {_norm_mrn(m) for m in mrny} if m]
+    if not mrny:
+        return set()
+    rows = (await db.execute(
+        text("SELECT UPPER(mrn) FROM app_odprawy WHERE UPPER(mrn) = ANY(:m)"), {"m": mrny},
+    )).all()
+    return {r[0] for r in rows}
+
+
 def _lot_key(manufacturer_id, order_number) -> tuple:
     """Klucz dopasowania lotu „starego" do „nowego" przy przebudowie (gdy front nie przysłał id)."""
     return (manufacturer_id, (order_number or "").strip().lower())
@@ -222,11 +239,12 @@ async def _replace_lots(db: AsyncSession, cid: int, lots, *, inherit_from: Optio
     nowym locie: po id (front przysyła je przy edycji), a gdy go brak — po (dostawca, PO).
     Bez tego zwykłe otwarcie i zapisanie kontenera gasiło zieloną kropkę."""
     prev = (await db.execute(text(f"""
-        SELECT id, manufacturer_id, order_number, subiekt_wbite, subiekt_wbite_at
+        SELECT id, manufacturer_id, order_number, subiekt_wbite, subiekt_wbite_at, mrn
         FROM {settings.TABLE_CONTAINER_LOTS}
         WHERE container_id = :c
         ORDER BY position ASC, id ASC
     """), {"c": cid})).mappings().all()
+    mrn_odpraw = await _mrn_zapisanych_odpraw(db, [r["mrn"] for r in prev])
     prev_by_id = {row["id"]: row for row in prev}
     prev_by_key: dict = {}
     for row in prev:
@@ -291,7 +309,8 @@ async def _replace_lots(db: AsyncSession, cid: int, lots, *, inherit_from: Optio
                 RETURNING id
             """),
             {"c": cid, "m": lot.manufacturer_id, "o": (lot.order_number or None), "p": pos,
-             "mrn": _norm_mrn(getattr(lot, "mrn", None)),
+             "mrn": _norm_mrn(getattr(lot, "mrn", None)) or (
+                 old["mrn"] if old and old["mrn"] in mrn_odpraw else None),
              "swb": (bool(old["subiekt_wbite"]) if old else (pos == inherit_idx)),
              "swb_at": (old["subiekt_wbite_at"] if old else (inherit_at if pos == inherit_idx else None)),
              "wal": default_cur,
@@ -588,7 +607,7 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
 async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_edit_containers)):
     cur = (await db.execute(
         text(f"""SELECT container_number, status, is_consolidated,
-                        manufacturer_id, order_number, subiekt_wbite, subiekt_wbite_at
+                        manufacturer_id, order_number, subiekt_wbite, subiekt_wbite_at, mrn
                  FROM {settings.TABLE_CONTAINERS} WHERE id = :id"""),
         {"id": cid},
     )).mappings().first()
@@ -665,7 +684,10 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
     if "subiekt_nr" in fset:
         updates.append("subiekt_nr = :sub"); params["sub"] = (payload.subiekt_nr or None)
     if "mrn" in fset:
-        updates.append("mrn = :mrn"); params["mrn"] = _norm_mrn(payload.mrn)
+        nowy = _norm_mrn(payload.mrn)
+        # Pusty MRN z formularza nie zdejmuje numeru zapisanej odprawy (patrz _mrn_zapisanych_odpraw).
+        if nowy is not None or not (await _mrn_zapisanych_odpraw(db, [cur["mrn"]])):
+            updates.append("mrn = :mrn"); params["mrn"] = nowy
 
     # Płatności na kontenerze: przy konsolidacji przenoszą się do lotów → czyścimy;
     # w wariancie nieskonsolidowanym — waluta/balance z payloadu (sterowane fset).
