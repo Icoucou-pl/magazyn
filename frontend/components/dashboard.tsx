@@ -15,7 +15,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  I, Card, CardHeader, HoverRow, Pill, StatusPill, MfrChip, CONTAINER_STATUS_META, ContainerNr,
+  I, Card, CardHeader, HoverRow, Pill, StatusPill, CONTAINER_STATUS_META, ContainerNr,
 } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
@@ -870,63 +870,6 @@ function AnomaliesCard({ anomalies, onProductClick }: { anomalies: Anomaly[]; on
   );
 }
 
-// ── Lista zakupów per producent ──────────────────────────────
-function ShoppingListCard({
-  groups, showEdit, onCreateContainer, onAutoSuggest,
-}: {
-  groups: ShoppingGroup[];
-  showEdit: boolean;
-  onCreateContainer?: (manufacturerId: number | null) => void;
-  onAutoSuggest?: () => void;
-}) {
-  const [expanded, setExpanded] = useState<number | null>(groups[0]?.manufacturer_id ?? null);
-  return (
-    <Card>
-      <CardHeader icon={<I.Wand size={16} />} title="Lista zakupów" hint="grupowanie per producent oszczędza fracht" accent="var(--accent)"
-        action={<button onClick={onAutoSuggest} style={{ ...btnAccent, display: showEdit ? "inline-flex" : "none" }}><I.Wand size={12} /> Auto-sugestia kontenera</button>} />
-      <div>
-        {groups.map((g, i) => {
-          const key = g.manufacturer_id ?? 0;
-          const isExpanded = expanded === key;
-          const totalQty = g.products.reduce((s, p) => s + p.recommended_quantity, 0);
-          return (
-            <div key={key} style={{ borderBottom: i === groups.length - 1 ? "none" : "1px solid var(--border-soft)" }}>
-              <div onClick={() => setExpanded(isExpanded ? null : key)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 18px", cursor: "pointer", transition: "background 0.12s" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                <span style={{ width: 18, height: 18, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "var(--text-mid)", transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.18s" }}><I.ChevronR size={14} /></span>
-                {g.manufacturer_name
-                  ? <MfrChip name={g.manufacturer_name} color={g.manufacturer_color ?? "var(--text-lo)"} size="md" />
-                  : <Pill bg="var(--surface-2)" fg="var(--text-mid)" size="sm">Bez producenta</Pill>}
-                <span style={{ fontSize: 12, color: "var(--text-mid)" }}>
-                  <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{g.total_skus}</span> SKU ·
-                  <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}> {fmtNum(totalQty)}</span> szt
-                </span>
-                <div style={{ flex: 1 }} />
-                <button onClick={(e) => { e.stopPropagation(); onCreateContainer?.(g.manufacturer_id); }} style={{ ...btnGhost, display: showEdit ? "inline-flex" : "none" }}>Utwórz kontener <I.Box size={11} /></button>
-              </div>
-              {isExpanded && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6, padding: "4px 18px 16px" }} className="fade-in">
-                  {g.products.map((item) => (
-                    <div key={item.sku} style={{ background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-sm)", padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div className="mono" style={{ fontSize: 11, fontWeight: 600 }}>{item.sku}</div>
-                        <div style={{ fontSize: 10, color: "var(--text-lo)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</div>
-                      </div>
-                      <span className="num" style={{ background: "var(--accent-soft)", color: "var(--accent)", fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 4, flexShrink: 0 }}>×{item.recommended_quantity}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {groups.length === 0 && <EmptyRow text="Nic do zamówienia 🎉" />}
-      </div>
-    </Card>
-  );
-}
-
 // ── Top sprzedaży (sztuki, bez PLN — widoczne dla wszystkich) ─
 function TopSellersCard({ top, shop, onProductClick }: { top: TopSeller[]; shop: string; onProductClick?: (p: ClickTarget) => void }) {
   const { shown, hidden, open, toggle } = useExpandable(top);
@@ -1047,17 +990,6 @@ function EmptyRow({ text }: { text: string }) {
   return <div style={{ padding: "18px", textAlign: "center", fontSize: 12, color: "var(--text-lo)" }}>{text}</div>;
 }
 
-const btnGhost: React.CSSProperties = {
-  display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
-  fontSize: 11, fontWeight: 600, background: "transparent", border: "1px solid var(--border)",
-  color: "var(--text-mid)", borderRadius: 6, transition: "all 0.12s",
-};
-const btnAccent: React.CSSProperties = {
-  display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 11px",
-  fontSize: 11, fontWeight: 600, background: "var(--accent)", border: "1px solid var(--accent)",
-  color: "var(--accent-ink)", borderRadius: 6,
-};
-
 // ── Skeleton ładowania ───────────────────────────────────────
 function DashboardSkeleton({ gap }: { gap: number }) {
   const box = (h: number): React.CSSProperties => ({
@@ -1078,14 +1010,13 @@ function DashboardSkeleton({ gap }: { gap: number }) {
 
 // ── Główny widok ─────────────────────────────────────────────
 export default function Dashboard({
-  density, onProductClick, onContainerClick, onAutoSuggest, onSimulator, onCreateContainer, onOpenMoneyEntries,
+  density, onProductClick, onContainerClick, onAutoSuggest, onSimulator, onOpenMoneyEntries,
 }: {
   density?: string;
   onProductClick?: (p: ClickTarget) => void;
   onContainerClick?: (c: ContainerOut) => void;
   onAutoSuggest?: () => void;
   onSimulator?: () => void;
-  onCreateContainer?: (manufacturerId: number | null) => void;
   onOpenMoneyEntries?: () => void;   // skrót z karty „Pieniądze firmy" do Cashflow
 }) {
   const user = useUser();
@@ -1168,6 +1099,7 @@ export default function Dashboard({
       setLoading(true);
       // Dashboard pokazuje WYŁĄCZNIE obserwowane SKU (favorites_only=1) — na sztywno, bez przełącznika.
       // W obserwowanych trzymamy tylko to, co firmy aktualnie sprzedają, więc boxy nie krzyczą o wycofanych SKU.
+      // Lista zakupów (/shopping-list) nie ma już własnej karty — z niej liczymy tylko „Pożary”.
       // Kontenery (/containers) zostają globalne: wiozą fizyczny towar niezależnie od obserwacji.
       const shopQ = shop ? `&shop=${shop}` : "";
       // Szereg od 01.01.2026 do dziś (jeden fetch). Picker dat i porównanie tną tę tablicę
@@ -1275,7 +1207,6 @@ export default function Dashboard({
             <FiresCard fires={fires} onProductClick={onProductClick} onNoReorder={onNoReorder} />
             <DeliveriesCard deliveries={pipeline.deliveries} shop={shop} onContainerClick={onContainerClick} />
           </div>
-          <ShoppingListCard groups={shopping} showEdit={showEdit} onCreateContainer={onCreateContainer} onAutoSuggest={onAutoSuggest} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             <AnomaliesCard anomalies={anomalies} onProductClick={onProductClick} />
             <TopSellersCard top={topSellers} shop={shop} onProductClick={onProductClick} />
