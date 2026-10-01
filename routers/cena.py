@@ -33,7 +33,7 @@ from security import (
     allowed_shops, can_edit_product_price, require_product_price_edit,
     require_product_price_view, resolve_shop,
 )
-from services.cena import BladCeny, Dostawa, policz_koszty, wylicz_cene
+from services.cena import BladCeny, Dostawa, policz_koszty, vat_produktu, wylicz_cene
 from services.containers import compute_effective_status
 from services.products import _arrival_and_source, get_product
 
@@ -163,7 +163,10 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
     slug = shop or await _slug_firmy(db, p.firma_id)
     zrodlo, ceny = await _koszt_erp(db, slug, [p.sku])
 
+    vat = await vat_produktu(db, p.sku, shop or slug)
+
     return CenaProduktuOut(
+        vat=vat["vat"], vat_zrodlo=vat["zrodlo"],
         sku=p.sku, shop=shop, stan=stan, poza_dostawami=w.poza_dostawami,
         erp_zrodlo=zrodlo, erp_cena=ceny.get(p.sku.strip().lower()),
         fifo=w.fifo, fifo_item_id=w.fifo_item_id,

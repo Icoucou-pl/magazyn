@@ -329,6 +329,8 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "cena_zakupu", "NUMERIC")
         # Migracja: ręczna nazwa produktu. Puste = nazwa z Subiektu/zamówień (a jak brak, to SKU). Override per-sku.
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "name_override", "VARCHAR(255)")
+        # Migracja: ręczna stawka VAT (%). NULL = stawka z ostatniej krajowej sprzedaży (Sellasist). Ręka wygrywa.
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "vat_manual", "NUMERIC(4,1)")
 
         # Kontenery
         await conn.execute(text(f"""

@@ -245,3 +245,39 @@ def wylicz_cene(koszt_bazy: float, tryb: str, proc: float, wysylka: float = 0.0,
         marza_proc=round(zysk / netto * 100, 2) if netto else 0.0,
         narzut_proc=round(zysk / koszt * 100, 2) if koszt else 0.0,
     )
+
+
+# ── Stawka VAT produktu ──────────────────────────────────────
+# Ręczna stawka z zakładki Dane (app_product_attrs.vat_manual) WYGRYWA. Bez niej bierzemy
+# stawkę z najświeższej KRAJOWEJ sprzedaży tego SKU w Sellasiście — najpierw w wybranej
+# firmie, potem w dowolnej (Acti ma głównie 8%). Stawki zagraniczne (np. 21%) pomijamy,
+# tak jak przy katalogu dropów: jedna sprzedaż za granicę nie może zmienić VAT produktu.
+VAT_KRAJOWE = (23, 8, 5)
+VAT_RECZNE = (23, 8, 5, 0)
+
+
+async def vat_produktu(db, sku: str, shop: str = "") -> dict:
+    from sqlalchemy import text
+    from config import settings
+
+    manual = (await db.execute(
+        text(f"""SELECT vat_manual FROM {settings.TABLE_PRODUCT_ATTRS}
+                  WHERE LOWER(TRIM(sku)) = LOWER(TRIM(:s)) AND vat_manual IS NOT NULL
+                  ORDER BY updated_at DESC NULLS LAST LIMIT 1"""),
+        {"s": sku},
+    )).scalar_one_or_none()
+    auto = (await db.execute(
+        text(f"""SELECT tax_rate FROM {settings.TABLE_ORDER_ITEMS}
+                  WHERE LOWER(TRIM(symbol)) = LOWER(TRIM(:s)) AND tax_rate IN ({", ".join(map(str, VAT_KRAJOWE))})
+                  ORDER BY (shop = :shop) DESC, order_date DESC NULLS LAST LIMIT 1"""),
+        {"s": sku, "shop": (shop or "").strip().lower()},
+    )).scalar_one_or_none()
+    vat_manual = float(manual) if manual is not None else None
+    vat_auto = float(auto) if auto is not None else None
+    if vat_manual is not None:
+        vat, zrodlo = vat_manual, "reczna"
+    elif vat_auto is not None:
+        vat, zrodlo = vat_auto, "sprzedaz"
+    else:
+        vat, zrodlo = VAT_DOMYSLNY, "domyslna"
+    return {"vat": vat, "zrodlo": zrodlo, "vat_auto": vat_auto, "vat_manual": vat_manual}

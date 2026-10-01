@@ -256,6 +256,19 @@ class ProductPhotoOut(BaseModel):
     uploaded_by: Optional[str] = None
 
 
+class VatUpdate(BaseModel):
+    """PUT /products/{sku}/vat — ręczna stawka VAT produktu. None = wróć do stawki automatycznej."""
+    vat: Optional[Literal[23, 8, 5, 0]] = None
+
+
+class VatOut(BaseModel):
+    """Stawka VAT produktu: ręczna wygrywa, inaczej z ostatniej krajowej sprzedaży, inaczej 23%."""
+    vat: float = 23
+    zrodlo: str = "domyslna"                 # 'reczna' | 'sprzedaz' | 'domyslna'
+    vat_auto: Optional[float] = None         # stawka z ostatniej sprzedaży (None = SKU się nie sprzedawał w PL)
+    vat_manual: Optional[float] = None
+
+
 class ManualNewUpdate(BaseModel):
     """PUT /products/{sku}/new-until — nowość ustawiona ręcznie.
     Data końca w przyszłości = ustaw / zmień; None = zdejmij."""
@@ -1235,3 +1248,6 @@ class CenaProduktuOut(BaseModel):
     zapisane: List[CenaZapisanaOut] = []
     uwagi: List[str] = []
     moze_zapisac: bool = False
+    # Stawka VAT produktu do kalkulatora (ręczna z zakładki Dane wygrywa nad automatyczną).
+    vat: float = 23
+    vat_zrodlo: str = "domyslna"             # 'reczna' | 'sprzedaz' | 'domyslna'

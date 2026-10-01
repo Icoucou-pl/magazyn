@@ -14,7 +14,7 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, ManualNewUpdate,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, ManualNewUpdate, VatOut, VatUpdate,
 )
 from security import get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
@@ -562,6 +562,39 @@ async def set_manual_new(sku: str, body: ManualNewUpdate, db: AsyncSession = Dep
         audit.note(f"oznaczył produkt {sku} jako nowość do {f_data(body.until)}" if body.until
                    else f"zdjął ręczną nowość z produktu {sku}", changes=ch, resource_id=sku)
     return await get_product(db, sku)
+
+
+@router.get("/products/{sku:path}/vat", response_model=VatOut)
+async def get_vat(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Stawka VAT produktu: ręczna (zakładka Dane) wygrywa nad stawką z ostatniej krajowej sprzedaży."""
+    from services.cena import vat_produktu
+    return VatOut(**await vat_produktu(db, sku, resolve_shop(shop, user)))
+
+
+@router.put("/products/{sku:path}/vat", response_model=VatOut)
+async def set_vat(sku: str, body: VatUpdate, shop: str = Query(""), db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
+    """Ręczna stawka VAT. None = wróć do automatu (ostatnia krajowa sprzedaż)."""
+    from services.cena import vat_produktu
+    sku = await _sku_atrybutow(db, sku)
+    stara = (await db.execute(
+        text(f"SELECT vat_manual FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku}
+    )).scalar()
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, vat_manual, updated_at)
+            VALUES (:sku, :vat, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET vat_manual = EXCLUDED.vat_manual, updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "vat": body.vat},
+    )
+    await db.commit()
+    fmt = lambda v: "automatycznie" if v is None else f"{float(v):g}%"   # noqa: E731
+    ch = audit.zmiany({"v": stara}, {"v": body.vat}, {"v": ("Stawka VAT", fmt)})
+    if not ch:
+        audit.skip()
+    else:
+        audit.note(f"ustawił stawkę VAT produktu {sku}: {fmt(body.vat)}", changes=ch, resource_id=sku)
+    return VatOut(**await vat_produktu(db, sku, resolve_shop(shop, user)))
 
 
 @router.get("/favorites", response_model=List[ProductSummary])

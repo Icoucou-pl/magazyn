@@ -48,6 +48,7 @@ type CenaData = {
   min: number | null; min_item_id: number | null; max: number | null; max_item_id: number | null;
   sredni_narzut_proc: number | null; narzut_zrodlo: "sku" | "wszystkie" | null;
   dostawy: Dostawa[]; zapisane: Zapisana[]; uwagi: string[]; moze_zapisac: boolean;
+  vat: number; vat_zrodlo: "reczna" | "sprzedaz" | "domyslna";
 };
 
 const zl2 = (n: number) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -55,11 +56,11 @@ const pct = (n: number, d = 1) => (n > 0 ? "+" : "") + n.toLocaleString("pl-PL",
 
 const BAZA_LABEL: Record<Baza, string> = { fifo: "FIFO", srednia: "Średnia", ostatnia: "Ostatnia", reczna: "Ręcznie" };
 const KANAL_LABEL: Record<Kanal, string> = { sklepy: "Sklepy", dropy: "Dropy" };
-const VAT = 23;
+const VAT_OPIS: Record<string, string> = { reczna: "ustawiona ręcznie", sprzedaz: "z ostatniej sprzedaży", domyslna: "domyślna" };
 
 // ── Formuła (lustro services/cena.py → wylicz_cene) ──────────
 type Wynik = { koszt: number; netto: number; brutto: number; prowizja: number; zysk: number; marza: number; narzut: number } | null;
-function wylicz(kosztBazy: number, tryb: Tryb, proc: number, wysylka: number, prowizja: number): Wynik {
+function wylicz(kosztBazy: number, tryb: Tryb, proc: number, wysylka: number, prowizja: number, vat: number): Wynik {
   if (!(kosztBazy > 0) || proc < 0 || wysylka < 0 || prowizja < 0) return null;
   const p = proc / 100, c = prowizja / 100;
   const koszt = kosztBazy + wysylka;
@@ -75,7 +76,7 @@ function wylicz(kosztBazy: number, tryb: Tryb, proc: number, wysylka: number, pr
   const prow = Math.round(netto * c * 100) / 100;
   const zysk = Math.round((netto - koszt - prow) * 100) / 100;
   return {
-    koszt, netto, brutto: Math.round(netto * (1 + VAT / 100) * 100) / 100, prowizja: prow, zysk,
+    koszt, netto, brutto: Math.round(netto * (1 + vat / 100) * 100) / 100, prowizja: prow, zysk,
     marza: netto ? (zysk / netto) * 100 : 0, narzut: koszt ? (zysk / koszt) * 100 : 0,
   };
 }
@@ -138,7 +139,8 @@ export default function ProductPriceTab({ sku, shop, onOpenContainer }: {
           {(["sklepy", "dropy"] as Kanal[]).map((k) => (
             <Kalkulator key={`${data.sku}-${k}`} sku={data.sku} shop={shop} kanal={k} bazy={bazy}
               zapisana={data.zapisane.find((z) => z.kanal === k) || null}
-              mozeZapisac={data.moze_zapisac} onSaved={zapisano} />
+              mozeZapisac={data.moze_zapisac} onSaved={zapisano}
+              vat={data.vat} vatZrodlo={data.vat_zrodlo} />
           ))}
         </div>
       </Section>
@@ -290,11 +292,12 @@ const DOMYSLNE: Record<Kanal, { baza: Baza; tryb: Tryb; proc: string }> = {
   dropy: { baza: "srednia", tryb: "narzut", proc: "20" },
 };
 
-function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved }: {
+function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved, vat, vatZrodlo }: {
   sku: string; shop: string; kanal: Kanal;
   bazy: Record<Exclude<Baza, "reczna">, number | null>;
   zapisana: Zapisana | null; mozeZapisac: boolean;
   onSaved: (z: Zapisana) => void;
+  vat: number; vatZrodlo: string;
 }) {
   const startowe = () => {
     if (zapisana) {
@@ -313,8 +316,8 @@ function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved }: 
   const num = (v: string) => Number(String(v).replace(",", ".")) || 0;
 
   const kosztBazy = s.baza === "reczna" ? num(s.reczna) : (bazy[s.baza] ?? 0);
-  const w = useMemo(() => wylicz(kosztBazy, s.tryb, num(s.proc), num(s.wys), num(s.prow)),
-    [kosztBazy, s.tryb, s.proc, s.wys, s.prow]);
+  const w = useMemo(() => wylicz(kosztBazy, s.tryb, num(s.proc), num(s.wys), num(s.prow), vat),
+    [kosztBazy, s.tryb, s.proc, s.wys, s.prow, vat]);
 
   const zapisz = async () => {
     if (!w || busy) return;
@@ -322,7 +325,7 @@ function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved }: 
     try {
       const z = (await api.put(`/products/${encodeURIComponent(sku)}/cena`, {
         kanal, baza: s.baza, koszt_bazy: Math.round(kosztBazy * 100) / 100, tryb: s.tryb,
-        procent: num(s.proc), wysylka: num(s.wys), prowizja: num(s.prow), vat: VAT, shop,
+        procent: num(s.proc), wysylka: num(s.wys), prowizja: num(s.prow), vat, shop,
       })) as Zapisana;
       onSaved(z);
       toast(`Zapisano cenę dla ${KANAL_LABEL[kanal].toLowerCase()}: ${zl2(z.cena_brutto)} zł brutto`, "ok");
@@ -342,7 +345,7 @@ function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved }: 
         {zapisana ? <span style={{ ...pill, ...okStyl }}>zapisana</span> : <span style={{ ...pill, background: "var(--surface-2)", color: "var(--text-mid)" }}>brak zapisu</span>}
       </div>
 
-      <ZapisanaBox kanal={kanal} z={zapisana} bazy={bazy} />
+      <ZapisanaBox kanal={kanal} z={zapisana} bazy={bazy} vat={vat} />
 
       <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
         <Wiersz label="Baza kosztu">
@@ -401,7 +404,7 @@ function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved }: 
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, margin: "12px 16px 0" }}>
         <MetricBox label="Sugerowana netto" value={w ? <>{zl2(w.netto)}<small style={small}> zł</small></> : "—"} sub="bez VAT" />
-        <MetricBox label="Sugerowana brutto" value={w ? <span style={{ color: "var(--accent)" }}>{zl2(w.brutto)}<small style={small}> zł</small></span> : "—"} sub={`z VAT ${VAT}%`} />
+        <MetricBox label="Sugerowana brutto" value={w ? <span style={{ color: "var(--accent)" }}>{zl2(w.brutto)}<small style={small}> zł</small></span> : "—"} sub={`z VAT ${vat}% · ${VAT_OPIS[vatZrodlo] || ""}`} />
       </div>
       {!w && <div style={{ ...hint, margin: "8px 16px 0", color: "var(--warning)" }}>Sprawdź parametry: koszt musi być większy od zera, a marża z prowizją mniejsza niż 100%.</div>}
 
@@ -413,7 +416,7 @@ function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved }: 
   );
 }
 
-function ZapisanaBox({ kanal, z, bazy }: { kanal: Kanal; z: Zapisana | null; bazy: Record<Exclude<Baza, "reczna">, number | null> }) {
+function ZapisanaBox({ kanal, z, bazy, vat }: { kanal: Kanal; z: Zapisana | null; bazy: Record<Exclude<Baza, "reczna">, number | null>; vat: number }) {
   if (!z) {
     return (
       <div style={{ margin: "14px 16px 0", padding: "12px 14px", border: "1px dashed var(--border-soft)", borderRadius: 10, textAlign: "center", fontSize: 12, color: "var(--text-lo)" }}>
@@ -434,8 +437,13 @@ function ZapisanaBox({ kanal, z, bazy }: { kanal: Kanal; z: Zapisana | null; baz
         <div className="num" style={{ fontSize: 12, color: "var(--text-mid)" }}>{zl2(z.cena_netto)} zł netto</div>
       </div>
       <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 4 }}>
-        {BAZA_LABEL[z.baza]} {zl2(z.koszt_bazy)} zł · {z.tryb === "marza" ? "marża" : "narzut"} {z.procent}% · wysyłka {zl2(z.wysylka)} zł{z.prowizja ? ` · prowizja ${z.prowizja}%` : ""}
+        {BAZA_LABEL[z.baza]} {zl2(z.koszt_bazy)} zł · {z.tryb === "marza" ? "marża" : "narzut"} {z.procent}% · wysyłka {zl2(z.wysylka)} zł{z.prowizja ? ` · prowizja ${z.prowizja}%` : ""} · VAT {z.vat}%
       </div>
+      {z.vat !== vat && (
+        <div style={{ marginTop: 8, fontSize: 11.5, padding: "6px 9px", borderRadius: 6, ...warnStyl }}>
+          Cena zapisana z VAT {z.vat}%, a produkt ma teraz {vat}%. Przelicz i zapisz ponownie.
+        </div>
+      )}
       {dryf != null && Math.abs(dryf) >= 0.05 && (
         <div style={{ marginTop: 8, fontSize: 11.5, padding: "6px 9px", borderRadius: 6, ...(Math.abs(dryf) >= 3 ? warnStyl : { background: "var(--surface-2)", color: "var(--text-mid)" }) }}>
           Koszt bazowy ({BAZA_LABEL[z.baza]}) zmienił się o <b className="mono">{pct(dryf)}</b> od zapisu: {zl2(z.koszt_bazy)} → {zl2(teraz as number)} zł. Warto przeliczyć.
