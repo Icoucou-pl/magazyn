@@ -26,14 +26,17 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from collections import Counter
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
 from models import (
-    CurrentUser, OdprawaKontrolaOut, OdprawaLiniaKosztuIn, OdprawaOut, OdprawaZapisaneOut,
+    CurrentUser, OdprawaKontenerOut, OdprawaKontrolaOut, OdprawaLiniaKosztuIn, OdprawaLotOut,
+    OdprawaOut, OdprawaZapisaneOut,
     OdprawaPozycjaOut, OdprawaTowarOut, OdprawaUstawieniaIn, OdprawaUwagaOut,
     OdprawaZapisOut,
 )
@@ -80,7 +83,7 @@ async def _kontenery_odprawy(db: AsyncSession, numery: Sequence[str]) -> List[Di
     rows = (await db.execute(
         text(f"""
             SELECT id, container_number, mrn, koszt_transportu, koszt_spedycji,
-                   koszt_transportu_magazyn
+                   koszt_transportu_magazyn, COALESCE(is_consolidated, FALSE) AS is_consolidated
               FROM {settings.TABLE_CONTAINERS}
              WHERE UPPER(TRIM(container_number)) = ANY(:numery)
              ORDER BY id
@@ -90,14 +93,18 @@ async def _kontenery_odprawy(db: AsyncSession, numery: Sequence[str]) -> List[Di
     return [dict(r) for r in rows]
 
 
-async def _towar(db: AsyncSession, container_ids: Sequence[int]) -> List[PozycjaTowaru]:
+async def _towar(db: AsyncSession, container_ids: Sequence[int]
+                 ) -> "tuple[List[PozycjaTowaru], Dict[int, Dict[str, Any]]]":
     """Pozycje kontenerów wzbogacone o wagę, CBM i kod CN z karty produktu.
 
     CBM liczymy tą samą funkcją co karta produktu i wypełnienie kontenera
     (compute_effective_cbm), żeby w trzech miejscach nie wyszły trzy różne liczby.
+
+    Drugi element to metadane pozycji, których rachunek nie potrzebuje, a odprawa
+    kontenera skonsolidowanego tak: lot, firma towaru i odprawa, która już go rozliczyła.
     """
     if not container_ids:
-        return []
+        return [], {}
     # Nazwa z katalogu (prod_names — to samo źródło co lista kontenerów) jest potrzebna
     # do dopasowania pozycji zgłoszenia: opis celny mówi „PODUSZKA KOSMETYCZNA", a bez
     # nazwy zostałaby tylko wartość, która przy starych cenach planowanych myli.
@@ -108,11 +115,14 @@ async def _towar(db: AsyncSession, container_ids: Sequence[int]) -> List[Pozycja
                    pn.nazwa AS product_name,
                    pa.waga_brutto_kg, pa.kod_cn,
                    COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
-                   pa.dlugosc_cm, pa.szerokosc_cm, pa.wysokosc_cm, pa.szt_w_kartonie
+                   pa.dlugosc_cm, pa.szerokosc_cm, pa.wysokosc_cm, pa.szt_w_kartonie,
+                   ci.lot_id, ci.koszt_odprawa_id,
+                   LOWER(COALESCE(f.slug, 'amh')) AS firma
               FROM {settings.TABLE_CONTAINER_ITEMS} ci
               LEFT JOIN prod_names pn ON pn.sku_canon = LOWER(TRIM(ci.sku))
               LEFT JOIN {settings.TABLE_PRODUCT_ATTRS} pa
                      ON LOWER(TRIM(pa.sku)) = LOWER(TRIM(ci.sku))
+              LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
              WHERE ci.container_id = ANY(:ids)
              ORDER BY ci.container_id, ci.id
         """),
@@ -120,7 +130,10 @@ async def _towar(db: AsyncSession, container_ids: Sequence[int]) -> List[Pozycja
     )).mappings().all()
 
     towar: List[PozycjaTowaru] = []
+    meta: Dict[int, Dict[str, Any]] = {}
     for r in rows:
+        meta[r["item_id"]] = {"lot_id": r["lot_id"], "firma": r["firma"],
+                              "odprawa_id": r["koszt_odprawa_id"]}
         cbm, _ = compute_effective_cbm(dict(r))
         towar.append(PozycjaTowaru(
             item_id=r["item_id"],
@@ -133,7 +146,7 @@ async def _towar(db: AsyncSession, container_ids: Sequence[int]) -> List[Pozycja
             kod_cn=r["kod_cn"],
             nazwa=r["product_name"],
         ))
-    return towar
+    return towar, meta
 
 
 async def _firma_po_nip(db: AsyncSession, nip: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -172,6 +185,216 @@ async def _firma_kontenera(db: AsyncSession, container_id: int) -> Optional[str]
 # ============================================================
 # Złożenie podglądu
 # ============================================================
+
+# ============================================================
+# Kontener skonsolidowany — loty i ich odprawy
+# ============================================================
+#
+# Kontener skonsolidowany to kilku dostawców (lotów), a często też kilka spółek w jednej
+# skrzyni. Agencja odprawia go wtedy kilkoma zgłoszeniami: SAD ma jednego importera, więc
+# towar Acti i Veluxy nie może pójść jednym. Konsolidacja Acti CORU2068476: SAD 1/2 objął
+# trzy faktury Acti, a 1000 szt. Pod_1b Veluxy poszło osobno. Bez zawężenia do lotów
+# rachunek wciągał Pod_1b do pozycji łóżek i rozjeżdżał cały podział.
+#
+# Nie pytamy więc „ile będzie zgłoszeń". Każdy lot jest albo rozliczony (jego towar ma
+# koszt z którejś odprawy), albo czeka. Zgłoszenie bierze te loty, które do niego pasują,
+# a resztę zostawia następnemu.
+
+async def _loty(db: AsyncSession, container_ids: Sequence[int]) -> List[Dict[str, Any]]:
+    if not container_ids:
+        return []
+    rows = (await db.execute(
+        text(f"""
+            SELECT l.id, l.container_id, l.order_number, l.mrn, m.name AS dostawca
+              FROM {settings.TABLE_CONTAINER_LOTS} l
+              LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
+             WHERE l.container_id = ANY(:ids)
+             ORDER BY l.container_id, l.position, l.id
+        """),
+        {"ids": list(container_ids)},
+    )).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _numer(x: Optional[str]) -> str:
+    """Numer faktury albo zamówienia do porównania: same litery i cyfry, wielkimi literami.
+
+    Dostawcy mylą literę O z zerem — na tej samej fakturze KS Medical stoi raz
+    „25KS-O1125-PL", a raz „25KS-01125-PL" — więc O traktujemy jak 0.
+    """
+    return "".join(c for c in (x or "").upper() if c.isalnum()).replace("O", "0")
+
+
+def _faktury_lotow(odprawa: Odprawa, loty: Sequence[Dict[str, Any]], towar_lotu: Dict[int, List[PozycjaTowaru]]
+                   ) -> Dict[int, "tuple[str, str]"]:
+    """lot_id → (numer faktury ze zgłoszenia, skąd wiemy: "numer" | "wartosc").
+
+    Najpierw numer zamówienia z lotu porównany z numerem faktury (KS Medical, Sunshine).
+    Co zostanie, łączymy po wartości: suma cen planowanych lotu wobec sumy pozycji SAD
+    tej faktury. Na MEDI numer zamówienia (MKB…) różni się od numeru faktury (MKF…),
+    a wartości różnią się o 3% — przy trzech fakturach o zupełnie różnych kwotach
+    to rozstrzyga bez wątpliwości. Rozjazd ponad 50% zostawiamy bez przypisania.
+    """
+    faktury = list(odprawa.faktury_dostawcy)
+    wynik: Dict[int, "tuple[str, str]"] = {}
+    wolne = set(faktury)
+    for lot in loty:
+        nr = _numer(lot.get("order_number"))
+        if len(nr) < 5:
+            continue
+        for fv in sorted(wolne):
+            n_fv = _numer(fv)
+            if nr == n_fv or (len(n_fv) >= 5 and (nr in n_fv or n_fv in nr)):
+                wynik[lot["id"]] = (fv, "numer")
+                wolne.discard(fv)
+                break
+
+    kurs = odprawa.kurs_celny or 1.0
+    wart_fv: Dict[str, float] = {}
+    for p in odprawa.pozycje:
+        for fv in p.faktury_dostawcy:
+            wart_fv[fv] = wart_fv.get(fv, 0.0) + p.wartosc / max(1, len(p.faktury_dostawcy))
+    pary = []
+    for lot in loty:
+        if lot["id"] in wynik:
+            continue
+        plan = sum(t.ilosc * t.cena_planowana for t in towar_lotu.get(lot["id"], [])) / kurs
+        for fv in wolne:
+            w = wart_fv.get(fv, 0.0)
+            if plan and w:
+                pary.append((abs(plan - w) / w, lot["id"], fv))
+    for odch, lot_id, fv in sorted(pary):
+        if odch > 0.5 or lot_id in wynik or fv not in wolne:
+            continue
+        wynik[lot_id] = (fv, "wartosc")
+        wolne.discard(fv)
+    return wynik
+
+
+def _wybierz_loty(
+    odprawa: Odprawa,
+    loty: Sequence[Dict[str, Any]],
+    towar: Sequence[PozycjaTowaru],
+    meta: Dict[int, Dict[str, Any]],
+    firma_sad: Optional[Dict[str, Any]],
+    ta_odprawa_id: Optional[int],
+    mrn_odpraw: Dict[int, str],
+    wybor_uzytkownika: Optional[Sequence[int]],
+) -> List[OdprawaLotOut]:
+    """Które loty obejmuje to zgłoszenie — automatycznie albo tak, jak zaznaczył użytkownik.
+
+    Lot NIE MOŻE wejść, gdy jego towar należy do innej spółki niż importer z SAD, gdy ma
+    już inny MRN albo gdy rozliczyła go inna odprawa. Pozostałe wchodzą domyślnie —
+    użytkownik może któryś odznaczyć (na przykład towar, który jeszcze nie przypłynął).
+    """
+    towar_lotu: Dict[int, List[PozycjaTowaru]] = {}
+    for t in towar:
+        lid = meta.get(t.item_id, {}).get("lot_id")
+        if lid is not None:
+            towar_lotu.setdefault(lid, []).append(t)
+    faktury = _faktury_lotow(odprawa, [l for l in loty if l["id"] in towar_lotu], towar_lotu)
+    slug_sad = ((firma_sad or {}).get("slug") or "").lower() or None
+    mrn_sad = (odprawa.mrn or "").strip().upper()
+
+    wynik: List[OdprawaLotOut] = []
+    for lot in loty:
+        lista = towar_lotu.get(lot["id"], [])
+        firmy = Counter(meta[t.item_id]["firma"] for t in lista)
+        firma = firmy.most_common(1)[0][0] if firmy else None
+        odprawy = Counter(meta[t.item_id]["odprawa_id"] for t in lista if meta[t.item_id]["odprawa_id"])
+        inna = next((oid for oid, _ in odprawy.most_common() if oid != ta_odprawa_id), None)
+        mrn_lotu = (lot.get("mrn") or "").strip().upper()
+
+        blokada, powod = False, ""
+        if not lista:
+            blokada, powod = True, "Lot nie ma towaru na kontenerze."
+        elif slug_sad and firma and firma != slug_sad:
+            blokada = True
+            powod = (f"Towar {firma.upper()}, a importerem w tym zgłoszeniu jest {slug_sad.upper()}. "
+                     "Ten lot rozliczy osobne zgłoszenie.")
+        elif mrn_lotu and mrn_sad and mrn_lotu != mrn_sad:
+            blokada, powod = True, f"Lot ma już MRN {lot['mrn']} — należy do innego zgłoszenia."
+        elif inna is not None:
+            blokada = True
+            powod = f"Rozliczony odprawą {mrn_odpraw.get(inna, inna)}. Cofnij ją, jeśli to pomyłka."
+
+        fv = faktury.get(lot["id"])
+        if not blokada:
+            if fv and fv[1] == "numer":
+                powod = f"Numer zamówienia zgadza się z fakturą {fv[0]}."
+            elif fv:
+                powod = f"Wartość lotu odpowiada fakturze {fv[0]} — numer zamówienia jest inny."
+            elif odprawa.faktury_dostawcy:
+                powod = "Nie znalazłem jego faktury w zgłoszeniu — sprawdź, czy ten towar jest w tym SAD."
+            else:
+                powod = "Zgłoszenie nie podaje faktur dostawców."
+
+        if wybor_uzytkownika is None:
+            wybrany = not blokada
+        else:
+            wybrany = lot["id"] in set(wybor_uzytkownika)
+
+        wynik.append(OdprawaLotOut(
+            lot_id=lot["id"], container_id=lot["container_id"],
+            dostawca=lot.get("dostawca"), zamowienie=lot.get("order_number"), mrn=lot.get("mrn"),
+            firma=firma, sku=sorted({t.sku for t in lista}), sztuk=sum(t.ilosc for t in lista),
+            wybrany=wybrany, blokada=blokada,
+            faktura=fv[0] if fv and not blokada else None,
+            dopasowanie=fv[1] if fv and not blokada else None,
+            powod=powod,
+            odprawa_id=inna if inna is not None else (ta_odprawa_id if ta_odprawa_id in odprawy else None),
+            odprawa_mrn=mrn_odpraw.get(inna) if inna is not None else None,
+        ))
+    return wynik
+
+
+def _udzial_kontenerow(towar_odprawy: Sequence[PozycjaTowaru], towar_wszystko: Sequence[PozycjaTowaru]
+                       ) -> Dict[int, float]:
+    """Jaka część każdego kontenera należy do tej odprawy — po wadze brutto.
+
+    Transport krajowy to jedna ciężarówka na cały kontener, więc przy kilku odprawach
+    każda bierze tyle, ile waży jej towar. Gdy któremuś SKU w kontenerze brakuje wagi,
+    porównanie wag byłoby fikcją — liczymy wtedy po wartości planowanej.
+    """
+    wynik: Dict[int, float] = {}
+    for cid in {t.container_id for t in towar_wszystko}:
+        wszystko = [t for t in towar_wszystko if t.container_id == cid]
+        moje_id = {t.item_id for t in towar_odprawy if t.container_id == cid}
+        if all(t.waga_brutto_kg is not None for t in wszystko):
+            miara = lambda t: (t.waga_brutto_kg or 0) * t.ilosc  # noqa: E731
+        else:
+            miara = lambda t: t.cena_planowana * t.ilosc  # noqa: E731
+        calosc = sum(miara(t) for t in wszystko)
+        wynik[cid] = (sum(miara(t) for t in wszystko if t.item_id in moje_id) / calosc) if calosc else 1.0
+    return wynik
+
+
+async def _odprawy_kontenera(db: AsyncSession, container_id: int) -> List[OdprawaKontenerOut]:
+    rows = (await db.execute(
+        text(f"""
+            SELECT o.id, o.mrn, o.data_zgloszenia, o.importer, o.status,
+                   (SELECT COUNT(*) FROM {settings.TABLE_CONTAINER_ITEMS} ci
+                     WHERE ci.koszt_odprawa_id = o.id AND ci.container_id = :cid) AS pozycji
+              FROM app_odprawy o
+              JOIN app_odprawa_kontenery ok ON ok.odprawa_id = o.id
+             WHERE ok.container_id = :cid
+             ORDER BY o.data_zgloszenia NULLS LAST, o.id
+        """),
+        {"cid": container_id},
+    )).mappings().all()
+    return [OdprawaKontenerOut(id=r["id"], mrn=r["mrn"], data_zgloszenia=r["data_zgloszenia"],
+                               importer=r["importer"], status=r["status"] or "zapisana",
+                               pozycji=int(r["pozycji"] or 0)) for r in rows]
+
+
+async def _mrn_odpraw(db: AsyncSession, ids: Sequence[int]) -> Dict[int, str]:
+    ids = [i for i in ids if i]
+    if not ids:
+        return {}
+    rows = (await db.execute(text("SELECT id, mrn FROM app_odprawy WHERE id = ANY(:ids)"),
+                             {"ids": list(ids)})).all()
+    return {r[0]: r[1] for r in rows}
+
 
 async def _koszt_erp(db: AsyncSession, slug: Optional[str],
                     skus: Sequence[str]) -> "tuple[Optional[str], Dict[str, float]]":
@@ -340,22 +563,58 @@ async def _zloz(
         ))
 
     firma_sad = await _firma_po_nip(db, odprawa.nip_importera)
-    firma_kont = await _firma_kontenera(db, container_id)
-    if firma_sad and firma_kont and firma_sad["slug"].lower() != firma_kont:
-        raise HTTPException(400, (
-            f"Importerem w SAD jest {firma_sad['name']} (NIP {odprawa.nip_importera}), "
-            f"a towar w kontenerze należy do firmy {firma_kont.upper()}."
-        ))
-
     kontenery = await _kontenery_odprawy(db, odprawa.kontenery)
+    # Konsolidację rozpoznajemy po fladze ALBO po samych lotach — flaga bywa nieustawiona,
+    # a kontener z lotami bez niej wciągnąłby do rachunku towar innych dostawców i spółek.
+    loty_db = await _loty(db, [k["id"] for k in kontenery])
+    konsolidacja = any(k.get("is_consolidated") for k in kontenery) or bool(loty_db)
     for k in kontenery:
+        # Przy konsolidacji MRN siedzi na lotach (każdy lot może mieć swoje zgłoszenie),
+        # więc sprawdzamy go niżej, lot po locie — numer na samym kontenerze nie wiąże.
+        if konsolidacja:
+            continue
         if k["mrn"] and odprawa.mrn and k["mrn"].strip().upper() != odprawa.mrn.strip().upper():
             raise HTTPException(400, (
                 f"Kontener {k['container_number']} ma już MRN {k['mrn']}, a plik niesie {odprawa.mrn}. "
                 "Popraw numer na kontenerze albo wrzuć właściwe zgłoszenie."
             ))
 
-    towar = await _towar(db, [k["id"] for k in kontenery])
+    istniejaca = (await db.execute(
+        text("SELECT id, status, klucz_podzialu, kurs_towaru, kurs_kosztow, "
+             "       fv_spedytora, fv_spedytora_data "
+             "  FROM app_odprawy WHERE mrn = :mrn"),
+        {"mrn": odprawa.mrn},
+    )).mappings().first()
+
+    towar_wszystko, meta = await _towar(db, [k["id"] for k in kontenery])
+    loty_out: List[OdprawaLotOut] = []
+    towar = towar_wszystko
+    if konsolidacja:
+        mrn_odpraw = await _mrn_odpraw(db, list({m["odprawa_id"] for m in meta.values() if m["odprawa_id"]}))
+        loty_out = _wybierz_loty(odprawa, loty_db, towar_wszystko, meta, firma_sad,
+                                 istniejaca["id"] if istniejaca else None, mrn_odpraw, ustawienia.loty)
+        wybrane = {l.lot_id for l in loty_out if l.wybrany}
+        towar = [t for t in towar_wszystko if meta[t.item_id]["lot_id"] is None
+                 or meta[t.item_id]["lot_id"] in wybrane]
+
+    # Firma towaru = najczęstsza firma TEGO, co liczymy. Przy konsolidacji to towar
+    # wybranych lotów, a nie całego kontenera — inaczej 1000 szt. Veluxy przegłosowałoby
+    # trzy loty Acti i odprawa Acti nie dałaby się wczytać.
+    firmy = Counter(meta[t.item_id]["firma"] for t in towar)
+    firma_kont = firmy.most_common(1)[0][0] if firmy else None
+    if firma_sad and firma_kont and firma_sad["slug"].lower() != firma_kont:
+        raise HTTPException(400, (
+            f"Importerem w SAD jest {firma_sad['name']} (NIP {odprawa.nip_importera}), "
+            f"a towar w kontenerze należy do firmy {firma_kont.upper()}."
+        ))
+
+    faktury_sku: Dict[str, set] = {}
+    for l in loty_out:
+        if l.wybrany and l.faktura:
+            for sku in l.sku:
+                faktury_sku.setdefault(sku, set()).add(l.faktura)
+    udzial = _udzial_kontenerow(towar, towar_wszystko) if konsolidacja else None
+
     linie = _linie_kosztow(odprawa, ustawienia, kontenery)
     klucz = KLUCZ_CBM if ustawienia.klucz_podzialu == KLUCZ_CBM else KLUCZ_WAGA
 
@@ -367,9 +626,42 @@ async def _zloz(
         kurs_towaru=ustawienia.kurs_towaru,
         kurs_kosztow=ustawienia.kurs_kosztow,
         ceny_reczne=ustawienia.ceny_reczne or None,
+        faktury_sku=faktury_sku or None,
+        udzial_kontenera=udzial,
     )
 
     uwagi = list(rachunek.uwagi)
+    if konsolidacja:
+        for l in loty_out:
+            if l.wybrany and l.blokada:
+                uwagi.append(Uwaga("blad", f"Lot {l.dostawca or l.lot_id} nie może wejść do tej odprawy",
+                                   l.powod))
+        z_lotem = {l.faktura for l in loty_out if l.wybrany and l.faktura}
+        bez_lotu = [fv for fv in odprawa.faktury_dostawcy if fv not in z_lotem]
+        if bez_lotu and loty_out:
+            uwagi.append(Uwaga(
+                "ostrzezenie",
+                "Faktura ze zgłoszenia bez lotu na kontenerze — jej pozycje mogą rozliczyć się jako gratis",
+                ", ".join(bez_lotu),
+            ))
+        czeka = [l for l in loty_out if not l.wybrany and l.odprawa_id is None]
+        if czeka:
+            uwagi.append(Uwaga(
+                "info", "Na kontenerze zostaje towar bez zgłoszenia — rozliczysz go następną odprawą",
+                "; ".join(f"{l.dostawca or 'lot'}: {', '.join(l.sku)}" for l in czeka),
+            ))
+        for k in kontenery:
+            u = (udzial or {}).get(k["id"], 1.0)
+            tk = float(k.get("koszt_transportu_magazyn") or 0)
+            if u < 0.999 and any(l.container_id == k["id"] and l.kwota for l in linie):
+                po_wadze = all(t.waga_brutto_kg is not None for t in towar_wszystko if t.container_id == k["id"])
+                uwagi.append(Uwaga(
+                    "info",
+                    f"{k['container_number']}: transport krajowy dzielony na cały kontener — "
+                    f"ta odprawa bierze {u * 100:.1f}% " + ("jego wagi" if po_wadze else
+                                                             "jego wartości (części towaru brakuje wagi)"),
+                    f"kwota w polu to transport całego kontenera{f' ({tk:.2f} zł)' if tk else ''}",
+                ))
     brakujace = [n for n in odprawa.kontenery
                  if n not in {(k["container_number"] or "").strip().upper() for k in kontenery}]
     if brakujace:
@@ -378,7 +670,13 @@ async def _zloz(
         uwagi.append(Uwaga("info", "Odprawa obejmuje kilka kontenerów — koszt liczony łącznie",
                            ", ".join(k["container_number"] for k in kontenery)))
     for k in kontenery:
-        if not k["mrn"]:
+        if konsolidacja:
+            bez_mrn = [l for l in loty_out if l.wybrany and not l.blokada and not l.mrn
+                       and l.container_id == k["id"]]
+            if bez_mrn:
+                uwagi.append(Uwaga("info", f"{k['container_number']}: MRN uzupełni się na lotach przy zapisie",
+                                   ", ".join(l.dostawca or str(l.lot_id) for l in bez_mrn)))
+        elif not k["mrn"]:
             uwagi.append(Uwaga("info", f"{k['container_number']}: MRN uzupełni się przy zapisie",
                                odprawa.mrn or ""))
     if odprawa.faktury_dostawcy:
@@ -387,12 +685,6 @@ async def _zloz(
         uwagi.append(Uwaga("info", "W pliku jest kilka kursów — użyty kurs waluty zgłoszenia",
                            f"{odprawa.waluta} {odprawa.kurs_celny}"))
 
-    istniejaca = (await db.execute(
-        text("SELECT id, status, klucz_podzialu, kurs_towaru, kurs_kosztow, "
-             "       fv_spedytora, fv_spedytora_data "
-             "  FROM app_odprawy WHERE mrn = :mrn"),
-        {"mrn": odprawa.mrn},
-    )).mappings().first()
     zapisane = await _zapisane_ustawienia(db, istniejaca)
     zrodlo_erp, erp = await _koszt_erp(db, (firma_sad or {}).get("slug") or firma_kont,
                                        [t.sku for t in towar])
@@ -434,6 +726,7 @@ async def _zloz(
             vat_stawka=p.vat_stawka, vat_metoda=p.vat_metoda,
             liczba_opakowan=p.liczba_opakowan, szt_uzup=p.szt_uzup, kontenery=p.kontenery,
             item_ids=sorted(po_nr.get(p.nr, [])), gratis_item_id=rachunek.gratisy.get(p.nr),
+            faktury=list(p.faktury_dostawcy),
         ) for p in odprawa.pozycje],
         towar=[OdprawaTowarOut(
             item_id=w.item_id, container_id=w.container_id,
@@ -458,6 +751,9 @@ async def _zloz(
         status=(istniejaca["status"] if istniejaca else "podglad"),
         zapisane=zapisane,
         zrodlo_erp=zrodlo_erp,
+        odprawa_id=istniejaca["id"] if istniejaca else None,
+        loty=loty_out,
+        odprawy_kontenera=await _odprawy_kontenera(db, container_id),
     )
     return out, odprawa, rachunek, kontenery, towar
 
@@ -513,18 +809,23 @@ async def zapisz(
 @router.get("/kontenery/{container_id}/odprawa", response_model=Optional[OdprawaOut])
 async def pobierz(
     container_id: int,
+    odprawa_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_landed_cost_view),
 ):
-    """Zapisana odprawa tego kontenera albo null, gdy jeszcze jej nie policzono."""
+    """Zapisana odprawa tego kontenera albo null, gdy jeszcze jej nie policzono.
+
+    Kontener skonsolidowany potrafi mieć kilka odpraw — `odprawa_id` wybiera jedną,
+    bez niego dostajemy ostatnią. Lista wszystkich jedzie w `odprawy_kontenera`.
+    """
     row = (await db.execute(
         text("""
             SELECT o.* FROM app_odprawy o
               JOIN app_odprawa_kontenery ok ON ok.odprawa_id = o.id
-             WHERE ok.container_id = :cid
+             WHERE ok.container_id = :cid AND (CAST(:oid AS INTEGER) IS NULL OR o.id = :oid)
              ORDER BY o.id DESC LIMIT 1
         """),
-        {"cid": container_id},
+        {"cid": container_id, "oid": odprawa_id},
     )).mappings().first()
     if not row:
         return None
@@ -608,6 +909,7 @@ async def pobierz(
             szt_uzup=float(p["szt_uzup"]) if p["szt_uzup"] is not None else None,
             gratis_item_id=p["gratis_item_id"],
             item_ids=sorted(po_pozycji.get(p["nr"], [])),
+            faktury=[f.strip() for f in (p.get("faktury") or "").split(",") if f.strip()],
         ) for p in pozycje],
         towar=[OdprawaTowarOut(
             reczna=bool(i["cena_reczna"]),
@@ -643,7 +945,41 @@ async def pobierz(
         narzut_proc=narzut,
         status=row["status"],
         zrodlo_erp=zrodlo_erp,
+        odprawa_id=row["id"],
+        loty=await _pokrycie_lotow(db, container_id, row["id"]),
+        odprawy_kontenera=await _odprawy_kontenera(db, container_id),
     )
+
+
+async def _pokrycie_lotow(db: AsyncSession, container_id: int, odprawa_id: int) -> List[OdprawaLotOut]:
+    """Loty otwartego kontenera i to, która odprawa rozliczyła ich towar.
+
+    Pusta lista dla zwykłego kontenera — zakładka pokazuje wtedy dawny widok bez lotów.
+    Lot „wybrany" to lot rozliczony TĄ odprawą; lot bez żadnej odprawy czeka na zgłoszenie.
+    """
+    loty = await _loty(db, [container_id])
+    if not loty:
+        return []
+    towar, meta = await _towar(db, [container_id])
+    mrn = await _mrn_odpraw(db, list({m["odprawa_id"] for m in meta.values() if m["odprawa_id"]}))
+    wynik: List[OdprawaLotOut] = []
+    for lot in loty:
+        lista = [t for t in towar if meta[t.item_id]["lot_id"] == lot["id"]]
+        firmy = Counter(meta[t.item_id]["firma"] for t in lista)
+        odprawy = Counter(meta[t.item_id]["odprawa_id"] for t in lista if meta[t.item_id]["odprawa_id"])
+        oid = odprawy.most_common(1)[0][0] if odprawy else None
+        wynik.append(OdprawaLotOut(
+            lot_id=lot["id"], container_id=container_id, dostawca=lot.get("dostawca"),
+            zamowienie=lot.get("order_number"), mrn=lot.get("mrn"),
+            firma=firmy.most_common(1)[0][0] if firmy else None,
+            sku=sorted({t.sku for t in lista}), sztuk=sum(t.ilosc for t in lista),
+            wybrany=oid == odprawa_id, blokada=oid is not None and oid != odprawa_id,
+            powod=("Rozliczony tą odprawą." if oid == odprawa_id
+                   else f"Rozliczony odprawą {mrn.get(oid, oid)}." if oid
+                   else "Czeka na zgłoszenie."),
+            odprawa_id=oid, odprawa_mrn=mrn.get(oid) if oid else None,
+        ))
+    return wynik
 
 
 @router.delete("/odprawy/{odprawa_id}", status_code=204)
@@ -747,6 +1083,27 @@ async def _zapisz_wszystko(
         },
     )).scalar_one()
 
+    # Udział kontenerów w kosztach tej odprawy — po wadze jej towaru w każdym z nich.
+    # Liczony przed zapisem, bo trafia do app_odprawa_kontenery: karta kontenera dostaje
+    # SUMĘ udziałów ze wszystkich jego odpraw (konsolidacja = kilka zgłoszeń na kontener).
+    fracht = next((float(l.kwota or 0) for l in out.koszty if l.lp == 1), 0.0)
+    razem_fv = sum(float(l.kwota or 0) for l in out.koszty if l.container_id is None)
+    masy = {k["id"]: sum((t.waga_brutto_kg or 0) * t.ilosc for t in towar if t.container_id == k["id"])
+            for k in kontenery}
+    masa_razem = sum(masy.values())
+    udzial_k = {k["id"]: ((masy[k["id"]] / masa_razem) if masa_razem else (1.0 / max(1, len(kontenery))))
+                for k in kontenery}
+
+    async def sumy_kart() -> Dict[int, "tuple[float, float]"]:
+        rows = (await db.execute(
+            text("SELECT container_id, COALESCE(SUM(fracht), 0), COALESCE(SUM(spedycja), 0) "
+                 "  FROM app_odprawa_kontenery WHERE container_id = ANY(:ids) GROUP BY container_id"),
+            {"ids": [k["id"] for k in kontenery]},
+        )).all()
+        return {r[0]: (float(r[1]), float(r[2])) for r in rows}
+
+    sumy_przed = await sumy_kart()
+
     # Pozycje, kontenery i koszty przepisujemy w całości — ponowny import ma dać
     # dokładnie to, co jest w pliku, bez resztek po poprzednim odczycie.
     for tab in ("app_odprawa_pozycje", "app_odprawa_koszty", "app_odprawa_kontenery"):
@@ -754,10 +1111,13 @@ async def _zapisz_wszystko(
 
     po_numerze = {(k["container_number"] or "").strip().upper(): k["id"] for k in kontenery}
     for numer in odprawa.kontenery:
+        cid = po_numerze.get(numer)
+        u = udzial_k.get(cid, 0.0) if cid else 0.0
         await db.execute(
-            text("INSERT INTO app_odprawa_kontenery (odprawa_id, numer, container_id) "
-                 "VALUES (:id, :numer, CAST(:cid AS INTEGER))"),
-            {"id": odprawa_id, "numer": numer, "cid": po_numerze.get(numer)},
+            text("INSERT INTO app_odprawa_kontenery (odprawa_id, numer, container_id, fracht, spedycja) "
+                 "VALUES (:id, :numer, CAST(:cid AS INTEGER), :fr, :sp)"),
+            {"id": odprawa_id, "numer": numer, "cid": cid,
+             "fr": round(fracht * u, 2) if cid else None, "sp": round(razem_fv * u, 2) if cid else None},
         )
 
     for p in odprawa.pozycje:
@@ -766,9 +1126,10 @@ async def _zapisz_wszystko(
                 INSERT INTO app_odprawa_pozycje
                     (odprawa_id, nr, kod_cn, opis, wartosc, masa_brutto, masa_netto,
                      wartosc_celna_pln, clo_stawka, clo_pln, clo_wyliczone, vat_stawka, vat_pln,
-                     vat_metoda, liczba_opakowan, szt_uzup, doliczenia, gratis_item_id)
+                     vat_metoda, liczba_opakowan, szt_uzup, doliczenia, gratis_item_id, faktury)
                 VALUES (:id, :nr, :cn, :opis, :wartosc, :mb, :mn, :wc, :cs, :cp, :cw, :vs, :vp,
-                        :vm, CAST(:opak AS INTEGER), :szt, CAST(:dol AS JSONB), CAST(:gratis AS INTEGER))
+                        :vm, CAST(:opak AS INTEGER), :szt, CAST(:dol AS JSONB), CAST(:gratis AS INTEGER),
+                        :faktury)
             """),
             {
                 "id": odprawa_id, "nr": p.nr, "cn": p.kod_cn or None, "opis": p.opis,
@@ -777,6 +1138,7 @@ async def _zapisz_wszystko(
                 "cw": p.clo_wyliczone, "vs": p.vat_stawka, "vp": p.vat_pln, "vm": p.vat_metoda,
                 "opak": p.liczba_opakowan, "szt": p.szt_uzup,
                 "dol": json.dumps(p.doliczenia), "gratis": rachunek.gratisy.get(p.nr),
+                "faktury": ", ".join(p.faktury_dostawcy) or None,
             },
         )
 
@@ -806,6 +1168,21 @@ async def _zapisz_wszystko(
             },
         )
 
+    # ── Pozycje, które wypadły z tej odprawy ─────────────────────────────────
+    # Ponowny zapis z odznaczonym lotem nie może zostawić na jego towarze kosztu z tej
+    # odprawy — inaczej lot wyglądałby na rozliczony, choć nikt go już nie liczy.
+    await db.execute(
+        text(f"""
+            UPDATE {settings.TABLE_CONTAINER_ITEMS}
+               SET koszt_jednostkowy = NULL, cena_zakupu_pln = NULL, cena_zakupu_waluta = NULL,
+                   cena_reczna = FALSE, koszt_logistyka_pln = NULL, koszt_clo_pln = NULL,
+                   koszt_gratisy_pln = NULL, koszt_transport_pln = NULL, odprawa_poz_nr = NULL,
+                   koszt_odprawa_id = NULL, koszt_zrodlo = NULL, koszt_updated_at = NULL
+             WHERE koszt_odprawa_id = :oid AND NOT (id = ANY(:ids))
+        """),
+        {"oid": odprawa_id, "ids": [w.item_id for w in rachunek.pozycje] or [0]},
+    )
+
     # ── Koszt na pozycjach kontenera ─────────────────────────────────────────
     # Zapisujemy CAŁE rozbicie, nie tylko wynik. Odczyt zapisanej odprawy ma pokazać
     # dokładnie to, co zatwierdzono — odtwarzanie rachunku przy każdym wejściu dałoby
@@ -834,30 +1211,44 @@ async def _zapisz_wszystko(
         )
 
     # ── Dopisanie wartości na kartę kontenera ────────────────────────────────
-    # Puste pole uzupełniamy, wypełnionego nie ruszamy — ktoś mógł je wpisać ręcznie
-    # i cicha podmiana byłaby najgorszą możliwą niespodzianką.
-    fx_k = ust.kurs_kosztow or odprawa.kurs_celny
-    fracht = next((float(l.kwota or 0) for l in out.koszty if l.lp == 1), 0.0)
-    razem_fv = sum(float(l.kwota or 0) for l in out.koszty if l.container_id is None)
-    masy = {k["id"]: sum((t.waga_brutto_kg or 0) * t.ilosc for t in towar if t.container_id == k["id"])
-            for k in kontenery}
-    masa_razem = sum(masy.values())
+    # Fracht i spedycja na karcie = SUMA udziałów ze wszystkich odpraw kontenera. Pole
+    # nadpisujemy tylko wtedy, gdy jest puste albo równe sumie sprzed tego zapisu — czyli
+    # gdy wpisała je aplikacja. Kwoty wpisanej ręcznie nie ruszamy: cicha podmiana byłaby
+    # najgorszą możliwą niespodzianką.
+    sumy_po = await sumy_kart()
     mrn_uzupelniony: List[str] = []
     zaktualizowane: List[str] = []
+    konsolidacja = bool(out.loty)
+
+    def wolno(obecna, przed: float) -> bool:
+        return not obecna or abs(float(obecna) - przed) < 0.01
 
     for k in kontenery:
-        udzial = (masy[k["id"]] / masa_razem) if masa_razem else (1.0 / max(1, len(kontenery)))
         zmiany, params = [], {"cid": k["id"]}
-        if not k["mrn"] and odprawa.mrn:
+        fr_przed, sp_przed = sumy_przed.get(k["id"], (0.0, 0.0))
+        fr_po, sp_po = sumy_po.get(k["id"], (0.0, 0.0))
+        if konsolidacja:
+            # MRN na lotach, które objęło to zgłoszenie. Kontener skonsolidowany nie ma
+            # jednego MRN — każdy lot może przyjść innym zgłoszeniem.
+            loty_mrn = [l.lot_id for l in out.loty
+                        if l.wybrany and not l.blokada and not l.mrn and l.container_id == k["id"]]
+            if loty_mrn and odprawa.mrn:
+                await db.execute(
+                    text(f"UPDATE {settings.TABLE_CONTAINER_LOTS} SET mrn = :mrn "
+                         f"WHERE id = ANY(:ids) AND COALESCE(TRIM(mrn), '') = ''"),
+                    {"mrn": odprawa.mrn, "ids": loty_mrn},
+                )
+                mrn_uzupelniony.append(k["container_number"])
+        elif not k["mrn"] and odprawa.mrn:
             zmiany.append("mrn = :mrn")
             params["mrn"] = odprawa.mrn
             mrn_uzupelniony.append(k["container_number"])
-        if not k["koszt_transportu"] and fracht:
+        if fr_po and wolno(k["koszt_transportu"], fr_przed) and abs(float(k["koszt_transportu"] or 0) - fr_po) >= 0.01:
             zmiany.append("koszt_transportu = :kt")
-            params["kt"] = round(fracht * udzial, 2)
-        if not k["koszt_spedycji"] and razem_fv:
+            params["kt"] = round(fr_po, 2)
+        if sp_po and wolno(k["koszt_spedycji"], sp_przed) and abs(float(k["koszt_spedycji"] or 0) - sp_po) >= 0.01:
             zmiany.append("koszt_spedycji = :ks")
-            params["ks"] = round(razem_fv * udzial, 2)
+            params["ks"] = round(sp_po, 2)
         tk = next((float(l.kwota or 0) for l in out.koszty if l.container_id == k["id"]), 0.0)
         if not k["koszt_transportu_magazyn"] and tk:
             zmiany.append("koszt_transportu_magazyn = :tk")
