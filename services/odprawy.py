@@ -136,6 +136,10 @@ class Rachunek:
 
 # ===== dopasowanie po nazwie =====
 
+ROZLOZ_NA_FAKTURE = 0
+"""Wartość w `gratisy[nr]`: rozłóż koszty pozycji bez towaru na towar tej samej faktury.
+Zero, bo id pozycji kontenera są dodatnie — nie pomyli się z żadnym produktem."""
+
 PROG_NAZWY = 0.15
 """Poniżej tego podobieństwa nie rozstrzygamy nazwą — jedno przypadkowe słowo
 w dziesięciowyrazowym opisie celnym to za mało, żeby przesądzić o pozycji."""
@@ -698,23 +702,29 @@ def policz(
             wyniki[t.item_id].clo += p.clo_pln * wyniki[t.item_id].towar / suma
 
     # ── 4. Gratisy ────────────────────────────────────────────────────────────
+    # Pozycja SAD bez towaru (część zamienna, próbka) niesie fracht, ubezpieczenie i cło,
+    # ale nie ma sztuki, na którą dałoby się je zapisać. Domyślnie ROZKŁADAMY je na cały
+    # towar z tej samej faktury dostawcy, po wartości — próbka od KS Medical obciąża
+    # proporcjonalnie cały towar KS Medical, a nie jeden produkt. Wcześniej całość szła na
+    # najdroższy SKU i przy drogiej próbce wypaczała jego koszt. Kto chce inaczej, wskazuje
+    # na liście jeden produkt (gratisy[nr] = item_id). Bez znanej faktury rozkład idzie na
+    # cały towar odprawy.
     gratisy = dict(gratisy or {})
     wszystkie = {nr: pula_gratisow.get(nr, 0.0) + pula_gratisow_clo.get(nr, 0.0)
                  for nr in set(pula_gratisow) | set(pula_gratisow_clo)}
-    if wszystkie and towar:
-        # Gratis przejmuje najdroższy towar Z TEJ SAMEJ FAKTURY dostawcy — próbka od
-        # KS Medical ma obciążyć towar KS Medical, a nie najdroższy towar całego kontenera,
-        # który przy konsolidacji pochodzi od zupełnie innego dostawcy. Bez znanej faktury
-        # zostaje dawna reguła: najdroższy towar odprawy.
-        poz_po_nr = {p.nr: p for p in odprawa.pozycje}
-        for nr in wszystkie:
-            fv = set(poz_po_nr[nr].faktury_dostawcy) if nr in poz_po_nr else set()
-            kandydaci = [t for t in towar if fv and (faktury_sku or {}).get(t.sku, set()) & fv] or list(towar)
-            gratisy.setdefault(nr, max(kandydaci, key=lambda t: t.ilosc * t.cena_planowana).item_id)
+    poz_po_nr = {p.nr: p for p in odprawa.pozycje}
     clo_gratisow = 0.0
     for nr, kwota in wszystkie.items():
-        cel = gratisy.get(nr)
-        if cel in wyniki:
+        cel = gratisy.setdefault(nr, ROZLOZ_NA_FAKTURE)
+        if cel == ROZLOZ_NA_FAKTURE and towar:
+            fv = set(poz_po_nr[nr].faktury_dostawcy) if nr in poz_po_nr else set()
+            lista = [t for t in towar if fv and (faktury_sku or {}).get(t.sku, set()) & fv] or list(towar)
+            wagi = {t.item_id: wyniki[t.item_id].towar or t.ilosc * t.cena_planowana for t in lista}
+            suma = sum(wagi.values())
+            for t in lista:
+                wyniki[t.item_id].gratisy += kwota * (wagi[t.item_id] / suma if suma else 1.0 / len(lista))
+            clo_gratisow += pula_gratisow_clo.get(nr, 0.0)
+        elif cel in wyniki:
             wyniki[cel].gratisy += kwota
             clo_gratisow += pula_gratisow_clo.get(nr, 0.0)
         else:
