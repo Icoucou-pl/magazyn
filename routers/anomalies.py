@@ -400,6 +400,9 @@ async def shopping_list(shop: str = "", favorites_only: bool = False, db: AsyncS
             "transfer_source_qty": p.transfer_source_qty,
             "transfer_source_transit": p.transfer_source_transit,
             "transfer_state": p.transfer_state,
+            # Firma-właściciel (magazyn źródłowy) — „Pożary” na pulpicie pokazują tylko towar
+            # firmy z wybranej zakładki, bez produktów przesuwanych od sióstr.
+            "firma_slug": p.firma_slug,
         })
         groups[key]["total_skus"] += 1
 
