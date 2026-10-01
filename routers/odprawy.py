@@ -530,6 +530,11 @@ def _linie_kosztow(odprawa: Odprawa, ustawienia: OdprawaUstawieniaIn,
                              waluta=odprawa.waluta, klucz="wartosc"),
         OdprawaLiniaKosztuIn(lp=5, nazwa="Zgłoszenie do odprawy celnej", kwota=0, waluta=odprawa.waluta),
     ]
+    if d.get("033W"):
+        # Załadunek po stronie dostawcy (np. „Container FOB cost") — płacony dostawcy,
+        # więc nie ma go na fakturze spedytora, a do kosztu towaru należy.
+        linie.append(OdprawaLiniaKosztuIn(lp=6, nazwa="Załadunek u dostawcy (033W)",
+                                          kwota=d["033W"], waluta=odprawa.waluta))
     for k in kontenery:
         linie.append(OdprawaLiniaKosztuIn(
             nazwa="Transport krajowy", kwota=float(k.get("koszt_transportu_magazyn") or 0),
@@ -1195,7 +1200,7 @@ async def _zapisz_wszystko(
             },
         )
 
-    z_sad = {1: "031W", 2: "071V", 4: "032W"}
+    z_sad = {1: "031W", 2: "071V", 4: "032W", 6: "033W"}
     dolicz = {d.kod: d.kwota for d in odprawa.doliczenia}
 
     def zrodlo(l) -> str:
