@@ -37,6 +37,7 @@ Jak liczy się koszt
 
 from __future__ import annotations
 
+import random
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -185,7 +186,8 @@ def _podobienstwo(opis: Sequence[str], nazwa: Sequence[str]) -> float:
 
 
 def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
-                       do_ulozenia: List[str]) -> Dict[str, int]:
+                       do_ulozenia: List[str],
+                       dozwolone: Optional[Dict[str, Set[int]]] = None) -> Dict[str, int]:
     """SKU → nr pozycji SAD, tam gdzie nazwa towaru jednoznacznie wskazuje pozycję.
 
     Agencja opisuje pozycję po polsku („PODUSZKA KOSMETYCZNA WYKONANA Z PIANKI”),
@@ -208,8 +210,12 @@ def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
         moje = _slowa(" ".join(filter(None, [grupy[sku][0].nazwa, sku])))
         if not moje:
             continue
-        punkty = sorted(((_podobienstwo(opisy[p.nr], moje), p.nr) for p in odprawa.pozycje),
+        dozw = (dozwolone or {}).get(sku)
+        punkty = sorted(((_podobienstwo(opisy[p.nr], moje), p.nr) for p in odprawa.pozycje
+                         if dozw is None or p.nr in dozw),
                         reverse=True)
+        if not punkty:
+            continue
         if punkty[0][0] < PROG_NAZWY:
             continue
         if len(punkty) == 1 or punkty[0][0] > punkty[1][0]:
@@ -219,12 +225,45 @@ def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
 
 # ===== dopasowanie =====
 
+def _dozwolone(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
+               faktury_sku: Optional[Dict[str, Set[str]]]) -> Dict[str, Set[int]]:
+    """SKU → numery pozycji SAD, do których wolno je przypisać.
+
+    Każda pozycja zgłoszenia podaje fakturę dostawcy (dokument N935), a lot kontenera to
+    jeden dostawca. Gdy wiemy, z której faktury pochodzi SKU, może ono trafić wyłącznie do
+    pozycji tej faktury. Na konsolidacji Acti CORU2068476 bez tego ograniczenia wózek
+    od KS Medical potrafił wylądować w łóżkach od MEDI, bo wartości „pasowały".
+
+    Pozycja bez numeru faktury jest dostępna dla wszystkich, a SKU bez znanej faktury
+    (albo z fakturą, której nie ma w zgłoszeniu) nie dostaje ograniczeń — nie ma czego
+    zawężać, a pusty zbiór zablokowałby dopasowanie zamiast mu pomóc.
+    """
+    if not faktury_sku:
+        return {}
+    wynik: Dict[str, Set[int]] = {}
+    for sku in grupy:
+        fv = faktury_sku.get(sku)
+        if not fv:
+            continue
+        nr = {p.nr for p in odprawa.pozycje
+              if not p.faktury_dostawcy or set(p.faktury_dostawcy) & fv}
+        if nr and len(nr) < len(odprawa.pozycje):
+            wynik[sku] = nr
+    return wynik
+
+
 def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru],
-            slady: Optional[Dict[str, Any]] = None) -> Dict[int, int]:
-    """Zwraca {item_id: nr pozycji SAD}. Kolejno: kod CN, nazwa towaru, wartość.
+            slady: Optional[Dict[str, Any]] = None,
+            faktury_sku: Optional[Dict[str, Set[str]]] = None,
+            ustalone: Optional[Dict[int, int]] = None) -> Dict[int, int]:
+    """Zwraca {item_id: nr pozycji SAD}. Kolejno: ręcznie, faktura, kod CN, nazwa, wartość.
 
     `slady` (opcjonalny słownik) dostaje informacje o tym, CZYM rozstrzygnięto każde SKU
     i jak pewne było dopasowanie po wartości — `policz` zamienia to na ostrzeżenia.
+
+    `faktury_sku` (SKU → numery faktur dostawcy) zawęża każde SKU do pozycji jego faktury.
+    `ustalone` (item_id → nr) to przypisania zmienione ręcznie na liście „Pozycja SAD":
+    zostają nietknięte, a reszta układa się wokół nich.
     """
     if not towar or not odprawa.pozycje:
         return {}
@@ -238,22 +277,36 @@ def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru],
     grupy: Dict[str, List[PozycjaTowaru]] = {}
     for t in towar:
         grupy.setdefault(t.sku, []).append(t)
+    dozwolone = _dozwolone(odprawa, grupy, faktury_sku)
 
     wynik: Dict[int, int] = {}
     nierozstrzygniete: List[str] = []
     zrodlo: Dict[str, str] = {}
+    ustalone = {k: v for k, v in (ustalone or {}).items() if v is not None}
     for sku, sztuki in grupy.items():
+        if all(s.item_id in ustalone for s in sztuki):
+            for s in sztuki:
+                wynik[s.item_id] = ustalone[s.item_id]
+            zrodlo[sku] = "recznie"
+            continue
+        dozw = dozwolone.get(sku)
         kod = next((s.kod_cn for s in sztuki if s.kod_cn), None)
-        if kod and kod in nr_po_cn:
+        if kod and kod in nr_po_cn and (dozw is None or nr_po_cn[kod] in dozw):
             for s in sztuki:
                 wynik[s.item_id] = nr_po_cn[kod]
             zrodlo[sku] = "cn"
+        elif dozw is not None and len(dozw) == 1:
+            # Faktura tego dostawcy ma w zgłoszeniu tylko jedną pozycję — nie ma czego zgadywać.
+            nr = next(iter(dozw))
+            for s in sztuki:
+                wynik[s.item_id] = nr
+            zrodlo[sku] = "faktura"
         else:
             nierozstrzygniete.append(sku)
 
     # Nazwa przed wartością: mówi, CZYM towar jest, a nie tylko ile kosztował.
     if nierozstrzygniete:
-        po_nazwie = _dopasuj_po_nazwie(odprawa, grupy, nierozstrzygniete)
+        po_nazwie = _dopasuj_po_nazwie(odprawa, grupy, nierozstrzygniete, dozwolone)
         for sku, nr in po_nazwie.items():
             for s in grupy[sku]:
                 wynik[s.item_id] = nr
@@ -264,7 +317,7 @@ def dopasuj(odprawa: Odprawa, towar: Sequence[PozycjaTowaru],
     zachlannie = False
     if nierozstrzygniete:
         pomoc: Dict[str, Any] = {}
-        wynik.update(_dopasuj_po_wartosci(odprawa, grupy, nierozstrzygniete, wynik, pomoc))
+        wynik.update(_dopasuj_po_wartosci(odprawa, grupy, nierozstrzygniete, wynik, pomoc, dozwolone))
         for sku in nierozstrzygniete:
             zrodlo[sku] = "wartosc"
         pewnosc = pomoc.get("margines")
@@ -284,9 +337,16 @@ def _dopasuj_po_wartosci(
     do_ulozenia: List[str],
     juz: Dict[int, int],
     pomoc: Optional[Dict[str, Any]] = None,
+    dozwolone: Optional[Dict[str, Set[int]]] = None,
 ) -> Dict[int, int]:
     kurs = odprawa.kurs_celny or 1.0
     poz = odprawa.pozycje
+    # Dla każdego SKU lista indeksów pozycji, które w ogóle wchodzą w grę.
+    opcje = [
+        [k for k, p in enumerate(poz) if (dozwolone or {}).get(sku) is None or p.nr in dozwolone[sku]]
+        or list(range(len(poz)))
+        for sku in do_ulozenia
+    ]
 
     # Ile wartości każda pozycja SAD ma już zajęte przez SKU dopasowane po kodzie CN.
     zajete = {p.nr: 0.0 for p in poz}
@@ -314,14 +374,18 @@ def _dopasuj_po_wartosci(
         """
         sumy = dict(zajete)
         for i, idx in enumerate(uklad):
-            sumy[poz[idx].nr] += wartosci[i]
+            if idx is not None:          # SKU jeszcze nieułożone nie obciążają żadnej pozycji
+                sumy[poz[idx].nr] += wartosci[i]
         return sum(abs(sumy[p.nr] - p.wartosc) / max(p.wartosc, 1.0) for p in poz)
 
-    n, m = len(do_ulozenia), len(poz)
+    n = len(do_ulozenia)
     najlepszy: Optional[List[int]] = None
-    if m ** n <= LIMIT_PRZEGLADU:
+    ile_ukladow = 1
+    for o in opcje:
+        ile_ukladow *= len(o)
+    if ile_ukladow <= LIMIT_PRZEGLADU:
         naj, drugi = float("inf"), float("inf")
-        for uklad in iloczyn(range(m), repeat=n):
+        for uklad in iloczyn(*opcje):
             b = blad(uklad)
             if b < naj:
                 naj, drugi, najlepszy = b, naj, list(uklad)
@@ -339,15 +403,55 @@ def _dopasuj_po_wartosci(
         # a to właśnie duże odprawy trafiają tutaj i najbardziej potrzebują kontroli.
         if pomoc is not None:
             pomoc["zachlannie"] = True
-        najlepszy = [0] * n
-        for i in sorted(range(n), key=lambda i: -wartosci[i]):
-            naj, wybor = float("inf"), 0
-            for k in range(m):
-                najlepszy[i] = k
-                b = blad(najlepszy)
-                if b < naj:
-                    naj, wybor = b, k
-            najlepszy[i] = wybor
+        # Start od „nic nie ułożone". Wcześniej startowało od [0] * n, czyli każde SKU,
+        # którego pętla jeszcze nie doszła, liczyło się tak, jakby leżało w pozycji 1.
+        # Pozycja 1 była przez to na starcie przepełniona i pierwsze decyzje szły pod
+        # ten sztuczny nadmiar. Na konsolidacji Acti CORU2068476 (13 SKU, 7 pozycji)
+        # trafiało 3 z 13, choć ceny planowane zgadzały się z fakturą co do kilku procent.
+        def uloz(kolejnosc: Sequence[int]) -> "tuple[float, List[Optional[int]]]":
+            uklad: List[Optional[int]] = [None] * n
+            for i in kolejnosc:
+                naj, wybor = float("inf"), opcje[i][0]
+                for k in opcje[i]:
+                    uklad[i] = k
+                    b = blad(uklad)
+                    if b < naj:
+                        naj, wybor = b, k
+                uklad[i] = wybor
+            # Poprawki lokalne: przenosimy pojedyncze SKU i zamieniamy pary, dopóki błąd
+            # maleje. Jedno przejście zachłanne nie cofa wczesnych decyzji, a to one bywają
+            # złe — dwa SKU o podobnej wartości potrafią wylądować na krzyż.
+            obecny = blad(uklad)
+            for _ in range(50):
+                poprawa = False
+                for i in range(n):
+                    for k in opcje[i]:
+                        if k == uklad[i]:
+                            continue
+                        stare, uklad[i] = uklad[i], k
+                        b = blad(uklad)
+                        if b < obecny - 1e-12:
+                            obecny, poprawa = b, True
+                        else:
+                            uklad[i] = stare
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        if uklad[i] == uklad[j] or uklad[j] not in opcje[i] or uklad[i] not in opcje[j]:
+                            continue
+                        uklad[i], uklad[j] = uklad[j], uklad[i]
+                        b = blad(uklad)
+                        if b < obecny - 1e-12:
+                            obecny, poprawa = b, True
+                        else:
+                            uklad[i], uklad[j] = uklad[j], uklad[i]
+                if not poprawa:
+                    break
+            return obecny, uklad
+
+        najblad, uklad = uloz(sorted(range(n), key=lambda i: -wartosci[i]))
+        if najblad > 1e-9:
+            najblad, uklad = _wyzarzanie(uklad, opcje, wartosci, poz, zajete)
+        najlepszy = [int(x) for x in uklad]
 
     wynik: Dict[int, int] = {}
     for i, sku in enumerate(do_ulozenia):
@@ -355,6 +459,67 @@ def _dopasuj_po_wartosci(
         for s in grupy[sku]:
             wynik[s.item_id] = nr
     return wynik
+
+
+def _wyzarzanie(start: List[Optional[int]], opcje: List[List[int]], wartosci: List[float],
+                poz: Sequence[PozycjaSAD], zajete: Dict[int, float]) -> "tuple[float, List[Optional[int]]]":
+    """Symulowane wyżarzanie nad układem SKU → pozycja, z błędem liczonym przyrostowo.
+
+    Przenoszenie jednego SKU i zamiana pary potrafią utknąć w układzie, z którego wyjście
+    wymaga przestawienia trzech SKU naraz (test z 12 SKU w 6 pozycjach: 0,45 zamiast 0,0).
+    Wyżarzanie przyjmuje czasem ruch na gorsze i tym wychodzi z takich pułapek. Każdy ruch
+    zmienia sumy tylko dwóch pozycji, więc ocena kosztuje stały czas — 30 tys. ruchów to
+    kilkadziesiąt milisekund nawet przy dużej odprawie. Ziarno losowania jest stałe:
+    ten sam plik daje zawsze ten sam układ.
+    """
+    los = random.Random(0)
+    n, m = len(start), len(poz)
+    cel = [max(p.wartosc, 1.0) for p in poz]
+    wart = [p.wartosc for p in poz]
+    sumy = [zajete[p.nr] for p in poz]
+    uklad = list(start)
+    for i, k in enumerate(uklad):
+        sumy[k] += wartosci[i]
+
+    def e(k: int, s_: float) -> float:
+        return abs(s_ - wart[k]) / cel[k]
+
+    obecny = sum(e(k, sumy[k]) for k in range(m))
+    najblad, najlepszy = obecny, list(uklad)
+    ruchome = [i for i in range(n) if len(opcje[i]) > 1]
+    if not ruchome:
+        return najblad, najlepszy
+    KROKI, T0, T1 = 30000, 0.2, 0.0005
+    for krok in range(KROKI):
+        t = T0 * (T1 / T0) ** (krok / KROKI)
+        i = ruchome[los.randrange(len(ruchome))]
+        a = uklad[i]
+        if los.random() < 0.5:
+            b = opcje[i][los.randrange(len(opcje[i]))]
+            if b == a:
+                continue
+            na, nb = sumy[a] - wartosci[i], sumy[b] + wartosci[i]
+            delta = e(a, na) + e(b, nb) - e(a, sumy[a]) - e(b, sumy[b])
+            if delta <= 0 or los.random() < pow(2.718281828, -delta / t):
+                sumy[a], sumy[b], uklad[i] = na, nb, b
+                obecny += delta
+        else:
+            j = ruchome[los.randrange(len(ruchome))]
+            b = uklad[j]
+            if a == b or b not in opcje[i] or a not in opcje[j]:
+                continue
+            d = wartosci[j] - wartosci[i]
+            na, nb = sumy[a] + d, sumy[b] - d
+            delta = e(a, na) + e(b, nb) - e(a, sumy[a]) - e(b, sumy[b])
+            if delta <= 0 or los.random() < pow(2.718281828, -delta / t):
+                sumy[a], sumy[b] = na, nb
+                uklad[i], uklad[j] = b, a
+                obecny += delta
+        if obecny < najblad - 1e-12:
+            najblad, najlepszy = obecny, list(uklad)
+            if najblad < 1e-9:
+                break
+    return najblad, najlepszy
 
 
 # ===== rachunek =====
@@ -370,15 +535,27 @@ def policz(
     kurs_towaru: Optional[float] = None,
     kurs_kosztow: Optional[float] = None,
     ceny_reczne: Optional[Dict[int, float]] = None,
+    faktury_sku: Optional[Dict[str, Set[str]]] = None,
+    udzial_kontenera: Optional[Dict[int, float]] = None,
 ) -> Rachunek:
     """Liczy koszt jednostkowy dla każdej pozycji kontenera.
 
     `ceny_reczne` to {item_id: cena na sztukę w walucie odprawy} — wpisywane z faktury
     dostawcy tam, gdzie jedna pozycja SAD obejmuje kilka SKU i podział jest szacunkiem.
+
+    `przypisanie` to ręczne zmiany z listy „Pozycja SAD" — NADPISUJĄ automat, a nie go
+    zastępują. Front wysyła wyłącznie pozycje, które ktoś przestawił; traktowanie tego
+    jako kompletnego przypisania zostawiało całą resztę towaru bez pozycji, czyli bez
+    ceny zakupu, a pozycje SAD szły w gratisy.
+
+    `faktury_sku` (SKU → numery faktur dostawcy) zawęża dopasowanie do pozycji faktury
+    i wskazuje, komu przypada gratis. `udzial_kontenera` (container_id → ułamek) mówi,
+    jaka część kontenera należy do TEJ odprawy — transport krajowy to jedna ciężarówka
+    na cały kontener, więc przy kilku odprawach każda bierze tylko swoją część.
     """
     slady: Dict[str, Any] = {}
-    auto = przypisanie is None
-    przypisanie = dict(przypisanie or dopasuj(odprawa, towar, slady))
+    auto = True
+    przypisanie = dopasuj(odprawa, towar, slady, faktury_sku=faktury_sku, ustalone=przypisanie)
     fx_t = kurs_towaru or odprawa.kurs_celny
     fx_k = kurs_kosztow or odprawa.kurs_celny
     ceny_reczne = ceny_reczne or {}
@@ -476,7 +653,8 @@ def policz(
             continue
         pln = linia.kwota * (1.0 if linia.waluta == "PLN" else fx_k)
         if linia.container_id is not None:
-            _rozdziel_w_kontenerze(pln, linia.container_id, towar, wyniki, klucz)
+            udzial = (udzial_kontenera or {}).get(linia.container_id, 1.0)
+            _rozdziel_w_kontenerze(pln * udzial, linia.container_id, towar, wyniki, klucz)
             continue
         rodzaj = KLUCZ_WARTOSC if linia.klucz == KLUCZ_WARTOSC else klucz
         wagi = {p.nr: klucz_pozycji(p, rodzaj) for p in odprawa.pozycje}
@@ -524,9 +702,15 @@ def policz(
     wszystkie = {nr: pula_gratisow.get(nr, 0.0) + pula_gratisow_clo.get(nr, 0.0)
                  for nr in set(pula_gratisow) | set(pula_gratisow_clo)}
     if wszystkie and towar:
-        domyslny = max(towar, key=lambda t: t.ilosc * t.cena_planowana).item_id
+        # Gratis przejmuje najdroższy towar Z TEJ SAMEJ FAKTURY dostawcy — próbka od
+        # KS Medical ma obciążyć towar KS Medical, a nie najdroższy towar całego kontenera,
+        # który przy konsolidacji pochodzi od zupełnie innego dostawcy. Bez znanej faktury
+        # zostaje dawna reguła: najdroższy towar odprawy.
+        poz_po_nr = {p.nr: p for p in odprawa.pozycje}
         for nr in wszystkie:
-            gratisy.setdefault(nr, domyslny)
+            fv = set(poz_po_nr[nr].faktury_dostawcy) if nr in poz_po_nr else set()
+            kandydaci = [t for t in towar if fv and (faktury_sku or {}).get(t.sku, set()) & fv] or list(towar)
+            gratisy.setdefault(nr, max(kandydaci, key=lambda t: t.ilosc * t.cena_planowana).item_id)
     clo_gratisow = 0.0
     for nr, kwota in wszystkie.items():
         cel = gratisy.get(nr)
@@ -633,6 +817,13 @@ def _uwagi_o_dopasowaniu(slady: Dict[str, Any], odprawa: Odprawa,
     zrodlo: Dict[str, str] = slady.get("zrodlo") or {}
     po_wartosci = [s for s, z in zrodlo.items() if z == "wartosc"]
     po_nazwie = [s for s, z in zrodlo.items() if z == "nazwa"]
+    po_fakturze = [s for s, z in zrodlo.items() if z == "faktura"]
+
+    if po_fakturze:
+        uwagi.append(Uwaga(
+            "info", "Dopasowane po fakturze dostawcy — jej jedyna pozycja w zgłoszeniu",
+            ", ".join(sorted(po_fakturze)),
+        ))
 
     if po_nazwie:
         uwagi.append(Uwaga(
