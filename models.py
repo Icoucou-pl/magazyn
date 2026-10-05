@@ -1235,6 +1235,13 @@ class CenaZapisIn(BaseModel):
     shop: Optional[str] = None
 
 
+class KosztNaglowekOut(BaseModel):
+    """Nagłówek karty produktu: średnia ważona z kontenerów + cena z ERP do porównania."""
+    srednia: Optional[float] = None
+    erp_cena: Optional[float] = None
+    erp_zrodlo: Optional[str] = None          # 'subiekt' | 'fakturownia'
+
+
 class CenaProduktuOut(BaseModel):
     sku: str
     shop: str = ""

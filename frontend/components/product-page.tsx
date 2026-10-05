@@ -139,24 +139,24 @@ export default function ProductPage({
   const [hasHistory, setHasHistory] = useState<boolean | null>(null);
   const [delChk, setDelChk] = useState<DeleteCheck | null>(null);
   const [nowoscOpen, setNowoscOpen] = useState(false);
-  // Koszt w nagłówku: średnia ważona z kontenerów na stanie (zakładka „Cena"),
-  // a pod spodem cena z Fakturowni / Subiektu do porównania. Tylko dla tych, którzy
-  // widzą zakładkę „Cena" — reszta dostaje jak dotąd cenę z ERP.
+  // Koszt w nagłówku: średnia ważona z kontenerów na stanie (jak w zakładce „Cena"),
+  // a pod spodem cena z Fakturowni / Subiektu do porównania. Widzi to każdy, kto widzi
+  // koszt sztuki (finanse ALBO „Cena zakupu produktu") — chudy endpoint /koszt.
   // Klucz sku|firma przy wyniku: po zmianie SKU albo firmy stara liczba po prostu przestaje pasować.
   const [kosztSrDane, setKosztSrDane] = useState<{ klucz: string; srednia: number | null; erp_cena: number | null; erp_zrodlo: string } | null>(null);
-  const kosztSr = priceAllowed && kosztSrDane?.klucz === `${sku}|${shop}` ? kosztSrDane : null;
+  const kosztSr = showPrice && kosztSrDane?.klucz === `${sku}|${shop}` ? kosztSrDane : null;
 
   const [tab, setTabState] = useState<ProductTab>(() => czytajTabZAdresu() || "logistyka");
   const setTab = (t: ProductTab) => { setTabState(t); onTabChange(t); };
 
   useEffect(() => {
-    if (!priceAllowed) return;
+    if (!showPrice) return;
     let alive = true;
-    api.get(`/products/${encodeURIComponent(sku)}/cena${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
+    api.get(`/products/${encodeURIComponent(sku)}/koszt${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then((d) => { if (alive) setKosztSrDane({ ...(d as { srednia: number | null; erp_cena: number | null; erp_zrodlo: string }), klucz: `${sku}|${shop}` }); })
-      .catch(() => { /* zostaje cena z ERP — nagłówek nie może się wysypać przez zakładkę Cena */ });
+      .catch(() => { /* zostaje cena z ERP — nagłówek nie może się wysypać przez koszt z kontenerów */ });
     return () => { alive = false; };
-  }, [sku, shop, priceAllowed]);
+  }, [sku, shop, showPrice]);
 
   // ── Słowniki (raz na montaż) ───────────────────────────────
   useEffect(() => {

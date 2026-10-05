@@ -260,6 +260,19 @@ async def require_landed_cost_edit(user: CurrentUser = Depends(get_current_user)
     return user
 
 
+def can_view_purchase_price(user: CurrentUser) -> bool:
+    """Koszt netto / szt w nagłówku karty = viewFinancials ALBO viewPurchasePrice
+    (lustro: permissions.js → canSeePurchasePrice). Celowo ALBO — ptaszek jest właśnie
+    dla osób bez finansów, które muszą znać koszt sztuki."""
+    return has_perm(user, "viewFinancials") or has_perm(user, "viewPurchasePrice")
+
+
+async def require_purchase_price_view(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_view_purchase_price(user):
+        raise HTTPException(403, "Brak uprawnienia: viewPurchasePrice")
+    return user
+
+
 def can_view_product_price(user: CurrentUser) -> bool:
     """Zakładka „Cena" = viewProductPrice ORAZ viewFinancials (lustro: permissions.js → canSeeProductPrice)."""
     return has_perm(user, "viewProductPrice") and has_perm(user, "viewFinancials")
