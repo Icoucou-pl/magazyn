@@ -1202,7 +1202,7 @@ class CenaDostawaOut(BaseModel):
     koszt: Optional[float] = None             # koszt / szt: landed cost albo szacunek
     szacunek: bool = False
     narzut_proc: Optional[float] = None       # koszt ÷ cena z FV − 1
-    rozliczenie: str = "brak"                 # 'odprawa' | 'brak'
+    rozliczenie: str = "brak"                 # 'odprawa' | 'krajowa' | 'brak'
     odstaje: bool = False                     # narzut daleko od pozostałych dostaw — sprawdzić kontener
     fifo: bool = False
 
