@@ -236,14 +236,14 @@ async def cena_lista(shop: str = Query(""), db: AsyncSession = Depends(get_db),
 @router.get("/products/{sku:path}/koszt", response_model=KosztNaglowekOut)
 async def koszt_naglowek(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db),
                          user: CurrentUser = Depends(require_purchase_price_view)):
-    """Koszt do nagłówka karty: średnia ważona z kontenerów + cena z ERP do porównania.
+    """Koszt do nagłówka karty i „Danych podstawowych": FIFO i średnia z kontenerów + cena z ERP.
 
     Osobny, chudy endpoint, bo nagłówek widzi każdy z „Ceną zakupu produktu" — także bez
     danych finansowych i bez zakładki „Cena". Nie oddajemy tu dostaw, FIFO ani zapisanych cen.
     """
     shop = resolve_shop(shop, user)
     p, _, w, _, _, zrodlo, ceny = await _policz(db, sku, shop, user)
-    return KosztNaglowekOut(srednia=w.srednia, erp_zrodlo=zrodlo,
+    return KosztNaglowekOut(fifo=w.fifo, srednia=w.srednia, erp_zrodlo=zrodlo,
                             erp_cena=ceny.get(p.sku.strip().lower()))
 
 

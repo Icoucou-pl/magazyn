@@ -32,7 +32,7 @@ BEZ_FINANSOW = {"viewFinancials": False, "viewPurchasePrice": False, "viewProduc
 def klient(monkeypatch):
     async def atrapa(db, sku, shop, user):
         p = SimpleNamespace(sku="SZP3")
-        w = SimpleNamespace(srednia=1850.01)
+        w = SimpleNamespace(fifo=1814.48, srednia=1850.01)
         return p, 154, w, {}, "acti", "fakturownia", {"szp3": 1700.0}
     monkeypatch.setattr(cena, "_policz", atrapa)
 
@@ -48,7 +48,7 @@ def klient(monkeypatch):
 def test_sam_ptaszek_ceny_zakupu_wystarcza(klient):
     r = klient({**BEZ_FINANSOW, "viewPurchasePrice": True}).get("/api/products/SZP3/koszt")
     assert r.status_code == 200
-    assert r.json() == {"srednia": 1850.01, "erp_cena": 1700.0, "erp_zrodlo": "fakturownia"}
+    assert r.json() == {"fifo": 1814.48, "srednia": 1850.01, "erp_cena": 1700.0, "erp_zrodlo": "fakturownia"}
 
 
 def test_finanse_bez_ptaszka_tez_widza(klient):

@@ -27,6 +27,7 @@ import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 import VatRow from "./product-vat-row";
+import KosztRows from "./product-koszt-rows";
 
 export type ApiProjPoint = { date: string; stock: number; event: string | null };
 type Delivery = { day: number; qty: number; container: string; eta: string; status: string };
@@ -1224,6 +1225,7 @@ export function AttributesCard({
             </span>
           )}
         </div>
+        <KosztRows sku={product.sku} shop={shop} rowStyle={attrRowStyle} labelStyle={attrLabelStyle} />
         <VatRow sku={product.sku} shop={shop} editing={editing} rowStyle={attrRowStyle} labelStyle={attrLabelStyle} />
         <AttrSelect label="Producent (dostawca)" value={draft.mfrId} editing={editing} onChange={(v) => setDraft({ ...draft, mfrId: v })} options={mfrOptions}
           renderDisplay={() => (curMfr ? <MfrChip name={curMfr.name} color={curMfr.color} size="sm" /> : <span style={{ color: "var(--text-disabled)" }}>—</span>)} />
