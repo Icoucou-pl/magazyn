@@ -139,7 +139,9 @@ export const PRODUCT_COLS: ColDef[] = [
   { id: "months", label: "Mies. zap.", w: 80, align: "right", sortKey: "months_of_stock" },
   { id: "ean", label: "EAN", w: 120, align: "left", sortKey: "ean" },
   { id: "vat", label: "VAT", w: 60, align: "right", sortKey: "vat" },
-  { id: "price", label: "Cena Fakturownia/Subiekt", w: 120, align: "right", sortKey: "purchase_price" },
+  // \u200b (niewidoczna spacja) po ukośniku: „FAKTUROWNIA/SUBIEKT” to dla przeglądarki jedno słowo,
+  // nie łamało się i właziło na kolumnę VAT. Teraz „Subiekt” schodzi do nowej linii.
+  { id: "price", label: "Cena Fakturownia/\u200bSubiekt", w: 120, align: "right", sortKey: "purchase_price" },
   { id: "fifo", label: "Cena FIFO", w: 90, align: "right", sortKey: "cena_fifo" },
   { id: "srednia", label: "Cena średnia ważona", w: 110, align: "right", sortKey: "cena_srednia" },
   { id: "value", label: "Wartość", w: 100, align: "right", sortKey: "stock_value" },
