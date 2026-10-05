@@ -271,9 +271,7 @@ export default function ContainerPage({
       {paskZakladek}
       {tab === "koszt" && pokazKoszt ? (
         <LandedCostTab containerId={container.id} onSaved={() => { void reload(); }}
-          krajowa={container.is_consolidated && (container.lots ?? []).length
-            ? (container.lots ?? []).every((l) => (l.waluta_towaru || "").toUpperCase() === "PLN")
-            : (container.waluta_towaru || "").toUpperCase() === "PLN"} />
+          krajowa={czyKrajowa(container)} />
       ) : (
       <ContainerCard
         container={container}
@@ -314,3 +312,15 @@ const backBtn: React.CSSProperties = {
   background: "var(--surface-1)", border: "1px solid var(--border-soft)", color: "var(--text-mid)",
   font: "inherit", fontSize: 12.5, padding: "6px 12px", borderRadius: "var(--r-sm)", cursor: "pointer",
 };
+
+
+// Zakup w Polsce: PLN w walucie towaru ALBO płatności. Waluta towaru domyślnie zostaje
+// „USD" także przy polskiej fakturze (formularz jej nie wymusza), więc sama nie wystarcza —
+// ta sama reguła co w routers/cena.py.
+function czyKrajowa(c: Container): boolean {
+  const pln = (v?: string | null) => (v || "").trim().toUpperCase() === "PLN";
+  const lots = c.lots ?? [];
+  return c.is_consolidated && lots.length
+    ? lots.every((l) => pln(l.waluta_towaru) || pln(l.balance_waluta))
+    : pln(c.waluta_towaru) || pln(c.balance_waluta);
+}
