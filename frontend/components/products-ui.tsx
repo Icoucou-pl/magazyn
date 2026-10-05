@@ -91,6 +91,10 @@ export type Product = {
   order_date: string | null;
   status: string; // urgencja: KRYTYCZNY/ZAMOW_TERAZ/ZAMOW_WKROTCE/OK
   incoming_deliveries: IncomingDelivery[];
+  // Doklejane z /cena/lista (osobne zapytanie, to samo co zakładka „Cena" na karcie):
+  vat?: number;                         // stawka VAT produktu (ręczna albo z krajowej sprzedaży)
+  cena_fifo?: number | null;            // koszt FIFO z kontenerów
+  cena_srednia?: number | null;         // średnia ważona z rozliczonych kontenerów na stanie
 };
 
 export type Manufacturer = { id: number; name: string; color: string; email?: string | null; notes?: string | null; default_currency?: string | null };
@@ -104,7 +108,8 @@ export const STATUS_RANK: Record<string, number> = { KRYTYCZNY: 0, ZAMOW_TERAZ: 
 type ColId =
   | "fav" | "sku" | "name" | "firma" | "mfr" | "stock" | "magWDrodze" | "wKontenerach"
   | "sales_1m" | "sales_2m" | "sales_3m" | "sales_4m"
-  | "avgMonth" | "yoy" | "yoyNext" | "months" | "price" | "value" | "lt" | "cbm" | "status";
+  | "avgMonth" | "yoy" | "yoyNext" | "months" | "ean" | "vat" | "price" | "fifo" | "srednia"
+  | "value" | "lt" | "cbm" | "status";
 
 export type ColDef = {
   id: ColId; label: string; w: number | string;
@@ -132,7 +137,11 @@ export const PRODUCT_COLS: ColDef[] = [
   { id: "yoy", label: "YoY (rok)", w: 90, align: "right", sortKey: "sales_yoy_30d", highlight: "yoy" },
   { id: "yoyNext", label: "YoY +30d", w: 90, align: "right", sortKey: "sales_yoy_next_30d", highlight: "yoy" },
   { id: "months", label: "Mies. zap.", w: 80, align: "right", sortKey: "months_of_stock" },
-  { id: "price", label: "Cena", w: 90, align: "right", sortKey: "purchase_price" },
+  { id: "ean", label: "EAN", w: 120, align: "left", sortKey: "ean" },
+  { id: "vat", label: "VAT", w: 60, align: "right", sortKey: "vat" },
+  { id: "price", label: "Cena Fakturownia/Subiekt", w: 120, align: "right", sortKey: "purchase_price" },
+  { id: "fifo", label: "Cena FIFO", w: 90, align: "right", sortKey: "cena_fifo" },
+  { id: "srednia", label: "Cena średnia ważona", w: 110, align: "right", sortKey: "cena_srednia" },
   { id: "value", label: "Wartość", w: 100, align: "right", sortKey: "stock_value" },
   { id: "lt", label: "LT", w: 60, align: "right", sortKey: "lead_time_days" },
   { id: "cbm", label: "CBM", w: 70, align: "right", sortKey: "cbm_per_unit" },
@@ -141,7 +150,7 @@ export const PRODUCT_COLS: ColDef[] = [
 
 // Domyślnie otwarte kolumny. "fav" (gwiazdka) to nie kolumna danych tylko przełącznik
 // obserwowania — jest alwaysVisible i musi tu zostać, inaczej znika przycisk gwiazdki.
-export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "firma", "mfr", "stock", "magWDrodze", "wKontenerach", "sales_1m", "months", "price", "cbm", "status"];
+export const DEFAULT_COLS: ColId[] = ["fav", "sku", "name", "firma", "mfr", "stock", "magWDrodze", "wKontenerach", "sales_1m", "months", "vat", "price", "fifo", "srednia", "cbm", "status"];
 
 const FILTER_CHIPS: Array<{ id: string; label: string; icon?: React.ReactNode }> = [
   { id: "favorites", label: "Obserwowane", icon: <I.StarFill size={11} /> },
@@ -460,6 +469,17 @@ function Cell({ col, product: p, onToggleFav, showFin, showPrice }: { col: ColDe
     }
     case "price":
       return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{showPrice ? fmtNum(p.purchase_price) : "•••"}</span></div>;
+    case "ean":
+      return <div style={baseStyle}>{p.ean ? <span className="mono" style={{ color: "var(--text-mid)" }}>{p.ean}</span> : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
+    case "vat":
+      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{p.vat != null ? `${p.vat}%` : "—"}</span></div>;
+    case "fifo":
+    case "srednia": {
+      const v = col.id === "fifo" ? p.cena_fifo : p.cena_srednia;
+      return <div style={baseStyle}>{!showPrice ? <span className="num" style={{ color: "var(--text-mid)" }}>•••</span>
+        : v != null ? <span className="num" style={{ color: "var(--text-mid)" }}>{fmtNum(v)}</span>
+          : <span style={{ color: "var(--text-disabled)" }}>—</span>}</div>;
+    }
     case "value":
       return <div style={baseStyle}><span className="num" style={{ color: "var(--text-hi)", fontWeight: 500 }}>{showFin ? fmtPLNk(p.stock_value) : "•••"}</span></div>;
     case "lt":

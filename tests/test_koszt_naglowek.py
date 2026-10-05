@@ -64,3 +64,55 @@ def test_bez_finansow_i_bez_ptaszka_403(klient):
 def test_zakladka_cena_dalej_wymaga_swojego_ptaszka(klient):
     r = klient({**BEZ_FINANSOW, "viewPurchasePrice": True}).get("/api/products/SZP3/cena")
     assert r.status_code == 403
+
+
+# ── Lista „Produkty": GET /cena/lista ────────────────────────
+@pytest.fixture
+def lista(monkeypatch):
+    from datetime import date
+    from services.cena import Dostawa
+
+    async def produkty(db, include, shop):
+        return [SimpleNamespace(sku="SZP3", stock=154, stock_in_transit_wbite=0),
+                SimpleNamespace(sku="BEZ", stock=5, stock_in_transit_wbite=0)]
+
+    async def vaty(db, shop):
+        return {"szp3": 8.0}
+
+    async def dostawy(db):
+        d = lambda i, m, szt, koszt: Dostawa(  # noqa: E731
+            item_id=i, container_id=i, container_number=f"K{i}", data=date(2026, m, 1),
+            data_zrodlo="delivered", szt=szt, u_nas=True, cena_fv_pln=1600, koszt_jednostkowy=koszt)
+        return {"szp3": [d(1, 4, 45, 1798.54), d(2, 8, 84, 1814.48), d(3, 9, 84, 1879.62)]}
+
+    async def narzut(db):
+        return None
+
+    monkeypatch.setattr(cena, "fetch_products", produkty)
+    monkeypatch.setattr(cena, "vat_produktow", vaty)
+    monkeypatch.setattr(cena, "_dostawy_wszystkie", dostawy)
+    monkeypatch.setattr(cena, "_narzut_globalny", narzut)
+
+    async def db():
+        yield None
+    app.dependency_overrides[get_db] = db
+    yield lambda perms: (app.dependency_overrides.__setitem__(
+        get_current_user, lambda: CurrentUser(id=1, email="a@b.pl", role="VIEWER", perms=perms)),
+        TestClient(app))[1]
+    app.dependency_overrides.clear()
+
+
+def test_lista_liczy_fifo_i_srednia_jak_karta(lista):
+    r = lista({**BEZ_FINANSOW, "viewPurchasePrice": True}).get("/api/cena/lista")
+    assert r.status_code == 200
+    po_sku = {x["sku"]: x for x in r.json()}
+    assert po_sku["SZP3"] == {"sku": "SZP3", "vat": 8.0, "fifo": 1814.48,
+                              "srednia": round((84 * 1879.62 + 70 * 1814.48) / 154, 2)}
+    assert po_sku["BEZ"] == {"sku": "BEZ", "vat": 23.0, "fifo": None, "srednia": None}
+
+
+def test_lista_bez_uprawnien_daje_sam_vat(lista):
+    r = lista(BEZ_FINANSOW).get("/api/cena/lista")
+    assert r.status_code == 200
+    assert {x["sku"]: (x["vat"], x["fifo"], x["srednia"]) for x in r.json()} == {
+        "SZP3": (8.0, None, None), "BEZ": (23.0, None, None)}

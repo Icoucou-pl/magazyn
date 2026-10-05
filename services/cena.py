@@ -289,3 +289,30 @@ async def vat_produktu(db, sku: str, shop: str = "") -> dict:
     else:
         vat, zrodlo = VAT_DOMYSLNY, "domyslna"
     return {"vat": vat, "zrodlo": zrodlo, "vat_auto": vat_auto, "vat_manual": vat_manual}
+
+
+async def vat_produktow(db, shop: str = "") -> Dict[str, float]:
+    """VAT wszystkich SKU naraz (lista produktów). Te same zasady co vat_produktu:
+    ręczna stawka wygrywa, potem najświeższa krajowa sprzedaż (najpierw w tej firmie).
+    Klucz: LOWER(TRIM(sku)). SKU bez żadnej stawki nie ma w słowniku — wołający
+    bierze wtedy VAT_DOMYSLNY.
+    """
+    from sqlalchemy import text
+    from config import settings
+
+    auto = (await db.execute(
+        text(f"""SELECT DISTINCT ON (LOWER(TRIM(symbol))) LOWER(TRIM(symbol)) AS k, tax_rate
+                   FROM {settings.TABLE_ORDER_ITEMS}
+                  WHERE tax_rate IN ({", ".join(map(str, VAT_KRAJOWE))}) AND symbol IS NOT NULL
+                  ORDER BY LOWER(TRIM(symbol)), (shop = :shop) DESC, order_date DESC NULLS LAST"""),
+        {"shop": (shop or "").strip().lower()},
+    )).all()
+    manual = (await db.execute(
+        text(f"""SELECT DISTINCT ON (LOWER(TRIM(sku))) LOWER(TRIM(sku)) AS k, vat_manual
+                   FROM {settings.TABLE_PRODUCT_ATTRS}
+                  WHERE vat_manual IS NOT NULL
+                  ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST"""),
+    )).all()
+    out = {k: float(v) for k, v in auto}
+    out.update({k: float(v) for k, v in manual})   # ręczna nadpisuje
+    return out
