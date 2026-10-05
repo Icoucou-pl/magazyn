@@ -75,6 +75,30 @@ async def _kontener(db: AsyncSession, container_id: int) -> Dict[str, Any]:
     return dict(row)
 
 
+async def _drobnica_pasuje(db: AsyncSession, container_id: int, odprawa: Odprawa) -> bool:
+    """Czy SAD bez numerów kontenerów (drobnica) należy do otwartego kontenera.
+
+    Wiąże je faktura dostawcy: numer z N935 musi zgadzać się z numerem zamówienia
+    kontenera albo któregoś z jego lotów (AT2603-252 — Fujian, palety w cudzym kontenerze).
+    """
+    if not odprawa.faktury_dostawcy:
+        return False
+    rows = (await db.execute(
+        text(f"""
+            SELECT order_number FROM {settings.TABLE_CONTAINERS} WHERE id = :id
+            UNION ALL
+            SELECT order_number FROM {settings.TABLE_CONTAINER_LOTS} WHERE container_id = :id
+        """),
+        {"id": container_id},
+    )).all()
+    zamowienia = [_numer(r[0]) for r in rows if r[0] and len(_numer(r[0])) >= 5]
+    for fv in odprawa.faktury_dostawcy:
+        n_fv = _numer(fv)
+        if len(n_fv) >= 5 and any(z == n_fv or z in n_fv or n_fv in z for z in zamowienia):
+            return True
+    return False
+
+
 async def _kontenery_odprawy(db: AsyncSession, numery: Sequence[str]) -> List[Dict[str, Any]]:
     """Kontenery z aplikacji odpowiadające numerom ze zgłoszenia.
 
@@ -580,10 +604,19 @@ async def _zloz(
 
     otwarty = await _kontener(db, container_id)
     numer = (otwarty["container_number"] or "").strip().upper()
+    if not odprawa.kontenery and await _drobnica_pasuje(db, container_id, odprawa):
+        # Drobnica (LCL): towar jechał na paletach w cudzym kontenerze, więc SAD nie ma
+        # numeru kontenera (P19Kontenery="0"). Kontener w aplikacji wiążemy wtedy z
+        # fakturą dostawcy — dalej rachunek i zapis idą tak, jakby numer był w pliku.
+        odprawa.kontenery = [numer]
     if numer not in odprawa.kontenery:
         raise HTTPException(400, (
-            f"Ten SAD dotyczy kontenerów {', '.join(odprawa.kontenery) or '(brak numerów)'}, "
-            f"a otwarty jest {numer}. Otwórz właściwy kontener albo wrzuć inny plik."
+            (f"Ten SAD dotyczy kontenerów {', '.join(odprawa.kontenery)}, "
+             f"a otwarty jest {numer}. Otwórz właściwy kontener albo wrzuć inny plik.")
+            if odprawa.kontenery else
+            (f"Ten SAD nie podaje numeru kontenera (drobnica), a jego faktura "
+             f"{', '.join(odprawa.faktury_dostawcy) or '(brak)'} nie zgadza się z numerem zamówienia "
+             f"kontenera {numer} ani jego lotów. Popraw numer zamówienia albo otwórz właściwy kontener.")
         ))
 
     firma_sad = await _firma_po_nip(db, odprawa.nip_importera)
