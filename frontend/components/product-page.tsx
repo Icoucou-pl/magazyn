@@ -139,9 +139,24 @@ export default function ProductPage({
   const [hasHistory, setHasHistory] = useState<boolean | null>(null);
   const [delChk, setDelChk] = useState<DeleteCheck | null>(null);
   const [nowoscOpen, setNowoscOpen] = useState(false);
+  // Koszt w nagłówku: średnia ważona z kontenerów na stanie (zakładka „Cena"),
+  // a pod spodem cena z Fakturowni / Subiektu do porównania. Tylko dla tych, którzy
+  // widzą zakładkę „Cena" — reszta dostaje jak dotąd cenę z ERP.
+  // Klucz sku|firma przy wyniku: po zmianie SKU albo firmy stara liczba po prostu przestaje pasować.
+  const [kosztSrDane, setKosztSrDane] = useState<{ klucz: string; srednia: number | null; erp_cena: number | null; erp_zrodlo: string } | null>(null);
+  const kosztSr = priceAllowed && kosztSrDane?.klucz === `${sku}|${shop}` ? kosztSrDane : null;
 
   const [tab, setTabState] = useState<ProductTab>(() => czytajTabZAdresu() || "logistyka");
   const setTab = (t: ProductTab) => { setTabState(t); onTabChange(t); };
+
+  useEffect(() => {
+    if (!priceAllowed) return;
+    let alive = true;
+    api.get(`/products/${encodeURIComponent(sku)}/cena${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
+      .then((d) => { if (alive) setKosztSrDane({ ...(d as { srednia: number | null; erp_cena: number | null; erp_zrodlo: string }), klucz: `${sku}|${shop}` }); })
+      .catch(() => { /* zostaje cena z ERP — nagłówek nie może się wysypać przez zakładkę Cena */ });
+    return () => { alive = false; };
+  }, [sku, shop, priceAllowed]);
 
   // ── Słowniki (raz na montaż) ───────────────────────────────
   useEffect(() => {
@@ -474,7 +489,19 @@ export default function ProductPage({
                 )}
               </div>
               <Meta label="Stan dostępny" value={`${fmtNum(product.stock)} szt`} />
-              <Meta label="Koszt netto / szt" value={showPrice ? fmtPLN(product.purchase_price) : "•••••"} />
+              {kosztSr?.srednia != null ? (() => {
+                const erpNazwa = kosztSr.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
+                const roz = kosztSr.erp_cena ? (kosztSr.srednia / kosztSr.erp_cena - 1) * 100 : null;
+                return (
+                  <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.srednia)}
+                    title="Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"
+                    sub={kosztSr.erp_cena
+                      ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}${roz != null ? ` · śr. ${roz >= 0 ? "+" : ""}${roz.toFixed(1).replace(".", ",")}%` : ""}`
+                      : `${erpNazwa}: brak ceny`} />
+                );
+              })() : (
+                <Meta label="Koszt netto / szt" value={showPrice ? fmtPLN(product.purchase_price) : "•••••"} />
+              )}
               <Meta label="EAN" value={product.ean || "—"} mono />
             </div>
           </div>
@@ -727,11 +754,12 @@ const popBtnPri: React.CSSProperties = { ...popBtn, background: "var(--accent)",
 const popChip: React.CSSProperties = { font: "inherit", fontSize: 12, padding: "4px 10px", borderRadius: 99, border: "1px solid var(--border)", background: "var(--surface-1)", color: "var(--text-mid)", cursor: "pointer" };
 const popDate: React.CSSProperties = { flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", color: "var(--text-hi)", fontSize: 13, padding: "6px 8px", colorScheme: "dark" };
 
-function Meta({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Meta({ label, value, mono, sub, title }: { label: string; value: string; mono?: boolean; sub?: string; title?: string }) {
   return (
-    <div>
+    <div title={title}>
       <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>{label}</div>
       <div className={mono ? "mono" : "num"} style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{value}</div>
+      {sub && <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 1 }}>{sub}</div>}
     </div>
   );
 }
