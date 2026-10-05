@@ -122,3 +122,24 @@ def test_kalkulator_odrzuca_marze_100_proc():
         wylicz_cene(100, "marza", 90, prowizja_proc=10)
     with pytest.raises(BladCeny):
         wylicz_cene(0, "narzut", 10)
+
+
+def test_dostawa_krajowa_bez_narzutu_importu_i_liczona_do_sredniej():
+    """Materac z Rehanu (PLN): koszt = cena z FV + transport/szt, bez +10% importu,
+    i wchodzi do FIFO, średniej, ostatniej, min i max — jak dostawa z odprawą."""
+    kraj = d(1, 4, 100, 310)
+    kraj.krajowa, kraj.transport_szt = True, 8.0
+    w = policz_koszty([kraj, d(2, 1, 50, 100, 130)], stan=80, narzut_globalny_proc=10.3)
+    x = {y.item_id: y for y in w.dostawy}
+    assert x[1].koszt == 318.0 and not x[1].szacunek
+    assert w.fifo == 318.0 and w.srednia == 318.0 and w.ostatnia == 318.0
+    assert w.max == 318.0 and w.min == 130
+    assert w.srednia_pominieto_szt == 0
+
+
+def test_dostawa_krajowa_nie_psuje_narzutu_importu():
+    kraj = d(1, 6, 100, 310)
+    kraj.krajowa = True
+    w = policz_koszty([kraj, d(2, 3, 100, 100, 120), d(3, 9, 10, 100, None, u_nas=False)], stan=0)
+    assert w.sredni_narzut_proc == 20.0 and w.narzut_zrodlo == "sku"
+    assert {y.item_id: y.koszt for y in w.dostawy}[3] == 120.0
