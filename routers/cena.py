@@ -3,6 +3,8 @@
   GET /api/products/{sku}/cena?shop=…   koszt zakupu z kontenerów, rozkład stanu na dostawy,
                                          koszt z ERP do porównania i zapisane ceny sprzedaży
   PUT /api/products/{sku}/cena           zapis sugerowanej ceny (sklepy albo dropy)
+  GET /api/products/{sku}/koszt?shop=…  sama średnia ważona + cena z ERP do nagłówka karty
+                                         (uprawnienie „Cena zakupu produktu" albo finanse)
 
 Rachunek siedzi w services/cena.py (czysty, z testami). Tu tylko zbieramy dane.
 
@@ -26,12 +28,12 @@ from audit_opisy import f_map, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
-    CenaDostawaOut, CenaProduktuOut, CenaZapisanaOut, CenaZapisIn, CurrentUser,
+    CenaDostawaOut, CenaProduktuOut, CenaZapisanaOut, CenaZapisIn, CurrentUser, KosztNaglowekOut,
 )
 from routers.odprawy import _koszt_erp
 from security import (
     allowed_shops, can_edit_product_price, require_product_price_edit,
-    require_product_price_view, resolve_shop,
+    require_product_price_view, require_purchase_price_view, resolve_shop,
 )
 from services.cena import BladCeny, Dostawa, policz_koszty, vat_produktu, wylicz_cene
 from services.containers import compute_effective_status
@@ -147,10 +149,8 @@ async def _zapisane(db: AsyncSession, sku: str) -> List[CenaZapisanaOut]:
     return [_zapisana(r) for r in rows]
 
 
-@router.get("/products/{sku:path}/cena", response_model=CenaProduktuOut)
-async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db),
-                        user: CurrentUser = Depends(require_product_price_view)):
-    shop = resolve_shop(shop, user)
+async def _policz(db: AsyncSession, sku: str, shop: str, user: CurrentUser):
+    """Wspólny rachunek zakładki „Cena" i nagłówka karty: produkt, koszty dostaw, cena z ERP."""
     p = await get_product(db, sku, shop, allowed=allowed_shops(user))
     # Stan do rozkładu: magazyn główny + to, co już wbite do „w drodze" (towar kupiony,
     # w ERP, tylko jeszcze nie przesunięty MM-ką). Kontenery niewbite nie liczą się do stanu.
@@ -162,6 +162,28 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
     # Koszt z ERP: firmy z przełącznika, a na „Wszystkich" — firmy, która ten towar importuje.
     slug = shop or await _slug_firmy(db, p.firma_id)
     zrodlo, ceny = await _koszt_erp(db, slug, [p.sku])
+    return p, stan, w, meta, slug, zrodlo, ceny
+
+
+@router.get("/products/{sku:path}/koszt", response_model=KosztNaglowekOut)
+async def koszt_naglowek(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db),
+                         user: CurrentUser = Depends(require_purchase_price_view)):
+    """Koszt do nagłówka karty: średnia ważona z kontenerów + cena z ERP do porównania.
+
+    Osobny, chudy endpoint, bo nagłówek widzi każdy z „Ceną zakupu produktu" — także bez
+    danych finansowych i bez zakładki „Cena". Nie oddajemy tu dostaw, FIFO ani zapisanych cen.
+    """
+    shop = resolve_shop(shop, user)
+    p, _, w, _, _, zrodlo, ceny = await _policz(db, sku, shop, user)
+    return KosztNaglowekOut(srednia=w.srednia, erp_zrodlo=zrodlo,
+                            erp_cena=ceny.get(p.sku.strip().lower()))
+
+
+@router.get("/products/{sku:path}/cena", response_model=CenaProduktuOut)
+async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db),
+                        user: CurrentUser = Depends(require_product_price_view)):
+    shop = resolve_shop(shop, user)
+    p, stan, w, meta, slug, zrodlo, ceny = await _policz(db, sku, shop, user)
 
     vat = await vat_produktu(db, p.sku, shop or slug)
 
