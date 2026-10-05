@@ -736,3 +736,14 @@ def test_zaladunek_033w_wchodzi_do_wartosci_celnej():
     d = {x.kod: x for x in o.doliczenia}
     assert d["033W"].do_wartosci_celnej
     assert all(k.ok for k in kontrole(o)), [k.nazwa for k in kontrole(o) if not k.ok]
+
+
+def test_sku_bez_ceny_planowanej_sam_w_pozycji_dostaje_wartosc_z_sad():
+    """ECSU3903241: szafka SZ1 z ceną planowaną 0 sama w pozycji dostawała 0 USD i błąd
+    „ceny nie sumują się". Bez cen planowanych pozycja dzieli się po sztukach."""
+    o = parsuj(SAD_KONSOLIDACJA)
+    towar = [PozycjaTowaru(91, 501, "STOL", 100, 0.0, waga_brutto_kg=8.0)]
+    r = policz(o, towar, [], klucz=KLUCZ_WAGA, przypisanie={91: 5})
+    w = {x.item_id: x for x in r.pozycje}
+    assert abs(w[91].cena_zakupu_waluta - 26.30) < 0.001
+    assert not any(u.poziom == "blad" for u in r.uwagi), [u.tresc for u in r.uwagi]
