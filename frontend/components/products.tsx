@@ -95,12 +95,22 @@ export default function ProductsView({
       ? "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,INACTIVE,SAMPLE"
       : "ACTIVE,ACTIVE_NO_STOCK,DEAD_STOCK,SAMPLE";
     const shopQ = shop ? `&shop=${shop}` : "";
-    const [prod, mfr] = await Promise.allSettled([
+    const [prod, mfr, ceny] = await Promise.allSettled([
       api.get(`/products?include=${include}${shopQ}`),
       api.get("/manufacturers"),
+      // VAT, FIFO i średnia ważona — osobno, bo liczy je rachunek zakładki „Cena".
+      // Jak padnie, tabela i tak się pokazuje, tylko te kolumny zostają puste.
+      api.get(`/cena/lista${shop ? `?shop=${shop}` : ""}`),
     ]);
-    if (prod.status === "fulfilled") setProducts((prod.value as Product[]) || []);
-    else toast("Nie udało się wczytać produktów", "warning");
+    if (prod.status === "fulfilled") {
+      type Koszt = { sku: string; vat: number; fifo: number | null; srednia: number | null };
+      const poSku = new Map<string, Koszt>();
+      if (ceny.status === "fulfilled") for (const c of (ceny.value as Koszt[]) || []) poSku.set(c.sku.trim().toLowerCase(), c);
+      setProducts(((prod.value as Product[]) || []).map((p) => {
+        const c = poSku.get(p.sku.trim().toLowerCase());
+        return c ? { ...p, vat: c.vat, cena_fifo: c.fifo, cena_srednia: c.srednia } : p;
+      }));
+    } else toast("Nie udało się wczytać produktów", "warning");
     if (mfr.status === "fulfilled") setManufacturers((mfr.value as Manufacturer[]) || []);
     setLoading(false);
   }, [showInactive, shop]);
@@ -297,9 +307,14 @@ export default function ProductsView({
       { label: "Sprzedaż/mies", get: (p) => Math.round(p.avg_monthly_weighted) },
       { key: "sales_1m", label: "Sprzedaż 30d" },
       { label: "Miesięcy zapasu", get: (p) => monthsDisplay(p.months_of_stock) },
+      // ="…": inaczej Excel zrobi z 13 cyfr EAN-u liczbę 5,9E+12 i zgubi końcówkę.
+      { label: "EAN", get: (p) => (p.ean ? `="${p.ean}"` : "") },
+      { label: "VAT %", get: (p) => (p.vat != null ? p.vat : "") },
       // Ceny: finanse ALBO „Cena zakupu produktu". Wartość stanu tylko z finansami.
       ...(canSeePurchasePrice(user) ? [
-        { key: "purchase_price", label: "Cena zakupu (obecna)" },
+        { key: "purchase_price", label: "Cena Fakturownia/Subiekt" },
+        { label: "Cena FIFO", get: (p) => (p.cena_fifo != null ? p.cena_fifo : "") },
+        { label: "Cena średnia ważona", get: (p) => (p.cena_srednia != null ? p.cena_srednia : "") },
         { label: "Cena zakupu (ręczna)", get: (p) => (p.cena_zakupu_manual != null && p.cena_zakupu_manual > 0 ? p.cena_zakupu_manual : "") },
       ] as CsvColumn<Product>[] : []),
       ...(showFin ? [

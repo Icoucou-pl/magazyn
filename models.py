@@ -1235,6 +1235,14 @@ class CenaZapisIn(BaseModel):
     shop: Optional[str] = None
 
 
+class CenaListaPozycja(BaseModel):
+    """Lista „Produkty": VAT i koszt z kontenerów jednego SKU (dokładane do tabeli po SKU)."""
+    sku: str
+    vat: float
+    fifo: Optional[float] = None
+    srednia: Optional[float] = None
+
+
 class KosztNaglowekOut(BaseModel):
     """Nagłówek karty produktu: średnia ważona z kontenerów + cena z ERP do porównania."""
     srednia: Optional[float] = None

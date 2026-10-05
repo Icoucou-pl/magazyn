@@ -3,6 +3,7 @@
   GET /api/products/{sku}/cena?shop=…   koszt zakupu z kontenerów, rozkład stanu na dostawy,
                                          koszt z ERP do porównania i zapisane ceny sprzedaży
   PUT /api/products/{sku}/cena           zapis sugerowanej ceny (sklepy albo dropy)
+  GET /api/cena/lista?shop=…            VAT, FIFO i średnia ważona hurtem — kolumny listy „Produkty"
   GET /api/products/{sku}/koszt?shop=…  sama średnia ważona + cena z ERP do nagłówka karty
                                          (uprawnienie „Cena zakupu produktu" albo finanse)
 
@@ -28,20 +29,24 @@ from audit_opisy import f_map, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
-    CenaDostawaOut, CenaProduktuOut, CenaZapisanaOut, CenaZapisIn, CurrentUser, KosztNaglowekOut,
+    CenaDostawaOut, CenaProduktuOut, CenaZapisanaOut, CenaZapisIn, CurrentUser, CenaListaPozycja, KosztNaglowekOut,
 )
 from routers.odprawy import _koszt_erp
 from security import (
-    allowed_shops, can_edit_product_price, require_product_price_edit,
+    allowed_shops, can_edit_product_price, can_view_purchase_price, get_current_user,
+    require_product_price_edit,
     require_product_price_view, require_purchase_price_view, resolve_shop,
 )
-from services.cena import BladCeny, Dostawa, policz_koszty, vat_produktu, wylicz_cene
+from services.cena import (
+    VAT_DOMYSLNY, BladCeny, Dostawa, policz_koszty, vat_produktow, vat_produktu, wylicz_cene,
+)
 from services.containers import compute_effective_status
-from services.products import _arrival_and_source, get_product
+from services.products import _arrival_and_source, fetch_products, get_product
 
 router = APIRouter(prefix="/api", tags=["cena"])
 
 TABELA = "app_product_ceny"
+WSZYSTKIE_STATUSY = ("ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK", "INACTIVE", "SAMPLE")
 
 # Dziennik audytu: co z zapisanej ceny pokazujemy w „było → jest”.
 _BAZY = {"fifo": "FIFO", "srednia": "średnia", "ostatnia": "ostatnia dostawa", "reczna": "ręczna"}
@@ -58,11 +63,10 @@ POLA_CENY = {
 }
 
 
-async def _dostawy(db: AsyncSession, sku: str) -> "tuple[List[Dostawa], Dict[int, dict]]":
-    """Wszystkie pozycje kontenerów z tym SKU (+ metadane do odpowiedzi)."""
-    rows = (await db.execute(
-        text(f"""
-            SELECT ci.id AS item_id, ci.container_id, ci.quantity, ci.unit_cost,
+# Pozycje kontenerów z tym, czego potrzebuje rachunek kosztu. Bez WHERE — karta produktu
+# dokleja filtr po SKU, lista produktów bierze całość jednym zapytaniem.
+_DOSTAWY_SQL = f"""
+            SELECT ci.id AS item_id, ci.sku, ci.container_id, ci.quantity, ci.unit_cost,
                    ci.cena_zakupu_pln, ci.cena_zakupu_waluta, ci.koszt_jednostkowy, ci.koszt_zrodlo,
                    c.container_number, c.order_number, c.status, c.eta_date,
                    c.delivered_date, c.expected_delivery_date,
@@ -76,35 +80,55 @@ async def _dostawy(db: AsyncSession, sku: str) -> "tuple[List[Dostawa], Dict[int
               LEFT JOIN {settings.TABLE_MANUFACTURERS} lm ON lm.id = l.manufacturer_id
               LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
               LEFT JOIN app_odprawy o ON o.id = ci.koszt_odprawa_id
-             WHERE LOWER(TRIM(ci.sku)) = LOWER(TRIM(:s))
-        """),
-        {"s": sku},
+"""
+
+
+def _dostawa(r) -> Dostawa:
+    """Wiersz pozycji kontenera → Dostawa do rachunku w services/cena.py."""
+    data, zrodlo = _arrival_and_source(dict(r))
+    eff, _, _ = compute_effective_status(r["status"], r["eta_date"], r["expected_delivery_date"])
+    u_nas = bool(r["wbite"]) or eff == "DELIVERED" or r["delivered_date"] is not None
+    rozliczona = r["koszt_zrodlo"] == "odprawa" and r["koszt_jednostkowy"]
+    # Cena z FV: przy rozliczonej dostawie ta z odprawy (wartość z SAD × kurs zapłaty),
+    # przy nierozliczonej — cena wpisana na pozycji kontenera (PLN z Fakturowni).
+    fv = r["cena_zakupu_pln"] if rozliczona and r["cena_zakupu_pln"] else r["unit_cost"]
+    return Dostawa(
+        item_id=r["item_id"], container_id=r["container_id"],
+        container_number=(r["container_number"] or "").strip(),
+        data=data, data_zrodlo=zrodlo, szt=int(r["quantity"] or 0), u_nas=u_nas,
+        cena_fv_pln=float(fv) if fv else None,
+        cena_fv_waluta=float(r["cena_zakupu_waluta"]) if rozliczona and r["cena_zakupu_waluta"] else None,
+        waluta=r["waluta"] if rozliczona else None,
+        koszt_jednostkowy=float(r["koszt_jednostkowy"]) if rozliczona else None,
+    )
+
+
+async def _dostawy(db: AsyncSession, sku: str) -> "tuple[List[Dostawa], Dict[int, dict]]":
+    """Wszystkie pozycje kontenerów z tym SKU (+ metadane do odpowiedzi)."""
+    rows = (await db.execute(
+        text(_DOSTAWY_SQL + " WHERE LOWER(TRIM(ci.sku)) = LOWER(TRIM(:s))"), {"s": sku},
     )).mappings().all()
 
     out: List[Dostawa] = []
     meta: Dict[int, dict] = {}
     for r in rows:
-        data, zrodlo = _arrival_and_source(dict(r))
-        eff, _, _ = compute_effective_status(r["status"], r["eta_date"], r["expected_delivery_date"])
-        u_nas = bool(r["wbite"]) or eff == "DELIVERED" or r["delivered_date"] is not None
-        rozliczona = r["koszt_zrodlo"] == "odprawa" and r["koszt_jednostkowy"]
-        # Cena z FV: przy rozliczonej dostawie ta z odprawy (wartość z SAD × kurs zapłaty),
-        # przy nierozliczonej — cena wpisana na pozycji kontenera (PLN z Fakturowni).
-        fv = r["cena_zakupu_pln"] if rozliczona and r["cena_zakupu_pln"] else r["unit_cost"]
-        out.append(Dostawa(
-            item_id=r["item_id"], container_id=r["container_id"],
-            container_number=(r["container_number"] or "").strip(),
-            data=data, data_zrodlo=zrodlo, szt=int(r["quantity"] or 0), u_nas=u_nas,
-            cena_fv_pln=float(fv) if fv else None,
-            cena_fv_waluta=float(r["cena_zakupu_waluta"]) if rozliczona and r["cena_zakupu_waluta"] else None,
-            waluta=r["waluta"] if rozliczona else None,
-            koszt_jednostkowy=float(r["koszt_jednostkowy"]) if rozliczona else None,
-        ))
+        out.append(_dostawa(r))
         meta[r["item_id"]] = {
             "order_number": r["order_number"], "lot_order_number": r["lot_order_number"],
             "manufacturer_name": r["manufacturer_name"],
         }
     return out, meta
+
+
+async def _dostawy_wszystkie(db: AsyncSession) -> Dict[str, List[Dostawa]]:
+    """Pozycje WSZYSTKICH kontenerów, pogrupowane po SKU (klucz LOWER(TRIM)) — do listy produktów."""
+    rows = (await db.execute(text(_DOSTAWY_SQL))).mappings().all()
+    out: Dict[str, List[Dostawa]] = {}
+    for r in rows:
+        klucz = (r["sku"] or "").strip().lower()
+        if klucz:
+            out.setdefault(klucz, []).append(_dostawa(r))
+    return out
 
 
 async def _narzut_globalny(db: AsyncSession) -> Optional[float]:
@@ -163,6 +187,34 @@ async def _policz(db: AsyncSession, sku: str, shop: str, user: CurrentUser):
     slug = shop or await _slug_firmy(db, p.firma_id)
     zrodlo, ceny = await _koszt_erp(db, slug, [p.sku])
     return p, stan, w, meta, slug, zrodlo, ceny
+
+
+@router.get("/cena/lista", response_model=List[CenaListaPozycja])
+async def cena_lista(shop: str = Query(""), db: AsyncSession = Depends(get_db),
+                     user: CurrentUser = Depends(get_current_user)):
+    """VAT, koszt FIFO i średnia ważona dla wszystkich produktów — kolumny listy „Produkty".
+
+    Ten sam rachunek co zakładka „Cena", tylko hurtem: jedno zapytanie o wszystkie pozycje
+    kontenerów i jedno o VAT, stan z tej samej listy produktów co tabela (ta sama firma).
+    VAT nie jest tajemnicą — widzi go każdy. FIFO i średnia jak koszt w nagłówku karty:
+    finanse ALBO „Cena zakupu produktu"; bez tego pola wracają puste.
+    """
+    shop = resolve_shop(shop, user)
+    widzi_koszt = can_view_purchase_price(user)
+    produkty = await fetch_products(db, set(WSZYSTKIE_STATUSY), shop)
+    vaty = await vat_produktow(db, shop)
+    dostawy = await _dostawy_wszystkie(db) if widzi_koszt else {}
+    narzut = await _narzut_globalny(db) if widzi_koszt else None
+    out: List[CenaListaPozycja] = []
+    for p in produkty:
+        klucz = p.sku.strip().lower()
+        fifo = srednia = None
+        if widzi_koszt and klucz in dostawy:
+            stan = int(p.stock or 0) + int(p.stock_in_transit_wbite or 0)
+            w = policz_koszty(dostawy[klucz], stan, narzut)
+            fifo, srednia = w.fifo, w.srednia
+        out.append(CenaListaPozycja(sku=p.sku, vat=vaty.get(klucz, VAT_DOMYSLNY), fifo=fifo, srednia=srednia))
+    return out
 
 
 @router.get("/products/{sku:path}/koszt", response_model=KosztNaglowekOut)
