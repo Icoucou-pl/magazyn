@@ -164,7 +164,8 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
     ? <>FV + Lenmar, <span style={{ color: "var(--warning)" }}>bez SAD (cła)</span></>
     : "cena z FV, bez kosztów importu";
   const roz = data.fifo != null && data.erp_cena ? (data.fifo / data.erp_cena - 1) * 100 : null;
-  const v = (n: number | null) => (n != null ? <>{zl2(n)}<small style={small}> zł</small></> : "—");
+  // Wszystkie kafle to koszt NETTO (bez VAT) — piszemy to wprost, żeby nie trzeba było zgadywać.
+  const v = (n: number | null) => (n != null ? <>{zl2(n)}<small style={small}> zł netto</small></> : "—");
 
   return (
     <Section title="Koszt zakupu / szt"
@@ -180,8 +181,8 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
             : data.srednia_pominieto_szt ? "na stanie tylko partie bez SAD" : "brak towaru na stanie"} />
         <MetricBox label={erpNazwa} value={v(data.erp_cena)}
           sub={<>{roz != null && <span style={pillMute}>FIFO {pct(roz)}</span>} {erpOpis}</>} />
-        <MetricBox label="Ostatnia dostawa" tone={ostD?.szacunek ? "info" : "neutral"} value={v(data.ostatnia)}
-          sub={ostD ? <>{ostD.szacunek && <span style={{ ...tag, ...infoStyl }}>SZAC.</span>} {ostD.data ? fmtDay(ostD.data) : ""}{ostD.szacunek ? " · czeka na SAD" : ""}</> : "—"} />
+        <MetricBox label="Ostatnia dostawa" value={v(data.ostatnia)}
+          sub={ostD ? <><span className="mono">{nrDostawy(ostD)}</span>{ostD.data ? ` · ${fmtDay(ostD.data)}` : ""}</> : "brak rozliczonych"} />
         <MetricBox label="Najniższa" tone="ok" value={v(data.min)}
           sub={minD ? <><span className="mono">{nrDostawy(minD)}</span>{minD.data ? ` · ${fmtDay(minD.data)}` : ""}</> : "brak rozliczonych"} />
         <MetricBox label="Najwyższa" tone={maxD?.odstaje ? "critical" : "neutral"} value={v(data.max)}
@@ -239,7 +240,7 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr>
               <Th l>Kontener</Th><Th l>Na magazyn</Th><Th>Szt.</Th><Th>Na stanie</Th>
-              <Th>Cena FV</Th><Th>Cena FV PLN</Th><Th>Koszt jedn.</Th><Th>Narzut importu</Th><Th l>Rozliczenie</Th>
+              <Th>Cena FV</Th><Th>Cena FV PLN netto</Th><Th>Koszt jedn. netto</Th><Th>Narzut importu</Th><Th l>Rozliczenie</Th>
             </tr></thead>
             <tbody>
               {data.dostawy.map((d) => {
