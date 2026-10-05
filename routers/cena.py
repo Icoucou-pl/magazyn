@@ -75,6 +75,7 @@ _DOSTAWY_SQL = f"""
                    COALESCE(lm.name, m.name) AS manufacturer_name,
                    o.waluta AS waluta,
                    UPPER(TRIM(COALESCE(NULLIF(TRIM(l.waluta_towaru), ''), c.waluta_towaru, ''))) AS waluta_towaru,
+                   UPPER(TRIM(COALESCE(NULLIF(TRIM(l.balance_waluta), ''), c.balance_waluta, ''))) AS waluta_balance,
                    COALESCE(c.koszt_transportu_magazyn, 0) AS transport_kontenera,
                    (SELECT SUM(x.quantity * COALESCE(x.unit_cost, 0))
                       FROM {settings.TABLE_CONTAINER_ITEMS} x
@@ -99,7 +100,10 @@ def _dostawa(r) -> Dostawa:
     fv = r["cena_zakupu_pln"] if rozliczona and r["cena_zakupu_pln"] else r["unit_cost"]
     # Zakup w Polsce: kontener (albo lot) w PLN i bez odprawy. Koszt = cena z FV + transport
     # do magazynu rozłożony po wartości pozycji (services/cena.py, „Dostawa krajowa").
-    krajowa = not rozliczona and (r["waluta_towaru"] or "") == "PLN"
+    # Waluta towaru domyślnie zostaje „USD", nawet gdy faktura jest polska — formularz jej
+    # nie wymusza (FPF/23/2026: towar USD, balance 33 480 zł w PLN). Dlatego wystarczy, że
+    # PLN jest w walucie towaru ALBO płatności.
+    krajowa = not rozliczona and "PLN" in ((r["waluta_towaru"] or ""), (r["waluta_balance"] or ""))
     wartosc = float(r["wartosc_kontenera"] or 0)
     transport_szt = (float(r["transport_kontenera"] or 0) * float(r["unit_cost"] or 0) / wartosc
                      if krajowa and wartosc > 0 else 0.0)
