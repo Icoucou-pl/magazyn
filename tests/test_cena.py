@@ -49,7 +49,17 @@ def test_szacunek_z_narzutu_rozliczonych_dostaw_tego_sku():
     assert nowa.szacunek and w.narzut_zrodlo == "sku"
     assert w.sredni_narzut_proc == 32.0
     assert nowa.koszt == round(90 * 1.32, 2)
-    assert w.srednia_szacunek
+    # partia bez SAD jest informacyjna — nie wchodzi do średniej
+    assert w.srednia is None and w.srednia_pominieto_szt == 40
+
+
+def test_srednia_tylko_z_rozliczonych_partii_na_stanie():
+    # na stanie: 40 szt bez SAD (najnowsza) + 60 szt rozliczonych po 120 i 20 szt po 130
+    ds = [d(1, 1, 50, 100, 130), d(2, 4, 60, 100, 120), d(3, 8, 40, 95)]
+    w = policz_koszty(ds, stan=120)
+    assert w.srednia == round((60 * 120 + 20 * 130) / 80, 2)
+    assert w.srednia_szt == 80 and w.srednia_pominieto_szt == 40
+    assert (w.min, w.max) == (120, 130), "min/max bez szacunku"
 
 
 def test_bez_rozliczonych_dostaw_szacunek_z_narzutu_globalnego():

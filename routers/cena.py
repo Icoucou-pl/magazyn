@@ -170,7 +170,7 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
         sku=p.sku, shop=shop, stan=stan, poza_dostawami=w.poza_dostawami,
         erp_zrodlo=zrodlo, erp_cena=ceny.get(p.sku.strip().lower()),
         fifo=w.fifo, fifo_item_id=w.fifo_item_id,
-        srednia=w.srednia, srednia_szt=w.srednia_szt, srednia_szacunek=w.srednia_szacunek,
+        srednia=w.srednia, srednia_szt=w.srednia_szt, srednia_pominieto_szt=w.srednia_pominieto_szt,
         ostatnia=w.ostatnia, ostatnia_item_id=w.ostatnia_item_id,
         min=w.min, min_item_id=w.min_item_id, max=w.max, max_item_id=w.max_item_id,
         sredni_narzut_proc=w.sredni_narzut_proc, narzut_zrodlo=w.narzut_zrodlo,
