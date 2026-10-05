@@ -1244,7 +1244,8 @@ class CenaListaPozycja(BaseModel):
 
 
 class KosztNaglowekOut(BaseModel):
-    """Nagłówek karty produktu: średnia ważona z kontenerów + cena z ERP do porównania."""
+    """Nagłówek i „Dane podstawowe" karty: FIFO i średnia ważona z kontenerów + cena z ERP."""
+    fifo: Optional[float] = None
     srednia: Optional[float] = None
     erp_cena: Optional[float] = None
     erp_zrodlo: Optional[str] = None          # 'subiekt' | 'fakturownia'
