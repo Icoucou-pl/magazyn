@@ -73,7 +73,12 @@ _DOSTAWY_SQL = f"""
                    COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE) AS wbite,
                    l.order_number AS lot_order_number,
                    COALESCE(lm.name, m.name) AS manufacturer_name,
-                   o.waluta AS waluta
+                   o.waluta AS waluta,
+                   UPPER(TRIM(COALESCE(NULLIF(TRIM(l.waluta_towaru), ''), c.waluta_towaru, ''))) AS waluta_towaru,
+                   COALESCE(c.koszt_transportu_magazyn, 0) AS transport_kontenera,
+                   (SELECT SUM(x.quantity * COALESCE(x.unit_cost, 0))
+                      FROM {settings.TABLE_CONTAINER_ITEMS} x
+                     WHERE x.container_id = ci.container_id) AS wartosc_kontenera
               FROM {settings.TABLE_CONTAINER_ITEMS} ci
               JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
               LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
@@ -92,6 +97,12 @@ def _dostawa(r) -> Dostawa:
     # Cena z FV: przy rozliczonej dostawie ta z odprawy (wartość z SAD × kurs zapłaty),
     # przy nierozliczonej — cena wpisana na pozycji kontenera (PLN z Fakturowni).
     fv = r["cena_zakupu_pln"] if rozliczona and r["cena_zakupu_pln"] else r["unit_cost"]
+    # Zakup w Polsce: kontener (albo lot) w PLN i bez odprawy. Koszt = cena z FV + transport
+    # do magazynu rozłożony po wartości pozycji (services/cena.py, „Dostawa krajowa").
+    krajowa = not rozliczona and (r["waluta_towaru"] or "") == "PLN"
+    wartosc = float(r["wartosc_kontenera"] or 0)
+    transport_szt = (float(r["transport_kontenera"] or 0) * float(r["unit_cost"] or 0) / wartosc
+                     if krajowa and wartosc > 0 else 0.0)
     return Dostawa(
         item_id=r["item_id"], container_id=r["container_id"],
         container_number=(r["container_number"] or "").strip(),
@@ -100,6 +111,7 @@ def _dostawa(r) -> Dostawa:
         cena_fv_waluta=float(r["cena_zakupu_waluta"]) if rozliczona and r["cena_zakupu_waluta"] else None,
         waluta=r["waluta"] if rozliczona else None,
         koszt_jednostkowy=float(r["koszt_jednostkowy"]) if rozliczona else None,
+        krajowa=krajowa, transport_szt=round(transport_szt, 4),
     )
 
 
@@ -256,7 +268,8 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
             data=d.data, data_zrodlo=d.data_zrodlo, status="u_nas" if d.u_nas else "w_drodze",
             szt=d.szt, na_stanie=d.na_stanie, cena_fv_pln=d.cena_fv_pln,
             cena_fv_waluta=d.cena_fv_waluta, waluta=d.waluta, koszt=d.koszt, szacunek=d.szacunek,
-            narzut_proc=d.narzut_proc, rozliczenie="odprawa" if d.rozliczona else "brak",
+            narzut_proc=d.narzut_proc,
+            rozliczenie="odprawa" if d.rozliczona else "krajowa" if d.krajowa else "brak",
             odstaje=d.odstaje, fifo=d.fifo,
         ) for d in w.dostawy],
         zapisane=await _zapisane(db, p.sku),
