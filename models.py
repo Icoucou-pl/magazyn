@@ -1247,7 +1247,7 @@ class CenaProduktuOut(BaseModel):
     fifo_item_id: Optional[int] = None
     srednia: Optional[float] = None
     srednia_szt: int = 0
-    srednia_szacunek: bool = False
+    srednia_pominieto_szt: int = 0     # sztuki z partii bez SAD, pominięte w średniej
     ostatnia: Optional[float] = None
     ostatnia_item_id: Optional[int] = None
     min: Optional[float] = None

@@ -47,7 +47,7 @@ type CenaData = {
   sku: string; shop: string; stan: number; poza_dostawami: number;
   erp_zrodlo: "subiekt" | "fakturownia" | null; erp_cena: number | null;
   fifo: number | null; fifo_item_id: number | null;
-  srednia: number | null; srednia_szt: number; srednia_szacunek: boolean;
+  srednia: number | null; srednia_szt: number; srednia_pominieto_szt: number;
   ostatnia: number | null; ostatnia_item_id: number | null;
   min: number | null; min_item_id: number | null; max: number | null; max_item_id: number | null;
   sredni_narzut_proc: number | null; narzut_zrodlo: "sku" | "wszystkie" | null;
@@ -175,7 +175,9 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
             sub={fifoD ? <>partia <span className="mono">{nrDostawy(fifoD)}</span> · zostało {fifoD.na_stanie} szt</> : "brak towaru na stanie"} />
         </div>
         <MetricBox label="Średnia ważona" value={v(data.srednia)}
-          sub={data.srednia != null ? `${data.srednia_szt} szt na stanie${data.srednia_szacunek ? " · w tym szac." : ""}` : "brak towaru na stanie"} />
+          sub={data.srednia != null
+            ? `${data.srednia_szt} szt rozliczonych${data.srednia_pominieto_szt ? ` · pominięto ${data.srednia_pominieto_szt} szt bez SAD` : ""}`
+            : data.srednia_pominieto_szt ? "na stanie tylko partie bez SAD" : "brak towaru na stanie"} />
         <MetricBox label={erpNazwa} value={v(data.erp_cena)}
           sub={<>{roz != null && <span style={pillMute}>FIFO {pct(roz)}</span>} {erpOpis}</>} />
         <MetricBox label="Ostatnia dostawa" tone={ostD?.szacunek ? "info" : "neutral"} value={v(data.ostatnia)}

@@ -22,6 +22,10 @@ Gdy stanu jest więcej niż sztuk w znanych dostawach, nadwyżka to towar sprzed
 
 FIFO = koszt najstarszej partii, z której jeszcze coś zostało (z niej zejdzie następna sprzedaż).
 Średnia ważona = koszt partii na stanie ważony liczbą pozostałych sztuk (tak liczy Subiekt).
+Do średniej, ostatniej, najniższej i najwyższej wchodzą TYLKO dostawy rozliczone odprawą.
+Kontener „bez SAD” ma koszt szacowany — pokazujemy go w tabeli informacyjnie, ale nie miesza
+w tych kaflach (jego sztuki na stanie liczymy osobno: `srednia_pominieto_szt`).
+Średnia bierze wyłącznie partie, z których coś jeszcze jest na stanie — wyprzedane nie.
 
 KONTENER DO SPRAWDZENIA
 Narzut importu (koszt ÷ cena z FV − 1) bywa różny między dostawami, ale w wąskim paśmie.
@@ -87,7 +91,7 @@ class Wynik:
     fifo_item_id: Optional[int] = None
     srednia: Optional[float] = None
     srednia_szt: int = 0                # z ilu sztuk liczona średnia
-    srednia_szacunek: bool = False      # czy w średniej siedzi choć jedna szacowana partia
+    srednia_pominieto_szt: int = 0      # sztuki na stanie z partii bez SAD — poza średnią
     ostatnia: Optional[float] = None
     ostatnia_item_id: Optional[int] = None
     min: Optional[float] = None
@@ -172,16 +176,20 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
         najstarsza = na_stanie[-1]           # ds jest od najnowszej, więc ostatnia = najstarsza
         najstarsza.fifo = True
         w.fifo, w.fifo_item_id = najstarsza.koszt, najstarsza.item_id
-        szt = sum(d.na_stanie for d in na_stanie)
-        w.srednia = round(sum(d.koszt * d.na_stanie for d in na_stanie) / szt, 2)
+        # Średnia tylko z partii rozliczonych odprawą — szacunek „bez SAD” jest informacyjny.
+        rozl_na_stanie = [d for d in na_stanie if d.rozliczona]
+        szt = sum(d.na_stanie for d in rozl_na_stanie)
+        if szt:
+            w.srednia = round(sum(d.koszt * d.na_stanie for d in rozl_na_stanie) / szt, 2)
         w.srednia_szt = szt
-        w.srednia_szacunek = any(d.szacunek for d in na_stanie)
+        w.srednia_pominieto_szt = sum(d.na_stanie for d in na_stanie if not d.rozliczona)
     bez_kosztu = [d for d in ds if d.na_stanie > 0 and d.koszt is None]
     if bez_kosztu:
         w.uwagi.append("Część stanu pochodzi z dostaw bez ceny z faktury — pominięta w FIFO i średniej")
 
-    # 6) Ostatnia dostawa (najnowsza, która jest u nas) oraz min / max z rozliczonych
-    ostatnia = next((d for d in ds if d.u_nas and d.koszt is not None), None)
+    # 6) Ostatnia dostawa (najnowsza rozliczona, która jest u nas) oraz min / max z rozliczonych.
+    #    Kontener bez SAD pomijamy — jego koszt to tylko szacunek.
+    ostatnia = next((d for d in ds if d.u_nas and d.rozliczona), None)
     if ostatnia:
         w.ostatnia, w.ostatnia_item_id = ostatnia.koszt, ostatnia.item_id
     if rozl:
