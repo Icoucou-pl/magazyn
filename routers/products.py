@@ -20,7 +20,7 @@ from security import get_current_user, has_perm, require_perm, resolve_shop, all
 from services.products import fetch_products, get_product
 import audit
 from audit import log_audit
-from audit_opisy import f_bool, f_data, f_num, f_status_produktu, f_txt, f_zl
+from audit_opisy import etykieta_kontenera, f_bool, f_data, f_num, f_status_produktu, f_txt, f_zl
 from routers.product_history import require_super_admin   # ten sam guard co historia produktu
 
 router = APIRouter(prefix="/api", tags=["products"])
@@ -318,7 +318,9 @@ async def projection(sku: str, days: int = 180, db: AsyncSession = Depends(get_d
     for d in product.incoming_deliveries:
         wd = d.warehouse_delivery_date
         eta_map[wd] = eta_map.get(wd, 0) + d.quantity
-        lbl = f"#{d.container_number} +{d.quantity}"
+        nazwa = etykieta_kontenera(d.container_number, d.container_order_number or d.lot_order_number,
+                                   d.container_id)
+        lbl = f"{nazwa if nazwa.startswith(('FV', '#')) else '#' + nazwa} +{d.quantity}"
         eta_names[wd] = (eta_names[wd] + ", " + lbl) if wd in eta_names else lbl
     points = []
     current = float(product.stock)

@@ -60,11 +60,27 @@ MAX_XML = 8 * 1024 * 1024   # zgłoszenie z 7 pozycjami waży 36 kB; 8 MB to zap
 # Odczyt kontekstu z bazy
 # ============================================================
 
+def _etykieta_sql(c: str = "c") -> str:
+    """Nazwa kontenera do pokazania: numer, a dopóki jest roboczy „Draft-…" — „FV: <nr>".
+
+    Numer roboczy nadajemy wewnętrznie dla unikalności (drobnica, kontener bez numeru);
+    na ekranie go nie pokazujemy — tak samo jak lista kontenerów (containerLabel) i dziennik.
+    FV = zamówienie kontenera, a przy konsolidacji zamówienie pierwszego lotu.
+    """
+    return f"""CASE WHEN COALESCE(TRIM({c}.container_number), '') = ''
+                      OR LOWER(TRIM({c}.container_number)) LIKE 'draft-%'
+                 THEN COALESCE('FV: ' || COALESCE(NULLIF(TRIM({c}.order_number), ''),
+                        (SELECT NULLIF(TRIM(l.order_number), '') FROM {settings.TABLE_CONTAINER_LOTS} l
+                          WHERE l.container_id = {c}.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
+                          ORDER BY l.position, l.id LIMIT 1)), '#' || {c}.id)
+                 ELSE {c}.container_number END"""
+
+
 async def _kontener(db: AsyncSession, container_id: int) -> Dict[str, Any]:
     row = (await db.execute(
         text(f"""
             SELECT c.id, c.container_number, c.mrn, c.koszt_transportu, c.koszt_spedycji,
-                   c.koszt_transportu_magazyn
+                   c.koszt_transportu_magazyn, {_etykieta_sql()} AS etykieta
               FROM {settings.TABLE_CONTAINERS} c
              WHERE c.id = :id
         """),
@@ -109,11 +125,12 @@ async def _kontenery_odprawy(db: AsyncSession, numery: Sequence[str]) -> List[Di
         return []
     rows = (await db.execute(
         text(f"""
-            SELECT id, container_number, mrn, koszt_transportu, koszt_spedycji,
-                   koszt_transportu_magazyn, COALESCE(is_consolidated, FALSE) AS is_consolidated
-              FROM {settings.TABLE_CONTAINERS}
-             WHERE UPPER(TRIM(container_number)) = ANY(:numery)
-             ORDER BY id
+            SELECT c.id, c.container_number, c.mrn, c.koszt_transportu, c.koszt_spedycji,
+                   c.koszt_transportu_magazyn, COALESCE(c.is_consolidated, FALSE) AS is_consolidated,
+                   {_etykieta_sql()} AS etykieta
+              FROM {settings.TABLE_CONTAINERS} c
+             WHERE UPPER(TRIM(c.container_number)) = ANY(:numery)
+             ORDER BY c.id
         """),
         {"numery": [n.strip().upper() for n in numery]},
     )).mappings().all()
@@ -612,11 +629,11 @@ async def _zloz(
     if numer not in odprawa.kontenery:
         raise HTTPException(400, (
             (f"Ten SAD dotyczy kontenerów {', '.join(odprawa.kontenery)}, "
-             f"a otwarty jest {numer}. Otwórz właściwy kontener albo wrzuć inny plik.")
+             f"a otwarty jest {otwarty['etykieta']}. Otwórz właściwy kontener albo wrzuć inny plik.")
             if odprawa.kontenery else
             (f"Ten SAD nie podaje numeru kontenera (drobnica), a jego faktura "
              f"{', '.join(odprawa.faktury_dostawcy) or '(brak)'} nie zgadza się z numerem zamówienia "
-             f"kontenera {numer} ani jego lotów. Popraw numer zamówienia albo otwórz właściwy kontener.")
+             f"kontenera {otwarty['etykieta']} ani jego lotów. Popraw numer zamówienia albo otwórz właściwy kontener.")
         ))
 
     firma_sad = await _firma_po_nip(db, odprawa.nip_importera)
@@ -632,7 +649,7 @@ async def _zloz(
             continue
         if k["mrn"] and odprawa.mrn and k["mrn"].strip().upper() != odprawa.mrn.strip().upper():
             raise HTTPException(400, (
-                f"Kontener {k['container_number']} ma już MRN {k['mrn']}, a plik niesie {odprawa.mrn}. "
+                f"Kontener {k['etykieta']} ma już MRN {k['mrn']}, a plik niesie {odprawa.mrn}. "
                 "Popraw numer na kontenerze albo wrzuć właściwe zgłoszenie."
             ))
 
@@ -726,7 +743,7 @@ async def _zloz(
                 po_wadze = all(t.waga_brutto_kg is not None for t in towar_wszystko if t.container_id == k["id"])
                 uwagi.append(Uwaga(
                     "info",
-                    f"{k['container_number']}: transport krajowy dzielony na cały kontener — "
+                    f"{k['etykieta']}: transport krajowy dzielony na cały kontener — "
                     f"ta odprawa bierze {u * 100:.1f}% " + ("jego wagi" if po_wadze else
                                                              "jego wartości (części towaru brakuje wagi)"),
                     f"kwota w polu to transport całego kontenera{f' ({tk:.2f} zł)' if tk else ''}",
@@ -737,16 +754,16 @@ async def _zloz(
         uwagi.append(Uwaga("blad", "Kontener ze zgłoszenia nie istnieje w aplikacji", ", ".join(brakujace)))
     if len(kontenery) > 1:
         uwagi.append(Uwaga("info", "Odprawa obejmuje kilka kontenerów — koszt liczony łącznie",
-                           ", ".join(k["container_number"] for k in kontenery)))
+                           ", ".join(k["etykieta"] for k in kontenery)))
     for k in kontenery:
         if konsolidacja:
             bez_mrn = [l for l in loty_out if l.wybrany and not l.blokada and not l.mrn
                        and l.container_id == k["id"]]
             if bez_mrn:
-                uwagi.append(Uwaga("info", f"{k['container_number']}: MRN uzupełni się na lotach przy zapisie",
+                uwagi.append(Uwaga("info", f"{k['etykieta']}: MRN uzupełni się na lotach przy zapisie",
                                    ", ".join(l.dostawca or str(l.lot_id) for l in bez_mrn)))
         elif not k["mrn"]:
-            uwagi.append(Uwaga("info", f"{k['container_number']}: MRN uzupełni się przy zapisie",
+            uwagi.append(Uwaga("info", f"{k['etykieta']}: MRN uzupełni się przy zapisie",
                                odprawa.mrn or ""))
     if odprawa.faktury_dostawcy:
         uwagi.append(Uwaga("info", "Faktury dostawcy w zgłoszeniu", ", ".join(odprawa.faktury_dostawcy)))
@@ -767,7 +784,8 @@ async def _zloz(
     po_nr = {p.nr: [] for p in odprawa.pozycje}
     for item_id, nr in rachunek.przypisanie.items():
         po_nr.setdefault(nr, []).append(item_id)
-    nr_kontenera = {k["id"]: k["container_number"] for k in kontenery}
+    nr_kontenera = {k["id"]: k["etykieta"] for k in kontenery}
+    etykieta_numeru = {(k["container_number"] or "").strip().upper(): k["etykieta"] for k in kontenery}
 
     out = OdprawaOut(
         mrn=odprawa.mrn,
@@ -785,7 +803,7 @@ async def _zloz(
         clo_suma=odprawa.clo_suma,
         vat_suma=odprawa.vat_suma,
         faktury_dostawcy=odprawa.faktury_dostawcy,
-        kontenery=odprawa.kontenery,
+        kontenery=[etykieta_numeru.get(n, n) for n in odprawa.kontenery],
         kontenery_w_aplikacji=[k["id"] for k in kontenery],
         doliczenia=[{"kod": d.kod, "kwota": d.kwota, "klucz": d.klucz,
                      "do_wartosci_celnej": d.do_wartosci_celnej} for d in odprawa.doliczenia],
@@ -947,12 +965,15 @@ async def pobierz(
         {"id": row["id"]},
     )).mappings().all()
     numery = (await db.execute(
-        text("SELECT numer, container_id FROM app_odprawa_kontenery WHERE odprawa_id = :id ORDER BY numer"),
+        text(f"SELECT ok.numer, ok.container_id, {_etykieta_sql()} AS etykieta "
+             f"  FROM app_odprawa_kontenery ok "
+             f"  LEFT JOIN {settings.TABLE_CONTAINERS} c ON c.id = ok.container_id "
+             f" WHERE ok.odprawa_id = :id ORDER BY ok.numer"),
         {"id": row["id"]},
     )).mappings().all()
     itemy = (await db.execute(
         text(f"""
-            SELECT ci.id AS item_id, ci.container_id, c.container_number, ci.sku, ci.quantity,
+            SELECT ci.id AS item_id, ci.container_id, {_etykieta_sql()} AS container_number, ci.sku, ci.quantity,
                    ci.unit_cost, ci.cena_zakupu_pln, ci.cena_zakupu_waluta, ci.koszt_jednostkowy,
                    ci.koszt_logistyka_pln, ci.koszt_clo_pln, ci.koszt_gratisy_pln,
                    ci.koszt_transport_pln, ci.odprawa_poz_nr, ci.cena_reczna
@@ -1006,7 +1027,7 @@ async def pobierz(
         wartosc_faktur=float(row["wartosc_faktur"] or 0),
         masa_brutto=float(row["masa_brutto"] or 0),
         clo_suma=float(row["clo_suma"] or 0), vat_suma=float(row["vat_suma"] or 0),
-        kontenery=[n["numer"] for n in numery],
+        kontenery=[n["etykieta"] if n["container_id"] else n["numer"] for n in numery],
         kontenery_w_aplikacji=[n["container_id"] for n in numery if n["container_id"]],
         pozycje=[OdprawaPozycjaOut(
             nr=p["nr"], kod_cn=p["kod_cn"], opis=p["opis"] or "",
@@ -1404,11 +1425,11 @@ async def _zapisz_wszystko(
                          f"WHERE id = ANY(:ids) AND COALESCE(TRIM(mrn), '') = ''"),
                     {"mrn": odprawa.mrn, "ids": loty_mrn},
                 )
-                mrn_uzupelniony.append(k["container_number"])
+                mrn_uzupelniony.append(k["etykieta"])
         elif not k["mrn"] and odprawa.mrn:
             zmiany.append("mrn = :mrn")
             params["mrn"] = odprawa.mrn
-            mrn_uzupelniony.append(k["container_number"])
+            mrn_uzupelniony.append(k["etykieta"])
         if fr_po and wolno(k["koszt_transportu"], fr_przed) and abs(float(k["koszt_transportu"] or 0) - fr_po) >= 0.01:
             zmiany.append("koszt_transportu = :kt")
             params["kt"] = round(fr_po, 2)
@@ -1424,7 +1445,7 @@ async def _zapisz_wszystko(
                 text(f"UPDATE {settings.TABLE_CONTAINERS} SET {', '.join(zmiany)} WHERE id = :cid"),
                 params,
             )
-            zaktualizowane.append(k["container_number"])
+            zaktualizowane.append(k["etykieta"])
 
     # ── Waga i kod CN do karty produktu ──────────────────────────────────────
     # Tylko tam, gdzie pole jest puste. Waga ma sens wyłącznie, gdy pozycja SAD ma
