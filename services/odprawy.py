@@ -585,7 +585,12 @@ def policz(
         if not lista:
             continue
         mieszana = len({t.sku for t in lista}) > 1
-        plan = sum(t.ilosc * t.cena_planowana for t in lista) or 1.0
+        # Waga podziału wartości pozycji: cena planowana × sztuki. Gdy nikt w pozycji nie ma
+        # ceny planowanej (np. SZ1 na ECSU3903241 — sama w pozycji, cena 0), dzielimy po
+        # sztukach. Inaczej pozycja z jednym SKU dostawała 0 zamiast wartości z SAD.
+        bez_planu = not any(t.ilosc * t.cena_planowana for t in lista)
+        waga = (lambda t: t.ilosc) if bez_planu else (lambda t: t.ilosc * t.cena_planowana)
+        plan = sum(waga(t) for t in lista) or 1.0
         suma_recznych = 0.0
         wszystkie_reczne = True
         for t in lista:
@@ -593,7 +598,7 @@ def policz(
             if reczna is not None:
                 wartosc = reczna * t.ilosc
             else:
-                wartosc = p.wartosc * (t.ilosc * t.cena_planowana) / plan
+                wartosc = p.wartosc * waga(t) / plan
                 if mieszana:
                     wszystkie_reczne = False
             suma_recznych += wartosc
@@ -862,6 +867,8 @@ def _uwagi_o_dopasowaniu(slady: Dict[str, Any], odprawa: Odprawa,
         if not lista or not p.wartosc:
             continue
         plan = sum(t.ilosc * t.cena_planowana for t in lista) / kurs
+        if not plan:
+            continue  # bez cen planowanych nie ma z czym porównać — to nie jest rozjazd
         odchylka = (plan - p.wartosc) / p.wartosc
         if abs(odchylka) > 0.25:
             uwagi.append(Uwaga(
