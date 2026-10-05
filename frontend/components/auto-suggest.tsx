@@ -218,7 +218,7 @@ export default function AutoSuggestModal({
         order_number: saved?.order_number ?? payload.order_number,
         manufacturer_name: saved?.manufacturer_name ?? manufacturers.find((m) => String(m.id) === manufacturerId)?.name ?? null,
       });
-      toast(`Utworzono kontener ${lab.isFallback ? lab.nr : `#${lab.nr}`}`, "ok");
+      toast(`Utworzono kontener ${lab.isFallback || lab.bezHash ? lab.nr : `#${lab.nr}`}`, "ok");
       onCreated();
       onClose();
     } catch (e) {

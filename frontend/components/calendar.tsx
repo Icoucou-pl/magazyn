@@ -22,7 +22,7 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { I, Card, CardHeader, Pill, MfrChip, containerLabel, isDraftNumber } from "./ui";
+import { I, Card, CardHeader, Pill, MfrChip, containerLabel, isDraftNumber, nrLubFv } from "./ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { useShop } from "@/lib/shop";
@@ -134,7 +134,7 @@ const payAmount = (e: CalEvent) => `${fmtNum(e.kwota)} ${e.waluta || "USD"}`;
 // Etykieta chipa płatności: PRODUCENT · KWOTA WALUTA (fallback na PO/nr kontenera bez producenta).
 const payLabel = (e: CalEvent) => {
   const who = e.manufacturer_name
-    || (isDraftNumber(e.container_number) ? (e.order_number || "Płatność") : (e.container_number || e.order_number || "Płatność"));
+    || (e.container_number || e.order_number ? nrLubFv(e.container_number, e.order_number) : "Płatność");
   return `${who} · ${payAmount(e)}`;
 };
 
@@ -164,14 +164,14 @@ const payShort = (e: CalEvent) => {
 const eventLabel = (e: CalEvent) => {
   if (e.type === "PAYMENT") return payLabel(e);
   return e.type === "DELIVERY"
-    ? (e.manufacturer_name ?? (isDraftNumber(e.container_number) ? (e.order_number || "Dostawa") : (e.container_number ?? "Dostawa")))
+    ? (e.manufacturer_name ?? (e.container_number || e.order_number ? nrLubFv(e.container_number, e.order_number) : "Dostawa"))
     : e.sku ?? "";
 };
 // Podtytuł: dostawa → "nr kontenera · N szt" (producent poszedł na 1 plan), reszta → nazwa produktu
 const eventSub = (e: CalEvent) => {
   if (e.type === "PAYMENT") {
     const nr = isDraftNumber(e.container_number) ? null : e.container_number;
-    return [payKindLabel(e), nr || e.order_number].filter(Boolean).join(" · ");
+    return [payKindLabel(e), nr || (e.order_number ? `FV: ${e.order_number}` : null)].filter(Boolean).join(" · ");
   }
   if (e.type !== "DELIVERY") return e.name ?? "";
   // Numer roboczy „Draft-…" nie idzie do UI — zastępuje go PO (containerLabel).

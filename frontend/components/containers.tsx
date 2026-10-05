@@ -285,7 +285,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     const nextLabel = nextLab
       ? (nextLab.isFallback
         ? (nextMfr || nextLab.nr)
-        : [nextMfr, `#${nextLab.nr}`].filter(Boolean).join(" · "))
+        : [nextMfr, nextLab.bezHash ? nextLab.nr : `#${nextLab.nr}`].filter(Boolean).join(" · "))
       : null;
 
     return {

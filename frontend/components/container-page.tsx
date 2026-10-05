@@ -29,6 +29,7 @@ import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { can, canSeeLandedCost, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
+import { containerLabel } from "./ui";
 import LandedCostTab from "./container-landed-cost";
 
 const norm = (s?: string | null) => (s || "").trim().toLocaleLowerCase("pl-PL");
@@ -61,7 +62,7 @@ export default function ContainerPage({
   onDeleted: () => void;
   /** Klucz kontenera zmienił się (np. po edycji przyszedł numer kontenera zamiast FV) —
    *  rodzic podmienia adres bez nowego wpisu w historii. */
-  onCanonicalKey?: (key: string) => void;
+  onCanonicalKey?: (key: string, label?: string) => void;
 }) {
   const user = useUser();
   const canPO = can(user, "generatePO");
@@ -120,10 +121,19 @@ export default function ContainerPage({
     id: container.id, container_number: container.container_number, order_number: container.order_number,
     lot_order_numbers: (container.lots ?? []).map((l) => l.order_number),
   }) : null;
+  // Etykieta w sznurku: „#numer", a bez numeru „FV: …" (containerLabel) — Draft-… nigdy.
+  const lab = container ? containerLabel({
+    container_number: container.container_number, order_number: container.order_number,
+    manufacturer_name: container.manufacturer_name, is_consolidated: container.is_consolidated,
+    lots: container.lots,
+  }) : null;
+  const etykieta = lab ? (lab.isFallback || lab.bezHash ? lab.nr : `#${lab.nr}`) : null;
+  const ostatnia = trail.length ? trail[trail.length - 1].label : null;
   useEffect(() => {
-    if (slug && slug !== containerKey) onCanonicalKey?.(slug);
+    if (!slug) return;
+    if (slug !== containerKey || (etykieta && etykieta !== ostatnia)) onCanonicalKey?.(slug, etykieta ?? undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
+  }, [slug, etykieta]);
 
   const containerId = container?.id ?? null;
   const reload = useCallback(async () => {

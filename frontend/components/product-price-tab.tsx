@@ -18,6 +18,7 @@ import { MetricBox, Section, fmtDay } from "./product-modal";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import { containerSlug } from "@/lib/routes";
+import { nrLubFv } from "./ui";
 
 type Baza = "fifo" | "srednia" | "ostatnia" | "reczna";
 type Tryb = "marza" | "narzut";
@@ -32,6 +33,9 @@ type Dostawa = {
   koszt: number | null; szacunek: boolean; narzut_proc: number | null;
   rozliczenie: "odprawa" | "brak"; odstaje: boolean; fifo: boolean;
 };
+
+// Kontener bez numeru (roboczy „Draft-…") pokazujemy jako „FV: <nr faktury>".
+const nrDostawy = (d: Dostawa) => nrLubFv(d.container_number, d.lot_order_number || d.order_number);
 
 type Zapisana = {
   kanal: Kanal; baza: Baza; koszt_bazy: number; tryb: Tryb; procent: number;
@@ -168,7 +172,7 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
         <div style={{ borderRadius: 10, boxShadow: "0 0 0 1px color-mix(in oklch, var(--accent) 40%, transparent)" }}>
           <MetricBox label="Koszt FIFO" dot="var(--accent)" value={<span style={{ color: "var(--accent)" }}>{v(data.fifo)}</span>}
-            sub={fifoD ? <>partia <span className="mono">{fifoD.container_number}</span> · zostało {fifoD.na_stanie} szt</> : "brak towaru na stanie"} />
+            sub={fifoD ? <>partia <span className="mono">{nrDostawy(fifoD)}</span> · zostało {fifoD.na_stanie} szt</> : "brak towaru na stanie"} />
         </div>
         <MetricBox label="Średnia ważona" value={v(data.srednia)}
           sub={data.srednia != null ? `${data.srednia_szt} szt na stanie${data.srednia_szacunek ? " · w tym szac." : ""}` : "brak towaru na stanie"} />
@@ -177,9 +181,9 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
         <MetricBox label="Ostatnia dostawa" tone={ostD?.szacunek ? "info" : "neutral"} value={v(data.ostatnia)}
           sub={ostD ? <>{ostD.szacunek && <span style={{ ...tag, ...infoStyl }}>SZAC.</span>} {ostD.data ? fmtDay(ostD.data) : ""}{ostD.szacunek ? " · czeka na SAD" : ""}</> : "—"} />
         <MetricBox label="Najniższa" tone="ok" value={v(data.min)}
-          sub={minD ? <><span className="mono">{minD.container_number}</span>{minD.data ? ` · ${fmtDay(minD.data)}` : ""}</> : "brak rozliczonych"} />
+          sub={minD ? <><span className="mono">{nrDostawy(minD)}</span>{minD.data ? ` · ${fmtDay(minD.data)}` : ""}</> : "brak rozliczonych"} />
         <MetricBox label="Najwyższa" tone={maxD?.odstaje ? "critical" : "neutral"} value={v(data.max)}
-          sub={maxD ? <><span className="mono">{maxD.container_number}</span>{maxD.data ? ` · ${fmtDay(maxD.data)}` : ""}</> : "brak rozliczonych"} />
+          sub={maxD ? <><span className="mono">{nrDostawy(maxD)}</span>{maxD.data ? ` · ${fmtDay(maxD.data)}` : ""}</> : "brak rozliczonych"} />
       </div>
     </Section>
   );
@@ -198,7 +202,7 @@ function Ostrzezenia({ data, onOpen }: { data: CenaData; onOpen: (d: Dostawa) =>
         <div key={d.item_id} style={{ ...note, ...noteWarn }}>
           <span style={{ color: "var(--warning)", fontWeight: 700 }}>!</span>
           <div>
-            <span style={{ color: "var(--text-hi)" }}>Kontener <span className="mono">{d.container_number}</span> ma narzut importu {pct(d.narzut_proc ?? 0, 0)}</span>
+            <span style={{ color: "var(--text-hi)" }}>Kontener <span className="mono">{nrDostawy(d)}</span> ma narzut importu {pct(d.narzut_proc ?? 0, 0)}</span>
             {zakres && <>, a pozostałe dostawy {zakres}</>}. Sprawdź rozliczenie tego kontenera.{" "}
             <button onClick={() => onOpen(d)} style={linkBtn}>Otwórz kartę kontenera</button>
           </div>
@@ -247,8 +251,8 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
                   <tr key={d.item_id} style={{ background: d.fifo ? "color-mix(in oklch, var(--accent) 6%, transparent)" : undefined, color: wDrodze ? "var(--text-lo)" : undefined }}>
                     <td style={{ ...td, textAlign: "left" }}>
                       {onOpen
-                        ? <button onClick={() => onOpen(d)} className="mono" style={cnrBtn} title="Otwórz kartę kontenera">{d.container_number || d.lot_order_number || `#${d.container_id}`} ›</button>
-                        : <span className="mono" style={{ fontWeight: 600 }}>{d.container_number}</span>}
+                        ? <button onClick={() => onOpen(d)} className="mono" style={cnrBtn} title="Otwórz kartę kontenera">{nrDostawy(d)} ›</button>
+                        : <span className="mono" style={{ fontWeight: 600 }}>{nrDostawy(d)}</span>}
                       {d.fifo && <> <span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>FIFO</span></>}
                       {d.manufacturer_name && <div style={sub}>{d.manufacturer_name}{d.lot_order_number ? ` · ${d.lot_order_number}` : ""}</div>}
                     </td>

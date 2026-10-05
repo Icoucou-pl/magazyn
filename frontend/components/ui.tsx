@@ -268,10 +268,20 @@ export type ContainerLabelSource = {
   lots?: ReadonlyArray<unknown> | null;
 };
 
-export type ContainerLabel = { nr: string; po: string | null; isFallback: boolean };
+// bezHash: etykieta to „FV: …" (kontener bez numeru) — nie doklejamy przed nią „#".
+export type ContainerLabel = { nr: string; po: string | null; isFallback: boolean; bezHash?: boolean };
 
 export function isDraftNumber(v?: string | null): boolean {
   return /^\s*draft-/i.test(v || "");
+}
+
+// Nazwa kontenera w tekście: prawdziwy numer, a gdy jest tylko roboczy „Draft-…" (albo
+// żaden) — „FV: <nr faktury>". Ta sama reguła co containerLabel, tylko jako zwykły napis.
+export function nrLubFv(nr?: string | null, fv?: string | null): string {
+  const n = (nr || "").trim();
+  if (n && !isDraftNumber(n)) return n;
+  const f = (fv || "").trim();
+  return f ? `FV: ${f}` : "—";
 }
 
 export function containerLabel(c: ContainerLabelSource): ContainerLabel {
@@ -288,7 +298,7 @@ export function containerLabel(c: ContainerLabelSource): ContainerLabel {
   const po = poList.length ? poList.join(", ") : null;
 
   if (realNr) return { nr: realNr, po, isFallback: false };
-  if (po) return { nr: po, po: null, isFallback: false };
+  if (po) return { nr: `FV: ${po}`, po: null, isFallback: false, bezHash: true };
   return { nr: (c.manufacturer_name || "").trim() || "—", po: null, isFallback: true };
 }
 
@@ -299,7 +309,7 @@ export function ContainerNr({ c, size = 11.5, color = "inherit" }: { c: Containe
   return (
     <span style={{ display: "inline-flex", alignItems: "baseline", gap: 5, minWidth: 0, flexWrap: "wrap" }}>
       <span className={lab.isFallback ? undefined : "mono"} style={{ fontSize: size, fontWeight: 600, color }}>
-        {lab.isFallback ? lab.nr : `#${lab.nr}`}
+        {lab.isFallback || lab.bezHash ? lab.nr : `#${lab.nr}`}
       </span>
       {lab.po && (
         <span className="mono" style={{ fontSize: Math.max(9, size - 1.5), fontWeight: 500, color: "var(--text-disabled)" }}>

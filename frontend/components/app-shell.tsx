@@ -100,8 +100,9 @@ function ComingSoon({ view }: { view: string }) {
 // aktualizacji usePathname. Stąd żadnego przekazywania window.history.state dalej.
 type HistState = { trail?: Trail };
 
-// Etykieta ogniwa kontenera w sznurku: „#MSDU6911513" / „#SK2605042", a dla zapasowego
-// klucza „id-12" po prostu „Kontener".
+// Etykieta ogniwa kontenera w sznurku: „#MSDU6911513", a dla zapasowego klucza „id-12"
+// po prostu „Kontener". Po samym kluczu nie wiadomo, czy to numer, czy FV (kontener bez
+// numeru) — dokładną etykietę („FV: AT2603-252") podaje karta po wczytaniu kontenera.
 function etykietaKontenera(key: string): string {
   return /^id-\d+$/i.test(key) ? "Kontener" : `#${key}`;
 }
@@ -375,8 +376,8 @@ export default function AppShell() {
   };
   // Kontener dostał numer (albo zmienił FV) — adres i ostatnie ogniwo na nowy klucz,
   // bez nowego wpisu w historii.
-  const onContainerCanonicalKey = (key: string) => {
-    const nowe = { label: etykietaKontenera(key), path: pathForContainerPage(key), mono: true };
+  const onContainerCanonicalKey = (key: string, label?: string) => {
+    const nowe = { label: label || etykietaKontenera(key), path: pathForContainerPage(key), mono: true };
     // Zapytanie (?tab=koszt) przenosimy, inaczej podmiana klucza zgubiłaby otwartą zakładkę.
     router.replace(pathForContainerPage(key) + window.location.search,
       { scroll: false, trail: [...sznurek.slice(0, -1), nowe] });

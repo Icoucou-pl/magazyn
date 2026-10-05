@@ -62,7 +62,7 @@ export function buildProjection(apiPoints: ApiProjPoint[], product: Product, day
       const po = (d.container_order_number || d.lot_order_number || "").trim();
       const etykieta = nr && !isDraftNumber(nr)
         ? nr
-        : po || (product.manufacturer_name || "").trim() || "—";
+        : (po ? `FV: ${po}` : (product.manufacturer_name || "").trim() || "—");
 
       return { day, qty: d.quantity, container: etykieta, eta: d.eta_date, status: d.status };
     })
@@ -558,7 +558,8 @@ export function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
   const label = (c: DeleteCheck["containers"][number]) => {
     const nr = (c.container_number || "").trim();
     if (nr && !isDraftNumber(nr)) return nr;
-    return (c.order_number || "").trim() || (c.manufacturer_name || "").trim() || `#${c.id}`;
+    const fv = (c.order_number || "").trim();
+    return fv ? `FV: ${fv}` : (c.manufacturer_name || "").trim() || `#${c.id}`;
   };
 
   return (
