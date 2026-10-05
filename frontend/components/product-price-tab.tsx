@@ -6,7 +6,7 @@
 //     ostatnia dostawa, najniższa i najwyższa z rozliczonych
 //   • ostrzeżenia: kontener z odstającym narzutem, stan spoza kontenerów
 //   • tabela dostaw tego SKU (od najnowszej) z linkiem na kartę kontenera
-//   • kalkulator ceny sprzedaży: Sklepy | Dropy, zapis na sztywno na tej karcie
+//   • kalkulator ceny sprzedaży: Nasze sklepy | Dropy/Hurt, zapis na sztywno na tej karcie
 //
 // Dane: GET /products/{sku}/cena (routers/cena.py). Formuła kalkulatora jest LUSTREM
 // services/cena.py → wylicz_cene; serwer przy zapisie liczy cenę jeszcze raz sam.
@@ -59,7 +59,9 @@ const zl2 = (n: number) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2,
 const pct = (n: number, d = 1) => (n > 0 ? "+" : "") + n.toLocaleString("pl-PL", { minimumFractionDigits: d, maximumFractionDigits: d }) + "%";
 
 const BAZA_LABEL: Record<Baza, string> = { fifo: "FIFO", srednia: "Średnia", ostatnia: "Ostatnia", reczna: "Ręcznie" };
-const KANAL_LABEL: Record<Kanal, string> = { sklepy: "Sklepy", dropy: "Dropy" };
+const KANAL_LABEL: Record<Kanal, string> = { sklepy: "Nasze sklepy", dropy: "Dropy/Hurt" };
+// Ta sama nazwa w środku zdania („cena dla …”) — sama mała litera dałaby „dla nasze sklepy”.
+const KANAL_DLA: Record<Kanal, string> = { sklepy: "naszych sklepów", dropy: "dropów/hurtu" };
 const VAT_OPIS: Record<string, string> = { reczna: "ustawiona ręcznie", sprzedaz: "z ostatniej sprzedaży", domyslna: "domyślna" };
 
 // ── Formuła (lustro services/cena.py → wylicz_cene) ──────────
@@ -335,7 +337,7 @@ function Kalkulator({ sku, shop, kanal, bazy, zapisana, mozeZapisac, onSaved, va
         procent: num(s.proc), wysylka: num(s.wys), prowizja: num(s.prow), vat, shop,
       })) as Zapisana;
       onSaved(z);
-      toast(`Zapisano cenę dla ${KANAL_LABEL[kanal].toLowerCase()}: ${zl2(z.cena_brutto)} zł brutto`, "ok");
+      toast(`Zapisano cenę dla ${KANAL_DLA[kanal]}: ${zl2(z.cena_brutto)} zł brutto`, "ok");
     } catch (e) {
       toast(`Nie udało się zapisać ceny: ${e instanceof Error ? e.message : "błąd"}`, "warning");
     } finally {
@@ -427,7 +429,7 @@ function ZapisanaBox({ kanal, z, bazy, vat }: { kanal: Kanal; z: Zapisana | null
   if (!z) {
     return (
       <div style={{ margin: "14px 16px 0", padding: "12px 14px", border: "1px dashed var(--border-soft)", borderRadius: 10, textAlign: "center", fontSize: 12, color: "var(--text-lo)" }}>
-        Jeszcze nie zapisano ceny dla {KANAL_LABEL[kanal].toLowerCase()}. Ustaw parametry i kliknij „Zapisz cenę”.
+        Jeszcze nie zapisano ceny dla {KANAL_DLA[kanal]}. Ustaw parametry i kliknij „Zapisz cenę”.
       </div>
     );
   }
