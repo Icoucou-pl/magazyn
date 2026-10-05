@@ -492,7 +492,7 @@ export default function ProductPage({
               {kosztSr?.srednia != null ? (() => {
                 const erpNazwa = kosztSr.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
                 return (
-                  <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.srednia)}
+                  <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.srednia)} color="var(--accent)"
                     title="Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"
                     sub={kosztSr.erp_cena
                       ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}`
@@ -753,11 +753,11 @@ const popBtnPri: React.CSSProperties = { ...popBtn, background: "var(--accent)",
 const popChip: React.CSSProperties = { font: "inherit", fontSize: 12, padding: "4px 10px", borderRadius: 99, border: "1px solid var(--border)", background: "var(--surface-1)", color: "var(--text-mid)", cursor: "pointer" };
 const popDate: React.CSSProperties = { flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", color: "var(--text-hi)", fontSize: 13, padding: "6px 8px", colorScheme: "dark" };
 
-function Meta({ label, value, mono, sub, title }: { label: string; value: string; mono?: boolean; sub?: string; title?: string }) {
+function Meta({ label, value, mono, sub, title, color }: { label: string; value: string; mono?: boolean; sub?: string; title?: string; color?: string }) {
   return (
     <div title={title}>
       <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>{label}</div>
-      <div className={mono ? "mono" : "num"} style={{ fontSize: 14, fontWeight: 600, color: "var(--text-hi)", marginTop: 2 }}>{value}</div>
+      <div className={mono ? "mono" : "num"} style={{ fontSize: 14, fontWeight: 600, color: color || "var(--text-hi)", marginTop: 2 }}>{value}</div>
       {sub && <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 1 }}>{sub}</div>}
     </div>
   );
