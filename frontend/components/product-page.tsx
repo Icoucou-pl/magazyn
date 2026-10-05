@@ -491,12 +491,11 @@ export default function ProductPage({
               <Meta label="Stan dostępny" value={`${fmtNum(product.stock)} szt`} />
               {kosztSr?.srednia != null ? (() => {
                 const erpNazwa = kosztSr.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
-                const roz = kosztSr.erp_cena ? (kosztSr.srednia / kosztSr.erp_cena - 1) * 100 : null;
                 return (
                   <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.srednia)}
                     title="Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"
                     sub={kosztSr.erp_cena
-                      ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}${roz != null ? ` · śr. ${roz >= 0 ? "+" : ""}${roz.toFixed(1).replace(".", ",")}%` : ""}`
+                      ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}`
                       : `${erpNazwa}: brak ceny`} />
                 );
               })() : (
