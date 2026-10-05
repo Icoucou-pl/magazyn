@@ -22,9 +22,10 @@ Gdy stanu jest więcej niż sztuk w znanych dostawach, nadwyżka to towar sprzed
 
 FIFO = koszt najstarszej partii, z której jeszcze coś zostało (z niej zejdzie następna sprzedaż).
 Średnia ważona = koszt partii na stanie ważony liczbą pozostałych sztuk (tak liczy Subiekt).
-Do średniej, najniższej i najwyższej wchodzą TYLKO dostawy rozliczone odprawą. Kontener
-„bez SAD” ma koszt szacowany — pokazujemy go w tabeli informacyjnie, ale nie miesza w tych
-trzech kaflach (sztuki z takich partii liczymy osobno: `srednia_pominieto_szt`).
+Do średniej, ostatniej, najniższej i najwyższej wchodzą TYLKO dostawy rozliczone odprawą.
+Kontener „bez SAD” ma koszt szacowany — pokazujemy go w tabeli informacyjnie, ale nie miesza
+w tych kaflach (jego sztuki na stanie liczymy osobno: `srednia_pominieto_szt`).
+Średnia bierze wyłącznie partie, z których coś jeszcze jest na stanie — wyprzedane nie.
 
 KONTENER DO SPRAWDZENIA
 Narzut importu (koszt ÷ cena z FV − 1) bywa różny między dostawami, ale w wąskim paśmie.
@@ -186,8 +187,9 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
     if bez_kosztu:
         w.uwagi.append("Część stanu pochodzi z dostaw bez ceny z faktury — pominięta w FIFO i średniej")
 
-    # 6) Ostatnia dostawa (najnowsza, która jest u nas) oraz min / max z rozliczonych
-    ostatnia = next((d for d in ds if d.u_nas and d.koszt is not None), None)
+    # 6) Ostatnia dostawa (najnowsza rozliczona, która jest u nas) oraz min / max z rozliczonych.
+    #    Kontener bez SAD pomijamy — jego koszt to tylko szacunek.
+    ostatnia = next((d for d in ds if d.u_nas and d.rozliczona), None)
     if ostatnia:
         w.ostatnia, w.ostatnia_item_id = ostatnia.koszt, ostatnia.item_id
     if rozl:
