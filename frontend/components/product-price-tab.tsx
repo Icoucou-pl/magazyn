@@ -31,7 +31,7 @@ type Dostawa = {
   szt: number; na_stanie: number;
   cena_fv_pln: number | null; cena_fv_waluta: number | null; waluta: string | null;
   koszt: number | null; szacunek: boolean; narzut_proc: number | null;
-  rozliczenie: "odprawa" | "brak"; odstaje: boolean; fifo: boolean;
+  rozliczenie: "odprawa" | "krajowa" | "brak"; odstaje: boolean; fifo: boolean;
 };
 
 // Kontener bez numeru (roboczy „Draft-…") pokazujemy jako „FV: <nr faktury>".
@@ -249,6 +249,10 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
                 const wDrodze = d.status === "w_drodze";
                 const barKolor = d.odstaje ? "var(--critical)" : d.szacunek ? "var(--info)" : "var(--accent)";
                 const status = wDrodze ? <span style={{ ...pill, ...infoStyl }}>W drodze</span>
+                  : d.rozliczenie === "krajowa"
+                    ? (d.koszt != null
+                      ? <span style={{ ...pill, ...okStyl }} title="Zakup w Polsce: cena z FV + transport do magazynu">Krajowa</span>
+                      : <span style={{ ...pill, ...warnStyl }} title="Dostawa krajowa bez ceny na kontenerze">Brak ceny</span>)
                   : d.rozliczenie === "brak" ? <span style={{ ...pill, ...warnStyl }}>Bez SAD</span>
                   : d.odstaje ? <span style={{ ...pill, ...critStyl }}>Do sprawdzenia</span>
                   : <span style={{ ...pill, ...okStyl }}>Policzony</span>;
@@ -288,6 +292,7 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
         <div style={{ display: "flex", flexWrap: "wrap", gap: 14, padding: "9px 12px", borderTop: "1px solid var(--border-soft)", background: "var(--bg-elevated)", fontSize: 10.5, color: "var(--text-lo)" }}>
           <span><span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>FIFO</span> z tej partii schodzi teraz towar</span>
           <span><b style={{ color: "var(--text-mid)", fontWeight: 600 }}>Na stanie</b> przypisane wstecz od najnowszej dostawy (brak powiązania PZ ↔ kontener)</span>
+          <span><span style={{ ...pill, ...okStyl }}>Krajowa</span> zakup w Polsce (PLN): cena z FV + transport do magazynu, bez narzutu importu</span>
           <span><span style={{ ...tag, ...infoStyl }}>SZAC.</span> kontener bez SAD: cena FV × {szacZ}{data.sredni_narzut_proc != null ? ` (${pct(data.sredni_narzut_proc)})` : ""}</span>
         </div>
       </div>

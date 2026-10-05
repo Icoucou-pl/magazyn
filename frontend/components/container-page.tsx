@@ -270,7 +270,10 @@ export default function ContainerPage({
       {pasek}
       {paskZakladek}
       {tab === "koszt" && pokazKoszt ? (
-        <LandedCostTab containerId={container.id} onSaved={() => { void reload(); }} />
+        <LandedCostTab containerId={container.id} onSaved={() => { void reload(); }}
+          krajowa={container.is_consolidated && (container.lots ?? []).length
+            ? (container.lots ?? []).every((l) => (l.waluta_towaru || "").toUpperCase() === "PLN")
+            : (container.waluta_towaru || "").toUpperCase() === "PLN"} />
       ) : (
       <ContainerCard
         container={container}

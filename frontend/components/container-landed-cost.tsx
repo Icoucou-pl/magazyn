@@ -78,7 +78,14 @@ const pl = (n: number | null | undefined, d = 2) =>
 /** Pola kursów i cen wpisuje się po polsku, z przecinkiem — Number() sam tego nie przeczyta. */
 const liczba = (s: string): number => Number((s || "").replace(",", ".").trim());
 
-export default function LandedCostTab({ containerId, onSaved }: { containerId: number; onSaved?: () => void }) {
+export default function LandedCostTab({ containerId, onSaved, krajowa = false }: {
+  containerId: number; onSaved?: () => void;
+  /** Kontener w PLN — zakup w Polsce, bez odprawy celnej. */
+  krajowa?: boolean;
+}) {
+  // Dostawa krajowa nie ma SAD: zamiast prośby o XML tłumaczymy, skąd bierze się koszt.
+  // „Wczytaj XML mimo to" zostaje na wypadek źle ustawionej waluty.
+  const [mimoTo, setMimoTo] = useState(false);
   const canEdit = canEditLandedCost(useUser());
   const [dane, setDane] = useState<Odprawa | null>(null);
   const [plik, setPlik] = useState<File | null>(null);
@@ -317,6 +324,23 @@ export default function LandedCostTab({ containerId, onSaved }: { containerId: n
   if (ladowanie) return <div className="pulse-soft" style={{ height: 200, background: "var(--surface-1)", borderRadius: "var(--r-md)" }} />;
 
   // ── stan pusty ────────────────────────────────────────────
+  if (!dane && krajowa && !mimoTo && !odprawyKont.length) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ border: "1px solid var(--border)", borderRadius: "var(--r-lg)", background: "var(--surface-1)", padding: "28px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Dostawa krajowa — bez odprawy celnej</div>
+          <p style={{ margin: "0 auto", maxWidth: "62ch", fontSize: 12.5, color: "var(--text-lo)", lineHeight: 1.6 }}>
+            Towar kupiony w Polsce (kontener w PLN), więc nie ma SAD-u, cła ani frachtu morskiego.
+            Koszt na sztukę to cena z faktury wpisana na pozycji kontenera plus „Transport do magazynu”
+            rozłożony po wartości pozycji. Widać go w zakładce <b>Cena</b> na karcie produktu.
+          </p>
+          {canEdit && (
+            <button onClick={() => setMimoTo(true)} style={{ ...btnSec, marginTop: 14 }}>Wczytaj XML mimo to</button>
+          )}
+        </div>
+      </div>
+    );
+  }
   if (!dane) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
