@@ -119,7 +119,7 @@ def etykieta_kontenera(nr: Optional[str], fv: Optional[str], cid) -> str:
     if nr and not _robocze(nr):
         return nr
     fv = (fv or "").strip()
-    return f"FV {fv}" if fv else f"#{cid}"
+    return f"FV: {fv}" if fv else f"#{cid}"
 
 
 ROLE = {"ADMIN": "Admin", "IMPORT": "Import", "VIEWER": "Viewer"}
