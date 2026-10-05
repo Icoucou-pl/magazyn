@@ -66,7 +66,7 @@ def test_formatery():
 
 def test_kontener_bez_numeru_to_nr_fv_nigdy_draft():
     assert o.etykieta_kontenera("MSKU7345120", "SK2605042", 7) == "MSKU7345120"
-    assert o.etykieta_kontenera("Draft-Youngcoln3", "SK2605042", 7) == "FV SK2605042"
+    assert o.etykieta_kontenera("Draft-Youngcoln3", "SK2605042", 7) == "FV: SK2605042"
     assert o.etykieta_kontenera("Draft-Youngcoln3", None, 7) == "#7"
     assert o.f_nr_kontenera("Draft-Youngcoln3") == "—"
     assert o.f_nr_kontenera("MSKU7345120") == "MSKU7345120"
