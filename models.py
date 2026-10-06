@@ -1425,6 +1425,11 @@ class StawkaCnIn(BaseModel):
     stawka: float = Field(..., ge=0, le=100)
 
 
+class KursTowaruIn(BaseModel):
+    """Przeliczenie zapisanej odprawy po innym kursie towaru. None = kurs z płatności."""
+    kurs: Optional[float] = Field(None, gt=0)
+
+
 class KursOut(BaseModel):
     """Ostatni kurs średni NBP — formularz kontenera przelicza nim cenę USD na PLN."""
     waluta: str

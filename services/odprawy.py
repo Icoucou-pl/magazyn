@@ -528,6 +528,21 @@ def _wyzarzanie(start: List[Optional[int]], opcje: List[List[int]], wartosci: Li
 
 # ===== rachunek =====
 
+def przelicz_po_kursie(cena_waluta: float, szt: int, logistyka: float, clo: float,
+                       gratisy: float, transport: float, kurs_towaru: float) -> "tuple[float, float]":
+    """Zapisana pozycja odprawy po innym kursie towaru → (cena PLN / szt, koszt / szt).
+
+    Kurs towaru mnoży w `policz` wyłącznie wartość towaru; cło, logistyka i gratisy dzielą
+    się po kluczu albo po PROPORCJI towaru, a ta przy jednym kursie dla całej odprawy się
+    nie zmienia. Dlatego zapisane kwoty logistyki, cła, gratisów i transportu zostają,
+    a zmienia się tylko towar. Wzór jak PozycjaWynik.koszt_jednostkowy.
+    """
+    if not szt:
+        return 0.0, 0.0
+    towar = cena_waluta * kurs_towaru * szt
+    return round(towar / szt, 2), round((towar + logistyka + clo + gratisy + transport) / szt, 2)
+
+
 def policz(
     odprawa: Odprawa,
     towar: Sequence[PozycjaTowaru],

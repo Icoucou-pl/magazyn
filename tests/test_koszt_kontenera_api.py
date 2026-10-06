@@ -67,6 +67,10 @@ def test_endpointy_sad_zamkniete_dla_admina(klient, metoda, adres):
     assert r.status_code == 403
 
 
+def test_przeliczenie_kursu_sad_zamkniete_dla_admina(klient):
+    assert klient().post("/api/odprawy/1/kurs-towaru", json={"kurs": 3.6}).status_code == 403
+
+
 def test_podglad_sad_zamkniety_dla_admina(klient):
     r = klient().post("/api/kontenery/1/odprawa/podglad", files={"plik": ("a.xml", b"<x/>", "text/xml")})
     assert r.status_code == 403
