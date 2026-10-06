@@ -31,7 +31,7 @@ type Dostawa = {
   szt: number; na_stanie: number;
   cena_fv_pln: number | null; cena_fv_waluta: number | null; waluta: string | null;
   koszt: number | null; szacunek: boolean; narzut_proc: number | null;
-  rozliczenie: "odprawa" | "krajowa" | "brak"; odstaje: boolean; fifo: boolean;
+  rozliczenie: "policzony" | "szacunek" | "krajowa" | "brak"; odstaje: boolean; fifo: boolean;
 };
 
 // Kontener bez numeru (roboczy „Draft-…") pokazujemy jako „FV: <nr faktury>".
@@ -163,7 +163,7 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
   const maxD = nr(data.max_item_id);
   const erpNazwa = data.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
   const erpOpis = data.erp_zrodlo === "subiekt"
-    ? <>FV + Lenmar, <span style={{ color: "var(--warning)" }}>bez SAD (cła)</span></>
+    ? <>FV + Lenmar, <span style={{ color: "var(--warning)" }}>bez cła</span></>
     : "cena z FV, bez kosztów importu";
   const roz = data.fifo != null && data.erp_cena ? (data.fifo / data.erp_cena - 1) * 100 : null;
   // Wszystkie kafle to koszt NETTO (bez VAT) — piszemy to wprost, żeby nie trzeba było zgadywać.
@@ -171,7 +171,7 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
 
   return (
     <Section title="Koszt zakupu / szt"
-      hint={`landed cost z kontenerów · stan ${data.stan} szt${data.shop ? ` · firma ${data.shop.toUpperCase()}` : ""}`}>
+      hint={`koszt jednostkowy z kontenerów · stan ${data.stan} szt${data.shop ? ` · firma ${data.shop.toUpperCase()}` : ""}`}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
         <div style={{ borderRadius: 10, boxShadow: "0 0 0 1px color-mix(in oklch, var(--accent) 40%, transparent)" }}>
           <MetricBox label="Koszt FIFO" dot="var(--accent)" value={<span style={{ color: "var(--accent)" }}>{v(data.fifo)}</span>}
@@ -179,8 +179,8 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
         </div>
         <MetricBox label="Średnia ważona" value={v(data.srednia)}
           sub={data.srednia != null
-            ? `${data.srednia_szt} szt rozliczonych${data.srednia_pominieto_szt ? ` · pominięto ${data.srednia_pominieto_szt} szt bez SAD` : ""}`
-            : data.srednia_pominieto_szt ? "na stanie tylko partie bez SAD" : "brak towaru na stanie"} />
+            ? `${data.srednia_szt} szt policzonych${data.srednia_pominieto_szt ? ` · pominięto ${data.srednia_pominieto_szt} szt z szacunkiem` : ""}`
+            : data.srednia_pominieto_szt ? "na stanie tylko partie z szacunkiem" : "brak towaru na stanie"} />
         <MetricBox label={erpNazwa} value={v(data.erp_cena)}
           sub={<>{roz != null && <span style={pillMute}>FIFO {pct(roz)}</span>} {erpOpis}</>} />
         <MetricBox label="Ostatnia dostawa" value={v(data.ostatnia)}
@@ -197,7 +197,7 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
 // ── Ostrzeżenia ──────────────────────────────────────────────
 function Ostrzezenia({ data, onOpen }: { data: CenaData; onOpen: (d: Dostawa) => void }) {
   const odst = data.dostawy.filter((d) => d.odstaje);
-  const inne = data.dostawy.filter((d) => d.rozliczenie === "odprawa" && !d.odstaje && d.narzut_proc != null)
+  const inne = data.dostawy.filter((d) => d.rozliczenie === "policzony" && !d.odstaje && d.narzut_proc != null)
     .map((d) => d.narzut_proc as number);
   const zakres = inne.length ? `${Math.round(Math.min(...inne))}–${Math.round(Math.max(...inne))}%` : null;
   if (!odst.length && !data.uwagi.length) return null;
@@ -253,9 +253,12 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
                     ? (d.koszt != null
                       ? <span style={{ ...pill, ...okStyl }} title="Zakup w Polsce: cena z FV + transport do magazynu">Krajowa</span>
                       : <span style={{ ...pill, ...warnStyl }} title="Dostawa krajowa bez ceny na kontenerze">Brak ceny</span>)
-                  : d.rozliczenie === "brak" ? <span style={{ ...pill, ...warnStyl }}>Bez SAD</span>
                   : d.odstaje ? <span style={{ ...pill, ...critStyl }}>Do sprawdzenia</span>
-                  : <span style={{ ...pill, ...okStyl }}>Policzony</span>;
+                  : d.rozliczenie === "szacunek"
+                    ? <span style={{ ...pill, ...warnStyl }} title="Nie wszystko zapłacone albo wartość z cen pozycji — koszt policzony z ostatniego kursu">Szacunek</span>
+                  : d.rozliczenie === "brak"
+                    ? <span style={{ ...pill, ...warnStyl }} title="Kontener bez cen i płatności — koszt z FV × średni narzut">Brak danych</span>
+                  : <span style={{ ...pill, ...okStyl }} title="Koszt jednostkowy z karty kontenera i zapłaconych płatności">Policzony</span>;
                 return (
                   <tr key={d.item_id} style={{ background: d.fifo ? "color-mix(in oklch, var(--accent) 6%, transparent)" : undefined, color: wDrodze ? "var(--text-lo)" : undefined }}>
                     <td style={{ ...td, textAlign: "left" }}>
@@ -293,7 +296,8 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
           <span><span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>FIFO</span> z tej partii schodzi teraz towar</span>
           <span><b style={{ color: "var(--text-mid)", fontWeight: 600 }}>Na stanie</b> przypisane wstecz od najnowszej dostawy (brak powiązania PZ ↔ kontener)</span>
           <span><span style={{ ...pill, ...okStyl }}>Krajowa</span> zakup w Polsce (PLN): cena z FV + transport do magazynu, bez narzutu importu</span>
-          <span><span style={{ ...tag, ...infoStyl }}>SZAC.</span> kontener bez SAD: cena FV × {szacZ}{data.sredni_narzut_proc != null ? ` (${pct(data.sredni_narzut_proc)})` : ""}</span>
+          <span><span style={{ ...pill, ...okStyl }}>Policzony</span> koszt z karty kontenera i zapłaconych płatności (zakładka „Koszt jednostkowy” kontenera)</span>
+          <span><span style={{ ...tag, ...infoStyl }}>SZAC.</span> nie wszystko zapłacone — kurs ostatni NBP; bez cen i płatności: cena FV × {szacZ}{data.sredni_narzut_proc != null ? ` (${pct(data.sredni_narzut_proc)})` : ""}</span>
         </div>
       </div>
     </Section>

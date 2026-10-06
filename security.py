@@ -260,6 +260,30 @@ async def require_landed_cost_edit(user: CurrentUser = Depends(get_current_user)
     return user
 
 
+def is_super_admin(user: Optional[CurrentUser]) -> bool:
+    """Adres z SUPER_ADMIN_EMAIL — ten sam test co routers/product_history.py i /auth/me."""
+    super_email = (settings.SUPER_ADMIN_EMAIL or "").strip().lower()
+    return bool(super_email and user and (user.email or "").strip().lower() == super_email)
+
+
+async def require_sad(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Rozliczenie z SAD (zakładka „SAD”, /kontenery/{id}/odprawa*, /odprawy/*) — tylko superadmin.
+
+    Koszt jednostkowy liczy się dziś „metodą szefa” (services/koszt_kontenera.py); SAD zostaje
+    jako kontrola i źródło kodów CN, wag i stawek cła. Lustro na froncie: permissions.js → canSeeSad.
+    """
+    if not is_super_admin(user):
+        raise HTTPException(403, "Rozliczenie z SAD widzi tylko superadmin")
+    return user
+
+
+async def require_super_admin_403(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Superadmin, z czytelnym 403 dla innych (np. ręczna stawka cła w słowniku)."""
+    if not is_super_admin(user):
+        raise HTTPException(403, "Tylko superadmin")
+    return user
+
+
 def can_view_purchase_price(user: CurrentUser) -> bool:
     """Koszt netto / szt w nagłówku karty = viewFinancials ALBO viewPurchasePrice
     (lustro: permissions.js → canSeePurchasePrice). Celowo ALBO — ptaszek jest właśnie

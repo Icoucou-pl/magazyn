@@ -43,7 +43,7 @@ from models import (
     OdprawaPozycjaOut, OdprawaTowarOut, OdprawaUstawieniaIn, OdprawaUwagaOut,
     OdprawaZapisOut,
 )
-from security import require_landed_cost_edit, require_landed_cost_view
+from security import require_sad
 from services.odprawy import (
     KLUCZ_CBM, KLUCZ_WAGA, LiniaKosztu, PozycjaTowaru, Rachunek, Uwaga, policz,
 )
@@ -849,20 +849,37 @@ async def _zloz(
 # Endpointy
 # ============================================================
 
+async def _dolicz_nowa_metode(db: AsyncSession, out: Optional[OdprawaOut]) -> Optional[OdprawaOut]:
+    """Kontrola dla superadmina: koszt tej samej pozycji liczony nową metodą (bez SAD-u).
+
+    Koszt jednostkowy liczy się dziś z karty kontenera i płatności (services/koszt_kontenera.py);
+    kolumna obok kosztu z SAD pokazuje, jak bardzo jedno odbiega od drugiego.
+    """
+    if out is None or not out.towar:
+        return out
+    from services.koszt_kontenera_dane import policz_kontenery
+
+    wyniki, _ = await policz_kontenery(db, sorted({t.container_id for t in out.towar}))
+    koszt = {p.item_id: p.koszt_jednostkowy for w in wyniki.values() for p in w.pozycje}
+    for t in out.towar:
+        t.koszt_nowa_metoda = koszt.get(t.item_id)
+    return out
+
+
 @router.post("/kontenery/{container_id}/odprawa/podglad", response_model=OdprawaOut)
 async def podglad(
     container_id: int,
     plik: UploadFile = File(...),
     ustawienia: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_landed_cost_edit),
+    user: CurrentUser = Depends(require_sad),
 ):
     """Wczytuje zgłoszenie i pokazuje rachunek. NIC nie zapisuje."""
     tresc = await plik.read()
     if len(tresc) > MAX_XML:
         raise HTTPException(413, "Plik jest za duży jak na zgłoszenie celne (limit 8 MB).")
     out, *_ = await _zloz(db, container_id, tresc, _ustawienia(ustawienia))
-    return out
+    return await _dolicz_nowa_metode(db, out)
 
 
 @router.post("/kontenery/{container_id}/odprawa", response_model=OdprawaOut)
@@ -871,7 +888,7 @@ async def zapisz(
     plik: UploadFile = File(...),
     ustawienia: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_landed_cost_edit),
+    user: CurrentUser = Depends(require_sad),
 ):
     """Zapisuje odczyt zgłoszenia i koszt jednostkowy na pozycjach kontenerów."""
     tresc = await plik.read()
@@ -895,7 +912,7 @@ async def zapisz(
     )
     out.status = "zapisana"
     _opisz_zapis(container_id, out, dict(przed) if przed else None, ust)
-    return out
+    return await _dolicz_nowa_metode(db, out)
 
 
 # Dziennik audytu: co z odprawy pokazujemy w „było → jest”.
@@ -937,7 +954,7 @@ async def pobierz(
     container_id: int,
     odprawa_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_landed_cost_view),
+    user: CurrentUser = Depends(require_sad),
 ):
     """Zapisana odprawa tego kontenera albo null, gdy jeszcze jej nie policzono.
 
@@ -1019,7 +1036,7 @@ async def pobierz(
         slug_importera = await _firma_kontenera(db, container_id)
     zrodlo_erp, erp = await _koszt_erp(db, slug_importera, [i["sku"] for i in itemy])
 
-    return OdprawaOut(
+    return await _dolicz_nowa_metode(db, OdprawaOut(
         mrn=row["mrn"], data_zgloszenia=row["data_zgloszenia"], dostawca=row["dostawca"],
         importer=row["importer"], nip_importera=row["nip_importera"],
         incoterms=row["incoterms"], waluta=row["waluta"],
@@ -1077,7 +1094,7 @@ async def pobierz(
         odprawa_id=row["id"],
         loty=await _pokrycie_lotow(db, container_id, row["id"]),
         odprawy_kontenera=await _odprawy_kontenera(db, container_id),
-    )
+    ))
 
 
 async def _pokrycie_lotow(db: AsyncSession, container_id: int, odprawa_id: int) -> List[OdprawaLotOut]:
@@ -1167,7 +1184,7 @@ async def _faktury_zapisanych(
 async def usun(
     odprawa_id: int,
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_landed_cost_edit),
+    user: CurrentUser = Depends(require_sad),
 ):
     """Cofa rozliczenie: zdejmuje koszt z pozycji i kasuje odprawę.
 
@@ -1328,6 +1345,23 @@ async def _zapisz_wszystko(
                 "faktury": ", ".join(p.faktury_dostawcy) or None,
             },
         )
+
+    # Słownik stawek cła (Ustawienia → Stawki cła): dla kodów z tego zgłoszenia stawka
+    # z NAJNOWSZEGO zgłoszenia, w którym kod wystąpił — ponowne wczytanie starego SAD-u
+    # nie cofa nowszej stawki. Stawki wpisanej ręcznie SAD nie nadpisuje.
+    kody = sorted({p.kod_cn for p in odprawa.pozycje if p.kod_cn})
+    if kody:
+        await db.execute(text("""
+            INSERT INTO app_stawki_cn (kod_cn, stawka, zrodlo, zmienil, updated_at)
+            SELECT DISTINCT ON (p.kod_cn) p.kod_cn, p.clo_stawka, 'sad', 'SAD ' || COALESCE(o.mrn, ''), NOW()
+              FROM app_odprawa_pozycje p
+              JOIN app_odprawy o ON o.id = p.odprawa_id
+             WHERE p.kod_cn = ANY(:kody) AND p.clo_stawka IS NOT NULL
+             ORDER BY p.kod_cn, o.data_zgloszenia DESC NULLS LAST, o.id DESC
+            ON CONFLICT (kod_cn) DO UPDATE
+               SET stawka = EXCLUDED.stawka, zmienil = EXCLUDED.zmienil, updated_at = NOW()
+             WHERE app_stawki_cn.zrodlo = 'sad'
+        """), {"kody": kody})
 
     z_sad = {1: "031W", 2: "071V", 4: "032W", LP_ZALADUNEK: "033W"}
     dolicz = {d.kod: d.kwota for d in odprawa.doliczenia}

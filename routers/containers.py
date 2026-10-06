@@ -21,7 +21,7 @@ from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
     AttachmentOut, AttachmentCreate, CurrentUser, SubiektWbiteIn,
 )
-from security import get_current_user, require_edit_containers, require_export, require_attachments, has_perm
+from security import get_current_user, require_edit_containers, require_export, require_attachments, has_perm, is_super_admin
 from services.containers import fetch_containers, get_container_by_id
 
 router = APIRouter(prefix="/api", tags=["containers"])
@@ -49,6 +49,14 @@ def _mask_container_financials(containers, user):
             lot.balance_kwota = None
             for adv in lot.advances:
                 adv.kwota = None
+    return containers
+
+
+def _mask_sad(containers, user):
+    """Stan odprawy (SAD) widzi tylko superadmin — reszta nie ma znać nawet jego istnienia."""
+    if not is_super_admin(user):
+        for c in containers:
+            c.koszt_status = None
     return containers
 
 
@@ -517,7 +525,7 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
 
 @router.get("/containers", response_model=List[ContainerOut])
 async def list_containers(status: Optional[ContainerStatus] = None, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    return _mask_container_attachments(_mask_container_financials(await fetch_containers(db, status), user), user)
+    return _mask_sad(_mask_container_attachments(_mask_container_financials(await fetch_containers(db, status), user), user), user)
 
 
 @router.get("/containers/{cid}", response_model=ContainerOut)
@@ -525,6 +533,7 @@ async def get_container(cid: int, db: AsyncSession = Depends(get_db), user: Curr
     c = await get_container_by_id(db, cid)
     _mask_container_financials([c], user)
     _mask_container_attachments([c], user)
+    _mask_sad([c], user)
     return c
 
 
@@ -703,7 +712,7 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
             changes=audit.zmiany(None, po, POLA_KONTENERA) + _zmiany_pozycji({}, poz),
             resource_id=cid,
         )
-    return await get_container_by_id(db, cid)
+    return _mask_sad([await get_container_by_id(db, cid)], user)[0]
 
 
 @router.patch("/containers/{cid}", response_model=ContainerOut)
@@ -905,7 +914,7 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
                        changes=ch, resource_id=cid)
         else:
             audit.note_zmiany(f"kontenera {_nazwa_kontenera(po, cid)}", ch, resource_id=cid)
-    return await get_container_by_id(db, cid)
+    return _mask_sad([await get_container_by_id(db, cid)], user)[0]
 
 
 @router.delete("/containers/{cid}", status_code=204)
@@ -930,7 +939,7 @@ async def deliver_container(cid: int, db: AsyncSession = Depends(get_db), user: 
     if po:
         audit.note(f"oznaczył kontener {_nazwa_kontenera(po, cid)} jako dostarczony",
                    changes=audit.zmiany(przed, po, POLA_KONTENERA), resource_id=cid)
-    return await get_container_by_id(db, cid)
+    return _mask_sad([await get_container_by_id(db, cid)], user)[0]
 
 
 @router.post("/containers/{cid}/subiekt-wbite", response_model=ContainerOut)
@@ -956,7 +965,7 @@ async def set_subiekt_wbite(cid: int, payload: SubiektWbiteIn, db: AsyncSession 
                else f"cofnął znacznik „dodano do Subiektu” {gdzie}",
                changes=[{"pole": "Dodano do Subiektu", "bylo": f_bool(not payload.value), "jest": f_bool(payload.value)}],
                resource_id=cid)
-    return await get_container_by_id(db, cid)
+    return _mask_sad([await get_container_by_id(db, cid)], user)[0]
 
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
