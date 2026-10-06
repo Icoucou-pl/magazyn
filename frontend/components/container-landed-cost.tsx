@@ -1,6 +1,11 @@
 "use client";
 // ============================================================
-// MAGAZYN — zakładka „Koszt jednostkowy" na karcie kontenera.
+// MAGAZYN — zakładka „SAD" na karcie kontenera (tylko superadmin).
+//
+// Dawne „Koszt jednostkowy" — rozliczenie z odprawy. Koszt sztuki liczy dziś zakładka
+// „Koszt jednostkowy" (container-unit-cost.tsx, metoda szefa); ta zostaje jako kontrola:
+// kolumny „Nowa metoda" i „Różnica" pokazują, jak bardzo metoda szefa odbiega od SAD-u.
+// Zapis odprawy dalej uzupełnia kody CN i wagi na kartach produktów oraz słownik stawek cła.
 //
 // Składa koszt sztuki z trzech dokumentów odprawy:
 //   · XML zgłoszenia celnego (SAD) — pozycje, cło, doliczenia, kurs,
@@ -11,15 +16,14 @@
 // Dlatego przy zapisie wysyłamy ten sam plik jeszcze raz — trzymamy go w stanie
 // komponentu od momentu wrzucenia (patrz `plik`).
 //
-// Zakładka pokazuje się tylko przy uprawnieniu „Koszt jednostkowy kontenera",
-// a pola do wpisywania i przycisk zapisu — przy „Liczenie kosztu jednostkowego"
-// (lib/permissions: canSeeLandedCost / canEditLandedCost).
+// Zakładkę i jej endpointy widzi wyłącznie superadmin (lib/permissions: canSeeSad,
+// security.py: require_sad) — on też może wczytywać i zapisywać odprawy.
 // ============================================================
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { canEditLandedCost, useUser } from "@/lib/permissions";
+import { canSeeSad, useUser } from "@/lib/permissions";
 import { toast } from "./toast";
 
 // ── typy odpowiedzi backendu (routers/odprawy.py) ────────────
@@ -45,6 +49,7 @@ type Towar = {
   cena_planowana: number; cena_zakupu_waluta: number; towar: number; logistyka: number; clo: number;
   gratisy: number; transport_krajowy: number; koszt_jednostkowy: number; zmiana_proc: number | null;
   szacunek: boolean; reczna: boolean; poz_sad: number | null; koszt_erp?: number | null;
+  koszt_nowa_metoda?: number | null;
 };
 export type Odprawa = {
   mrn: string | null; data_zgloszenia: string | null; dostawca: string | null; importer: string | null;
@@ -86,7 +91,8 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
   // Dostawa krajowa nie ma SAD: zamiast prośby o XML tłumaczymy, skąd bierze się koszt.
   // „Wczytaj XML mimo to" zostaje na wypadek źle ustawionej waluty.
   const [mimoTo, setMimoTo] = useState(false);
-  const canEdit = canEditLandedCost(useUser());
+  // Zakładkę i tak widzi tylko superadmin — on też wczytuje i zapisuje odprawy.
+  const canEdit = canSeeSad(useUser());
   const [dane, setDane] = useState<Odprawa | null>(null);
   const [plik, setPlik] = useState<File | null>(null);
   const [blad, setBlad] = useState<string | null>(null);
@@ -370,7 +376,7 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
               onChange={(e) => { wybierz(e.target.files?.[0]); e.currentTarget.value = ""; }} />
           </div>
         ) : (
-          <Komunikat poziom="info" tresc="Koszt jednostkowy nie został jeszcze policzony dla tego kontenera." />
+          <Komunikat poziom="info" tresc="Odprawa nie została jeszcze wczytana dla tego kontenera." />
         )}
       </div>
     );
@@ -671,7 +677,7 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
             przy zakładaniu kontenera i potem nikt jej nie poprawia, więc „zmiana" mierzyła
             głównie to, jak bardzo zestarzała się cena planowana. Sens różnicy zależy od
             źródła, dlatego podpis mówi wprost, co porównujemy. */}
-        <Naglowek tytul="Koszt jednostkowy" hint={
+        <Naglowek tytul="Koszt jednostkowy z SAD" hint={
           dane.zrodlo_erp === "fakturownia"
             ? "Fakturownia trzyma cenę od dostawcy bez frachtu i cła — różnica to narzut, którego tam nie widać"
             : dane.zrodlo_erp === "subiekt"
@@ -686,6 +692,8 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
               <Th><span title="Bieżący koszt zakupu w ERP spółki-importera — średnia z towaru na stanie, więc może obejmować też wcześniejsze dostawy.">
                 {dane.zrodlo_erp === "fakturownia" ? "Fakturownia" : "Subiekt"}
               </span></Th>
+              <Th>Różnica</Th>
+              <Th><span title="Koszt tej pozycji liczony nową metodą (karta kontenera + płatności, bez SAD-u) — zakładka „Koszt jednostkowy”.">Nowa metoda</span></Th>
               <Th>Różnica</Th>
             </tr></thead>
             <tbody>
@@ -710,6 +718,19 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
                         <td style={{ ...td, fontFamily: "var(--font-mono)", color: "var(--text-lo)" }}>{erp ? pl(erp) : "—"}</td>
                         <td style={{ ...td, fontFamily: "var(--font-mono)", color: roznica == null ? "var(--text-disabled)" : roznica >= 0 ? "var(--critical)" : "var(--ok)" }}>
                           {roznica == null ? "—" : `${roznica >= 0 ? "+" : ""}${pl(roznica, 1)}%`}
+                        </td>
+                      </>
+                    );
+                  })()}
+                  {(() => {
+                    // Kontrola metody szefa: ±1% to cel, więcej — warto zajrzeć do kontenera.
+                    const nowa = t.koszt_nowa_metoda ?? null;
+                    const roz = nowa && t.koszt_jednostkowy ? (nowa / t.koszt_jednostkowy - 1) * 100 : null;
+                    return (
+                      <>
+                        <td style={{ ...td, fontFamily: "var(--font-mono)" }}>{nowa ? pl(nowa) : "—"}</td>
+                        <td style={{ ...td, fontFamily: "var(--font-mono)", color: roz == null ? "var(--text-disabled)" : Math.abs(roz) <= 1 ? "var(--ok)" : "var(--warning)" }}>
+                          {roz == null ? "—" : `${roz >= 0 ? "+" : ""}${pl(roz, 1)}%`}
                         </td>
                       </>
                     );

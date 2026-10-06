@@ -100,10 +100,13 @@ export const canSeePurchasePrice = (u) => can(u, "viewFinancials") || can(u, "vi
 export const canSeeProductHistory = (u) =>
   Boolean(u?.is_super_admin || u?.isSuper) || can(u, "viewProductHistory");
 
-// Rozliczenie odprawy na karcie kontenera. Lustro w security.py →
+// Koszt jednostkowy na karcie kontenera (metoda szefa). Lustro w security.py →
 // can_view_landed_cost / can_edit_landed_cost. Bez podglądu zakładki nie ma w pasku w ogóle.
 export const canSeeLandedCost = (u) => can(u, "viewLandedCost") && can(u, "viewFinancials");
 export const canEditLandedCost = (u) => canSeeLandedCost(u) && can(u, "editLandedCost");
+// Rozliczenie z SAD (zakładka „SAD", wgrywanie XML) — tylko superadmin, jako kontrola.
+// Lustro w security.py → require_sad. Inni nie widzą zakładki ani śladu po niej.
+export const canSeeSad = (u) => Boolean(u?.is_super_admin || u?.isSuper);
 
 // Zakładka „Cena" na karcie produktu. Lustro w security.py →
 // can_view_product_price / can_edit_product_price. Zapis leży na wierzchu podglądu.

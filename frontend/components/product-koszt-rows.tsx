@@ -2,9 +2,9 @@
 // ============================================================
 // MAGAZYN — Koszt z kontenerów w „Danych podstawowych", pod ceną zakupu netto.
 //
-// Dwa wiersze TYLKO DO ODCZYTU: koszt FIFO i średnia ważona z rozliczonych kontenerów
-// na stanie — te same liczby co zakładka „Cena" i nagłówek karty. Nie da się ich
-// wpisać ręcznie: wynikają z kontenerów i odpraw.
+// Dwa wiersze TYLKO DO ODCZYTU: koszt FIFO i średnia ważona z kontenerów na stanie —
+// te same liczby co zakładka „Cena" i nagłówek karty. Nie da się ich wpisać ręcznie:
+// wynikają z kosztu jednostkowego kontenerów (karta kontenera i płatności).
 // Dane: GET /products/{sku}/koszt (routers/cena.py). Widzi je ten, kto widzi cenę
 // zakupu (finanse ALBO „Cena zakupu produktu") — reszta dostaje kropki.
 // ============================================================
@@ -52,7 +52,7 @@ export default function KosztRows({ sku, shop, rowStyle, labelStyle }: {
       </div>
       <div style={rowStyle}>
         <span style={labelStyle}>Cena średnia ważona</span>
-        {wartosc(k?.srednia, "Brak rozliczonych odprawą kontenerów, z których towar jest na stanie")}
+        {wartosc(k?.srednia, "Brak kontenerów z pewnym kosztem (bez szacunku), z których towar jest na stanie")}
       </div>
     </>
   );

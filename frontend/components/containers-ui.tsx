@@ -12,7 +12,7 @@ import { btnPrimary, btnSecondary } from "./products-ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { PhotoHover } from "./photo-hover";
 import { download } from "@/lib/api";
-import { canEdit, can, canSeeLandedCost, useUser } from "@/lib/permissions";
+import { canEdit, can, canSeeSad, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { trackingUrl, carrierLabel } from "@/lib/tracking";
 
@@ -534,7 +534,7 @@ export function ContainerCard({
   const eStatus = eff(c);
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
   const showFin = can(useUser(), "viewFinancials");
-  const pokazKoszt = canSeeLandedCost(useUser());
+  const pokazSad = canSeeSad(useUser());
   const Icon = meta.icon;
   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
   const isDelivered = eStatus === "DELIVERED";
@@ -596,14 +596,14 @@ export function ContainerCard({
               {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
               {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
               {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa celna" : "auto"}</Pill>}
-              {/* Stan rozliczenia odprawy — tylko dla uprawnionych. Reszta zespołu nie widzi
-                  nawet tego, że koszt jednostkowy w ogóle istnieje. */}
-              {pokazKoszt && (
+              {/* Stan odprawy (SAD) — tylko superadmin, jako kontrola. Koszt jednostkowy liczy się
+                  sam z karty kontenera (zakładka „Koszt jednostkowy"), więc „bez kosztu" już nie ma. */}
+              {pokazSad && (
                 c.koszt_status === "zapisana"
-                  ? <Pill bg="var(--ok-soft)" fg="var(--ok)" size="sm">koszt policzony</Pill>
+                  ? <Pill bg="var(--ok-soft)" fg="var(--ok)" size="sm">SAD zapisany</Pill>
                   : c.koszt_status === "szkic"
-                    ? <Pill bg="var(--warning-soft)" fg="var(--warning)" size="sm">koszt — szkic</Pill>
-                    : <Pill bg="var(--surface-2)" fg="var(--text-lo)" size="sm">bez kosztu</Pill>
+                    ? <Pill bg="var(--warning-soft)" fg="var(--warning)" size="sm">SAD — szkic</Pill>
+                    : null
               )}
             </div>
 

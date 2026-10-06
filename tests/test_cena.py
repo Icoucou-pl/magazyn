@@ -143,3 +143,20 @@ def test_dostawa_krajowa_nie_psuje_narzutu_importu():
     w = policz_koszty([kraj, d(2, 3, 100, 100, 120), d(3, 9, 10, 100, None, u_nas=False)], stan=0)
     assert w.sredni_narzut_proc == 20.0 and w.narzut_zrodlo == "sku"
     assert {y.item_id: y.koszt for y in w.dostawy}[3] == 120.0
+
+
+# ── koszt z metody szefa (services/koszt_kontenera.py) ──────
+
+def test_koszt_z_nowej_metody_i_szacunek_z_niezaplaconego_balance():
+    # najstarsza partia ma pewny koszt 120, najnowsza — szacunek 115 (balance niezapłacony)
+    ds = [d(1, 2, 100, 100, 120),
+          Dostawa(item_id=2, container_id=2, container_number="TEST0000002", data=date(2026, 8, 1),
+                  data_zrodlo="delivered", szt=50, u_nas=True, cena_fv_pln=95, koszt_jednostkowy=115,
+                  koszt_szacunek=True)]
+    w = policz_koszty(ds, stan=120)
+    szac = next(x for x in w.dostawy if x.item_id == 2)
+    assert szac.koszt == 115 and szac.szacunek, "koszt z nowej metody, ale podpisany jako szacunek"
+    assert w.fifo == 120, "FIFO bierze najstarszą partię na stanie, także obok szacunku"
+    assert w.srednia == 120 and w.srednia_pominieto_szt == 50, "szacunek nie miesza w średniej"
+    assert w.ostatnia == 120 and (w.min, w.max) == (120, 120)
+    assert w.sredni_narzut_proc == 20.0, "narzut tylko z pewnych dostaw importu"

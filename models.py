@@ -1071,6 +1071,8 @@ class OdprawaTowarOut(BaseModel):
     poz_sad: Optional[int] = None
     # Bieżący koszt zakupu w ERP importera (Subiekt dla AMH, Fakturownia dla Acti/Veluxy).
     koszt_erp: Optional[float] = None
+    # Kontrola: koszt tej pozycji liczony nową metodą (karta kontenera + płatności, bez SAD).
+    koszt_nowa_metoda: Optional[float] = None
 
 
 class OdprawaZapisOut(BaseModel):
@@ -1279,3 +1281,130 @@ class CenaProduktuOut(BaseModel):
     # Stawka VAT produktu do kalkulatora (ręczna z zakładki Dane wygrywa nad automatyczną).
     vat: float = 23
     vat_zrodlo: str = "domyslna"             # 'reczna' | 'sprzedaz' | 'domyslna'
+
+
+# ===== KOSZT JEDNOSTKOWY v2 („metoda szefa”) =====
+class KosztPlatnoscOut(BaseModel):
+    typ: str                                  # 'zaliczka' | 'balance'
+    kwota: float
+    waluta: str
+    data: Optional[date] = None               # data zapłaty (None = niezapłacona)
+    kurs: Optional[float] = None              # NBP z dnia roboczego przed zapłatą
+    data_kursu: Optional[date] = None
+
+
+class KosztGrupaOut(BaseModel):
+    """Lot (kontener skonsolidowany) albo cały kontener (id 0)."""
+    id: int
+    nazwa: str = ""
+    krajowa: bool = False
+    waluta: str
+    kurs: Optional[float] = None
+    kurs_auto: Optional[float] = None
+    kurs_reczny: bool = False
+    szacunek: bool = False
+    wartosc_waluta: float = 0.0
+    wartosc_zrodlo: str = "platnosci"         # 'platnosci' | 'plan' | 'faktura'
+    platnosci: List[KosztPlatnoscOut] = []
+
+
+class KosztPozycjaOut(BaseModel):
+    item_id: int
+    sku: str
+    nazwa: Optional[str] = None
+    szt: int
+    grupa: int = 0
+    krajowa: bool = False
+    cbm_szt: float = 0.0
+    cena_planowana: float = 0.0               # unit_cost z pozycji (PLN)
+    cena_waluta: float = 0.0                  # wartość w walucie / szt (krajowa: PLN)
+    cena_reczna: bool = False
+    towar: float = 0.0
+    fracht: float = 0.0
+    lenmar: float = 0.0
+    clo: float = 0.0
+    transport: float = 0.0
+    kod_cn: Optional[str] = None
+    stawka: float = 0.0
+    stawka_zrodlo: str = "brak"               # 'slownik' | 'reczna' | 'brak' | 'krajowa'
+    stawka_slownik: Optional[float] = None
+    koszt_jednostkowy: Optional[float] = None
+    szacunek: bool = False
+    koszt_erp: Optional[float] = None
+    erp_zrodlo: Optional[str] = None          # 'subiekt' | 'fakturownia'
+
+
+class KosztUwagaOut(BaseModel):
+    poziom: str
+    tresc: str
+
+
+class KosztKontenerOut(BaseModel):
+    container_id: int
+    krajowa: bool = False
+    szacunek: bool = False
+    podzial: str = "cbm"                      # 'cbm' | 'wartosc'
+    zgloszen: int = 0
+    towar: float = 0.0
+    fracht: float = 0.0
+    fracht_auto: float = 0.0
+    fracht_usd: float = 0.0
+    kurs_frachtu: Optional[float] = None
+    data_kursu_frachtu: Optional[date] = None
+    data_frachtu: Optional[date] = None       # dostawa albo ETA
+    lenmar: float = 0.0
+    lenmar_auto: float = 0.0
+    clo: float = 0.0
+    transport: float = 0.0
+    transport_auto: float = 0.0
+    suma: float = 0.0
+    narzut_proc: Optional[float] = None
+    # ręczne poprawki (None = automat)
+    kurs_towaru_reczny: Optional[float] = None
+    fracht_reczny: Optional[float] = None
+    lenmar_reczny: Optional[float] = None
+    transport_reczny: Optional[float] = None
+    lenmar_kontener: float = 0.0              # stałe ryczałtu — do opisu „1 600 + 600 × …”
+    lenmar_zgloszenie: float = 0.0
+    grupy: List[KosztGrupaOut] = []
+    pozycje: List[KosztPozycjaOut] = []
+    uwagi: List[KosztUwagaOut] = []
+    zapisal: Optional[str] = None
+    zapisano: Optional[datetime] = None
+    moze_edytowac: bool = False
+
+
+class KosztPozycjaIn(BaseModel):
+    item_id: int
+    cena_waluta: Optional[float] = Field(None, ge=0)
+    stawka_cla: Optional[float] = Field(None, ge=0, le=100)
+
+
+class KosztKontenerIn(BaseModel):
+    """Same ręczne poprawki. null = wróć do wartości automatycznej."""
+    kurs_towaru: Optional[float] = Field(None, gt=0)
+    fracht_pln: Optional[float] = Field(None, ge=0)
+    lenmar_pln: Optional[float] = Field(None, ge=0)
+    transport_pln: Optional[float] = Field(None, ge=0)
+    pozycje: List[KosztPozycjaIn] = []
+
+
+class StawkaCnOut(BaseModel):
+    """Wiersz listy Ustawienia → Stawki cła: SKU z kodem CN i stawką ze słownika."""
+    sku: str
+    nazwa: Optional[str] = None
+    firma: Optional[str] = None
+    obserwowany: bool = False
+    nowosc: bool = False
+    sample: bool = False
+    kod_cn: Optional[str] = None
+    stawka: Optional[float] = None
+    zrodlo: Optional[str] = None              # 'sad' | 'reczna' | None (brak w słowniku)
+
+
+class StawkaCnIn(BaseModel):
+    stawka: float = Field(..., ge=0, le=100)
+
+
+class KodCnIn(BaseModel):
+    kod_cn: Optional[str] = None              # puste = usuń kod

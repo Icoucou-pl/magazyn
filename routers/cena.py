@@ -41,6 +41,8 @@ from services.cena import (
     VAT_DOMYSLNY, BladCeny, Dostawa, policz_koszty, vat_produktow, vat_produktu, wylicz_cene,
 )
 from services.containers import compute_effective_status
+from services.koszt_kontenera import Wynik
+from services.koszt_kontenera_dane import policz_kontenery
 from services.products import _arrival_and_source, fetch_products, get_product
 
 router = APIRouter(prefix="/api", tags=["cena"])
@@ -63,103 +65,90 @@ POLA_CENY = {
 }
 
 
-# Pozycje kontenerów z tym, czego potrzebuje rachunek kosztu. Bez WHERE — karta produktu
-# dokleja filtr po SKU, lista produktów bierze całość jednym zapytaniem.
+# Pozycje kontenerów z datą wejścia i statusem — do rozkładu stanu. Sam koszt sztuki
+# liczy services/koszt_kontenera_dane.py (metoda szefa), hurtem dla wszystkich kontenerów.
+# Bez WHERE — karta produktu dokleja filtr po SKU, lista produktów bierze całość.
 _DOSTAWY_SQL = f"""
             SELECT ci.id AS item_id, ci.sku, ci.container_id, ci.quantity, ci.unit_cost,
-                   ci.cena_zakupu_pln, ci.cena_zakupu_waluta, ci.koszt_jednostkowy, ci.koszt_zrodlo,
                    c.container_number, c.order_number, c.status, c.eta_date,
                    c.delivered_date, c.expected_delivery_date,
                    COALESCE(l.subiekt_wbite, c.subiekt_wbite, FALSE) AS wbite,
                    l.order_number AS lot_order_number,
-                   COALESCE(lm.name, m.name) AS manufacturer_name,
-                   o.waluta AS waluta,
-                   UPPER(TRIM(COALESCE(NULLIF(TRIM(l.waluta_towaru), ''), c.waluta_towaru, ''))) AS waluta_towaru,
-                   UPPER(TRIM(COALESCE(NULLIF(TRIM(l.balance_waluta), ''), c.balance_waluta, ''))) AS waluta_balance,
-                   COALESCE(c.koszt_transportu_magazyn, 0) AS transport_kontenera,
-                   (SELECT SUM(x.quantity * COALESCE(x.unit_cost, 0))
-                      FROM {settings.TABLE_CONTAINER_ITEMS} x
-                     WHERE x.container_id = ci.container_id) AS wartosc_kontenera
+                   COALESCE(lm.name, m.name) AS manufacturer_name
               FROM {settings.TABLE_CONTAINER_ITEMS} ci
               JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
               LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
               LEFT JOIN {settings.TABLE_MANUFACTURERS} lm ON lm.id = l.manufacturer_id
               LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
-              LEFT JOIN app_odprawy o ON o.id = ci.koszt_odprawa_id
 """
 
 
-def _dostawa(r) -> Dostawa:
-    """Wiersz pozycji kontenera → Dostawa do rachunku w services/cena.py."""
+def _dostawa(r, wynik: Optional[Wynik]) -> Dostawa:
+    """Wiersz pozycji kontenera + rachunek jej kontenera → Dostawa do services/cena.py."""
     data, zrodlo = _arrival_and_source(dict(r))
     eff, _, _ = compute_effective_status(r["status"], r["eta_date"], r["expected_delivery_date"])
     u_nas = bool(r["wbite"]) or eff == "DELIVERED" or r["delivered_date"] is not None
-    rozliczona = r["koszt_zrodlo"] == "odprawa" and r["koszt_jednostkowy"]
-    # Cena z FV: przy rozliczonej dostawie ta z odprawy (wartość z SAD × kurs zapłaty),
-    # przy nierozliczonej — cena wpisana na pozycji kontenera (PLN z Fakturowni).
-    fv = r["cena_zakupu_pln"] if rozliczona and r["cena_zakupu_pln"] else r["unit_cost"]
-    # Zakup w Polsce: kontener (albo lot) w PLN i bez odprawy. Koszt = cena z FV + transport
-    # do magazynu rozłożony po wartości pozycji (services/cena.py, „Dostawa krajowa").
-    # Waluta towaru domyślnie zostaje „USD", nawet gdy faktura jest polska — formularz jej
-    # nie wymusza (FPF/23/2026: towar USD, balance 33 480 zł w PLN). Dlatego wystarczy, że
-    # PLN jest w walucie towaru ALBO płatności.
-    krajowa = not rozliczona and "PLN" in ((r["waluta_towaru"] or ""), (r["waluta_balance"] or ""))
-    wartosc = float(r["wartosc_kontenera"] or 0)
-    transport_szt = (float(r["transport_kontenera"] or 0) * float(r["unit_cost"] or 0) / wartosc
-                     if krajowa and wartosc > 0 else 0.0)
+    p = wynik.po_item().get(r["item_id"]) if wynik else None
+    waluta = None
+    if p and wynik:
+        waluta = next((g.waluta for g in wynik.grupy if g.id == p.grupa), None)
+    szt = int(r["quantity"] or 0)
+    # Cena z FV: towar w PLN / szt z rachunku (płatności × kurs); bez rachunku — cena planowana.
+    fv = (p.towar / szt) if p and szt and p.towar else (float(r["unit_cost"]) if r["unit_cost"] else None)
     return Dostawa(
         item_id=r["item_id"], container_id=r["container_id"],
         container_number=(r["container_number"] or "").strip(),
-        data=data, data_zrodlo=zrodlo, szt=int(r["quantity"] or 0), u_nas=u_nas,
-        cena_fv_pln=float(fv) if fv else None,
-        cena_fv_waluta=float(r["cena_zakupu_waluta"]) if rozliczona and r["cena_zakupu_waluta"] else None,
-        waluta=r["waluta"] if rozliczona else None,
-        koszt_jednostkowy=float(r["koszt_jednostkowy"]) if rozliczona else None,
-        krajowa=krajowa, transport_szt=round(transport_szt, 4),
+        data=data, data_zrodlo=zrodlo, szt=szt, u_nas=u_nas,
+        cena_fv_pln=round(fv, 4) if fv else None,
+        cena_fv_waluta=p.cena_waluta if p and not p.krajowa else None,
+        waluta=waluta if p and not p.krajowa else None,
+        koszt_jednostkowy=p.koszt_jednostkowy if p else None,
+        koszt_szacunek=bool(p and p.szacunek),
+        krajowa=bool(p and p.krajowa),
     )
 
 
-async def _dostawy(db: AsyncSession, sku: str) -> "tuple[List[Dostawa], Dict[int, dict]]":
-    """Wszystkie pozycje kontenerów z tym SKU (+ metadane do odpowiedzi)."""
+async def _dostawy(db: AsyncSession, sku: str) -> "tuple[List[Dostawa], Dict[int, dict], Optional[float]]":
+    """Wszystkie pozycje kontenerów z tym SKU (+ metadane do odpowiedzi i narzut do szacunków)."""
     rows = (await db.execute(
         text(_DOSTAWY_SQL + " WHERE LOWER(TRIM(ci.sku)) = LOWER(TRIM(:s))"), {"s": sku},
     )).mappings().all()
+    wyniki, _ = await policz_kontenery(db, sorted({r["container_id"] for r in rows})) if rows else ({}, {})
 
     out: List[Dostawa] = []
     meta: Dict[int, dict] = {}
     for r in rows:
-        out.append(_dostawa(r))
+        out.append(_dostawa(r, wyniki.get(r["container_id"])))
         meta[r["item_id"]] = {
             "order_number": r["order_number"], "lot_order_number": r["lot_order_number"],
             "manufacturer_name": r["manufacturer_name"],
         }
-    return out, meta
+    return out, meta, _narzut_globalny(wyniki)
 
 
-async def _dostawy_wszystkie(db: AsyncSession) -> Dict[str, List[Dostawa]]:
-    """Pozycje WSZYSTKICH kontenerów, pogrupowane po SKU (klucz LOWER(TRIM)) — do listy produktów."""
+async def _dostawy_wszystkie(db: AsyncSession) -> "tuple[Dict[str, List[Dostawa]], Optional[float]]":
+    """Pozycje WSZYSTKICH kontenerów po SKU (klucz LOWER(TRIM)) — do listy produktów.
+    Koszty wszystkich kontenerów liczone hurtem: kilka zapytań, bez pętli po kontenerach."""
     rows = (await db.execute(text(_DOSTAWY_SQL))).mappings().all()
+    wyniki, _ = await policz_kontenery(db)
     out: Dict[str, List[Dostawa]] = {}
     for r in rows:
         klucz = (r["sku"] or "").strip().lower()
         if klucz:
-            out.setdefault(klucz, []).append(_dostawa(r))
-    return out
+            out.setdefault(klucz, []).append(_dostawa(r, wyniki.get(r["container_id"])))
+    return out, _narzut_globalny(wyniki)
 
 
-async def _narzut_globalny(db: AsyncSession) -> Optional[float]:
-    """Średni narzut importu wszystkich rozliczonych pozycji (ważony wartością z FV)."""
-    row = (await db.execute(
-        text(f"""
-            SELECT SUM(koszt_jednostkowy * quantity)::float AS koszt,
-                   SUM(cena_zakupu_pln * quantity)::float AS fv
-              FROM {settings.TABLE_CONTAINER_ITEMS}
-             WHERE koszt_zrodlo = 'odprawa' AND koszt_jednostkowy > 0 AND cena_zakupu_pln > 0
-        """),
-    )).mappings().first()
-    if not row or not row["fv"]:
-        return None
-    return (row["koszt"] / row["fv"] - 1) * 100
+def _narzut_globalny(wyniki: Dict[int, Wynik]) -> Optional[float]:
+    """Średni narzut importu policzonych (nie szacowanych) pozycji, ważony wartością towaru —
+    zapas do szacunku dla pozycji, której nie da się policzyć (brak ceny i płatności)."""
+    towar = koszt = 0.0
+    for w in wyniki.values():
+        for p in w.pozycje:
+            if not p.szacunek and not p.krajowa and p.towar > 0:
+                towar += p.towar
+                koszt += p.suma
+    return (koszt / towar - 1) * 100 if towar else None
 
 
 async def _slug_firmy(db: AsyncSession, firma_id: Optional[int]) -> str:
@@ -196,8 +185,8 @@ async def _policz(db: AsyncSession, sku: str, shop: str, user: CurrentUser):
     # w ERP, tylko jeszcze nie przesunięty MM-ką). Kontenery niewbite nie liczą się do stanu.
     stan = int(p.stock or 0) + int(p.stock_in_transit_wbite or 0)
 
-    dostawy, meta = await _dostawy(db, p.sku)
-    w = policz_koszty(dostawy, stan, await _narzut_globalny(db))
+    dostawy, meta, narzut = await _dostawy(db, p.sku)
+    w = policz_koszty(dostawy, stan, narzut)
 
     # Koszt z ERP: firmy z przełącznika, a na „Wszystkich" — firmy, która ten towar importuje.
     slug = shop or await _slug_firmy(db, p.firma_id)
@@ -219,8 +208,7 @@ async def cena_lista(shop: str = Query(""), db: AsyncSession = Depends(get_db),
     widzi_koszt = can_view_purchase_price(user)
     produkty = await fetch_products(db, set(WSZYSTKIE_STATUSY), shop)
     vaty = await vat_produktow(db, shop)
-    dostawy = await _dostawy_wszystkie(db) if widzi_koszt else {}
-    narzut = await _narzut_globalny(db) if widzi_koszt else None
+    dostawy, narzut = await _dostawy_wszystkie(db) if widzi_koszt else ({}, None)
     out: List[CenaListaPozycja] = []
     for p in produkty:
         klucz = p.sku.strip().lower()
@@ -273,7 +261,8 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
             szt=d.szt, na_stanie=d.na_stanie, cena_fv_pln=d.cena_fv_pln,
             cena_fv_waluta=d.cena_fv_waluta, waluta=d.waluta, koszt=d.koszt, szacunek=d.szacunek,
             narzut_proc=d.narzut_proc,
-            rozliczenie="odprawa" if d.rozliczona else "krajowa" if d.krajowa else "brak",
+            rozliczenie=("krajowa" if d.krajowa else "szacunek" if d.szacunek
+                         else "policzony" if d.policzona else "brak"),
             odstaje=d.odstaje, fifo=d.fifo,
         ) for d in w.dostawy],
         zapisane=await _zapisane(db, p.sku),

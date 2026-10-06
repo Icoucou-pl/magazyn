@@ -16,8 +16,13 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
   - **Fakturownia** — stany „w drodze” + ceny zakupu **Acti/Veluxa**, sprzedaż spoza Sellasista
     (hurt, przesunięcia do AMH), dziennik ruchów magazynowych.
   - **NBP** — kursy walut (`app_fx_rates`), przeliczenie na PLN.
-- **Kontenery** z Chin: pozycje, loty, zaliczki, załączniki (FV, proformy, BL), odprawa celna
-  z XML WinSAD (`services/sad.py`, `services/odprawy.py`) → koszt jednostkowy (landed cost).
+- **Kontenery** z Chin: pozycje, loty, zaliczki, załączniki (FV, proformy, BL).
+  **Koszt jednostkowy** liczy „metoda szefa” (`services/koszt_kontenera.py`, wejście z bazy
+  `services/koszt_kontenera_dane.py`): płatności × kurs NBP sprzed zapłaty, fracht i transport po CBM,
+  ryczałt Lenmara, cło ze słownika `app_stawki_cn` (kod CN → stawka). Na bieżąco, w bazie tylko ręczne
+  poprawki (`app_koszt_kontenera`, `app_koszt_pozycji`). Z niego biorą FIFO/średnią zakładka „Cena” i lista.
+  Odprawa z XML WinSAD (`services/sad.py`, `services/odprawy.py`) to już tylko kontrola —
+  zakładka „SAD”, wyłącznie superadmin (`require_sad`); dalej uzupełnia kody CN, wagi i słownik stawek.
 - **Prognoza:** średnia ważona sprzedaży 1–4 mies. (`services/products.py`), lead time per SKU,
   dzień zamówienia, auto-sugestia składu kontenera, anomalie, lista zakupów.
 - **Dropy** — sprzedaż partnerom (dropshipping). Dwie części:
@@ -48,7 +53,7 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
 | `models.py` | modele Pydantic (wejście/wyjście API) |
 | `sql.py` | wspólne kawałki SQL (CTE nazw produktów itp.) |
 | `routers/` | endpointy, każdy z prefiksem `/api` |
-| `services/` | logika biznesowa i integracje (Sellasist, Fakturownia, NBP, SAD, cena, snapshoty) |
+| `services/` | logika biznesowa i integracje (Sellasist, Fakturownia, NBP, SAD, cena, koszt kontenera, snapshoty) |
 | `sql/` | ręczne migracje do puszczenia w Supabase **przed** deployem |
 | `tests/` | pytest, bez bazy |
 | `frontend/lib/api.js` | jedyny klient API (dokleja token, 401 → wylogowanie) |

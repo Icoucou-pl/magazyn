@@ -83,15 +83,11 @@ def lista(monkeypatch):
         d = lambda i, m, szt, koszt: Dostawa(  # noqa: E731
             item_id=i, container_id=i, container_number=f"K{i}", data=date(2026, m, 1),
             data_zrodlo="delivered", szt=szt, u_nas=True, cena_fv_pln=1600, koszt_jednostkowy=koszt)
-        return {"szp3": [d(1, 4, 45, 1798.54), d(2, 8, 84, 1814.48), d(3, 9, 84, 1879.62)]}
-
-    async def narzut(db):
-        return None
+        return {"szp3": [d(1, 4, 45, 1798.54), d(2, 8, 84, 1814.48), d(3, 9, 84, 1879.62)]}, None
 
     monkeypatch.setattr(cena, "fetch_products", produkty)
     monkeypatch.setattr(cena, "vat_produktow", vaty)
     monkeypatch.setattr(cena, "_dostawy_wszystkie", dostawy)
-    monkeypatch.setattr(cena, "_narzut_globalny", narzut)
 
     async def db():
         yield None

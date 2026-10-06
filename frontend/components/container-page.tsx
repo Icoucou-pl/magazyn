@@ -27,10 +27,13 @@ import OrderPdfModal from "./order-pdf";
 import type { Manufacturer, Product } from "./products-ui";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
-import { can, canSeeLandedCost, useUser } from "@/lib/permissions";
+import { can, canSeeLandedCost, canSeeSad, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
 import { containerLabel } from "./ui";
 import LandedCostTab from "./container-landed-cost";
+import UnitCostTab from "./container-unit-cost";
+
+type Zakladka = "przeglad" | "koszt" | "sad";
 
 const norm = (s?: string | null) => (s || "").trim().toLocaleLowerCase("pl-PL");
 
@@ -67,21 +70,25 @@ export default function ContainerPage({
   const user = useUser();
   const canPO = can(user, "generatePO");
   const pokazKoszt = canSeeLandedCost(user);
-  // Zakładka siedzi w adresie (?tab=koszt), żeby odświeżenie strony zostawiało na niej
+  const pokazSad = canSeeSad(user);
+  // Zakładka siedzi w adresie (?tab=koszt / ?tab=sad), żeby odświeżenie strony zostawiało na niej
   // użytkownika — wcześniej F5 zawsze wyrzucało na Przegląd. Zmieniamy ją przez
   // replaceState, nie pushState (jak na karcie produktu): „wstecz" ma cofać o widok,
   // a nie przeklikiwać zakładki. Stan historii (sznurek breadcrumba) przenosimy bez zmian.
-  const [tab, setTabState] = useState<"przeglad" | "koszt">(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "koszt"
-      ? "koszt" : "przeglad");
-  const setTab = (t: "przeglad" | "koszt") => {
+  const [tab, setTabState] = useState<Zakladka>(() => {
+    const t = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("tab") : null;
+    return t === "koszt" || t === "sad" ? t : "przeglad";
+  });
+  const setTab = (t: Zakladka) => {
     setTabState(t);
     if (typeof window === "undefined") return;
     const q = new URLSearchParams(window.location.search);
-    if (t === "koszt") q.set("tab", "koszt"); else q.delete("tab");
+    if (t === "przeglad") q.delete("tab"); else q.set("tab", t);
     const qs = q.toString();
     window.history.replaceState(window.history.state, "", window.location.pathname + (qs ? `?${qs}` : ""));
   };
+  // Zakładka bez uprawnień (np. ?tab=sad u admina) otwiera Przegląd — bez śladu, że istnieje.
+  const aktywna: Zakladka = tab === "koszt" && pokazKoszt ? "koszt" : tab === "sad" && pokazSad ? "sad" : "przeglad";
   const [container, setContainer] = useState<Container | null>(null);
   const [nieZnaleziono, setNieZnaleziono] = useState(false);
 
@@ -221,16 +228,19 @@ export default function ContainerPage({
     </div>
   );
 
-  // Zakładka „Koszt jednostkowy" pojawia się TYLKO przy uprawnieniu — bez niego pasek
-  // ma jedną pozycję i nikt się nie dowie, że rozliczenie odprawy w ogóle istnieje.
-  const paskZakladek = pokazKoszt ? (
+  // Zakładki „Koszt jednostkowy" i „SAD" pojawiają się TYLKO przy uprawnieniu — bez nich pasek
+  // znika, a „SAD" (rozliczenie z odprawy) widzi wyłącznie superadmin.
+  const zakladki: [Zakladka, string][] = [["przeglad", "Przegląd"]];
+  if (pokazKoszt) zakladki.push(["koszt", "Koszt jednostkowy"]);
+  if (pokazSad) zakladki.push(["sad", "SAD"]);
+  const paskZakladek = zakladki.length > 1 ? (
     <div style={{ display: "flex", gap: 2, marginBottom: 14, borderBottom: "1px solid var(--border-soft)" }}>
-      {([["przeglad", "Przegląd"], ["koszt", "Koszt jednostkowy"]] as const).map(([k, label]) => (
+      {zakladki.map(([k, label]) => (
         <button key={k} onClick={() => setTab(k)}
           style={{
             border: 0, background: "none", font: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer",
-            padding: "9px 13px", marginBottom: -1, color: tab === k ? "var(--text-hi)" : "var(--text-lo)",
-            borderBottom: `2px solid ${tab === k ? "var(--accent)" : "transparent"}`,
+            padding: "9px 13px", marginBottom: -1, color: aktywna === k ? "var(--text-hi)" : "var(--text-lo)",
+            borderBottom: `2px solid ${aktywna === k ? "var(--accent)" : "transparent"}`,
           }}>
           {label}
         </button>
@@ -269,7 +279,9 @@ export default function ContainerPage({
       <ContainersStyles />
       {pasek}
       {paskZakladek}
-      {tab === "koszt" && pokazKoszt ? (
+      {aktywna === "koszt" ? (
+        <UnitCostTab containerId={container.id} />
+      ) : aktywna === "sad" ? (
         <LandedCostTab containerId={container.id} onSaved={() => { void reload(); }}
           krajowa={czyKrajowa(container)} />
       ) : (

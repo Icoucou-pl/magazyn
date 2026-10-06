@@ -1137,13 +1137,12 @@ export function AttributesCard({
     cena: product.cena_zakupu_manual != null ? String(product.cena_zakupu_manual) : "",
     isSample: product.is_sample ?? false,
     sampleStock: String(product.sample_stock ?? 0),
-    kodCn: product.kod_cn ?? "",
   });
   const [draft, setDraft] = useState(init);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { setDraft(init()); /* resync po zapisie/zmianie produktu */ // eslint-disable-next-line
-  }, [product.sku, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock, product.kod_cn]);
+  }, [product.sku, product.ean, product.manufacturer_id, product.firma_id, product.forced_status, product.cena_zakupu_manual, product.name_override_manual, product.is_sample, product.sample_stock]);
 
   const save = async () => {
     if (busy) return;
@@ -1157,7 +1156,6 @@ export function AttributesCard({
         forced_status: draft.classification,
         is_sample: draft.isSample,
         sample_stock: parseInt(draft.sampleStock, 10) || 0,
-        kod_cn: draft.kodCn,
         ...(showFin ? { cena_zakupu: draft.cena.trim() === "" ? 0 : (parseFloat(draft.cena.replace(",", ".")) || 0) } : {}),
       })) as Product;
       onSaved(updated);
@@ -1192,10 +1190,8 @@ export function AttributesCard({
       <div style={{ padding: "6px 0" }}>
         <AttrInput label="Nazwa (ręczna)" wide value={editing ? draft.nazwa : (product.name_override_manual || "—")} editing={editing} placeholder={product.name} onChange={(v) => setDraft({ ...draft, nazwa: v })} />
         <AttrInput label="EAN" value={draft.ean || (editing ? "" : "—")} editing={editing} mono onChange={(v) => setDraft({ ...draft, ean: v })} />
-        {/* Kod CN — z pozycji zgłoszenia celnego. Wpisany raz, wiąże SKU z pozycją SAD przy
-            kolejnych dostawach. Backend normalizuje do samych cyfr (9402 90 00 → 94029000). */}
-        <AttrInput label="Kod CN" value={draft.kodCn || (editing ? "" : "—")} editing={editing} mono
-          placeholder="94029000" onChange={(v) => setDraft({ ...draft, kodCn: v })} />
+        {/* Kod CN przeniesiony do Ustawień → Stawki cła (obok stawki cła). Tam się go wpisuje,
+            a zapis SAD-u dalej uzupełnia go sam (routers/odprawy.py). */}
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>Cena zakupu netto</span>
           {!showPrice ? (

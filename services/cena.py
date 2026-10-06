@@ -5,16 +5,19 @@ Router (routers/cena.py) zbiera dane z bazy i woła tylko dwie funkcje stąd:
 `policz_koszty` i `wylicz_cene`.
 
 SKĄD BIERZE SIĘ KOSZT SZTUKI W DOSTAWIE
-  · kontener rozliczony odprawą → app_container_items.koszt_jednostkowy (landed cost),
-  · kontener bez odprawy        → SZACUNEK: cena z FV × (1 + średni narzut importu).
-    Narzut bierzemy z rozliczonych dostaw TEGO SKU; gdy żadnej nie ma — średni narzut
-    wszystkich rozliczonych pozycji (podaje go router). Szacunek zawsze niesie flagę,
-    żeby front mógł go podpisać „SZAC.", a nie udawać policzonego kosztu.
+  · koszt jednostkowy „metodą szefa” (services/koszt_kontenera.py) — liczony na bieżąco
+    z karty kontenera i płatności dla KAŻDEGO kontenera, także przed przypłynięciem.
+    Gdy nie wszystko jest zapłacone (albo wartość wzięta z cen planowanych), koszt niesie
+    flagę `koszt_szacunek` — front podpisuje go „SZAC.”, a kafle go pomijają.
+  · pozycja bez kosztu (brak ceny i płatności) → SZACUNEK: cena z FV × (1 + średni narzut
+    importu). Narzut bierzemy z policzonych dostaw TEGO SKU; gdy żadnej nie ma — średni
+    narzut wszystkich policzonych pozycji (podaje go router).
+Koszt z SAD-u nie jest tu używany — zostaje tylko jako kontrola w zakładce „SAD”.
 
 DOSTAWA KRAJOWA (towar kupiony w Polsce, kontener/lot w PLN)
-Nie ma odprawy ani narzutu importu, więc nie szacujemy: koszt = cena z FV + transport do
-magazynu rozłożony na sztuki. Taki koszt jest pewny — wchodzi do średniej, ostatniej,
-min i max tak samo jak koszt z odprawy, ale NIE do średniego narzutu importu.
+Nie ma odprawy ani narzutu importu: koszt = cena z FV + transport do magazynu rozłożony
+na sztuki (liczy to ta sama metoda). Taki koszt jest pewny — wchodzi do średniej, ostatniej,
+min i max, ale NIE do średniego narzutu importu.
 
 KTÓRE SZTUKI SĄ JESZCZE NA STANIE
 W systemie nie ma powiązania PZ ↔ kontener, więc stan rozkładamy WSTECZ: zaczynamy od
@@ -27,10 +30,10 @@ Gdy stanu jest więcej niż sztuk w znanych dostawach, nadwyżka to towar sprzed
 
 FIFO = koszt najstarszej partii, z której jeszcze coś zostało (z niej zejdzie następna sprzedaż).
 Średnia ważona = koszt partii na stanie ważony liczbą pozostałych sztuk (tak liczy Subiekt).
-Do średniej, ostatniej, najniższej i najwyższej wchodzą TYLKO dostawy rozliczone odprawą
-albo krajowe (koszt z faktury, bez szacunku).
-Kontener „bez SAD” ma koszt szacowany — pokazujemy go w tabeli informacyjnie, ale nie miesza
-w tych kaflach (jego sztuki na stanie liczymy osobno: `srednia_pominieto_szt`).
+Do średniej, ostatniej, najniższej i najwyższej wchodzą TYLKO dostawy o pewnym koszcie
+(policzone z zapłaconych płatności albo krajowe).
+Kontener z szacunkiem pokazujemy w tabeli informacyjnie, ale nie miesza w tych kaflach
+(jego sztuki na stanie liczymy osobno: `srednia_pominieto_szt`).
 Średnia bierze wyłącznie partie, z których coś jeszcze jest na stanie — wyprzedane nie.
 
 KONTENER DO SPRAWDZENIA
@@ -72,7 +75,8 @@ class Dostawa:
     cena_fv_pln: Optional[float]        # cena z faktury dostawcy / szt w PLN
     cena_fv_waluta: Optional[float] = None
     waluta: Optional[str] = None
-    koszt_jednostkowy: Optional[float] = None   # landed cost z odprawy (None = brak odprawy)
+    koszt_jednostkowy: Optional[float] = None   # koszt z metody szefa (None = nie ma z czego liczyć)
+    koszt_szacunek: bool = False        # metoda szefa: nie wszystko zapłacone / wartość z cen planowanych
     krajowa: bool = False               # zakup w Polsce (PLN) — bez odprawy i bez narzutu importu
     transport_szt: float = 0.0          # transport do magazynu / szt (dostawa krajowa)
     # wypełniane przez policz_koszty:
@@ -84,13 +88,21 @@ class Dostawa:
     fifo: bool = False
 
     @property
-    def rozliczona(self) -> bool:
+    def policzona(self) -> bool:
+        """Ma koszt z metody szefa (pewny albo szacunek)."""
         return self.koszt_jednostkowy is not None and self.koszt_jednostkowy > 0
 
     @property
+    def rozliczona(self) -> bool:
+        """Pewny koszt importu — z niego liczymy narzut i odstające dostawy."""
+        return self.policzona and not self.koszt_szacunek and not self.krajowa
+
+    @property
     def pewna(self) -> bool:
-        """Koszt policzony, nie szacowany: z odprawy albo z faktury krajowej."""
-        return self.rozliczona or (self.krajowa and bool(self.cena_fv_pln) and self.cena_fv_pln > 0)
+        """Koszt policzony, nie szacowany: import z zapłaconych płatności albo zakup krajowy."""
+        if self.policzona:
+            return not self.koszt_szacunek
+        return self.krajowa and bool(self.cena_fv_pln) and self.cena_fv_pln > 0
 
 
 @dataclass
@@ -160,10 +172,13 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
         w.sredni_narzut_proc = round(narzut_globalny_proc, 2)
         w.narzut_zrodlo = "wszystkie"
 
-    # 3) Koszt każdej dostawy (rozliczony albo szacunek)
+    # 3) Koszt każdej dostawy (z metody szefa albo szacunek z narzutu)
     for d in ds:
-        if d.rozliczona:
+        if d.policzona:
             d.koszt = round(d.koszt_jednostkowy, 2)
+            d.szacunek = d.koszt_szacunek
+            if not d.rozliczona:
+                d.narzut_proc = _narzut(d.koszt, d.cena_fv_pln)
         elif d.krajowa and d.cena_fv_pln and d.cena_fv_pln > 0:
             d.koszt = round(d.cena_fv_pln + (d.transport_szt or 0.0), 2)
             d.narzut_proc = _narzut(d.koszt, d.cena_fv_pln)
@@ -192,8 +207,7 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
         najstarsza = na_stanie[-1]           # ds jest od najnowszej, więc ostatnia = najstarsza
         najstarsza.fifo = True
         w.fifo, w.fifo_item_id = najstarsza.koszt, najstarsza.item_id
-        # Średnia tylko z partii o pewnym koszcie (odprawa albo zakup krajowy) — szacunek
-        # „bez SAD” jest informacyjny.
+        # Średnia tylko z partii o pewnym koszcie — szacunek jest informacyjny.
         rozl_na_stanie = [d for d in na_stanie if d.pewna]
         szt = sum(d.na_stanie for d in rozl_na_stanie)
         if szt:
@@ -204,8 +218,8 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
     if bez_kosztu:
         w.uwagi.append("Część stanu pochodzi z dostaw bez ceny z faktury — pominięta w FIFO i średniej")
 
-    # 6) Ostatnia dostawa (najnowsza rozliczona, która jest u nas) oraz min / max z rozliczonych.
-    #    Kontener bez SAD pomijamy — jego koszt to tylko szacunek.
+    # 6) Ostatnia dostawa (najnowsza pewna, która jest u nas) oraz min / max z pewnych.
+    #    Szacunek pomijamy.
     ostatnia = next((d for d in ds if d.u_nas and d.pewna), None)
     if ostatnia:
         w.ostatnia, w.ostatnia_item_id = ostatnia.koszt, ostatnia.item_id

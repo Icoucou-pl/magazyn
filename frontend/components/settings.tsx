@@ -65,7 +65,7 @@ const SCOPE_FIRMY: { slug: string; label: string }[] = [
 ];
 const ROLE_DEF = ROLE_PERMS as unknown as Record<string, Record<string, boolean>>;
 
-type SectionId = "manufacturers" | "firmy" | "cn_sku" | "container_types" | "users" | "account" | "audit" | "freshness" | "usage";
+type SectionId = "manufacturers" | "firmy" | "cn_sku" | "stawki_cla" | "container_types" | "users" | "account" | "audit" | "freshness" | "usage";
 type SectionDef = { id: SectionId; label: string; icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; desc: string };
 
 type CtxUser = {
@@ -79,6 +79,7 @@ const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "firmy",            label: "Firmy",           icon: I.Cart,     desc: "Sklepy AMH/Acti/Veluxa, konfiguracja API" },
   { id: "container_types", label: "Typy kontenerów", icon: I.Ship,     desc: "Pojemność CBM, sortowanie" },
   { id: "cn_sku",          label: "Chińskie SKU",    icon: I.Scan,     desc: "Odpowiedniki SKU dla fabryk — pod zamówienia (PO)" },
+  { id: "stawki_cla",      label: "Stawki cła",      icon: I.Customs,  desc: "Kod CN i stawka cła obserwowanych SKU, nowości i sampli — do kosztu jednostkowego" },
   { id: "users",           label: "Użytkownicy",     icon: I.Activity, desc: "Konta, role, uprawnienia" },
   { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
   { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Kto, co i kiedy zmienił w Magazynie" },
@@ -163,6 +164,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
     if (s.id === "audit") return superUser;
     if (s.id === "usage") return admin || superUser;
     if (s.id === "cn_sku") return can(user, "generatePO");
+    if (s.id === "stawki_cla") return can(user, "editProducts") || superUser;
     return true;
   });
   const [section, setSection] = useState<SectionId>(
@@ -220,6 +222,7 @@ function SettingsView({ initialSection, openManufacturerId, onOpenedManufacturer
           {section === "firmy"           && <FirmaePanel/>}
           {section === "container_types" && <ContainerTypesPanel/>}
           {section === "cn_sku"          && <CnSkuPanel/>}
+          {section === "stawki_cla"      && <StawkiClaPanel/>}
           {section === "users"           && <UsersPanel currentUserId={user?.id}/>}
           {section === "account"         && <AccountPanel/>}
           {section === "audit"           && <AuditLogPanel/>}
@@ -882,6 +885,181 @@ function CnSkuRow({ row, showEdit, onChanged }: { row: CnSkuRowT; showEdit: bool
       {showEdit
         ? <button onClick={remove} disabled={busy} title="Usuń" style={{ ...btnGhostMini, color: "var(--critical)", padding: "6px 8px" }}><I.Close size={13}/></button>
         : <span/>}
+    </div>
+  );
+}
+
+// ============================================================
+// STAWKI CŁA (kod CN produktu + słownik kod CN → stawka %)
+// ============================================================
+// Kod CN dawniej siedział w „Danych podstawowych" karty produktu — teraz tutaj, obok
+// stawki, bo liczą się razem: cło w koszcie jednostkowym kontenera = (towar + fracht) × stawka.
+// Lista to tylko obserwowane SKU, nowości i sample — outlety i reszta katalogu nie są potrzebne.
+// Stawka należy do KODU, nie do produktu: poprawka zmienia ją we wszystkich SKU z tym kodem.
+// Słownik uzupełnia się sam z zapisanych odpraw (SAD); ręczną stawkę wpisuje superadmin,
+// a kod CN — każdy z prawem edycji produktów (security: routers/koszt_kontenera.py).
+type StawkaRowT = {
+  sku: string; nazwa?: string | null; firma?: string | null; obserwowany: boolean; nowosc: boolean; sample: boolean;
+  kod_cn?: string | null; stawka?: number | null; zrodlo?: string | null;
+};
+
+const fmtCn = (k?: string | null) => (k ? k.replace(/^(\d{4})(\d{2})?(\d{2})?(\d{2})?$/, (_m, a, b, c, d) => [a, b, c, d].filter(Boolean).join(" ")) : "");
+
+function StawkiClaPanel() {
+  const user = useUser() as CtxUser;
+  const kodEdit = can(user, "editProducts");
+  const stawkaEdit = isSuperUser(user);
+  const [rows, setRows] = useState<StawkaRowT[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [tylkoBraki, setTylkoBraki] = useState(false);
+
+  useEffect(() => {
+    let zywy = true;
+    api.get("/stawki-cn")
+      .then((data) => { if (zywy) setRows(Array.isArray(data) ? (data as StawkaRowT[]) : []); })
+      .catch(() => toast("Nie udało się pobrać stawek cła", "error"))
+      .finally(() => { if (zywy) setLoading(false); });
+    return () => { zywy = false; };
+  }, []);
+
+  const filtered = useMemo(() => {
+    const qq = q.trim().toLowerCase().replace(/\s/g, "");
+    return rows.filter(r => {
+      if (tylkoBraki && r.kod_cn && r.stawka != null) return false;
+      if (!qq) return true;
+      return r.sku.toLowerCase().includes(qq) || (r.nazwa || "").toLowerCase().replace(/\s/g, "").includes(qq)
+        || (r.kod_cn || "").includes(qq);
+    });
+  }, [rows, q, tylkoBraki]);
+  const braki = rows.filter(r => !r.kod_cn || r.stawka == null).length;
+
+  // Zmiana stawki obowiązuje cały kod — przepisujemy ją we wszystkich wierszach z tym kodem.
+  const poStawce = (kod: string, stawka: number) =>
+    setRows(rs => rs.map(r => (r.kod_cn === kod ? { ...r, stawka, zrodlo: "reczna" } : r)));
+  const poKodzie = (sku: string, kod: string | null, stawka: number | null, zrodlo: string | null) =>
+    setRows(rs => rs.map(r => (r.sku === sku ? { ...r, kod_cn: kod, stawka, zrodlo } : r)));
+
+  const kol = "minmax(110px, 1fr) minmax(0, 2fr) 130px 110px 90px";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--text-lo)" }}>
+          <span className="num" style={{ color: "var(--text-hi)", fontWeight: 600 }}>{rows.length}</span> SKU
+          {braki > 0 && <> · <span className="num" style={{ color: "var(--critical)", fontWeight: 600 }}>{braki}</span> bez kodu CN albo stawki</>}
+        </span>
+        <span style={{ fontSize: 11.5, color: "var(--text-lo)", maxWidth: "62ch" }}>
+          Stawki uzupełniają się same z zapisanych odpraw. {stawkaEdit ? "Poprawka stawki zmienia ją we wszystkich SKU z tym kodem." : "Stawkę poprawia superadmin."}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px" }}>
+          <I.Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-lo)" }}/>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Szukaj SKU / nazwy / kodu CN…"
+            style={{ ...inputStyle, paddingLeft: 30 }}/>
+        </div>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-mid)", cursor: "pointer" }}>
+          <input type="checkbox" checked={tylkoBraki} onChange={(e) => setTylkoBraki(e.target.checked)}/> tylko braki
+        </label>
+      </div>
+
+      {loading && !rows.length ? (
+        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>Ładowanie…</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: "var(--text-lo)", fontSize: 12 }}>
+          {rows.length === 0 ? "Brak obserwowanych SKU, nowości i sampli." : "Nic nie pasuje do filtra."}
+        </div>
+      ) : (
+        <div style={{ border: "1px solid var(--border-soft)", borderRadius: 10, overflowX: "auto" }}>
+          <div style={{ minWidth: 620 }}>
+            <div style={{ display: "grid", gridTemplateColumns: kol, gap: 10, padding: "8px 12px", background: "var(--surface-2)",
+              borderBottom: "1px solid var(--border-soft)", fontSize: 10, fontWeight: 600, color: "var(--text-lo)",
+              textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              <span>SKU</span><span>Produkt</span><span>Kod CN</span><span>Stawka cła</span><span>Źródło</span>
+            </div>
+            {filtered.map(r => (
+              // Klucz z kodem i stawką: po zmianie wiersz montuje się od nowa z aktualnymi polami.
+              <StawkaRow key={`${r.sku}|${r.kod_cn ?? ""}|${r.stawka ?? ""}`} row={r} kol={kol} kodEdit={kodEdit} stawkaEdit={stawkaEdit}
+                onStawka={poStawce} onKod={poKodzie}/>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StawkaRow({ row, kol, kodEdit, stawkaEdit, onStawka, onKod }: {
+  row: StawkaRowT; kol: string; kodEdit: boolean; stawkaEdit: boolean;
+  onStawka: (kod: string, stawka: number) => void;
+  onKod: (sku: string, kod: string | null, stawka: number | null, zrodlo: string | null) => void;
+}) {
+  const [kod, setKod] = useState(fmtCn(row.kod_cn));
+  const [st, setSt] = useState(row.stawka != null ? String(row.stawka).replace(".", ",") : "");
+  const [busy, setBusy] = useState(false);
+
+  const zapiszKod = async () => {
+    const cyfry = kod.replace(/\D/g, "");
+    if (cyfry === (row.kod_cn || "")) { setKod(fmtCn(row.kod_cn)); return; }
+    setBusy(true);
+    try {
+      const r = await api.put(`/products/${encodeURIComponent(row.sku)}/kod-cn`, { kod_cn: cyfry || null }) as StawkaRowT;
+      onKod(row.sku, r.kod_cn ?? null, r.stawka ?? null, r.zrodlo ?? null);
+      toast(cyfry ? `Zapisano kod CN ${fmtCn(r.kod_cn)}` : "Usunięto kod CN", "ok");
+    } catch (e) { toast(e instanceof Error ? e.message : "Nie udało się zapisać kodu CN", "error"); setKod(fmtCn(row.kod_cn)); }
+    finally { setBusy(false); }
+  };
+  const zapiszStawke = async () => {
+    const t = st.trim().replace(",", ".");
+    if (!row.kod_cn || t === "" || Number(t) === row.stawka) { setSt(row.stawka != null ? String(row.stawka).replace(".", ",") : ""); return; }
+    const n = Number(t);
+    if (!Number.isFinite(n) || n < 0 || n > 100) { toast("Stawka to procent od 0 do 100", "warning"); return; }
+    setBusy(true);
+    try {
+      await api.put(`/stawki-cn/${row.kod_cn}`, { stawka: n });
+      onStawka(row.kod_cn, n);
+      toast(`Stawka dla ${fmtCn(row.kod_cn)}: ${String(n).replace(".", ",")}%`, "ok");
+    } catch (e) { toast(e instanceof Error ? e.message : "Nie udało się zapisać stawki", "error"); }
+    finally { setBusy(false); }
+  };
+
+  const plak = (t: string, bg: string, fg: string) => (
+    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", padding: "1px 5px", borderRadius: 4, background: bg, color: fg }}>{t}</span>
+  );
+  const brakStawki = row.kod_cn && row.stawka == null;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: kol, gap: 10, padding: "8px 12px", alignItems: "center", borderBottom: "1px solid var(--border-soft)" }}>
+      <span className="mono" style={{ fontSize: 12, color: "var(--text-hi)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{row.sku}</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.nazwa || "—"}</div>
+        <div style={{ display: "flex", gap: 4, marginTop: 2, flexWrap: "wrap" }}>
+          {row.obserwowany && plak("OBSERWOWANY", "var(--accent-soft)", "var(--accent)")}
+          {row.nowosc && plak("NOWOŚĆ", "var(--ok-soft)", "var(--ok)")}
+          {row.sample && plak("SAMPLE", "var(--anomaly-soft)", "var(--anomaly)")}
+          {row.firma && <span style={{ fontSize: 10.5, color: "var(--text-lo)" }}>{row.firma.toUpperCase()}</span>}
+        </div>
+      </div>
+      <input value={kod} onChange={(e) => setKod(e.target.value)} onBlur={zapiszKod} disabled={!kodEdit || busy}
+        placeholder="9403 20 80" aria-label={`Kod CN ${row.sku}`}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setKod(fmtCn(row.kod_cn)); }}
+        style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12, padding: "6px 8px",
+          borderColor: row.kod_cn ? undefined : "color-mix(in oklch, var(--critical) 50%, var(--border))" }}/>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input value={st} onChange={(e) => setSt(e.target.value)} onBlur={zapiszStawke}
+          disabled={!stawkaEdit || !row.kod_cn || busy} inputMode="decimal" placeholder={row.kod_cn ? "?" : "—"}
+          aria-label={`Stawka cła ${row.sku}`}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+          style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12, padding: "6px 8px", textAlign: "right",
+            borderColor: brakStawki ? "color-mix(in oklch, var(--critical) 50%, var(--border))" : undefined }}/>
+        <span style={{ fontSize: 12, color: "var(--text-lo)" }}>%</span>
+      </div>
+      <span>
+        {!row.kod_cn ? plak("BRAK KODU", "var(--critical-soft)", "var(--critical)")
+          : row.stawka == null ? plak("BRAK STAWKI", "var(--critical-soft)", "var(--critical)")
+            : row.zrodlo === "reczna" ? plak("RĘCZNIE", "var(--info-soft)", "var(--info)")
+              : plak("Z SAD", "var(--surface-3)", "var(--text-mid)")}
+      </span>
     </div>
   );
 }

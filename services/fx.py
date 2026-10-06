@@ -304,3 +304,87 @@ async def fx_status(session: AsyncSession) -> dict:
         "currencies_in_orders": in_orders,
         "untracked_currencies_in_orders": gaps,
     }
+
+
+# ── Kurs „z dnia roboczego przed” — koszt jednostkowy kontenera ──────────────
+# Ta sama reguła co przy płatnościach (rate_date < data), ale z dociąganiem brakujących
+# notowań prosto z NBP: kontener może mieć płatność sprzed historii zamówień albo kurs
+# frachtu z dnia, którego pętla w tle jeszcze nie pobrała.
+
+# Dłuższa przerwa w notowaniach niż ta (Wielkanoc + weekend to 4 dni) znaczy dziurę w cache,
+# a nie święta — wtedy pytamy NBP.
+MAX_PRZERWA_DNI = 7
+_OKNO_DNI = 10            # ile dni wstecz pytamy NBP o jedno notowanie
+
+# Raz w procesie pytamy NBP o daną walutę i dzień — lista produktów liczy wszystkie
+# kontenery naraz i nie może przy każdym odświeżeniu strzelać do NBP o ten sam brak.
+_zapytane: set = set()
+
+
+def wybierz_kurs_przed(notowania: List[Tuple[date, float]], d: date) -> Optional[Tuple[date, float]]:
+    """Ostatnie notowanie z dnia roboczego PRZED `d` (weekendy i święta same wypadają —
+    NBP nie publikuje wtedy tabeli, więc nie ma wiersza)."""
+    przed = [n for n in notowania if n[0] < d]
+    return max(przed, key=lambda n: n[0]) if przed else None
+
+
+async def kurs_nbp_przed(waluta: str, d: date) -> Optional[Tuple[date, float]]:
+    """Kurs średni NBP (tabela A) z dnia roboczego przed `d`, prosto z API.
+
+    Pytamy o okno kilku dni przed datą i cofamy się, aż trafimy na notowanie.
+    Gdy całe okno to brak tabeli (HTTP 404), poszerzamy je raz jeszcze.
+    """
+    for okno in (_OKNO_DNI, 3 * _OKNO_DNI):
+        start, end = d - timedelta(days=okno), d - timedelta(days=1)
+        wynik = wybierz_kurs_przed(await _fetch_range(waluta, start, end), d)
+        if wynik:
+            return wynik
+    return None
+
+
+async def kursy_przed(session: AsyncSession, pary) -> dict:
+    """{(waluta, data): (data_kursu, kurs)} dla wielu par naraz — jedno zapytanie do cache.
+
+    Data z przyszłości (niezapłacona płatność, ETA) = ostatni znany kurs, więc liczymy ją jak
+    jutro. Brakujące albo podejrzanie stare notowania dociągamy z NBP i zapisujemy w
+    app_fx_rates, żeby następny odczyt ich nie szukał. Błąd NBP nie przerywa rachunku —
+    para bez kursu po prostu nie trafia do wyniku.
+    """
+    jutro = date.today() + timedelta(days=1)
+    oryg = {(w.upper(), d): (w.upper(), min(d, jutro)) for w, d in pary if w and d and w.upper() != "PLN"}
+    pary = set(oryg.values())
+    if not pary:
+        return {}
+
+    async def z_cache(ps) -> dict:
+        lista = sorted(ps)
+        r = await session.execute(text(f"""
+            SELECT p.w, p.d, fx.rate_date, fx.mid
+              FROM unnest(CAST(:w AS TEXT[]), CAST(:d AS DATE[])) AS p(w, d)
+              LEFT JOIN LATERAL (
+                  SELECT r.rate_date, r.mid FROM {settings.TABLE_FX_RATES} r
+                   WHERE r.currency = p.w AND r.rate_date < p.d
+                   ORDER BY r.rate_date DESC LIMIT 1
+              ) fx ON TRUE
+        """), {"w": [w for w, _ in lista], "d": [d for _, d in lista]})
+        return {(row[0], row[1]): (row[2], float(row[3])) for row in r if row[3] is not None}
+
+    out = await z_cache(pary)
+    brak = [(w, d) for w, d in pary
+            if (w, d) not in out or (d - out[(w, d)][0]).days > MAX_PRZERWA_DNI]
+    dociagniete = False
+    for w, d in brak:
+        if (w, d) in _zapytane:
+            continue
+        _zapytane.add((w, d))
+        try:
+            n = await kurs_nbp_przed(w, d)
+        except Exception as e:  # noqa: BLE001 — brak kursu to uwaga w rachunku, nie błąd 500
+            print(f"[fx] kurs {w} przed {d}: {e}")
+            continue
+        if n:
+            await _upsert_rates(session, w, [n])
+            dociagniete = True
+    if dociagniete:
+        out = await z_cache(pary)
+    return {k: out[v] for k, v in oryg.items() if v in out}
