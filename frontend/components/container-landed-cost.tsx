@@ -385,6 +385,11 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
   }
 
   const zapisany = dane.status === "zapisana" && !plik;
+  // Logistyka + transport per kontener — z rozbicia pozycji (to samo, co w tabeli niżej).
+  const podzialKontenerow = Object.entries(dane.towar.reduce<Record<string, number>>((m, t) => {
+    m[t.container_number] = (m[t.container_number] ?? 0) + t.logistyka + t.transport_krajowy;
+    return m;
+  }, {}));
   // Zapisana odprawa po innym kursie towaru — bez pliku XML (POST /odprawy/{id}/kurs-towaru).
   const przeliczKurs = async () => {
     if (!dane.odprawa_id) return;
@@ -692,6 +697,17 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
           Przepisujesz kolumnę „Wartość netto" z faktury spedytora. VAT z niej jest do odliczenia
           i nie wchodzi do kosztu; VAT importowy rozliczany w JPK (art. 33a) też nie.
         </div>
+        {podzialKontenerow.length > 1 && (
+          // Jedno zgłoszenie na kilka kontenerów: faktura spedytora jest wspólna i liczona RAZ —
+          // tu widać, ile z niej (z cłem i transportem) przypada na każdy kontener.
+          <div style={{ padding: "10px 16px", borderTop: "1px solid var(--border-soft)", fontSize: 12, color: "var(--text-mid)", lineHeight: 1.6 }}>
+            <b style={{ color: "var(--text-hi)" }}>Zgłoszenie obejmuje {podzialKontenerow.length} kontenery</b> — kwoty wyżej to cała faktura,
+            liczona raz i rozłożona na towar wszystkich kontenerów ({klucz === "cbm" ? "po CBM" : "po wadze"}):{" "}
+            {podzialKontenerow.map(([nr, zl], i) => (
+              <span key={nr}>{i ? " · " : ""}<span className="mono">{nr}</span> <b className="mono" style={{ color: "var(--text-hi)" }}>{pl(zl, 0)} zł</b></span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Podsumowanie */}
