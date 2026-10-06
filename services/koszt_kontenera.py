@@ -9,9 +9,10 @@ RACHUNEK (wszystkie kwoty w PLN)
      płatność ma kurs NBP (tabela A) z dnia roboczego PRZED zapłatą; niezapłacona — ostatni
      znany kurs, a cały kurs jest wtedy SZACUNKIEM. Kontener skonsolidowany: osobno per lot.
   2. Wartość towaru w walucie = suma płatności (także niezapłaconego balance), rozłożona na
-     pozycje proporcjonalnie do unit_cost × szt. Ręczna cena w walucie / szt zostaje, a reszta
-     pozycji dzieli to, co zostało z płatności. Bez płatności: wartość = ceny planowane
-     (unit_cost to PLN) — SZACUNEK.
+     pozycje proporcjonalnie do unit_cost × szt. Cena w walucie / szt — ręczna z zakładki albo
+     wpisana na pozycji kontenera (z proformy/FV dostawcy) — zostaje, a reszta pozycji dzieli
+     to, co zostało z płatności. Bez płatności: wartość = ceny w walucie tam, gdzie są, a dla
+     reszty ceny planowane (unit_cost to PLN) — SZACUNEK.
   3. Fracht morski = koszt_transportu (USD) × kurs NBP sprzed dostawy (albo ETA), po CBM.
   4. Lenmar = ryczałt LENMAR_KONTENER + LENMAR_ZGLOSZENIE za każde dodatkowe zgłoszenie
      (jedno zgłoszenie na spółkę w kontenerze), po CBM.
@@ -88,6 +89,7 @@ class Pozycja:
     kod_cn: Optional[str] = None
     stawka_slownik: Optional[float] = None   # % ze słownika kodów CN
     cena_reczna: Optional[float] = None      # ręczna cena w walucie / szt (krajowa: PLN / szt)
+    cena_kontener: Optional[float] = None    # cena w walucie / szt wpisana na pozycji kontenera
     stawka_reczna: Optional[float] = None    # ręczna stawka cła % dla tej pozycji
 
 
@@ -128,6 +130,7 @@ class WynikPozycji:
     krajowa: bool
     cena_waluta: float                # wartość w walucie / szt (krajowa: PLN / szt)
     cena_reczna: bool
+    cena_zrodlo: str                  # 'reczna' | 'kontener' | 'auto' (rozłożone z płatności / plan)
     cena_planowana: float
     towar: float
     fracht: float
@@ -212,8 +215,9 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
     Zwraca (wynik grupy, {item_id: towar PLN}, {item_id: cena waluta/szt}, {item_id z ręczną ceną}).
     """
     plan = {p.item_id: p.unit_cost * p.szt for p in pozycje}
-    plan_pln = sum(plan.values())
     reczne = {p.item_id for p in pozycje if p.cena_reczna is not None}
+    # Cena stała w walucie / szt: ręczna z zakładki wygrywa z wpisaną na pozycji kontenera.
+    stala = {p.item_id: p.cena_reczna if p.cena_reczna is not None else p.cena_kontener for p in pozycje}
     etykieta = f" ({g.nazwa})" if g.nazwa else ""
 
     if g.krajowa:
@@ -249,7 +253,12 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
 
     szacunek = any(not p.zaplacona for p in z_kursem)
     zrodlo = "platnosci"
-    if not z_kursem or (not ma_balance and plan_pln > 0 and pln_platnosci < PROG_NIEPELNE_PLATNOSCI * plan_pln):
+    # Spodziewana wartość w PLN: ceny w walucie tam, gdzie są, reszta z cen planowanych.
+    kurs_est = kurs_ref or g.kurs_ostatni
+    oczekiwane_pln = sum((stala[p.item_id] * p.szt * kurs_est) if stala[p.item_id] is not None and kurs_est
+                         else plan[p.item_id] for p in pozycje)
+    if not z_kursem or (not ma_balance and oczekiwane_pln > 0
+                        and pln_platnosci < PROG_NIEPELNE_PLATNOSCI * oczekiwane_pln):
         # Brak płatności (albo same zaliczki bez balance) → wartość z cen planowanych.
         if z_kursem:
             uwagi.append(Uwaga("ostrzezenie", f"Na karcie{etykieta} nie ma balance, a zaliczki pokrywają "
@@ -263,7 +272,7 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
         if not kurs_auto:
             # Bez żadnego kursu ceny planowane (PLN) zostają w złotówkach.
             waluta, kurs_auto = "PLN", 1.0
-        wartosc_waluta = plan_pln / kurs_auto
+        wartosc_waluta = 0.0   # liczona niżej z pozycji — bez płatności nie ma czego rozkładać
     else:
         # Płatności w innej walucie niż główna przeliczamy na główną przez PLN.
         wartosc_waluta = sum(p.kwota if p.waluta == waluta else (p.kwota * p.kurs / kurs_ref if kurs_ref else 0.0)
@@ -276,18 +285,24 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
     if kurs_reczny:
         szacunek = szacunek and zrodlo == "plan"   # ręczny kurs zdejmuje szacunek z kursu, nie z wartości
 
-    # Wartość w walucie na pozycje: ręczne ceny stałe, reszta dzieli pozostałą kwotę.
+    # Wartość w walucie na pozycje: ceny stałe (ręczne i z kontenera) zostają, reszta dzieli
+    # pozostałą kwotę płatności. Bez płatności reszta to ceny planowane przeliczone kursem.
     wartosc_poz: Dict[int, float] = {}
     suma_reczna = 0.0
     for p in pozycje:
-        if p.cena_reczna is not None:
-            wartosc_poz[p.item_id] = p.cena_reczna * p.szt
+        if stala[p.item_id] is not None:
+            wartosc_poz[p.item_id] = stala[p.item_id] * p.szt
             suma_reczna += wartosc_poz[p.item_id]
-    auto = [p for p in pozycje if p.cena_reczna is None]
+    auto = [p for p in pozycje if stala[p.item_id] is None]
+    if zrodlo == "plan":
+        for p in auto:
+            wartosc_poz[p.item_id] = plan[p.item_id] / kurs_auto
+        wartosc_waluta = sum(wartosc_poz.values())
+        auto = []
     reszta = wartosc_waluta - suma_reczna
     if auto:
         if reszta < 0:
-            uwagi.append(Uwaga("blad", f"Ręczne ceny{etykieta} dają {_pl(suma_reczna)} {waluta}, więcej niż "
+            uwagi.append(Uwaga("blad", f"Wpisane ceny{etykieta} dają {_pl(suma_reczna)} {waluta}, więcej niż "
                                        f"płatności ({_pl(wartosc_waluta)} {waluta}) — pozostałe pozycje mają 0"))
             reszta = 0.0
         wagi = {p.item_id: plan[p.item_id] for p in auto}
@@ -295,7 +310,7 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
             wagi = {p.item_id: float(p.szt) for p in auto}
         wartosc_poz.update(_rozloz(reszta, wagi))
     elif pozycje and abs(reszta) > TOLERANCJA_WALUTA and zrodlo == "platnosci":
-        uwagi.append(Uwaga("ostrzezenie", f"Wszystkie ceny{etykieta} są wpisane ręcznie: {_pl(suma_reczna)} {waluta}, "
+        uwagi.append(Uwaga("ostrzezenie", f"Wszystkie pozycje{etykieta} mają wpisaną cenę: {_pl(suma_reczna)} {waluta}, "
                                           f"a płatności to {_pl(wartosc_waluta)} {waluta} "
                                           f"(różnica {_pl(suma_reczna - wartosc_waluta, True)} {waluta})"))
 
@@ -394,6 +409,8 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
         out.append(WynikPozycji(
             item_id=p.item_id, sku=p.sku, szt=p.szt, grupa=p.grupa, krajowa=kraj,
             cena_waluta=round(cena.get(p.item_id, 0.0), 4), cena_reczna=p.item_id in reczne,
+            cena_zrodlo=("reczna" if p.item_id in reczne
+                         else "kontener" if p.cena_kontener is not None and not kraj else "auto"),
             cena_planowana=p.unit_cost,
             towar=round(t, 2), fracht=round(f, 2), lenmar=round(l_, 2), clo=round(clo, 2),
             transport=round(tt, 2), stawka=stawka, stawka_zrodlo=zrodlo, kod_cn=p.kod_cn,

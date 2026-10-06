@@ -29,7 +29,7 @@ const fmtDatePL = (iso?: string | null): string =>
 
 // ── Typy ─────────────────────────────────────────────────────
 export type ContainerItem = {
-  id: number; sku: string; quantity: number; unit_cost: number | null;
+  id: number; sku: string; quantity: number; unit_cost: number | null; cena_waluta?: number | null;
   lot_id?: number | null;
   product_name: string | null; cbm_per_unit: number; total_cbm: number;
 };

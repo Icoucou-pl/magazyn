@@ -43,6 +43,7 @@ def _mask_container_financials(containers, user):
             adv.kwota = None
         for it in c.items:
             it.unit_cost = None
+            it.cena_waluta = None
         for lot in c.lots:
             lot.total_value = 0.0
             lot.zaliczka_kwota = None
@@ -432,9 +433,9 @@ async def _uzgodnij_pozycje(db: AsyncSession, cid: int, items, lot_ids: List[int
         r = przydzial[i]
         if r is None:
             await db.execute(
-                text(f"INSERT INTO {settings.TABLE_CONTAINER_ITEMS} (container_id, sku, quantity, unit_cost, lot_id) "
-                     f"VALUES (:c, :s, :q, :u, :l)"),
-                {"c": cid, "s": it.sku, "q": it.quantity, "u": it.unit_cost, "l": lid},
+                text(f"INSERT INTO {settings.TABLE_CONTAINER_ITEMS} (container_id, sku, quantity, unit_cost, cena_waluta, lot_id) "
+                     f"VALUES (:c, :s, :q, :u, :cw, :l)"),
+                {"c": cid, "s": it.sku, "q": it.quantity, "u": it.unit_cost, "cw": it.cena_waluta, "l": lid},
             )
             continue
         zeruj = ""
@@ -442,8 +443,8 @@ async def _uzgodnij_pozycje(db: AsyncSession, cid: int, items, lot_ids: List[int
             zeruj = ", " + ", ".join(f"{k} = NULL" for k in _KOSZT_WYNIK)
         await db.execute(
             text(f"UPDATE {settings.TABLE_CONTAINER_ITEMS} "
-                 f"SET sku = :s, quantity = :q, unit_cost = :u, lot_id = :l{zeruj} WHERE id = :id"),
-            {"s": it.sku, "q": it.quantity, "u": it.unit_cost, "l": lid, "id": r["id"]},
+                 f"SET sku = :s, quantity = :q, unit_cost = :u, cena_waluta = :cw, lot_id = :l{zeruj} WHERE id = :id"),
+            {"s": it.sku, "q": it.quantity, "u": it.unit_cost, "cw": it.cena_waluta, "l": lid, "id": r["id"]},
         )
 
     zbedne = [r["id"] for kubel in pula.values() for r in kubel]
@@ -599,6 +600,11 @@ async def _stan_do_audytu(db: AsyncSession, cid: int) -> Optional[dict]:
         f"WHERE container_id = :id GROUP BY sku"
     ), {"id": cid})).all()
     d["_pozycje"] = {r.sku: int(r.q or 0) for r in poz}
+    ceny = (await db.execute(text(
+        f"SELECT sku, MAX(cena_waluta) AS c FROM {settings.TABLE_CONTAINER_ITEMS} "
+        f"WHERE container_id = :id AND cena_waluta IS NOT NULL GROUP BY sku"
+    ), {"id": cid})).all()
+    d["_ceny_waluta"] = {r.sku: float(r.c) for r in ceny}
     fv_lotu = (await db.execute(text(
         f"SELECT order_number FROM {settings.TABLE_CONTAINER_LOTS} "
         f"WHERE container_id = :id AND NULLIF(TRIM(order_number), '') IS NOT NULL ORDER BY position, id LIMIT 1"
@@ -619,6 +625,14 @@ def _zmiany_pozycji(stare: dict, nowe: dict) -> List[dict]:
         reszta = len(out) - _MAX_POZYCJI_W_DZIENNIKU
         out = out[:_MAX_POZYCJI_W_DZIENNIKU] + [{"pole": f"…i {reszta} innych pozycji", "bylo": "", "jest": ""}]
     return out
+
+
+def _zmiany_cen(stare: dict, nowe: dict) -> List[dict]:
+    """Cena w walucie dostawcy per SKU — było → jest (puste = nie wpisano)."""
+    fmt = f_num("", 4)
+    return [{"pole": f"Cena w walucie {sku}", "bylo": fmt(stare.get(sku)) if sku in stare else "—",
+             "jest": fmt(nowe.get(sku)) if sku in nowe else "—"}
+            for sku in sorted(set(stare) | set(nowe)) if stare.get(sku) != nowe.get(sku)]
 
 
 def _nazwa_kontenera(d: Optional[dict], cid: int) -> str:
@@ -696,8 +710,8 @@ async def create_container(payload: ContainerCreate, db: AsyncSession = Depends(
     for item in payload.items:
         lid = _resolve_lot(item.lot_ref, lot_ids) if payload.is_consolidated else None
         await db.execute(
-            text(f"INSERT INTO {settings.TABLE_CONTAINER_ITEMS} (container_id, sku, quantity, unit_cost, lot_id) VALUES (:c, :s, :q, :u, :l)"),
-            {"c": cid, "s": item.sku, "q": item.quantity, "u": item.unit_cost, "l": lid}
+            text(f"INSERT INTO {settings.TABLE_CONTAINER_ITEMS} (container_id, sku, quantity, unit_cost, cena_waluta, lot_id) VALUES (:c, :s, :q, :u, :cw, :l)"),
+            {"c": cid, "s": item.sku, "q": item.quantity, "u": item.unit_cost, "cw": item.cena_waluta, "l": lid}
         )
 
     await db.commit()
@@ -906,7 +920,8 @@ async def update_container(cid: int, payload: ContainerUpdate, db: AsyncSession 
     await db.commit()
     po = await _stan_do_audytu(db, cid)
     if przed and po:
-        ch = audit.zmiany(przed, po, POLA_KONTENERA) + _zmiany_pozycji(przed["_pozycje"], po["_pozycje"])
+        ch = (audit.zmiany(przed, po, POLA_KONTENERA) + _zmiany_pozycji(przed["_pozycje"], po["_pozycje"])
+              + _zmiany_cen(przed["_ceny_waluta"], po["_ceny_waluta"]))
         nadany = next((c for c in ch if c["pole"] == "Numer kontenera" and c["bylo"] == "—"), None)
         if nadany and len(ch) == 1:
             # Pierwszy prawdziwy numer w miejsce roboczego — mówimy, któremu kontenerowi (po FV).

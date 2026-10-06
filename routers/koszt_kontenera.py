@@ -6,12 +6,13 @@
   GET /api/stawki-cn                 Ustawienia → Stawki cła: obserwowane, nowości i sample
   PUT /api/stawki-cn/{kod}           ręczna stawka w słowniku (superadmin)
   PUT /api/products/{sku}/kod-cn     kod CN produktu — przeniesiony z „Danych podstawowych”
+  GET /api/kursy/ostatni?waluta=USD  ostatni kurs NBP — formularz kontenera liczy z ceny USD cenę PLN
 
 Rachunek siedzi w services/koszt_kontenera.py (czysty, z testami), wejście z bazy składa
 services/koszt_kontenera_dane.py. Tabele: sql/2026-10-koszt-jednostkowy-v2.sql.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,7 +24,7 @@ from audit_opisy import f_num, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
-    CurrentUser, KodCnIn, KosztGrupaOut, KosztKontenerIn, KosztKontenerOut, KosztPlatnoscOut,
+    CurrentUser, KodCnIn, KursOut, KosztGrupaOut, KosztKontenerIn, KosztKontenerOut, KosztPlatnoscOut,
     KosztPozycjaOut, KosztUwagaOut, StawkaCnIn, StawkaCnOut,
 )
 from routers.odprawy import _koszt_erp
@@ -31,6 +32,7 @@ from security import (
     can_edit_landed_cost, get_current_user, require_landed_cost_edit, require_landed_cost_view,
     require_perm, require_super_admin_403, resolve_shop,
 )
+from services.fx import kursy_przed
 from services.koszt_kontenera import LENMAR_KONTENER, LENMAR_ZGLOSZENIE
 from services.koszt_kontenera_dane import (
     T_KONTENER, T_POZYCJA, T_STAWKI, policz_kontenery, slownik_stawek, stawka_dla,
@@ -106,7 +108,8 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
         pozycje=[KosztPozycjaOut(
             item_id=p.item_id, sku=p.sku, nazwa=nazwy.get(p.sku.lower()), szt=p.szt, grupa=p.grupa,
             krajowa=p.krajowa, cbm_szt=meta[p.item_id]["cbm_szt"], cena_planowana=p.cena_planowana,
-            cena_waluta=p.cena_waluta, cena_reczna=p.cena_reczna, towar=p.towar, fracht=p.fracht,
+            cena_waluta=p.cena_waluta, cena_reczna=p.cena_reczna, cena_zrodlo=p.cena_zrodlo,
+            towar=p.towar, fracht=p.fracht,
             lenmar=p.lenmar, clo=p.clo, transport=p.transport, kod_cn=p.kod_cn, stawka=p.stawka,
             stawka_zrodlo=p.stawka_zrodlo, stawka_slownik=stawka_dla(stawki, p.kod_cn),
             koszt_jednostkowy=p.koszt_jednostkowy, szacunek=p.szacunek,
@@ -189,6 +192,21 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
     audit.note_zmiany(f"kosztu jednostkowego kontenera {await audit.nazwa_kontenera(db, container_id)}",
                       zmiany, resource_type="container", resource_id=container_id)
     return await _rachunek(db, container_id, user)
+
+
+@router.get("/kursy/ostatni", response_model=KursOut)
+async def ostatni_kurs(waluta: str = Query("USD"), db: AsyncSession = Depends(get_db),
+                       user: CurrentUser = Depends(get_current_user)):
+    """Ostatni kurs średni NBP — formularz kontenera przelicza nim cenę w walucie na PLN.
+    Kurs NBP jest publiczny, więc wystarczy zalogowanie."""
+    w = (waluta or "").strip().upper()
+    if not (len(w) == 3 and w.isalpha()):
+        raise HTTPException(422, "Waluta to trzyliterowy kod, np. USD")
+    if w == "PLN":
+        return KursOut(waluta=w, kurs=1.0)
+    jutro = date.today() + timedelta(days=1)
+    d, k = (await kursy_przed(db, [(w, jutro)])).get((w, jutro), (None, None))
+    return KursOut(waluta=w, kurs=k, data=d)
 
 
 # ============================================================

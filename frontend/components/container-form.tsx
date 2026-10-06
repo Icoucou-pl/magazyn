@@ -20,7 +20,10 @@ import { CARRIERS, validateContainerNo, isValidContainerNo, isTracked, trackingU
 
 export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
 
-type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string };
+// cena_waluta: cena w walucie dostawcy (USD/CNY) / szt z proformy albo FV. Gdy jest, koszt
+// jednostkowy bierze ją jako realną cenę pozycji, a unit_cost (PLN) liczy się z niej po
+// ostatnim kursie NBP. Bez niej unit_cost to bieżąca cena PLN z bazy produktów.
+type ItemDraft = { sku: string; quantity: string; unit_cost: string; lotRef: string; cena_waluta?: string };
 type AdvanceDraft = { procent: string; kwota: string; waluta: string; termin: string; data: string };
 type LotDraft = {
   // id istniejącego lotu — backend kasuje i wstawia loty od nowa przy zapisie, więc bez niego
@@ -254,8 +257,30 @@ export default function ContainerFormModal({
     initial?.items?.map((i) => ({
       sku: i.sku, quantity: String(i.quantity), unit_cost: i.unit_cost ? String(i.unit_cost) : "",
       lotRef: (i.lot_id != null && lotIdToIdx.has(i.lot_id)) ? String(lotIdToIdx.get(i.lot_id)) : "",
+      cena_waluta: i.cena_waluta != null ? String(i.cena_waluta) : "",
     })) || [{ sku: "", quantity: "", unit_cost: "", lotRef: "" }],
   );
+  // Waluta płatności dostawcy dla pozycji: lotu (konsolidacja) albo kontenera — w niej
+  // wpisuje się cenę z proformy. Kursy NBP dociągamy raz na walutę.
+  const walutaWiersza = (lotRef: string): string => {
+    if (isConsolidated) {
+      const l = lotRef !== "" ? lots[Number(lotRef)] : undefined;
+      return ((l?.balance_waluta || l?.waluta_towaru || "USD") as string).toUpperCase();
+    }
+    return (balanceWaluta || walutaTowaru || "USD").toUpperCase();
+  };
+  const [kursy, setKursy] = useState<Record<string, number>>({});
+  const walutyKey = [...new Set([isConsolidated ? lots.map((l) => (l.balance_waluta || l.waluta_towaru || "USD").toUpperCase()) : [],
+    [(balanceWaluta || walutaTowaru || "USD").toUpperCase()]].flat())].filter((w) => w !== "PLN").sort().join(",");
+  useEffect(() => {
+    let zywy = true;
+    for (const w of walutyKey ? walutyKey.split(",") : []) {
+      api.get(`/kursy/ostatni?waluta=${encodeURIComponent(w)}`)
+        .then((r) => { const k = (r as { kurs?: number | null }).kurs; if (zywy && k) setKursy((p) => ({ ...p, [w]: k })); })
+        .catch(() => { /* bez kursu PLN po prostu się nie przeliczy */ });
+    }
+    return () => { zywy = false; };
+  }, [walutyKey]);
   const [attachments, setAttachments] = useState<AttDraft[]>(initial?.attachments || []);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -345,6 +370,17 @@ export default function ContainerFormModal({
     if (field === "sku" && value && !next[idx].unit_cost) {
       const product = productBySku.get(value);
       if (product) next[idx].unit_cost = String(product.purchase_price);
+    }
+    // Cena w walucie → cena PLN po ostatnim kursie NBP (dalej da się ją nadpisać ręcznie).
+    // Wyczyszczenie ceny w walucie wraca do bieżącej ceny PLN z bazy produktów.
+    if (field === "cena_waluta") {
+      const v = parseFloat(value.replace(",", "."));
+      const kurs = kursy[walutaWiersza(next[idx].lotRef)];
+      if (v > 0 && kurs) next[idx].unit_cost = (Math.round(v * kurs * 100) / 100).toFixed(2);
+      else if (!value.trim()) {
+        const product = productBySku.get(next[idx].sku);
+        if (product) next[idx].unit_cost = String(product.purchase_price);
+      }
     }
     setItems(next);
   };
@@ -578,6 +614,8 @@ export default function ContainerFormModal({
       })) : [],
       items: validItems.map((i) => ({
         sku: i.sku, quantity: parseInt(i.quantity, 10), unit_cost: i.unit_cost ? parseFloat(i.unit_cost) : null,
+        cena_waluta: i.cena_waluta && parseFloat(i.cena_waluta.replace(",", ".")) > 0
+          ? parseFloat(i.cena_waluta.replace(",", ".")) : null,
         lot_ref: isConsolidated && i.lotRef !== "" ? Number(i.lotRef) : null,
       })),
     };
@@ -1005,13 +1043,14 @@ export default function ContainerFormModal({
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {itemDetails.map((item, idx) => (
                   <ItemRow key={idx} item={item} sortedProducts={productsForMfr(rowMfrId(item.lotRef))} manufacturers={manufacturers} disabled={!showEdit} showFin={showFin}
+                    waluta={walutaWiersza(item.lotRef)} kurs={kursy[walutaWiersza(item.lotRef)]}
                     consolidated={isConsolidated} lots={lots}
                     onChange={(field, val) => updateItem(idx, field, val)} onRemove={() => removeItem(idx)} />
                 ))}
               </div>
               {showFin && (
                 <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                  <I.Wand size={11} style={{ color: "var(--accent)" }} /> Cena auto-wypełnia się z bazy produktów. Można nadpisać.
+                  <I.Wand size={11} style={{ color: "var(--accent)" }} /> Cena PLN auto-wypełnia się z bazy produktów. Wpisz cenę z proformy w walucie dostawcy — PLN przeliczy się po ostatnim kursie NBP, a koszt jednostkowy weźmie ją jako realną cenę.
                 </div>
               )}
             </Section>
@@ -1165,13 +1204,16 @@ export default function ContainerFormModal({
 
 // ── Wiersz pozycji ───────────────────────────────────────────
 function ItemRow({
-  item, sortedProducts, manufacturers, disabled, showFin, consolidated, lots, onChange, onRemove,
+  item, sortedProducts, manufacturers, disabled, showFin, consolidated, lots, waluta, kurs, onChange, onRemove,
 }: {
-  item: { sku: string; quantity: string; unit_cost: string; lotRef: string; product?: Product; qty: number; cbm: number; value: number; isMixed: boolean };
+  item: { sku: string; quantity: string; unit_cost: string; lotRef: string; cena_waluta?: string; product?: Product; qty: number; cbm: number; value: number; isMixed: boolean };
   sortedProducts: Product[]; manufacturers: Manufacturer[]; disabled: boolean; showFin: boolean;
   consolidated: boolean; lots: LotDraft[];
-  onChange: (field: "sku" | "quantity" | "unit_cost" | "lotRef", val: string) => void; onRemove: () => void;
+  waluta: string; kurs?: number;   // waluta płatności dostawcy tej pozycji i jej ostatni kurs NBP
+  onChange: (field: "sku" | "quantity" | "unit_cost" | "lotRef" | "cena_waluta", val: string) => void; onRemove: () => void;
 }) {
+  // Towar kupiony w Polsce (płatność w PLN) nie ma ceny w walucie — cena z FV to cena PLN.
+  const zWaluta = waluta !== "PLN";
   const mixedMfrName = item.product?.manufacturer_id ? manufacturers.find((m) => m.id === item.product!.manufacturer_id)?.name : undefined;
   // Niezgodność dostawcy w trybie skonsolidowanym: SKU innego producenta niż wybrany lot.
   const lotMfrId = consolidated && item.lotRef !== "" ? lots[Number(item.lotRef)]?.manufacturer_id : "";
@@ -1181,7 +1223,7 @@ function ItemRow({
   // Stare pozycje bez przypisanego lotu (dane sprzed lotów) zostają edytowalne.
   const lotFirst = consolidated && item.lotRef === "" && !item.sku;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 80px 90px 30px", gap: 6, alignItems: "flex-start", padding: 8, background: warn ? "color-mix(in oklch, var(--warning) 8%, var(--surface-2))" : "var(--surface-2)", border: `1px solid ${warn ? "color-mix(in oklch, var(--warning) 40%, var(--border))" : "var(--border-soft)"}`, borderRadius: 8 }}>
+    <div style={{ display: "grid", gridTemplateColumns: showFin ? "minmax(0, 1fr) 70px 86px 90px 30px" : "minmax(0, 1fr) 80px 90px 30px", gap: 6, alignItems: "flex-start", padding: 8, background: warn ? "color-mix(in oklch, var(--warning) 8%, var(--surface-2))" : "var(--surface-2)", border: `1px solid ${warn ? "color-mix(in oklch, var(--warning) 40%, var(--border))" : "var(--border-soft)"}`, borderRadius: 8 }}>
       <div style={{ minWidth: 0 }}>
         {/* Kolejność ma znaczenie: lot niesie dostawcę, a lista produktów sortuje się wg niego.
             Dlatego lot idzie PIERWSZY — przy odwrotnej kolejności produkt wybierało się
@@ -1225,8 +1267,25 @@ function ItemRow({
         )}
       </div>
       <input type="number" value={item.quantity} onChange={(e) => onChange("quantity", e.target.value)} placeholder="szt" min="1" disabled={disabled} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right" }} />
+      {showFin && (zWaluta ? (
+        <div>
+          <input type="number" value={item.cena_waluta ?? ""} onChange={(e) => onChange("cena_waluta", e.target.value)}
+            placeholder={waluta} step="0.01" min="0" disabled={disabled} aria-label={`Cena ${waluta} / szt`}
+            title={`Cena ${waluta} / szt z proformy albo FV dostawcy${kurs ? ` · kurs NBP ${kurs.toFixed(4)}` : ""}`}
+            style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right", width: "100%",
+              ...(item.cena_waluta ? { borderColor: "color-mix(in oklch, var(--info) 60%, var(--border))" } : {}) }} />
+          <div style={{ fontSize: 9.5, color: "var(--text-lo)", marginTop: 2, textAlign: "right" }}>{waluta} / szt</div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 10, color: "var(--text-disabled)", textAlign: "center", paddingTop: 8 }}>PLN</div>
+      ))}
       {showFin ? (
-        <input type="number" value={item.unit_cost} onChange={(e) => onChange("unit_cost", e.target.value)} placeholder="cena" step="0.01" disabled={disabled} title={item.product ? `Z bazy: ${item.product.purchase_price} zł` : ""} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right" }} />
+        <div>
+          <input type="number" value={item.unit_cost} onChange={(e) => onChange("unit_cost", e.target.value)} placeholder="cena" step="0.01" disabled={disabled} title={item.product ? `Z bazy: ${item.product.purchase_price} zł` : ""} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right", width: "100%" }} />
+          <div style={{ fontSize: 9.5, color: "var(--text-lo)", marginTop: 2, textAlign: "right" }}>
+            {zWaluta && item.cena_waluta && kurs ? `zł · kurs ${kurs.toFixed(4)}` : "zł / szt"}
+          </div>
+        </div>
       ) : (
         <div style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--text-disabled)", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>•••</div>
       )}
