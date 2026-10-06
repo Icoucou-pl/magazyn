@@ -261,3 +261,32 @@ def test_sama_zaliczka_porownana_z_wartoscia_z_cen_w_walucie():
     # zaliczka 300 USD wobec 1 000 USD z proformy to 30% — za mało, bierzemy ceny z kontenera
     w = tylko_towar([poz(1, 100, 1, cena_kontener=10.0)], [zap(300, 4.0)])
     assert w.towar == 4000 and w.grupy[0].wartosc_zrodlo == "plan"
+
+
+# ── wspólna faktura kilku kontenerów ────────────────────────
+
+def test_kontenery_rozliczane_razem_dziela_platnosci_na_caly_towar():
+    """Jak UETU8695821 + UETU8696129: na jednej karcie płatności za materace, na drugiej
+    za łóżka, a łóżka jadą w obu kontenerach. Osobno łóżko wychodzi raz tanio, raz drogo;
+    razem — tak samo w obu, a suma towaru = wszystkie płatności × kurs."""
+    from services.koszt_kontenera import policz_razem
+
+    def kontener(cid, platnosci, pozycje, fracht_usd):
+        return (Kontener(fracht_usd=fracht_usd, kurs_frachtu=4.0, lenmar_pln=0),
+                Grupa(id=0, platnosci=platnosci, kurs_ostatni=4.0), pozycje)
+
+    a = kontener(1, [zap(1400, 4.0, "balance")],                     # same materace na karcie A
+                 [poz(11, 16, 7000, cbm=1.0), poz(12, 120, 280, cbm=0.07)], 1000)
+    b = kontener(2, [zap(12000, 4.0, "balance")],                    # łóżka na karcie B
+                 [poz(21, 44, 7000, cbm=1.0)], 2000)
+    osobno_a = policz(a[0], [a[1]], a[2]).po_item()
+    osobno_b = policz(b[0], [b[1]], b[2]).po_item()
+    assert osobno_a[11].cena_waluta != pytest.approx(osobno_b[21].cena_waluta, abs=1), "osobno — rozjazd"
+
+    razem = policz_razem({1: a, 2: b})
+    pa, pb = razem[1].po_item(), razem[2].po_item()
+    assert pa[11].cena_waluta == pytest.approx(pb[21].cena_waluta), "to samo łóżko, ta sama cena"
+    assert razem[1].towar + razem[2].towar == pytest.approx(13400 * 4.0, abs=0.05)
+    # fracht zostaje na swojej karcie
+    assert razem[1].fracht == 4000 and razem[2].fracht == 8000
+    assert razem[1].razem_z == [2] and razem[2].razem_z == [1]

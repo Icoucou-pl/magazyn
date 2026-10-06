@@ -24,6 +24,12 @@ RACHUNEK (wszystkie kwoty w PLN)
   6. Transport do magazynu (PLN z karty) po CBM.
   7. Koszt jednostkowy = suma / sztuki. VAT importowy nie jest kosztem.
 
+WSPÓLNA FAKTURA (kontenery rozliczane razem)
+Faktura dostawcy bywa rozłożona na kilka kontenerów, a płatności wpisane na kartach według
+faktur — wtedy jeden kontener ma pieniądze za towar, który jedzie w drugim. Połączone
+kontenery liczą towar wspólnie: płatności wszystkich idą na towar wszystkich (`policz_razem`),
+a fracht, Lenmar i transport zostają na każdej karcie osobno.
+
 DOSTAWA KRAJOWA (kontener albo lot w PLN): cena z FV (unit_cost albo ręczna) + transport do
 magazynu — bez frachtu, Lenmara i cła. Gdy CAŁY kontener jest krajowy, transport dzielimy po
 wartości pozycji, tak jak dotąd w zakładce „Cena”.
@@ -178,6 +184,7 @@ class Wynik:
     szacunek: bool = False
     uwagi: List[Uwaga] = field(default_factory=list)
     kontener: Optional[Kontener] = None     # wejście (fracht w USD, kurs frachtu) — do ekranu
+    razem_z: List[int] = field(default_factory=list)   # kontenery rozliczane wspólnie (bez tego)
     data_frachtu: Optional[date] = None     # dostawa albo ETA, od której liczy się kurs frachtu
 
     def po_item(self) -> Dict[int, WynikPozycji]:
@@ -349,8 +356,14 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
     return wg, towar, cena, reczne, gratisy
 
 
-def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wynik:
-    """Pełny rachunek jednego kontenera."""
+def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
+           gotowe: Optional[Dict[int, tuple]] = None) -> Wynik:
+    """Pełny rachunek jednego kontenera.
+
+    `gotowe` = {id grupy: wynik _policz_grupe} policzony wcześniej dla wspólnej faktury kilku
+    kontenerów (policz_razem) — wtedy towar tej grupy bierzemy stamtąd, zamiast liczyć go
+    z płatności samego kontenera.
+    """
     uwagi: List[Uwaga] = []
     po_grupie: Dict[int, List[Pozycja]] = {}
     for p in pozycje:
@@ -368,7 +381,11 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
     krajowe_grupy = set()
     for gid, lista in po_grupie.items():
         g = znane[gid]
-        wg, t, c, r, gr = _policz_grupe(g, lista, kontener.kurs_towaru if not g.krajowa else None, uwagi)
+        if gotowe and gid in gotowe:
+            wg, t, c, r, gr, uw = gotowe[gid]
+            uwagi.extend(uw)
+        else:
+            wg, t, c, r, gr = _policz_grupe(g, lista, kontener.kurs_towaru if not g.krajowa else None, uwagi)
         wyniki_grup.append(wg)
         towar.update(t)
         gratisy.update(gr)
@@ -462,3 +479,37 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
     w.narzut_proc = round((w.suma - baza) / baza * 100, 2) if baza > 0 else None
     w.szacunek = any(g.szacunek for g in wyniki_grup)
     return w
+
+
+def policz_razem(kontenery: Dict[int, "tuple[Kontener, Grupa, List[Pozycja]]"]) -> Dict[int, Wynik]:
+    """Kilka kontenerów z jedną fakturą dostawcy: {container_id: (Kontener, Grupa, pozycje)}.
+
+    Towar liczymy raz dla wszystkich — płatności wszystkich kart idą na towar wszystkich,
+    po cenach pozycji — a potem każdy kontener liczy swój fracht, Lenmara, cło i transport.
+    Ręczny kurs towaru: z pierwszego kontenera, który go ma (jeden kurs dla wspólnej faktury).
+    """
+    ids = sorted(kontenery)
+    wspolna = Grupa(
+        id=0,
+        platnosci=[p for cid in ids for p in kontenery[cid][1].platnosci],
+        krajowa=False,
+        waluta=kontenery[ids[0]][1].waluta,
+        kurs_ostatni=next((kontenery[c][1].kurs_ostatni for c in ids if kontenery[c][1].kurs_ostatni), None),
+        data_kursu_ostatniego=next((kontenery[c][1].data_kursu_ostatniego for c in ids
+                                    if kontenery[c][1].data_kursu_ostatniego), None),
+        nazwa="wspólna faktura",
+    )
+    pozycje = [p for cid in ids for p in kontenery[cid][2]]
+    kurs_reczny = next((kontenery[c][0].kurs_towaru for c in ids if kontenery[c][0].kurs_towaru), None)
+    uwagi: List[Uwaga] = []
+    wg, t, c, r, gr = _policz_grupe(wspolna, pozycje, kurs_reczny, uwagi)
+    out: Dict[int, Wynik] = {}
+    for cid in ids:
+        k, _, lista = kontenery[cid]
+        moje = {p.item_id for p in lista}
+        gotowe = {0: (wg, {i: v for i, v in t.items() if i in moje}, {i: v for i, v in c.items() if i in moje},
+                      r & moje, {i: v for i, v in gr.items() if i in moje}, list(uwagi))}
+        w = policz(k, [kontenery[cid][1]], lista, gotowe)
+        w.razem_z = [x for x in ids if x != cid]
+        out[cid] = w
+    return out

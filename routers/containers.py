@@ -73,10 +73,13 @@ async def _dolicz_koszt(db: AsyncSession, containers, user):
     from services.koszt_kontenera_dane import policz_kontenery
 
     wyniki, _ = await policz_kontenery(db, [c.id for c in containers])
+    etykiety = {c.id: (c.container_number if c.container_number and not c.container_number.lower().startswith("draft-")
+                       else f"FV: {c.order_number or '#' + str(c.id)}") for c in containers}
     for c in containers:
         w = wyniki.get(c.id)
         if w and w.pozycje:
             c.koszt_v2 = "szacunek" if w.szacunek else "policzony"
+            c.koszt_razem_z = [etykiety.get(x, f"#{x}") for x in w.razem_z]
     return containers
 
 

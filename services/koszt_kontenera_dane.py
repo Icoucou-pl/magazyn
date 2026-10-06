@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from services.fx import kursy_przed
-from services.koszt_kontenera import Grupa, Kontener, Platnosc, Pozycja, Wynik, policz
+from services.koszt_kontenera import Grupa, Kontener, Platnosc, Pozycja, Wynik, policz, policz_razem
 from services.products import compute_effective_cbm
 
 T_KONTENER = "app_koszt_kontenera"
@@ -69,6 +69,16 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
     ids = list(container_ids or [])
     if not wszystkie and not ids:
         return {}, {}
+    zadane = set(ids)
+    if not wszystkie:
+        # Kontener rozliczany razem z innymi (wspólna faktura) potrzebuje do rachunku towaru
+        # i płatności wszystkich — dociągamy partnerów, choć w wyniku nikt ich nie prosił.
+        partnerzy = (await db.execute(text(f"""
+            SELECT id FROM {settings.TABLE_CONTAINERS}
+             WHERE rozliczenie_grupa IN (SELECT rozliczenie_grupa FROM {settings.TABLE_CONTAINERS}
+                                          WHERE id = ANY(:ids) AND rozliczenie_grupa IS NOT NULL)
+        """), {"ids": ids})).scalars().all()
+        ids = sorted(set(ids) | set(partnerzy))
     filtr_c = "" if wszystkie else "WHERE c.id = ANY(:ids)"
     filtr_ci = "" if wszystkie else "WHERE ci.container_id = ANY(:ids)"
     filtr_l = "" if wszystkie else "WHERE l.container_id = ANY(:ids)"
@@ -77,7 +87,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
     kontenery = (await db.execute(text(f"""
         SELECT c.id, COALESCE(c.is_consolidated, FALSE) AS skonsolidowany,
                c.koszt_transportu, c.koszt_transportu_magazyn, c.delivered_date, c.eta_date,
-               c.waluta_towaru, c.balance_kwota, c.balance_waluta, c.zaplacono_data
+               c.waluta_towaru, c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.rozliczenie_grupa
           FROM {settings.TABLE_CONTAINERS} c {filtr_c}
     """), p)).mappings().all()
     if not kontenery:
@@ -122,11 +132,12 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         f"SELECT * FROM {T_KONTENER} WHERE container_id = ANY(:ids)"), p)).mappings().all()}
     stawki = await slownik_stawek(db)
     if podmiana is not None:
-        nadpisania = {cid: podmiana.get("kontener") or {} for cid in ids}
+        nadpisania = {**nadpisania, **{cid: podmiana.get("kontener") or {} for cid in zadane}}
         brak = (None, None, False)
         pozycje = [{**r, "cena_waluta": podmiana.get("pozycje", {}).get(r["item_id"], brak)[0],
                     "stawka_cla": podmiana.get("pozycje", {}).get(r["item_id"], brak)[1],
                     "gratis": bool(podmiana.get("pozycje", {}).get(r["item_id"], brak)[2])}
+                   if r["container_id"] in zadane else r
                    for r in pozycje]
 
     dzis = date.today()
@@ -196,6 +207,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
                               "cbm_szt": cbm, "cbm_zrodlo": cbm_zrodlo}
 
     out: Dict[int, Wynik] = {}
+    wejscie: Dict[int, tuple] = {}
     for cid, lista in poz_k.items():
         k = po_k[cid]
         grupy: List[Grupa] = []
@@ -224,6 +236,23 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
             lenmar_pln=_f(n.get("lenmar_pln")) if n else None,
             transport_reczny=_f(n.get("transport_pln")) if n else None,
         )
-        out[cid] = policz(kont, grupy, lista)
-        out[cid].data_frachtu = data_frachtu
+        wejscie[cid] = (kont, grupy, lista, data_frachtu)
+
+    # Wspólna faktura: kontenery z tym samym rozliczenie_grupa liczą towar razem. Tylko
+    # zwykłe kontenery z importu — skonsolidowany ma płatności per lot, krajowy nie ma czego dzielić.
+    pule: Dict[int, List[int]] = {}
+    for cid, (_, grupy, _, _) in wejscie.items():
+        g = po_k[cid]["rozliczenie_grupa"]
+        if g is not None and not po_k[cid]["skonsolidowany"] and len(grupy) == 1 and not grupy[0].krajowa:
+            pule.setdefault(g, []).append(cid)
+    for cidy in pule.values():
+        if len(cidy) < 2:
+            continue
+        for cid, w in policz_razem({c: (wejscie[c][0], wejscie[c][1][0], wejscie[c][2]) for c in cidy}).items():
+            w.data_frachtu = wejscie[cid][3]
+            out[cid] = w
+    for cid, (kont, grupy, lista, data_frachtu) in wejscie.items():
+        if cid not in out:
+            out[cid] = policz(kont, grupy, lista)
+            out[cid].data_frachtu = data_frachtu
     return out, meta

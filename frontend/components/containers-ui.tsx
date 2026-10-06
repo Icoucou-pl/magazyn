@@ -107,6 +107,7 @@ export type Container = {
   dokumenty_wyslane_at?: string | null;
   dokumenty_wyslal?: string | null;
   koszt_v2?: "policzony" | "szacunek" | null;  // koszt jednostkowy (metoda szefa) — tylko dla uprawnionych
+  koszt_razem_z?: string[];                    // wspólna faktura: rozliczany razem z tymi kontenerami
   delivered_date?: string | null;              // ręczna, potwierdzona data dostawy
   expected_delivery_date?: string | null;      // „u nas" — umówiona data odbioru (nie domyka statusu)
   warehouse_delivery_date?: string | null;     // KPI: delivered_date → expected_delivery_date → ETA + odprawa
@@ -669,6 +670,12 @@ export function ContainerCard({
               {/* Stan odprawy (SAD) — tylko superadmin, jako kontrola. Koszt jednostkowy liczy się
                   sam z karty kontenera (zakładka „Koszt jednostkowy"), więc „bez kosztu" już nie ma. */}
               <KosztPlakietka stan={c.koszt_v2} />
+              {!!c.koszt_razem_z?.length && (
+                <span title={`Wspólna faktura: płatności liczone razem z ${c.koszt_razem_z.join(", ")}`}
+                  style={{ ...plakietka, background: "var(--info-soft)", color: "var(--info)", cursor: "help", textTransform: "none" }}>
+                  razem z {c.koszt_razem_z.join(", ")}
+                </span>
+              )}
               <DokumentyPlakietka c={c} onToggle={edytujeKontenery && onToggleDokumenty ? (v) => { void onToggleDokumenty(v); } : undefined} />
               {pokazSad && (
                 c.koszt_status === "zapisana"

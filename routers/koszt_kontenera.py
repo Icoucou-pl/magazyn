@@ -24,10 +24,10 @@ from audit_opisy import f_num, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
-    CurrentUser, KodCnIn, KursOut, KosztGrupaOut, KosztKontenerIn, KosztKontenerOut, KosztPlatnoscOut,
+    CurrentUser, KodCnIn, KontenerKrotkoOut, KursOut, RozliczenieRazemIn, RozliczenieRazemOut, KosztGrupaOut, KosztKontenerIn, KosztKontenerOut, KosztPlatnoscOut,
     KosztPozycjaOut, KosztUwagaOut, StawkaCnIn, StawkaCnOut,
 )
-from routers.odprawy import _koszt_erp
+from routers.odprawy import _etykieta_sql, _koszt_erp
 from security import (
     can_edit_landed_cost, get_current_user, require_landed_cost_edit, require_landed_cost_view,
     require_perm, require_super_admin_403, resolve_shop,
@@ -86,6 +86,7 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
             erp[p.item_id] = (ceny.get(p.sku.lower()), zrodlo)
 
     stawki = await slownik_stawek(db)
+    razem = await _krotko(db, w.razem_z)
     zapis = (await db.execute(text(f"SELECT zapisal, zapisano FROM {T_KONTENER} WHERE container_id = :c"),
                               {"c": cid})).mappings().first()
 
@@ -105,6 +106,7 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
             platnosci=[KosztPlatnoscOut(typ=x.typ, kwota=x.kwota, waluta=x.waluta, data=x.data,
                                         kurs=x.kurs, data_kursu=x.data_kursu) for x in g.platnosci],
         ) for g in w.grupy],
+        razem_z=razem,
         pozycje=[KosztPozycjaOut(
             item_id=p.item_id, sku=p.sku, nazwa=nazwy.get(p.sku.lower()), szt=p.szt, grupa=p.grupa,
             krajowa=p.krajowa, cbm_szt=meta[p.item_id]["cbm_szt"], cena_planowana=p.cena_planowana,
@@ -211,6 +213,96 @@ async def ostatni_kurs(waluta: str = Query("USD"), db: AsyncSession = Depends(ge
     jutro = date.today() + timedelta(days=1)
     d, k = (await kursy_przed(db, [(w, jutro)])).get((w, jutro), (None, None))
     return KursOut(waluta=w, kurs=k, data=d)
+
+
+# ============================================================
+# Wspólna faktura — kontenery rozliczane razem
+# ============================================================
+
+async def _krotko(db: AsyncSession, ids, gdzie: str = "c.id = ANY(:ids)", params: Optional[dict] = None
+                  ) -> List[KontenerKrotkoOut]:
+    if gdzie == "c.id = ANY(:ids)" and not ids:
+        return []
+    rows = (await db.execute(text(f"""
+        SELECT c.id, {_etykieta_sql()} AS etykieta, m.name AS dostawca, c.eta_date
+          FROM {settings.TABLE_CONTAINERS} c
+          LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = c.manufacturer_id
+         WHERE {gdzie}
+         ORDER BY c.eta_date DESC NULLS LAST, c.id DESC
+    """), {"ids": list(ids or []), **(params or {})})).mappings().all()
+    return [KontenerKrotkoOut(id=r["id"], etykieta=r["etykieta"], dostawca=r["dostawca"], eta=r["eta_date"])
+            for r in rows]
+
+
+@router.get("/kontenery/{container_id}/rozliczenie-razem", response_model=RozliczenieRazemOut)
+async def rozliczenie_razem(container_id: int, db: AsyncSession = Depends(get_db),
+                            user: CurrentUser = Depends(require_landed_cost_view)):
+    """Z kim ten kontener dzieli płatności + kandydaci: zwykłe (nieskonsolidowane) kontenery,
+    najpierw tego samego dostawcy i z bliską datą ETA."""
+    k = (await db.execute(text(f"SELECT id, manufacturer_id, eta_date, rozliczenie_grupa "
+                               f"FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
+                          {"id": container_id})).mappings().first()
+    if not k:
+        raise HTTPException(404, "Nie ma takiego kontenera")
+    polaczone = await _krotko(db, None, "c.rozliczenie_grupa = :g AND c.id <> :id",
+                              {"g": k["rozliczenie_grupa"], "id": container_id}) if k["rozliczenie_grupa"] else []
+    kandydaci = await _krotko(db, None, f"""c.id IN (
+            SELECT x.id FROM {settings.TABLE_CONTAINERS} x
+             WHERE x.id <> :id AND NOT COALESCE(x.is_consolidated, FALSE)
+             ORDER BY (x.manufacturer_id IS NOT DISTINCT FROM :m) DESC,
+                      ABS(x.eta_date - CAST(:eta AS DATE)) NULLS LAST
+             LIMIT 40)""", {"id": container_id, "m": k["manufacturer_id"], "eta": k["eta_date"]})
+    juz = {p.id for p in polaczone}
+    return RozliczenieRazemOut(polaczone=polaczone, kandydaci=[c for c in kandydaci if c.id not in juz])
+
+
+@router.put("/kontenery/{container_id}/rozliczenie-razem", response_model=RozliczenieRazemOut)
+async def zapisz_rozliczenie_razem(container_id: int, body: RozliczenieRazemIn, db: AsyncSession = Depends(get_db),
+                                   user: CurrentUser = Depends(require_landed_cost_edit)):
+    """Ustawia wspólną fakturę: ten kontener + `kontenery` liczą towar z płatności razem.
+    Lista dokładnie opisuje grupę — kontener zdjęty z listy wraca do liczenia sam."""
+    nowe = {container_id} | set(body.kontenery)
+    rows = (await db.execute(text(f"""
+        SELECT id, COALESCE(is_consolidated, FALSE) AS skonsolidowany, rozliczenie_grupa
+          FROM {settings.TABLE_CONTAINERS} WHERE id = ANY(:ids)
+    """), {"ids": list(nowe)})).mappings().all()
+    if len(rows) != len(nowe):
+        raise HTTPException(404, "Nie ma takiego kontenera")
+    if any(r["skonsolidowany"] for r in rows):
+        raise HTTPException(422, "Kontener skonsolidowany ma płatności per lot — nie łączymy go z innymi")
+    stara = next((r["rozliczenie_grupa"] for r in rows if r["id"] == container_id), None)
+    przed = await _krotko(db, None, "c.rozliczenie_grupa = :g AND c.id <> :id",
+                          {"g": stara, "id": container_id}) if stara else []
+
+    # Grupa tego kontenera w całości od nowa, a nowi członkowie wychodzą ze swoich starych grup.
+    await db.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET rozliczenie_grupa = NULL "
+                          f"WHERE id = ANY(:ids) OR (CAST(:g AS INTEGER) IS NOT NULL AND rozliczenie_grupa = :g)"),
+                     {"ids": list(nowe), "g": stara})
+    if len(nowe) > 1:
+        await db.execute(text(f"""
+            UPDATE {settings.TABLE_CONTAINERS}
+               SET rozliczenie_grupa = (SELECT COALESCE(MAX(rozliczenie_grupa), 0) + 1 FROM {settings.TABLE_CONTAINERS})
+             WHERE id = ANY(:ids)
+        """), {"ids": list(nowe)})
+    # Grupa, z której ktoś odszedł i został w niej jeden kontener, przestaje istnieć.
+    await db.execute(text(f"""
+        UPDATE {settings.TABLE_CONTAINERS} SET rozliczenie_grupa = NULL
+         WHERE rozliczenie_grupa IN (SELECT rozliczenie_grupa FROM {settings.TABLE_CONTAINERS}
+                                      WHERE rozliczenie_grupa IS NOT NULL
+                                      GROUP BY rozliczenie_grupa HAVING COUNT(*) = 1)
+    """))
+    await db.commit()
+
+    po = await rozliczenie_razem(container_id, db, user)
+    fmt = lambda lista: ", ".join(k.etykieta for k in lista) or "—"   # noqa: E731
+    if fmt(przed) == fmt(po.polaczone):
+        audit.skip()
+    else:
+        audit.note(f"ustawił wspólną fakturę kontenera {await audit.nazwa_kontenera(db, container_id)}: "
+                   f"rozliczany razem z {fmt(po.polaczone)}",
+                   changes=[{"pole": "Rozliczany razem z", "bylo": fmt(przed), "jest": fmt(po.polaczone)}],
+                   resource_type="container", resource_id=container_id)
+    return po
 
 
 # ============================================================

@@ -358,6 +358,9 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "subiekt_wbite_at", "DATE")
         await add_column_if_missing(conn, settings.TABLE_CONTAINER_LOTS, "subiekt_wbite", "BOOLEAN DEFAULT FALSE")
         await add_column_if_missing(conn, settings.TABLE_CONTAINER_LOTS, "subiekt_wbite_at", "DATE")
+        # Migracja: kontenery rozliczane razem (jedna faktura dostawcy w kilku kontenerach).
+        # Ta sama liczba = wspólne płatności w koszcie jednostkowym. NULL = rozliczany sam.
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "rozliczenie_grupa", "INTEGER")
         # Migracja: „dokumenty wysłane do agencji celnej" — klikalna plakietka na liście kontenerów
         # (kto i kiedy kliknął), żeby bez wchodzenia w kontener było widać, gdzie jest komplet.
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane", "BOOLEAN DEFAULT FALSE")
