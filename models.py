@@ -465,6 +465,11 @@ class ContainerAdvanceOut(BaseModel):
     data: Optional[date] = None
 
 
+class DokumentyIn(BaseModel):
+    """Plakietka „dokumenty wysłane do agencji celnej" — True = wysłane, False = cofnij."""
+    value: bool
+
+
 class SubiektWbiteIn(BaseModel):
     """Przełącznik kropki „dodano do Subiektu". lot_id=None → dotyczy kontenera (nieskonsolidowany)."""
     value: bool
@@ -674,6 +679,13 @@ class ContainerOut(BaseModel):
     subiekt_wbite_at: Optional[date] = None
     delivered_date: Optional[date] = None            # ręczna, potwierdzona data dostawy (jeśli jest)
     expected_delivery_date: Optional[date] = None    # „u nas" — umówiona data odbioru (przed potwierdzeniem)
+    # Dokumenty do agencji celnej wysłane — klikalna plakietka na liście (kto i kiedy).
+    dokumenty_wyslane: bool = False
+    dokumenty_wyslane_at: Optional[datetime] = None
+    dokumenty_wyslal: Optional[str] = None
+    # Koszt jednostkowy (metoda szefa): 'policzony' | 'szacunek' | None (brak pozycji
+    # albo brak uprawnienia „Koszt jednostkowy kontenera" — wtedy plakietki nie ma).
+    koszt_v2: Optional[str] = None
     # Płatności przeliczone na PLN (kurs NBP z dnia poprzedzającego wpłatę).
     zaplacono_pln: float = 0.0    # faktycznie zapłacone (zaliczki z datą + balance z zaplacono_data)
     pozostalo_pln: float = 0.0    # wartość towaru − zapłacone, nie schodzi poniżej 0

@@ -358,6 +358,11 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "subiekt_wbite_at", "DATE")
         await add_column_if_missing(conn, settings.TABLE_CONTAINER_LOTS, "subiekt_wbite", "BOOLEAN DEFAULT FALSE")
         await add_column_if_missing(conn, settings.TABLE_CONTAINER_LOTS, "subiekt_wbite_at", "DATE")
+        # Migracja: „dokumenty wysłane do agencji celnej" — klikalna plakietka na liście kontenerów
+        # (kto i kiedy kliknął), żeby bez wchodzenia w kontener było widać, gdzie jest komplet.
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane", "BOOLEAN DEFAULT FALSE")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane_at", "TIMESTAMP")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslal", "VARCHAR(255)")
 
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_ITEMS} (

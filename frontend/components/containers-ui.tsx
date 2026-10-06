@@ -11,7 +11,7 @@ import { I, Pill, MfrChip, ContainerNr, isDraftNumber } from "./ui";
 import { btnPrimary, btnSecondary } from "./products-ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { PhotoHover } from "./photo-hover";
-import { download } from "@/lib/api";
+import { api, download } from "@/lib/api";
 import { canEdit, can, canSeeSad, useUser } from "@/lib/permissions";
 import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
 import { trackingUrl, carrierLabel } from "@/lib/tracking";
@@ -103,6 +103,10 @@ export type Container = {
   zaplacono_data?: string | null;
   subiekt_wbite?: boolean | null;
   subiekt_wbite_at?: string | null;
+  dokumenty_wyslane?: boolean | null;          // dokumenty do agencji celnej wysłane (klikalna plakietka)
+  dokumenty_wyslane_at?: string | null;
+  dokumenty_wyslal?: string | null;
+  koszt_v2?: "policzony" | "szacunek" | null;  // koszt jednostkowy (metoda szefa) — tylko dla uprawnionych
   delivered_date?: string | null;              // ręczna, potwierdzona data dostawy
   expected_delivery_date?: string | null;      // „u nas" — umówiona data odbioru (nie domyka statusu)
   warehouse_delivery_date?: string | null;     // KPI: delivered_date → expected_delivery_date → ETA + odprawa
@@ -510,15 +514,77 @@ export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggl
   );
 }
 
+// ── Plakietki w nagłówku karty ───────────────────────────────
+const plakietka: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", fontSize: 10, fontWeight: 600,
+  letterSpacing: "0.02em", borderRadius: 999, whiteSpace: "nowrap", textTransform: "uppercase", font: "inherit",
+};
+const fmtKiedy = (s?: string | null) => {
+  if (!s) return "";
+  const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  return isNaN(d.getTime()) ? "" : d.toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+/** Koszt jednostkowy produktów z tego kontenera — „policzony" albo „szacunek" (nie wszystko zapłacone). */
+export function KosztPlakietka({ stan }: { stan?: "policzony" | "szacunek" | null }) {
+  if (!stan) return null;
+  const ok = stan === "policzony";
+  return (
+    <span title={ok
+      ? "Koszt jednostkowy produktów na tym kontenerze został policzony (z zapłaconych płatności) — zakładka „Koszt jednostkowy”"
+      : "Koszt jednostkowy produktów na tym kontenerze jest szacunkiem — nie wszystko zapłacone albo brak płatności na karcie"}
+      style={{ ...plakietka, fontSize: 10, padding: "2px 7px",
+        background: ok ? "var(--ok-soft)" : "var(--warning-soft)", color: ok ? "var(--ok)" : "var(--warning)", cursor: "help" }}>
+      {ok ? "policzony" : "koszt — szacunek"}
+    </span>
+  );
+}
+
+/** Zapis plakietki „dokumenty wysłane" — wspólny dla listy kontenerów i karty kontenera. */
+export async function zapiszDokumenty(cid: number, value: boolean, reload: () => Promise<unknown> | void) {
+  try {
+    await api.post(`/containers/${cid}/dokumenty`, { value });
+    await reload();
+    toast(value ? "Oznaczono: dokumenty wysłane do agencji celnej" : "Cofnięto: dokumenty do wysłania", "ok");
+  } catch (e) {
+    const err = e as { status?: number; message?: string };
+    toast(`Nie udało się zapisać: ${[err?.status, err?.message].filter(Boolean).join(": ") || "brak odpowiedzi serwera"}`, "warning");
+  }
+}
+
+/** Dokumenty do agencji celnej: kto wysłał komplet, klika — reszta widzi na liście bez wchodzenia. */
+export function DokumentyPlakietka({ c, onToggle }: { c: Container; onToggle?: (value: boolean) => void }) {
+  const wyslane = !!c.dokumenty_wyslane;
+  // Po dostawie brak znacznika to już historia — nie zaśmiecamy starych kontenerów „do wysłania".
+  if (!wyslane && eff(c) === "DELIVERED") return null;
+  const kiedy = fmtKiedy(c.dokumenty_wyslane_at);
+  const opis = wyslane
+    ? `Dokumenty wysłane do agencji celnej${c.dokumenty_wyslal ? ` — ${c.dokumenty_wyslal}` : ""}${kiedy ? `, ${kiedy}` : ""}`
+    : "Dokumenty jeszcze nie wysłane do agencji celnej";
+  const styl: React.CSSProperties = wyslane
+    ? { ...plakietka, background: "var(--ok-soft)", color: "var(--ok)", border: "1px solid transparent" }
+    : { ...plakietka, background: "transparent", color: "var(--text-lo)", border: "1px dashed var(--border-strong)" };
+  if (!onToggle) return <span title={opis} style={styl}>{wyslane ? "✓ dokumenty wysłane" : "dokumenty do wysłania"}</span>;
+  return (
+    <button type="button" title={`${opis} — kliknij, ${wyslane ? "by cofnąć" : "gdy wysłane"}`}
+      onClick={(e) => { e.stopPropagation(); onToggle(!wyslane); }}
+      style={{ ...styl, cursor: "pointer" }}>
+      {wyslane ? "✓ dokumenty wysłane" : "dokumenty do wysłania"}
+    </button>
+  );
+}
+
 // ── Karta kontenera ──────────────────────────────────────────
 export function ContainerCard({
   container: c, expanded, onToggle, onEdit, onAdvance, onGeneratePO, onSetDelivered, onToggleSubiekt, onManufacturerClick,
-  pinned = false, onProductClick, highlightSku, onOpenPage,
+  pinned = false, onProductClick, highlightSku, onOpenPage, onToggleDokumenty,
 }: {
   container: Container; expanded: boolean; onToggle: () => void;
   onEdit: () => void; onAdvance: () => void; onGeneratePO?: () => void;
   onSetDelivered?: (d: string | null) => Promise<void>;
   onToggleSubiekt?: (lotId: number | null, value: boolean) => Promise<void> | void;
+  /** Plakietka „dokumenty wysłane". Bez propa (albo bez editContainers) — tylko do odczytu. */
+  onToggleDokumenty?: (value: boolean) => Promise<void> | void;
   /** Otwiera szczegóły producenta. Bez tego propa przycisk się nie pojawia. */
   onManufacturerClick?: (id: number) => void;
   /** Karta kontenera (/kontenery/NR): zawsze rozwinięta, nagłówek nie zwija. */
@@ -535,6 +601,7 @@ export function ContainerCard({
   const meta = STATUS_FULL_META[eStatus] || STATUS_FULL_META.ORDERED;
   const showFin = can(useUser(), "viewFinancials");
   const pokazSad = canSeeSad(useUser());
+  const edytujeKontenery = can(useUser(), "editContainers");
   const Icon = meta.icon;
   const days = Math.ceil((new Date(c.eta_date).getTime() - Date.now()) / 86400000);
   const isDelivered = eStatus === "DELIVERED";
@@ -598,6 +665,8 @@ export function ContainerCard({
               {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa celna" : "auto"}</Pill>}
               {/* Stan odprawy (SAD) — tylko superadmin, jako kontrola. Koszt jednostkowy liczy się
                   sam z karty kontenera (zakładka „Koszt jednostkowy"), więc „bez kosztu" już nie ma. */}
+              <KosztPlakietka stan={c.koszt_v2} />
+              <DokumentyPlakietka c={c} onToggle={edytujeKontenery && onToggleDokumenty ? (v) => { void onToggleDokumenty(v); } : undefined} />
               {pokazSad && (
                 c.koszt_status === "zapisana"
                   ? <Pill bg="var(--ok-soft)" fg="var(--ok)" size="sm">SAD zapisany</Pill>

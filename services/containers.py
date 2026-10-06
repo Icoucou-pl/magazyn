@@ -379,6 +379,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.waluta_towaru, c.zaliczka_procent, c.zaliczka_kwota, c.zaliczka_waluta, c.zaliczka_data,
             c.balance_kwota, c.balance_waluta, c.balance_termin, c.zaplacono_data, c.delivered_date, c.expected_delivery_date,
             c.subiekt_wbite, c.subiekt_wbite_at,
+            c.dokumenty_wyslane, c.dokumenty_wyslane_at, c.dokumenty_wyslal,
             odp.status AS koszt_status,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
@@ -461,6 +462,9 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "expected_delivery_date": row["expected_delivery_date"],
                 "subiekt_wbite": bool(row["subiekt_wbite"]),
                 "subiekt_wbite_at": row["subiekt_wbite_at"],
+                "dokumenty_wyslane": bool(row["dokumenty_wyslane"]),
+                "dokumenty_wyslane_at": row["dokumenty_wyslane_at"],
+                "dokumenty_wyslal": row["dokumenty_wyslal"],
                 "warehouse_delivery_date": None,   # liczone niżej: delivered_date lub ETA + odprawa
                 "notes": row["notes"],
                 "items": [], "attachments": [], "advances": [],

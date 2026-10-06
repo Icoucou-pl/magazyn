@@ -15,7 +15,7 @@ import { useShop } from "@/lib/shop";
 import { I, containerLabel } from "./ui";
 import {
   ContainersToolbar, ContainerCard, ContainersStyles, MiniStat, MonthGroup, monthLabelPL,
-  STATUS_FLOW, FILTER_STATUSES, eff, type Container,
+  STATUS_FLOW, FILTER_STATUSES, eff, zapiszDokumenty, type Container,
 } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import AutoSuggestModal from "./auto-suggest";
@@ -358,6 +358,9 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
     }
   };
 
+  // Plakietka „dokumenty wysłane do agencji celnej" — ten sam zapis co na karcie kontenera.
+  const toggleDokumenty = (c: Container, value: boolean) => zapiszDokumenty(c.id, value, reload);
+
   if (loading) {
     return (
       <div className="pulse-soft" style={{ display: "flex", flexDirection: "column", gap, paddingBottom: 80 }}>
@@ -450,6 +453,7 @@ export default function ContainersView({ density, openId, onOpenedId, onDeepLink
                     onGeneratePO={canPO ? () => setPoContainer(c) : undefined}
                     onSetDelivered={(d) => setDelivered(c, d)}
                     onToggleSubiekt={(lotId, value) => toggleSubiekt(c, lotId, value)}
+                    onToggleDokumenty={(value) => toggleDokumenty(c, value)}
                     onManufacturerClick={(id) => setMfrModalId(id)}
                     onOpenPage={onOpenContainerPage ? () => onOpenContainerPage(c) : undefined}
                   />

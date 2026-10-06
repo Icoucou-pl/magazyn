@@ -125,3 +125,19 @@ def test_lista_stawek_to_obserwowane_nowosci_i_sample(klient, monkeypatch):
     assert (po["PROBKA"]["stawka"], po["PROBKA"]["zrodlo"]) == (2.7, "reczna")
     assert po["NOWY"]["kod_cn"] is None and po["NOWY"]["stawka"] is None
     assert [x["sku"] for x in r.json()][0] == "NOWY", "braki na górze listy"
+
+
+# ── plakietki na liście kontenerów ──────────────────────────
+
+def test_dokumenty_wyslane_klika_tylko_edycja_kontenerow(klient):
+    r = klient(role="VIEWER").post("/api/containers/1/dokumenty", json={"value": True})
+    assert r.status_code == 403
+
+
+def test_plakietka_kosztu_tylko_dla_widzacych_koszt():
+    import asyncio
+    from routers.containers import _dolicz_koszt
+    k = SimpleNamespace(id=1, koszt_v2=None)
+    # bez uprawnienia nawet nie liczymy (db=None nie jest dotykane)
+    asyncio.run(_dolicz_koszt(None, [k], CurrentUser(id=1, email="v@firma.pl", role="VIEWER")))
+    assert k.koszt_v2 is None

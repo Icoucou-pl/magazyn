@@ -19,9 +19,12 @@ from config import settings
 from database import get_db, SessionLocal
 from models import (
     ContainerStatus, ContainerOut, ContainerCreate, ContainerUpdate,
-    AttachmentOut, AttachmentCreate, CurrentUser, SubiektWbiteIn,
+    AttachmentOut, AttachmentCreate, CurrentUser, DokumentyIn, SubiektWbiteIn,
 )
-from security import get_current_user, require_edit_containers, require_export, require_attachments, has_perm, is_super_admin
+from security import (
+    can_view_landed_cost, get_current_user, has_perm, is_super_admin, require_attachments,
+    require_edit_containers, require_export,
+)
 from services.containers import fetch_containers, get_container_by_id
 
 router = APIRouter(prefix="/api", tags=["containers"])
@@ -58,6 +61,22 @@ def _mask_sad(containers, user):
     if not is_super_admin(user):
         for c in containers:
             c.koszt_status = None
+    return containers
+
+
+async def _dolicz_koszt(db: AsyncSession, containers, user):
+    """Plakietka „policzony / szacunek" na liście — koszt jednostkowy liczony metodą szefa
+    (services/koszt_kontenera.py) hurtem dla wszystkich kontenerów naraz. Tylko dla tych, kto
+    widzi zakładkę „Koszt jednostkowy"; reszta plakietki nie dostaje (koszt_v2 = None)."""
+    if not containers or not can_view_landed_cost(user):
+        return containers
+    from services.koszt_kontenera_dane import policz_kontenery
+
+    wyniki, _ = await policz_kontenery(db, [c.id for c in containers])
+    for c in containers:
+        w = wyniki.get(c.id)
+        if w and w.pozycje:
+            c.koszt_v2 = "szacunek" if w.szacunek else "policzony"
     return containers
 
 
@@ -526,7 +545,8 @@ async def export_containers_xlsx(db: AsyncSession = Depends(get_db), user: Curre
 
 @router.get("/containers", response_model=List[ContainerOut])
 async def list_containers(status: Optional[ContainerStatus] = None, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    return _mask_sad(_mask_container_attachments(_mask_container_financials(await fetch_containers(db, status), user), user), user)
+    lista = _mask_sad(_mask_container_attachments(_mask_container_financials(await fetch_containers(db, status), user), user), user)
+    return await _dolicz_koszt(db, lista, user)
 
 
 @router.get("/containers/{cid}", response_model=ContainerOut)
@@ -535,6 +555,7 @@ async def get_container(cid: int, db: AsyncSession = Depends(get_db), user: Curr
     _mask_container_financials([c], user)
     _mask_container_attachments([c], user)
     _mask_sad([c], user)
+    await _dolicz_koszt(db, [c], user)
     return c
 
 
@@ -954,6 +975,29 @@ async def deliver_container(cid: int, db: AsyncSession = Depends(get_db), user: 
     if po:
         audit.note(f"oznaczył kontener {_nazwa_kontenera(po, cid)} jako dostarczony",
                    changes=audit.zmiany(przed, po, POLA_KONTENERA), resource_id=cid)
+    return _mask_sad([await get_container_by_id(db, cid)], user)[0]
+
+
+@router.post("/containers/{cid}/dokumenty", response_model=ContainerOut)
+async def set_dokumenty(cid: int, payload: DokumentyIn, db: AsyncSession = Depends(get_db),
+                        user: CurrentUser = Depends(require_edit_containers)):
+    """Plakietka „dokumenty wysłane do agencji celnej": kto wysłał komplet, klika — reszta
+    zespołu widzi na liście, gdzie dokumenty już poszły. Ponowne kliknięcie cofa."""
+    kto = (user.full_name or user.email) if payload.value else None
+    r = await db.execute(
+        text(f"UPDATE {settings.TABLE_CONTAINERS} SET dokumenty_wyslane = :v, "
+             f"dokumenty_wyslane_at = CASE WHEN :v THEN CURRENT_TIMESTAMP END, dokumenty_wyslal = :kto, "
+             f"updated_at = CURRENT_TIMESTAMP WHERE id = :cid"),
+        {"v": payload.value, "kto": kto, "cid": cid},
+    )
+    if r.rowcount == 0:
+        raise HTTPException(404, "Nie ma takiego kontenera")
+    await db.commit()
+    nazwa = await audit.nazwa_kontenera(db, cid)
+    audit.note(f"oznaczył dokumenty kontenera {nazwa} jako wysłane do agencji celnej" if payload.value
+               else f"cofnął znacznik „dokumenty wysłane” kontenera {nazwa}",
+               changes=[{"pole": "Dokumenty wysłane", "bylo": f_bool(not payload.value), "jest": f_bool(payload.value)}],
+               resource_id=cid)
     return _mask_sad([await get_container_by_id(db, cid)], user)[0]
 
 

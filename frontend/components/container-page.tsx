@@ -21,7 +21,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Breadcrumbs, { type Trail } from "./breadcrumbs";
-import { ContainerCard, ContainersStyles, STATUS_FLOW, type Container } from "./containers-ui";
+import { ContainerCard, ContainersStyles, STATUS_FLOW, zapiszDokumenty, type Container } from "./containers-ui";
 import ContainerFormModal, { type ContainerType } from "./container-form";
 import OrderPdfModal from "./order-pdf";
 import type { Manufacturer, Product } from "./products-ui";
@@ -295,6 +295,7 @@ export default function ContainerPage({
         onGeneratePO={canPO ? () => { void openPO(); } : undefined}
         onSetDelivered={setDelivered}
         onToggleSubiekt={toggleSubiekt}
+        onToggleDokumenty={(value) => zapiszDokumenty(container.id, value, reload)}
         onManufacturerClick={(id) => { const n = mfrNameById.get(id); if (n) onOpenManufacturer(n); }}
         onProductClick={onOpenProduct}
         highlightSku={highlightSku}
