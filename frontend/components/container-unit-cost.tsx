@@ -41,8 +41,11 @@ type Koszt = {
   kurs_towaru_reczny: number | null; fracht_reczny: number | null; lenmar_reczny: number | null;
   transport_reczny: number | null; lenmar_kontener: number; lenmar_zgloszenie: number;
   grupy: Grupa[]; pozycje: Pozycja[]; uwagi: { poziom: string; tresc: string }[];
+  razem_z: KontenerKrotko[];
   zapisal: string | null; zapisano: string | null; moze_edytowac: boolean;
 };
+
+type KontenerKrotko = { id: number; etykieta: string; dostawca?: string | null; eta?: string | null };
 
 // Poprawki jako tekst z pól (po polsku, z przecinkiem). "" = automat.
 type Szkic = {
@@ -270,6 +273,11 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
         </div>
       )}
 
+      {!k.krajowa && (
+        <WspolnaFaktura containerId={containerId} edycja={edycja}
+          onZmiana={() => { wczytaj().then(przyjmij).catch(() => toast("Nie udało się wczytać kosztu", "error")); }} />
+      )}
+
       <div style={karta}>
         <Naglowek tytul="Założenia" hint={edycja ? "Puste pole = wartość automatyczna. Wpisana liczba zastępuje automat." : undefined} />
         {zalozenia.map((z) => {
@@ -406,6 +414,65 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Wspólna faktura: kontenery rozliczane razem ─────────────
+// Faktura dostawcy bywa rozłożona na dwa kontenery, a płatności wpisane według faktur —
+// wtedy jeden kontener ma pieniądze za towar, który jedzie w drugim. Połączone kontenery
+// liczą towar ze wspólnych płatności; fracht, Lenmar i transport zostają na swoich kartach.
+function WspolnaFaktura({ containerId, edycja, onZmiana }: { containerId: number; edycja: boolean; onZmiana: () => void }) {
+  const [dane, setDane] = useState<{ polaczone: KontenerKrotko[]; kandydaci: KontenerKrotko[] } | null>(null);
+  const [wybor, setWybor] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [licznik, setLicznik] = useState(0);
+  useEffect(() => {
+    let zywy = true;
+    api.get(`/kontenery/${containerId}/rozliczenie-razem`)
+      .then((r) => { if (zywy) setDane(r as { polaczone: KontenerKrotko[]; kandydaci: KontenerKrotko[] }); })
+      .catch(() => { /* bez listy sekcja się po prostu nie pokaże */ });
+    return () => { zywy = false; };
+  }, [containerId, licznik]);
+  if (!dane || (!edycja && !dane.polaczone.length)) return null;
+
+  const zapisz = async (ids: number[]) => {
+    setBusy(true);
+    try {
+      await api.put(`/kontenery/${containerId}/rozliczenie-razem`, { kontenery: ids });
+      setWybor(""); setLicznik((n) => n + 1); onZmiana();
+      toast(ids.length ? "Zapisano wspólną fakturę — płatności liczone razem" : "Kontener rozliczany sam", "ok");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się zapisać", "error");
+    } finally { setBusy(false); }
+  };
+  const ids = dane.polaczone.map((x) => x.id);
+  return (
+    <div style={karta}>
+      <Naglowek tytul="Wspólna faktura" hint="Płatności połączonych kontenerów idą na towar wszystkich — fracht, Lenmar i transport zostają na kartach" />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "10px 16px" }}>
+        <span style={{ fontSize: 12.5, color: "var(--text-mid)" }}>Rozliczany razem z:</span>
+        {dane.polaczone.length ? dane.polaczone.map((x) => (
+          <span key={x.id} style={{ ...tag, fontSize: 11, padding: "3px 8px", background: "var(--info-soft)", color: "var(--info)", display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <span className="mono">{x.etykieta}</span>
+            {edycja && <button onClick={() => { void zapisz(ids.filter((i) => i !== x.id)); }} disabled={busy}
+              title="Odłącz — ten kontener wróci do liczenia sam" style={{ ...btnLink, padding: 0, fontSize: 12 }}>×</button>}
+          </span>
+        )) : <span style={{ fontSize: 12.5, color: "var(--text-lo)" }}>— sam (płatności tylko z tej karty)</span>}
+        {edycja && (
+          <>
+            <select value={wybor} onChange={(e) => setWybor(e.target.value)} disabled={busy} aria-label="Dodaj kontener do wspólnej faktury"
+              style={{ ...input, textAlign: "left", fontFamily: "inherit", padding: "5px 8px", minWidth: 220 }}>
+              <option value="">dodaj kontener…</option>
+              {dane.kandydaci.map((x) => (
+                <option key={x.id} value={x.id}>{x.etykieta}{x.dostawca ? ` · ${x.dostawca}` : ""}{x.eta ? ` · ETA ${data(x.eta)}` : ""}</option>
+              ))}
+            </select>
+            <button onClick={() => { if (wybor) void zapisz([...ids, Number(wybor)]); }} disabled={busy || !wybor}
+              style={{ ...btnSec, opacity: busy || !wybor ? 0.5 : 1 }}>Połącz</button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

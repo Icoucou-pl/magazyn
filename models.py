@@ -686,6 +686,7 @@ class ContainerOut(BaseModel):
     # Koszt jednostkowy (metoda szefa): 'policzony' | 'szacunek' | None (brak pozycji
     # albo brak uprawnienia „Koszt jednostkowy kontenera" — wtedy plakietki nie ma).
     koszt_v2: Optional[str] = None
+    koszt_razem_z: List[str] = []   # wspólna faktura: kontenery rozliczane razem (etykiety) — jak koszt_v2
     # Płatności przeliczone na PLN (kurs NBP z dnia poprzedzającego wpłatę).
     zaplacono_pln: float = 0.0    # faktycznie zapłacone (zaliczki z datą + balance z zaplacono_data)
     pozostalo_pln: float = 0.0    # wartość towaru − zapłacone, nie schodzi poniżej 0
@@ -1302,6 +1303,23 @@ class CenaProduktuOut(BaseModel):
 
 
 # ===== KOSZT JEDNOSTKOWY v2 („metoda szefa”) =====
+class KontenerKrotkoOut(BaseModel):
+    id: int
+    etykieta: str
+    dostawca: Optional[str] = None
+    eta: Optional[date] = None
+
+
+class RozliczenieRazemOut(BaseModel):
+    """Kontenery rozliczane wspólnie z tym (jedna faktura dostawcy) + podpowiedzi do wyboru."""
+    polaczone: List[KontenerKrotkoOut] = []
+    kandydaci: List[KontenerKrotkoOut] = []
+
+
+class RozliczenieRazemIn(BaseModel):
+    kontenery: List[int] = []                 # pusta lista = rozliczaj sam
+
+
 class KosztPlatnoscOut(BaseModel):
     typ: str                                  # 'zaliczka' | 'balance'
     kwota: float
@@ -1389,6 +1407,7 @@ class KosztKontenerOut(BaseModel):
     lenmar_kontener: float = 0.0              # stałe ryczałtu — do opisu „1 600 + 600 × …”
     lenmar_zgloszenie: float = 0.0
     grupy: List[KosztGrupaOut] = []
+    razem_z: List[KontenerKrotkoOut] = []     # wspólna faktura: płatności liczone razem z tymi kontenerami
     pozycje: List[KosztPozycjaOut] = []
     uwagi: List[KosztUwagaOut] = []
     zapisal: Optional[str] = None

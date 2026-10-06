@@ -145,3 +145,8 @@ def test_plakietka_kosztu_tylko_dla_widzacych_koszt():
     # bez uprawnienia nawet nie liczymy (db=None nie jest dotykane)
     asyncio.run(_dolicz_koszt(None, [k], CurrentUser(id=1, email="v@firma.pl", role="VIEWER")))
     assert k.koszt_v2 is None
+
+
+def test_wspolna_faktura_wymaga_uprawnien_kosztu(klient):
+    assert klient(role="VIEWER").get("/api/kontenery/1/rozliczenie-razem").status_code == 403
+    assert klient(role="IMPORT").put("/api/kontenery/1/rozliczenie-razem", json={"kontenery": [2]}).status_code == 403
