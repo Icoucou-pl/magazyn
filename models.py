@@ -1177,6 +1177,10 @@ class OdprawaOut(BaseModel):
     # Ustawienia rachunku odtworzone z zapisu — front wypełnia nimi pola nagłówka faktury
     # po odświeżeniu zakładki, żeby nie trzeba było wpisywać ich drugi raz.
     kurs_towaru: Optional[float] = None
+    # Kurs ważony z płatności (NBP z dni zapłaty zaliczek i balance) — ten sam co w zakładce
+    # „Koszt jednostkowy". Domyślny kurs towaru, gdy pole jest puste.
+    kurs_platnosci: Optional[float] = None
+    kurs_platnosci_szacunek: bool = False
     kurs_kosztow: Optional[float] = None
     fv_spedytora: Optional[str] = None
     fv_spedytora_data: Optional[date] = None
