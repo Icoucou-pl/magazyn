@@ -374,6 +374,12 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Migracja: znacznik „gratisy na tę pozycję" w poprawkach kosztu jednostkowego. Tabelę
+        # zakłada sql/2026-10-koszt-jednostkowy-v2.sql, więc dokładamy kolumnę tylko, gdy już jest —
+        # błąd ALTER-a na brakującej tabeli przerwałby całą transakcję startu.
+        if (await conn.execute(text("SELECT to_regclass('app_koszt_pozycji')"))).scalar():
+            await add_column_if_missing(conn, "app_koszt_pozycji", "gratis", "BOOLEAN NOT NULL DEFAULT FALSE")
+
         # Migracja: cena pozycji w walucie dostawcy (USD/CNY) / szt — z proformy/FV dostawcy.
         # Gdy jest, koszt jednostkowy (services/koszt_kontenera.py) bierze ją jako realną cenę
         # pozycji; unit_cost (PLN) zostaje do wartości kontenera. NULL = nie wpisano.

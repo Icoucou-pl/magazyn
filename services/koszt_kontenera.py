@@ -13,6 +13,9 @@ RACHUNEK (wszystkie kwoty w PLN)
      wpisana na pozycji kontenera (z proformy/FV dostawcy) — zostaje, a reszta pozycji dzieli
      to, co zostało z płatności. Bez płatności: wartość = ceny w walucie tam, gdzie są, a dla
      reszty ceny planowane (unit_cost to PLN) — SZACUNEK.
+     Gdy WSZYSTKIE pozycje mają ceny, a płatności są inne niż ich suma, różnica to gratisy
+     z faktury (części, próbki) albo rabat: rozkładamy ją na całą fakturę (grupę) po wartości
+     pozycji, a gdy pozycja ma znacznik `gratis` — w całości na nią. Wchodzi do wartości celnej.
   3. Fracht morski = koszt_transportu (USD) × kurs NBP sprzed dostawy (albo ETA), po CBM.
   4. Lenmar = ryczałt LENMAR_KONTENER + LENMAR_ZGLOSZENIE za każde dodatkowe zgłoszenie
      (jedno zgłoszenie na spółkę w kontenerze), po CBM.
@@ -91,6 +94,7 @@ class Pozycja:
     cena_reczna: Optional[float] = None      # ręczna cena w walucie / szt (krajowa: PLN / szt)
     cena_kontener: Optional[float] = None    # cena w walucie / szt wpisana na pozycji kontenera
     stawka_reczna: Optional[float] = None    # ręczna stawka cła % dla tej pozycji
+    gratis: bool = False                     # ta pozycja przejmuje całą różnicę płatności grupy
 
 
 @dataclass
@@ -133,6 +137,8 @@ class WynikPozycji:
     cena_zrodlo: str                  # 'reczna' | 'kontener' | 'auto' (rozłożone z płatności / plan)
     cena_planowana: float
     towar: float
+    gratisy: float                    # PLN — udział w różnicy płatności (gratisy z faktury / rabat)
+    gratis_przypiety: bool            # różnica grupy przypięta do tej pozycji
     fracht: float
     lenmar: float
     clo: float
@@ -165,6 +171,7 @@ class Wynik:
     zgloszen: int
     podzial: str                      # 'cbm' | 'wartosc'
     towar: float = 0.0
+    gratisy: float = 0.0
     clo: float = 0.0
     suma: float = 0.0
     narzut_proc: Optional[float] = None
@@ -209,10 +216,11 @@ def _rozloz(kwota: float, wagi: Dict[int, float]) -> Dict[int, float]:
 
 
 def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float],
-                  uwagi: List[Uwaga]) -> "tuple[WynikGrupy, Dict[int, float], Dict[int, float], set]":
+                  uwagi: List[Uwaga]) -> "tuple[WynikGrupy, Dict[int, float], Dict[int, float], set, Dict[int, float]]":
     """Towar w PLN i cena w walucie / szt dla pozycji jednej grupy.
 
-    Zwraca (wynik grupy, {item_id: towar PLN}, {item_id: cena waluta/szt}, {item_id z ręczną ceną}).
+    Zwraca (wynik grupy, {item_id: towar PLN}, {item_id: cena waluta/szt}, {item_id z ręczną ceną},
+    {item_id: gratisy PLN}).
     """
     plan = {p.item_id: p.unit_cost * p.szt for p in pozycje}
     reczne = {p.item_id for p in pozycje if p.cena_reczna is not None}
@@ -227,7 +235,7 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
         wg = WynikGrupy(id=g.id, nazwa=g.nazwa, krajowa=True, waluta="PLN", kurs=1.0, kurs_auto=1.0,
                         kurs_reczny=False, szacunek=False, wartosc_waluta=sum(towar.values()),
                         wartosc_zrodlo="faktura", platnosci=g.platnosci)
-        return wg, towar, cena, reczne
+        return wg, towar, cena, reczne, {}
 
     waluta = _waluta_glowna(g.platnosci, g.waluta)
     # Płatność bez kursu (NBP nie odpowiedział) liczymy po ostatnim znanym kursie — lepszy
@@ -309,18 +317,36 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
         if sum(wagi.values()) <= 0:
             wagi = {p.item_id: float(p.szt) for p in auto}
         wartosc_poz.update(_rozloz(reszta, wagi))
-    elif pozycje and abs(reszta) > TOLERANCJA_WALUTA and zrodlo == "platnosci":
-        uwagi.append(Uwaga("ostrzezenie", f"Wszystkie pozycje{etykieta} mają wpisaną cenę: {_pl(suma_reczna)} {waluta}, "
-                                          f"a płatności to {_pl(wartosc_waluta)} {waluta} "
-                                          f"(różnica {_pl(suma_reczna - wartosc_waluta, True)} {waluta})"))
+    gratis_waluta: Dict[int, float] = {}
+    if not auto and pozycje and abs(reszta) > TOLERANCJA_WALUTA and zrodlo == "platnosci":
+        # Wszystkie pozycje mają ceny, a zapłacono inaczej: różnica to gratisy z faktury (albo
+        # rabat). Zapłacone pieniądze muszą trafić do kosztu — domyślnie na całą fakturę po
+        # wartości pozycji, a przypięte do pozycji ze znacznikiem `gratis` — w całości na nią.
+        przypiete = [p for p in pozycje if p.gratis]
+        if przypiete:
+            wagi = {p.item_id: wartosc_poz[p.item_id] or float(p.szt) for p in przypiete}
+            gdzie = "przypięta do " + ", ".join(p.sku for p in przypiete)
+        else:
+            wagi = {p.item_id: wartosc_poz[p.item_id] for p in pozycje}
+            if sum(wagi.values()) <= 0:
+                wagi = {p.item_id: float(p.szt) for p in pozycje}
+            gdzie = "rozłożona na całą fakturę po wartości pozycji"
+        gratis_waluta = _rozloz(reszta, wagi)
+        if reszta > 0:
+            uwagi.append(Uwaga("info", f"Gratisy / różnica z płatności{etykieta}: {_pl(reszta)} {waluta} "
+                                       f"(płatności {_pl(wartosc_waluta)}, ceny pozycji {_pl(suma_reczna)}) — {gdzie}"))
+        else:
+            uwagi.append(Uwaga("ostrzezenie", f"Płatności{etykieta} są mniejsze niż ceny pozycji o {_pl(-reszta)} {waluta} "
+                                              f"(rabat albo literówka w cenie) — różnica {gdzie}"))
 
     towar = {k: v * (kurs or 0.0) for k, v in wartosc_poz.items()}
+    gratisy = {k: v * (kurs or 0.0) for k, v in gratis_waluta.items()}
     cena = {p.item_id: (wartosc_poz[p.item_id] / p.szt if p.szt else 0.0) for p in pozycje}
     wg = WynikGrupy(id=g.id, nazwa=g.nazwa, krajowa=False, waluta=waluta,
                     kurs=round(kurs, 6) if kurs else None, kurs_auto=round(kurs_auto, 6) if kurs_auto else None,
                     kurs_reczny=bool(kurs_reczny), szacunek=szacunek,
                     wartosc_waluta=round(wartosc_waluta, 2), wartosc_zrodlo=zrodlo, platnosci=g.platnosci)
-    return wg, towar, cena, reczne
+    return wg, towar, cena, reczne, gratisy
 
 
 def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wynik:
@@ -338,12 +364,14 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
     towar: Dict[int, float] = {}
     cena: Dict[int, float] = {}
     reczne: set = set()
+    gratisy: Dict[int, float] = {}
     krajowe_grupy = set()
     for gid, lista in po_grupie.items():
         g = znane[gid]
-        wg, t, c, r = _policz_grupe(g, lista, kontener.kurs_towaru if not g.krajowa else None, uwagi)
+        wg, t, c, r, gr = _policz_grupe(g, lista, kontener.kurs_towaru if not g.krajowa else None, uwagi)
         wyniki_grup.append(wg)
         towar.update(t)
+        gratisy.update(gr)
         cena.update(c)
         reczne |= r
         if g.krajowa:
@@ -380,8 +408,8 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
         wagi_imp = {p.item_id: p.cbm_szt * p.szt for p in importowe}
         wagi_all = {p.item_id: p.cbm_szt * p.szt for p in pozycje}
     else:
-        wagi_imp = {p.item_id: towar.get(p.item_id, 0.0) for p in importowe}
-        wagi_all = {p.item_id: towar.get(p.item_id, 0.0) for p in pozycje}
+        wagi_imp = {p.item_id: towar.get(p.item_id, 0.0) + gratisy.get(p.item_id, 0.0) for p in importowe}
+        wagi_all = {p.item_id: towar.get(p.item_id, 0.0) + gratisy.get(p.item_id, 0.0) for p in pozycje}
     fr = _rozloz(fracht, wagi_imp) if importowe else {}
     le = _rozloz(lenmar, wagi_imp) if importowe else {}
     tr = _rozloz(transport, wagi_all)
@@ -391,6 +419,7 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
     for p in pozycje:
         kraj = p.grupa in krajowe_grupy
         t = towar.get(p.item_id, 0.0)
+        gr = gratisy.get(p.item_id, 0.0)
         f = fr.get(p.item_id, 0.0)
         if kraj:
             stawka, zrodlo = 0.0, "krajowa"
@@ -402,17 +431,17 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
             stawka, zrodlo = 0.0, "brak"
             powod = f"kod CN {p.kod_cn} nie ma stawki w słowniku" if p.kod_cn else "produkt nie ma kodu CN"
             uwagi.append(Uwaga("blad", f"Brak stawki cła dla SKU {p.sku} ({powod}) — liczymy 0%"))
-        clo = (t + f) * stawka / 100
+        clo = (t + gr + f) * stawka / 100
         l_ = le.get(p.item_id, 0.0)
         tt = tr.get(p.item_id, 0.0)
-        suma = t + f + l_ + clo + tt
+        suma = t + gr + f + l_ + clo + tt
         out.append(WynikPozycji(
             item_id=p.item_id, sku=p.sku, szt=p.szt, grupa=p.grupa, krajowa=kraj,
             cena_waluta=round(cena.get(p.item_id, 0.0), 4), cena_reczna=p.item_id in reczne,
             cena_zrodlo=("reczna" if p.item_id in reczne
                          else "kontener" if p.cena_kontener is not None and not kraj else "auto"),
             cena_planowana=p.unit_cost,
-            towar=round(t, 2), fracht=round(f, 2), lenmar=round(l_, 2), clo=round(clo, 2),
+            towar=round(t, 2), gratisy=round(gr, 2), gratis_przypiety=p.gratis and not kraj, fracht=round(f, 2), lenmar=round(l_, 2), clo=round(clo, 2),
             transport=round(tt, 2), stawka=stawka, stawka_zrodlo=zrodlo, kod_cn=p.kod_cn,
             suma=round(suma, 2),
             koszt_jednostkowy=round(suma / p.szt, 2) if p.szt and suma > 0 else None,
@@ -425,8 +454,11 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja]) -> Wy
               transport_auto=round(transport_auto, 2), transport=round(transport, 2),
               zgloszen=zgloszen, podzial=podzial, uwagi=uwagi, kontener=kontener)
     w.towar = round(sum(p.towar for p in out), 2)
+    w.gratisy = round(sum(p.gratisy for p in out), 2)
     w.clo = round(sum(p.clo for p in out), 2)
     w.suma = round(sum(p.suma for p in out), 2)
-    w.narzut_proc = round((w.suma - w.towar) / w.towar * 100, 2) if w.towar > 0 else None
+    # Gratisy to zapłacony towar, nie koszt importu — narzut liczymy od towaru razem z nimi.
+    baza = w.towar + w.gratisy
+    w.narzut_proc = round((w.suma - baza) / baza * 100, 2) if baza > 0 else None
     w.szacunek = any(g.szacunek for g in wyniki_grup)
     return w

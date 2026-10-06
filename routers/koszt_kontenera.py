@@ -55,7 +55,7 @@ POLA_KONTENERA = {
 def _podmiana(body: KosztKontenerIn) -> dict:
     return {"kontener": {"kurs_towaru": body.kurs_towaru, "fracht_pln": body.fracht_pln,
                          "lenmar_pln": body.lenmar_pln, "transport_pln": body.transport_pln},
-            "pozycje": {p.item_id: (p.cena_waluta, p.stawka_cla) for p in body.pozycje}}
+            "pozycje": {p.item_id: (p.cena_waluta, p.stawka_cla, p.gratis) for p in body.pozycje}}
 
 
 async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
@@ -91,7 +91,7 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
 
     return KosztKontenerOut(
         container_id=cid, krajowa=w.krajowa, szacunek=w.szacunek, podzial=w.podzial, zgloszen=w.zgloszen,
-        towar=w.towar, fracht=w.fracht, fracht_auto=w.fracht_auto, fracht_usd=k.fracht_usd,
+        towar=w.towar, gratisy=w.gratisy, fracht=w.fracht, fracht_auto=w.fracht_auto, fracht_usd=k.fracht_usd,
         kurs_frachtu=k.kurs_frachtu, data_kursu_frachtu=k.data_kursu_frachtu, data_frachtu=w.data_frachtu,
         lenmar=w.lenmar, lenmar_auto=w.lenmar_auto, clo=w.clo,
         transport=w.transport, transport_auto=w.transport_auto, suma=w.suma, narzut_proc=w.narzut_proc,
@@ -109,7 +109,7 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
             item_id=p.item_id, sku=p.sku, nazwa=nazwy.get(p.sku.lower()), szt=p.szt, grupa=p.grupa,
             krajowa=p.krajowa, cbm_szt=meta[p.item_id]["cbm_szt"], cena_planowana=p.cena_planowana,
             cena_waluta=p.cena_waluta, cena_reczna=p.cena_reczna, cena_zrodlo=p.cena_zrodlo,
-            towar=p.towar, fracht=p.fracht,
+            towar=p.towar, gratisy=p.gratisy, gratis_przypiety=p.gratis_przypiety, fracht=p.fracht,
             lenmar=p.lenmar, clo=p.clo, transport=p.transport, kod_cn=p.kod_cn, stawka=p.stawka,
             stawka_zrodlo=p.stawka_zrodlo, stawka_slownik=stawka_dla(stawki, p.kod_cn),
             koszt_jednostkowy=p.koszt_jednostkowy, szacunek=p.szacunek,
@@ -163,7 +163,7 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
         await db.execute(text(f"DELETE FROM {T_KONTENER} WHERE container_id = :c"), {"c": container_id})
 
     pozycje = (await db.execute(text(f"""
-        SELECT ci.id, ci.sku, kp.cena_waluta, kp.stawka_cla
+        SELECT ci.id, ci.sku, kp.cena_waluta, kp.stawka_cla, COALESCE(kp.gratis, FALSE) AS gratis
           FROM {settings.TABLE_CONTAINER_ITEMS} ci
           LEFT JOIN {T_POZYCJA} kp ON kp.item_id = ci.id
          WHERE ci.container_id = :c
@@ -172,7 +172,8 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
     obce = [p.item_id for p in body.pozycje if p.item_id not in po_id]
     if obce:
         raise HTTPException(422, "Pozycja nie należy do tego kontenera")
-    wpisane = {p.item_id: p for p in body.pozycje if p.cena_waluta is not None or p.stawka_cla is not None}
+    wpisane = {p.item_id: p for p in body.pozycje
+               if p.cena_waluta is not None or p.stawka_cla is not None or p.gratis}
     zmiany = audit.zmiany(dict(stare) if stare else None, nowe, POLA_KONTENERA)
     for iid, r in po_id.items():
         p = wpisane.get(iid)
@@ -181,12 +182,15 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
             if fmt(a) != fmt(b):
                 zmiany.append({"pole": f"{r['sku']}: {etykieta}", "bylo": fmt(a) if a is not None else "automat",
                                "jest": fmt(b) if b is not None else "automat"})
+        if bool(r["gratis"]) != bool(p and p.gratis):
+            zmiany.append({"pole": f"{r['sku']}: gratisy", "bylo": "przypięte" if r["gratis"] else "cała faktura",
+                           "jest": "przypięte" if p and p.gratis else "cała faktura"})
     await db.execute(text(f"DELETE FROM {T_POZYCJA} WHERE item_id = ANY(:ids)"), {"ids": list(po_id)})
     for p in wpisane.values():
         await db.execute(text(f"""
-            INSERT INTO {T_POZYCJA} (item_id, cena_waluta, stawka_cla, zapisal, zapisano)
-            VALUES (:i, :c, :s, :kto, :teraz)
-        """), {"i": p.item_id, "c": p.cena_waluta, "s": p.stawka_cla, "kto": kto, "teraz": teraz})
+            INSERT INTO {T_POZYCJA} (item_id, cena_waluta, stawka_cla, gratis, zapisal, zapisano)
+            VALUES (:i, :c, :s, :g, :kto, :teraz)
+        """), {"i": p.item_id, "c": p.cena_waluta, "s": p.stawka_cla, "g": p.gratis, "kto": kto, "teraz": teraz})
     await db.commit()
 
     audit.note_zmiany(f"kosztu jednostkowego kontenera {await audit.nazwa_kontenera(db, container_id)}",

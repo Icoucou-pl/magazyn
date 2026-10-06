@@ -92,11 +92,37 @@ def test_reczna_cena_jednej_pozycji_reszta_dzieli_pozostala_kwote():
     assert w.towar == 4000, "suma dalej równa sumie płatności"
 
 
-def test_wszystkie_reczne_i_suma_sie_nie_zgadza_to_ostrzezenie():
+def test_wszystkie_ceny_wpisane_a_zaplacono_wiecej_to_gratisy_na_cala_fakture():
+    # ceny 300 + 600 = 900 USD, zapłacono 1 000 → 100 USD gratisów, po wartości 1 : 2
     w = tylko_towar([poz(1, 100, 10, cena_reczna=3.0), poz(2, 100, 30, cena_reczna=6.0)],
                     [zap(1000, 4.0, "balance")])
-    assert w.towar == 3600
-    assert any("różnica -100,00 USD" in u.tresc for u in w.uwagi)
+    p = w.po_item()
+    assert w.towar == 3600 and w.gratisy == 400, "zapłacone gratisy wchodzą do kosztu"
+    assert p[1].gratisy == pytest.approx(133.33, abs=0.01) and p[2].gratisy == pytest.approx(266.67, abs=0.01)
+    assert p[1].koszt_jednostkowy == pytest.approx((1200 + 133.33) / 100, abs=0.01)
+    assert any("Gratisy / różnica z płatności: 100,00 USD" in u.tresc and "całą fakturę" in u.tresc for u in w.uwagi)
+
+
+def test_gratisy_przypiete_do_jednej_pozycji():
+    w = tylko_towar([poz(1, 100, 10, cena_reczna=3.0), poz(2, 100, 30, cena_reczna=6.0, gratis=True)],
+                    [zap(1000, 4.0, "balance")])
+    p = w.po_item()
+    assert p[1].gratisy == 0 and p[2].gratisy == 400 and p[2].gratis_przypiety
+    assert any("przypięta do SKU2" in u.tresc for u in w.uwagi)
+
+
+def test_zaplacono_mniej_niz_ceny_to_rabat_z_ostrzezeniem():
+    w = tylko_towar([poz(1, 100, 10, cena_kontener=5.0)], [zap(450, 4.0, "balance")])
+    assert w.towar == 2000 and w.gratisy == -200
+    assert w.pozycje[0].koszt_jednostkowy == 18.0
+    assert any(u.poziom == "ostrzezenie" and "mniejsze niż ceny pozycji o 50,00 USD" in u.tresc for u in w.uwagi)
+
+
+def test_clo_liczone_takze_od_gratisow():
+    w = tylko_towar([poz(1, 100, 10, cena_kontener=2.0, stawka=10)], [zap(250, 4.0, "balance")])
+    p = w.pozycje[0]
+    assert (p.towar, p.gratisy) == (800, 200)
+    assert p.clo == pytest.approx(100.0)
 
 
 # ── 3–6. fracht, Lenmar, transport, cło ─────────────────────

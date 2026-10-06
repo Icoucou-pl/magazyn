@@ -94,7 +94,8 @@ def _dostawa(r, wynik: Optional[Wynik]) -> Dostawa:
         waluta = next((g.waluta for g in wynik.grupy if g.id == p.grupa), None)
     szt = int(r["quantity"] or 0)
     # Cena z FV: towar w PLN / szt z rachunku (płatności × kurs); bez rachunku — cena planowana.
-    fv = (p.towar / szt) if p and szt and p.towar else (float(r["unit_cost"]) if r["unit_cost"] else None)
+    # Gratisy z faktury to też zapłacony towar — wchodzą do ceny z FV, nie do narzutu importu.
+    fv = ((p.towar + p.gratisy) / szt) if p and szt and p.towar else (float(r["unit_cost"]) if r["unit_cost"] else None)
     return Dostawa(
         item_id=r["item_id"], container_id=r["container_id"],
         container_number=(r["container_number"] or "").strip(),
