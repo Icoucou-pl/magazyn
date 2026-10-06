@@ -27,14 +27,15 @@ type Grupa = {
 };
 type Pozycja = {
   item_id: number; sku: string; nazwa: string | null; szt: number; grupa: number; krajowa: boolean; cbm_szt: number;
-  cena_planowana: number; cena_waluta: number; cena_reczna: boolean; cena_zrodlo: string; towar: number; fracht: number; lenmar: number;
+  cena_planowana: number; cena_waluta: number; cena_reczna: boolean; cena_zrodlo: string; towar: number;
+  gratisy: number; gratis_przypiety: boolean; fracht: number; lenmar: number;
   clo: number; transport: number; kod_cn: string | null; stawka: number; stawka_zrodlo: string;
   stawka_slownik: number | null; koszt_jednostkowy: number | null; szacunek: boolean;
   koszt_erp: number | null; erp_zrodlo: string | null;
 };
 type Koszt = {
   container_id: number; krajowa: boolean; szacunek: boolean; podzial: string; zgloszen: number;
-  towar: number; fracht: number; fracht_auto: number; fracht_usd: number; kurs_frachtu: number | null;
+  towar: number; gratisy: number; fracht: number; fracht_auto: number; fracht_usd: number; kurs_frachtu: number | null;
   data_kursu_frachtu: string | null; data_frachtu: string | null; lenmar: number; lenmar_auto: number;
   clo: number; transport: number; transport_auto: number; suma: number; narzut_proc: number | null;
   kurs_towaru_reczny: number | null; fracht_reczny: number | null; lenmar_reczny: number | null;
@@ -47,6 +48,7 @@ type Koszt = {
 type Szkic = {
   kurs: string; fracht: string; lenmar: string; transport: string;
   cena: Record<number, string>; stawka: Record<number, string>;
+  gratis: number[];   // pozycje, na które przypięto różnicę płatności (gratisy) — zwykle żadna = cała FV
 };
 type PoleKontenera = "kurs" | "fracht" | "lenmar" | "transport";
 
@@ -71,16 +73,18 @@ function szkicZ(k: Koszt): Szkic {
   return {
     kurs: tekst(k.kurs_towaru_reczny, 4), fracht: tekst(k.fracht_reczny), lenmar: tekst(k.lenmar_reczny),
     transport: tekst(k.transport_reczny), cena, stawka,
+    gratis: k.pozycje.filter((p) => p.gratis_przypiety).map((p) => p.item_id),
   };
 }
 
 function cialo(s: Szkic) {
-  const ids = new Set([...Object.keys(s.cena), ...Object.keys(s.stawka)].map(Number));
+  const ids = new Set([...Object.keys(s.cena).map(Number), ...Object.keys(s.stawka).map(Number), ...s.gratis]);
   return {
     kurs_towaru: liczba(s.kurs), fracht_pln: liczba(s.fracht), lenmar_pln: liczba(s.lenmar),
     transport_pln: liczba(s.transport),
-    pozycje: [...ids].map((id) => ({ item_id: id, cena_waluta: liczba(s.cena[id] ?? ""), stawka_cla: liczba(s.stawka[id] ?? "") }))
-      .filter((p) => p.cena_waluta != null || p.stawka_cla != null),
+    pozycje: [...ids].sort((a, b) => a - b).map((id) => ({
+      item_id: id, cena_waluta: liczba(s.cena[id] ?? ""), stawka_cla: liczba(s.stawka[id] ?? ""), gratis: s.gratis.includes(id),
+    })).filter((p) => p.cena_waluta != null || p.stawka_cla != null || p.gratis),
   };
 }
 
@@ -145,11 +149,22 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
   const waluta = glowna?.waluta ?? "USD";
   const kursSzac = importowe.some((g) => g.szacunek);
   const ileRecznych = [szkic.kurs, szkic.fracht, szkic.lenmar, szkic.transport].filter(Boolean).length
-    + Object.values(szkic.cena).filter(Boolean).length + Object.values(szkic.stawka).filter(Boolean).length;
+    + Object.values(szkic.cena).filter(Boolean).length + Object.values(szkic.stawka).filter(Boolean).length
+    + szkic.gratis.length;
   const ustawPole = (pole: PoleKontenera, v: string) => zmien({ ...szkic, [pole]: v });
   const przywroc = (pole: PoleKontenera) => { const s = { ...szkic, [pole]: "" }; setSzkic(s); void przelicz(s); };
   const ustawPoz = (rodzaj: "cena" | "stawka", id: number, v: string) =>
     zmien({ ...szkic, [rodzaj]: { ...szkic[rodzaj], [id]: v } });
+  // Przypięcie różnicy płatności (gratisów) do jednej pozycji — jedna na fakturę (grupę).
+  // Drugie kliknięcie odpina i różnica wraca na całą fakturę.
+  const przypnij = (id: number) => {
+    const grupa = k.pozycje.find((p) => p.item_id === id)?.grupa;
+    const zGrupy = new Set(k.pozycje.filter((p) => p.grupa === grupa).map((p) => p.item_id));
+    const bylo = szkic.gratis.includes(id);
+    const s = { ...szkic, gratis: [...szkic.gratis.filter((g) => !zGrupy.has(g)), ...(bylo ? [] : [id])] };
+    setSzkic(s); void przelicz(s);
+  };
+  const pokazGratisy = !k.krajowa && (Math.abs(k.gratisy) >= 0.01 || szkic.gratis.length > 0);
   const przywrocCene = (id: number) => {
     const cena = { ...szkic.cena }; delete cena[id];
     const s = { ...szkic, cena }; setSzkic(s); void przelicz(s);
@@ -191,8 +206,9 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
     <Kafel key="tr" l="Transport krajowy" v={`${pl(k.transport, 0)} zł`} n="do magazynu, po wartości" />,
     <Kafel key="n" l="Narzut" v={k.narzut_proc != null ? `${pl(k.narzut_proc, 1)}%` : "—"} n="transport / towar" akcent />,
   ] : [
-    <Kafel key="t" l="Towar" v={`${pl(k.towar, 0)} zł`} tag={k.szacunek ? <Tag t="szac" /> : null}
-      n={wiele ? `${importowe.length} loty z płatności` : glowna ? `${pl(glowna.wartosc_waluta, 0)} ${waluta} ${glowna.wartosc_zrodlo === "plan" ? "z cen pozycji" : "z płatności"}` : ""} />,
+    <Kafel key="t" l="Towar" v={`${pl(k.towar + k.gratisy, 0)} zł`} tag={k.szacunek ? <Tag t="szac" /> : null}
+      n={(wiele ? `${importowe.length} loty z płatności` : glowna ? `${pl(glowna.wartosc_waluta, 0)} ${waluta} ${glowna.wartosc_zrodlo === "plan" ? "z cen pozycji" : "z płatności"}` : "")
+        + (Math.abs(k.gratisy) >= 0.01 ? ` · w tym gratisy ${pl(k.gratisy, 0)} zł` : "")} />,
     <Kafel key="f" l="Fracht" v={`${pl(k.fracht, 0)} zł`}
       n={k.fracht_reczny != null ? "wpisany ręcznie" : k.fracht_usd ? `${pl(k.fracht_usd, 0)} USD × ${pl(k.kurs_frachtu, 4)}` : "brak na karcie"} />,
     <Kafel key="l" l="Lenmar" v={`${pl(k.lenmar, 0)} zł`}
@@ -287,7 +303,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
             <thead><tr>
               <Th l>SKU</Th><Th>Szt.</Th>
               <Th>{k.krajowa ? "Cena z FV/szt" : `Cena ${waluta}/szt`}</Th>
-              {!k.krajowa && <><Th>Towar/szt</Th><Th>Fracht/szt</Th><Th>Lenmar/szt</Th><Th>Cło/szt · CN · stawka %</Th></>}
+              {!k.krajowa && <><Th>Towar/szt</Th>{pokazGratisy && <Th><span title="Różnica między płatnościami a cenami pozycji — gratisy z faktury (albo rabat). Domyślnie na całą fakturę po wartości; „przypnij” daje całość jednej pozycji.">Gratisy/szt</span></Th>}<Th>Fracht/szt</Th><Th>Lenmar/szt</Th><Th>Cło/szt · CN · stawka %</Th></>}
               <Th>Transport/szt</Th><Th>Koszt jedn.</Th>
               <Th><span title="Bieżący koszt zakupu w ERP spółki-importera — średnia z towaru na stanie, więc może obejmować też wcześniejsze dostawy.">{erpNazwa}</span></Th>
               <Th>Różnica</Th>
@@ -324,6 +340,16 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
                     </td>
                     {!k.krajowa && <>
                       <td style={tdM}>{pl(p.towar / szt)}</td>
+                      {pokazGratisy && (
+                        <td style={tdM}>
+                          <span style={{ color: p.gratisy ? undefined : "var(--text-disabled)" }}>{pl(p.gratisy / szt)}</span>
+                          {edycja ? (
+                            <div><button onClick={() => przypnij(p.item_id)} style={{ ...btnLink, color: p.gratis_przypiety ? "var(--accent)" : "var(--info)" }}
+                              title={p.gratis_przypiety ? "Odepnij — różnica wróci na całą fakturę" : "Przypnij całą różnicę (gratisy) do tej pozycji"}>
+                              {p.gratis_przypiety ? "przypięte ✓" : "przypnij"}</button></div>
+                          ) : p.gratis_przypiety ? <div style={{ fontSize: 10.5, color: "var(--accent)" }}>przypięte</div> : null}
+                        </td>
+                      )}
                       <td style={tdM}>{pl(p.fracht / szt)}</td>
                       <td style={tdM}>{pl(p.lenmar / szt)}</td>
                       <td style={tdM}>
@@ -357,7 +383,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
               <td style={{ ...td, textAlign: "left", fontWeight: 700, color: "var(--text-mid)", borderBottom: 0 }}>Razem</td>
               <td style={tdSum}>{pl(sumaSzt, 0)}</td><td style={tdSum} />
               {!k.krajowa && <>
-                <td style={tdSum}>{pl(k.towar, 0)}</td><td style={tdSum}>{pl(k.fracht, 0)}</td>
+                <td style={tdSum}>{pl(k.towar, 0)}</td>{pokazGratisy && <td style={tdSum}>{pl(k.gratisy, 0)}</td>}<td style={tdSum}>{pl(k.fracht, 0)}</td>
                 <td style={tdSum}>{pl(k.lenmar, 0)}</td><td style={tdSum}>{pl(k.clo, 0)}</td>
               </>}
               <td style={tdSum}>{pl(k.transport, 0)}</td><td style={tdSum}>{pl(k.suma, 0)} zł</td>

@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS app_koszt_pozycji (
     zapisano       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Pozycja, która przejmuje całą różnicę płatności grupy (gratisy z faktury). FALSE = różnica
+-- rozkłada się na całą fakturę po wartości. Dokłada ją też lifespan.py przy starcie.
+ALTER TABLE app_koszt_pozycji ADD COLUMN IF NOT EXISTS gratis BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- Słownik kod CN → stawka cła (%). Zasilany z zapisanych odpraw (najnowsza stawka dla kodu),
 -- poprawiany ręcznie przez superadmina. Ręczna stawka nie jest nadpisywana przez SAD.
 CREATE TABLE IF NOT EXISTS app_stawki_cn (

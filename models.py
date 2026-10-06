@@ -1339,6 +1339,8 @@ class KosztPozycjaOut(BaseModel):
     cena_reczna: bool = False
     cena_zrodlo: str = "auto"                 # 'reczna' | 'kontener' (z pozycji kontenera) | 'auto'
     towar: float = 0.0
+    gratisy: float = 0.0                      # udział w różnicy płatności (gratisy z faktury / rabat)
+    gratis_przypiety: bool = False
     fracht: float = 0.0
     lenmar: float = 0.0
     clo: float = 0.0
@@ -1365,6 +1367,7 @@ class KosztKontenerOut(BaseModel):
     podzial: str = "cbm"                      # 'cbm' | 'wartosc'
     zgloszen: int = 0
     towar: float = 0.0
+    gratisy: float = 0.0                      # różnica płatności vs ceny pozycji, rozłożona na towar
     fracht: float = 0.0
     fracht_auto: float = 0.0
     fracht_usd: float = 0.0
@@ -1397,6 +1400,7 @@ class KosztPozycjaIn(BaseModel):
     item_id: int
     cena_waluta: Optional[float] = Field(None, ge=0)
     stawka_cla: Optional[float] = Field(None, ge=0, le=100)
+    gratis: bool = False                      # ta pozycja przejmuje całą różnicę płatności (gratisy)
 
 
 class KosztKontenerIn(BaseModel):

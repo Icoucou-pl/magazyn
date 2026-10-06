@@ -59,7 +59,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
 
     `podmiana` = poprawki do podglądu bez zapisu, zamiast tych z bazy:
     {"kontener": {kurs_towaru, fracht_pln, lenmar_pln, transport_pln},
-     "pozycje": {item_id: (cena_waluta, stawka_cla)}} — dotyczy wszystkich liczonych kontenerów,
+     "pozycje": {item_id: (cena_waluta, stawka_cla, gratis)}} — dotyczy wszystkich liczonych kontenerów,
     więc woła się ją dla jednego.
 
     Zwraca ({container_id: Wynik}, {item_id: metadane pozycji}) — metadane to to, czego
@@ -106,7 +106,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         SELECT ci.id AS item_id, ci.container_id, ci.lot_id, ci.sku, ci.quantity, ci.unit_cost, ci.cena_waluta AS cena_kontener,
                pa.cbm_per_unit, pa.dlugosc_cm, pa.szerokosc_cm, pa.wysokosc_cm, pa.szt_w_kartonie,
                pa.kod_cn, LOWER(COALESCE(f.slug, 'amh')) AS firma,
-               kp.cena_waluta, kp.stawka_cla
+               kp.cena_waluta, kp.stawka_cla, COALESCE(kp.gratis, FALSE) AS gratis
           FROM {settings.TABLE_CONTAINER_ITEMS} ci
           LEFT JOIN LATERAL (
               SELECT * FROM {settings.TABLE_PRODUCT_ATTRS} a
@@ -123,8 +123,10 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
     stawki = await slownik_stawek(db)
     if podmiana is not None:
         nadpisania = {cid: podmiana.get("kontener") or {} for cid in ids}
-        pozycje = [{**r, "cena_waluta": podmiana.get("pozycje", {}).get(r["item_id"], (None, None))[0],
-                    "stawka_cla": podmiana.get("pozycje", {}).get(r["item_id"], (None, None))[1]}
+        brak = (None, None, False)
+        pozycje = [{**r, "cena_waluta": podmiana.get("pozycje", {}).get(r["item_id"], brak)[0],
+                    "stawka_cla": podmiana.get("pozycje", {}).get(r["item_id"], brak)[1],
+                    "gratis": bool(podmiana.get("pozycje", {}).get(r["item_id"], brak)[2])}
                    for r in pozycje]
 
     dzis = date.today()
@@ -187,7 +189,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
             item_id=r["item_id"], sku=(r["sku"] or "").strip(), szt=int(r["quantity"] or 0),
             unit_cost=float(r["unit_cost"] or 0), cbm_szt=cbm, grupa=gid, firma=r["firma"],
             kod_cn=r["kod_cn"], stawka_slownik=stawka_dla(stawki, r["kod_cn"]),
-            cena_reczna=_f(r["cena_waluta"]), stawka_reczna=_f(r["stawka_cla"]),
+            cena_reczna=_f(r["cena_waluta"]), stawka_reczna=_f(r["stawka_cla"]), gratis=bool(r["gratis"]),
             cena_kontener=_f(r["cena_kontener"]),
         ))
         meta[r["item_id"]] = {"container_id": r["container_id"], "lot_id": r["lot_id"], "firma": r["firma"],
