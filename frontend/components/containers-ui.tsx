@@ -515,9 +515,12 @@ export function SubiektSwitch({ on, onToggle, disabled }: { on: boolean; onToggl
 }
 
 // ── Plakietki w nagłówku karty ───────────────────────────────
+// Ten sam rozmiar co Pill size="sm" (ui.tsx). Ramka (przerywana „do wysłania") ma 1 px, więc
+// padding jest o 1 px mniejszy — plakietki z ramką i bez mają tę samą wysokość.
 const plakietka: React.CSSProperties = {
-  display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", fontSize: 10, fontWeight: 600,
-  letterSpacing: "0.02em", borderRadius: 999, whiteSpace: "nowrap", textTransform: "uppercase", font: "inherit",
+  display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 6px", fontFamily: "inherit",
+  fontSize: 10, fontWeight: 600, lineHeight: "inherit", letterSpacing: "0.02em", borderRadius: 999,
+  whiteSpace: "nowrap", textTransform: "uppercase", border: "1px solid transparent", margin: 0,
 };
 const fmtKiedy = (s?: string | null) => {
   if (!s) return "";
@@ -533,7 +536,7 @@ export function KosztPlakietka({ stan }: { stan?: "policzony" | "szacunek" | nul
     <span title={ok
       ? "Koszt jednostkowy produktów na tym kontenerze został policzony (z zapłaconych płatności) — zakładka „Koszt jednostkowy”"
       : "Koszt jednostkowy produktów na tym kontenerze jest szacunkiem — nie wszystko zapłacone albo brak płatności na karcie"}
-      style={{ ...plakietka, fontSize: 10, padding: "2px 7px",
+      style={{ ...plakietka,
         background: ok ? "var(--ok-soft)" : "var(--warning-soft)", color: ok ? "var(--ok)" : "var(--warning)", cursor: "help" }}>
       {ok ? "policzony" : "koszt — szacunek"}
     </span>
@@ -562,7 +565,7 @@ export function DokumentyPlakietka({ c, onToggle }: { c: Container; onToggle?: (
     ? `Dokumenty wysłane do agencji celnej${c.dokumenty_wyslal ? ` — ${c.dokumenty_wyslal}` : ""}${kiedy ? `, ${kiedy}` : ""}`
     : "Dokumenty jeszcze nie wysłane do agencji celnej";
   const styl: React.CSSProperties = wyslane
-    ? { ...plakietka, background: "var(--ok-soft)", color: "var(--ok)", border: "1px solid transparent" }
+    ? { ...plakietka, background: "var(--ok-soft)", color: "var(--ok)" }
     : { ...plakietka, background: "transparent", color: "var(--text-lo)", border: "1px dashed var(--border-strong)" };
   if (!onToggle) return <span title={opis} style={styl}>{wyslane ? "✓ dokumenty wysłane" : "dokumenty do wysłania"}</span>;
   return (
