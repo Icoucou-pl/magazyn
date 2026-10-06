@@ -61,6 +61,8 @@ export type Odprawa = {
   pozycje: PozycjaSad[]; towar: Towar[]; koszty: Linia[];
   kontrole: Kontrola[]; uwagi: Uwaga[]; klucz_podzialu: string;
   kurs_towaru: number | null; kurs_kosztow: number | null;
+  // Kurs z dni zapłaty zaliczek i balance (jak zakładka „Koszt jednostkowy") — domyślny kurs towaru.
+  kurs_platnosci?: number | null; kurs_platnosci_szacunek?: boolean;
   fv_spedytora: string | null; fv_spedytora_data: string | null;
   suma_towar: number; suma_logistyka: number; suma_clo: number; narzut_proc: number | null;
   mozna_zapisac: boolean; status: string; zrodlo_erp?: string | null;
@@ -150,7 +152,7 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
           ustawDaneRef.current(z);
           setKlucz(z.klucz_podzialu === "cbm" ? "cbm" : "waga");
           setKoszty(z.koszty ?? []);
-          setFxTowar(z.kurs_towaru != null ? String(z.kurs_towaru) : String(z.kurs_celny || ""));
+          setFxTowar(String(z.kurs_towaru ?? z.kurs_platnosci ?? z.kurs_celny ?? ""));
           setFxKoszty(z.kurs_kosztow != null ? String(z.kurs_kosztow) : String(z.kurs_celny || ""));
           setFvNr(z.fv_spedytora ?? "");
           setFvData(z.fv_spedytora_data ?? "");
@@ -207,7 +209,7 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
       // z domknięcia — ten bywa starszy niż ostatnie naciśnięcie klawisza.
       const zap = z.zapisane ?? null;
       setKoszty((k) => (k.length ? k : (zap?.koszty?.length ? zap.koszty : z.koszty ?? [])));
-      setFxTowar((v) => v || String(zap?.kurs_towaru ?? z.kurs_celny));
+      setFxTowar((v) => v || String(zap?.kurs_towaru ?? z.kurs_platnosci ?? z.kurs_celny));
       setFxKoszty((v) => v || String(zap?.kurs_kosztow ?? z.kurs_celny));
       // Odtwarzamy raz na wczytany plik. Klucz podziału ma niepustą wartość domyślną,
       // więc po „pole jest puste" nie da się poznać, czy użytkownik już go wybrał —
@@ -625,8 +627,18 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
             <Wpis etykieta="Data sprzedaży" v={fvData} set={setFvData} szer={120} placeholder="2026-08-26" />
             <Wpis etykieta="Kurs kosztów" v={fxKoszty} set={setFxKoszty} szer={100} />
             <Wpis etykieta="Kurs towaru" v={fxTowar} set={setFxTowar} szer={100} />
+            {dane?.kurs_platnosci != null && (
+              <span style={{ fontSize: 11.5, color: "var(--text-lo)", alignSelf: "flex-end", display: "inline-flex", gap: 6, alignItems: "baseline" }}
+                title="Średnia z kursów NBP z dnia roboczego przed zapłatą zaliczek i balance — ten sam kurs co w zakładce „Koszt jednostkowy”">
+                z płatności: <b className="mono" style={{ color: "var(--text-hi)" }}>{pl(dane.kurs_platnosci, 4)}</b>
+                {dane.kurs_platnosci_szacunek && <span style={{ color: "var(--warning)" }}>(nie wszystko zapłacone)</span>}
+                {liczba(fxTowar) !== dane.kurs_platnosci && (
+                  <button onClick={() => setFxTowar(String(dane.kurs_platnosci))} style={{ ...btnSec, padding: "3px 9px", fontSize: 11 }}>użyj</button>
+                )}
+              </span>
+            )}
             <span style={{ fontSize: 11.5, color: "var(--text-lo)", alignSelf: "flex-end", flex: 1, minWidth: 180 }}>
-              Kurs NBP jest w nagłówku faktury, w zdaniu o przeliczeniu VAT.
+              Kurs kosztów — z nagłówka faktury spedytora (zdanie o przeliczeniu VAT). Kurs towaru — z dni zapłaty zaliczek i balance.
             </span>
           </div>
         )}

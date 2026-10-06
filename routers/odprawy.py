@@ -699,12 +699,18 @@ async def _zloz(
     linie = _linie_kosztow(odprawa, ustawienia, kontenery)
     klucz = KLUCZ_CBM if ustawienia.klucz_podzialu == KLUCZ_CBM else KLUCZ_WAGA
 
+    # Kurs towaru: wpisany ręcznie, a bez niego — z dni zapłaty zaliczek i balance (jak zakładka
+    # „Koszt jednostkowy"). Kurs celny z SAD-u zostaje ostatnim zapasem w services/odprawy.py.
+    kurs_platnosci, kurs_szac = await _kurs_z_platnosci(
+        db, [t.container_id for t in towar], [t.item_id for t in towar])
+    kurs_towaru = ustawienia.kurs_towaru or kurs_platnosci
+
     rachunek = policz(
         odprawa, towar, _na_serwis(linie),
         przypisanie=ustawienia.przypisanie or None,
         gratisy=ustawienia.gratisy or None,
         klucz=klucz,
-        kurs_towaru=ustawienia.kurs_towaru,
+        kurs_towaru=kurs_towaru,
         kurs_kosztow=ustawienia.kurs_kosztow,
         ceny_reczne=ustawienia.ceny_reczne or None,
         faktury_sku=faktury_sku or None,
@@ -788,6 +794,7 @@ async def _zloz(
     etykieta_numeru = {(k["container_number"] or "").strip().upper(): k["etykieta"] for k in kontenery}
 
     out = OdprawaOut(
+        kurs_platnosci=kurs_platnosci, kurs_platnosci_szacunek=kurs_szac,
         mrn=odprawa.mrn,
         data_zgloszenia=odprawa.data_zgloszenia,
         dostawca=odprawa.dostawca,
@@ -849,6 +856,27 @@ async def _zloz(
 # Endpointy
 # ============================================================
 
+async def _kurs_z_platnosci(db: AsyncSession, container_ids: Sequence[int],
+                            item_ids: Sequence[int]) -> "tuple[Optional[float], bool]":
+    """Kurs towaru ze zgłoszenia liczony jak w zakładce „Koszt jednostkowy": średnia z kursów
+    NBP z dnia roboczego przed zapłatą zaliczek i balance, ważona wartością lotów objętych
+    odprawą. Zwraca (kurs, szacunek) — szacunek, gdy coś jest jeszcze niezapłacone."""
+    from services.koszt_kontenera_dane import policz_kontenery
+
+    ids = set(item_ids)
+    wyniki, _ = await policz_kontenery(db, sorted(set(container_ids)))
+    licznik = mianownik = 0.0
+    szacunek = False
+    for w in wyniki.values():
+        grupy = {p.grupa for p in w.pozycje if p.item_id in ids}
+        for g in w.grupy:
+            if g.id in grupy and not g.krajowa and g.kurs_auto and g.wartosc_waluta:
+                licznik += g.kurs_auto * g.wartosc_waluta
+                mianownik += g.wartosc_waluta
+                szacunek = szacunek or g.szacunek
+    return (round(licznik / mianownik, 4) if mianownik else None), szacunek
+
+
 async def _dolicz_nowa_metode(db: AsyncSession, out: Optional[OdprawaOut]) -> Optional[OdprawaOut]:
     """Kontrola dla superadmina: koszt tej samej pozycji liczony nową metodą (bez SAD-u).
 
@@ -863,6 +891,8 @@ async def _dolicz_nowa_metode(db: AsyncSession, out: Optional[OdprawaOut]) -> Op
     koszt = {p.item_id: p.koszt_jednostkowy for w in wyniki.values() for p in w.pozycje}
     for t in out.towar:
         t.koszt_nowa_metoda = koszt.get(t.item_id)
+    out.kurs_platnosci, out.kurs_platnosci_szacunek = await _kurs_z_platnosci(
+        db, [t.container_id for t in out.towar], [t.item_id for t in out.towar])
     return out
 
 
@@ -1278,7 +1308,7 @@ async def _zapisz_wszystko(
             "wartosc": odprawa.wartosc_faktur, "masa": odprawa.masa_brutto,
             "clo": odprawa.clo_suma, "vat": odprawa.vat_suma,
             "klucz": out.klucz_podzialu,
-            "fxt": ust.kurs_towaru or odprawa.kurs_celny,
+            "fxt": ust.kurs_towaru or out.kurs_platnosci or odprawa.kurs_celny,
             "fxk": ust.kurs_kosztow or odprawa.kurs_celny,
             "fv": ust.fv_spedytora, "fv_data": ust.fv_spedytora_data,
             "plik": nazwa_pliku, "uid": user_id, "teraz": teraz,
