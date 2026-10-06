@@ -747,3 +747,21 @@ def test_sku_bez_ceny_planowanej_sam_w_pozycji_dostaje_wartosc_z_sad():
     w = {x.item_id: x for x in r.pozycje}
     assert abs(w[91].cena_zakupu_waluta - 26.30) < 0.001
     assert not any(u.poziom == "blad" for u in r.uwagi), [u.tresc for u in r.uwagi]
+
+
+def test_przeliczenie_zapisanej_odprawy_po_innym_kursie_rowna_sie_pelnemu_rachunkowi():
+    """Przycisk „Przelicz po kursie z płatności” nie ma pliku XML — liczy z zapisanych kwot.
+    Musi dać to samo, co pełny rachunek odpalony z nowym kursem towaru."""
+    from services.odprawy import przelicz_po_kursie
+
+    o = parsuj(SAD_XML)
+    for klucz in (KLUCZ_WAGA, KLUCZ_CBM):
+        stary = policz(o, TOWAR, KOSZTY, klucz=klucz, kurs_towaru=3.6894)
+        nowy = {w.item_id: w for w in policz(o, TOWAR, KOSZTY, klucz=klucz, kurs_towaru=3.6255).pozycje}
+        for w in stary.pozycje:
+            # tak jak zapis w routers/odprawy.py: kwoty zaokrąglone do groszy
+            zakup, koszt = przelicz_po_kursie(
+                round(w.cena_zakupu_waluta, 4), w.ilosc, round(w.logistyka, 2), round(w.clo, 2),
+                round(w.gratisy, 2), round(w.transport_krajowy, 2), 3.6255)
+            assert abs(koszt - nowy[w.item_id].koszt_jednostkowy) <= 0.01, (klucz, w.sku)
+            assert abs(zakup - nowy[w.item_id].towar / w.ilosc) <= 0.01, (klucz, w.sku)

@@ -41,11 +41,11 @@ from models import (
     CurrentUser, OdprawaKontenerOut, OdprawaKontrolaOut, OdprawaLiniaKosztuIn, OdprawaLotOut,
     OdprawaOut, OdprawaZapisaneOut,
     OdprawaPozycjaOut, OdprawaTowarOut, OdprawaUstawieniaIn, OdprawaUwagaOut,
-    OdprawaZapisOut,
+    OdprawaZapisOut, KursTowaruIn,
 )
 from security import require_sad
 from services.odprawy import (
-    KLUCZ_CBM, KLUCZ_WAGA, LiniaKosztu, PozycjaTowaru, Rachunek, Uwaga, policz,
+    KLUCZ_CBM, KLUCZ_WAGA, LiniaKosztu, PozycjaTowaru, Rachunek, Uwaga, policz, przelicz_po_kursie,
 )
 from services.products import compute_effective_cbm
 from services.sad import BladSAD, Odprawa, kontrole, parsuj
@@ -1208,6 +1208,58 @@ async def _faktury_zapisanych(
         jej = [l for l in loty if odprawa_lotu.get(l["id"]) == oid]
         wynik.update(_faktury_lotow(odprawa, jej, towar_lotu))  # type: ignore[arg-type]
     return wynik
+
+
+@router.post("/odprawy/{odprawa_id}/kurs-towaru")
+async def przelicz_kurs_towaru(
+    odprawa_id: int,
+    body: KursTowaruIn,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_sad),
+):
+    """Przelicza ZAPISANĄ odprawę po innym kursie towaru — bez ponownego wgrywania XML.
+
+    W rachunku (services/odprawy.py) kurs towaru mnoży wyłącznie wartość towaru:
+    cło rozkłada się po proporcji towaru w pozycji, logistyka i gratisy po kluczu albo
+    po proporcji wartości — a te proporcje przy jednym kursie dla całej odprawy się nie
+    zmieniają. Dlatego wystarczy: cena PLN = cena w walucie × kurs, a koszt sztuki
+    = (towar + logistyka + cło + gratisy + transport) / szt, jak w PozycjaWynik.
+    Bez kursu w body bierzemy kurs z dni zapłaty zaliczek i balance.
+    """
+    odp = (await db.execute(text("SELECT id, mrn, kurs_towaru FROM app_odprawy WHERE id = :id"),
+                            {"id": odprawa_id})).mappings().first()
+    if not odp:
+        raise HTTPException(404, "Nie ma takiej odprawy")
+    itemy = (await db.execute(text(f"""
+        SELECT id, container_id, quantity, cena_zakupu_waluta, koszt_logistyka_pln, koszt_clo_pln,
+               koszt_gratisy_pln, koszt_transport_pln
+          FROM {settings.TABLE_CONTAINER_ITEMS} WHERE koszt_odprawa_id = :id
+    """), {"id": odprawa_id})).mappings().all()
+    if not itemy:
+        raise HTTPException(409, "Odprawa nie ma rozliczonych pozycji")
+    kurs = body.kurs
+    if not kurs:
+        kurs, _ = await _kurs_z_platnosci(db, [i["container_id"] for i in itemy], [i["id"] for i in itemy])
+    if not kurs:
+        raise HTTPException(409, "Brak kursu z płatności — kontener nie ma zaliczek ani balance w walucie")
+    for i in itemy:
+        zakup, koszt = przelicz_po_kursie(
+            _kwota(i["cena_zakupu_waluta"]), int(i["quantity"] or 0), _kwota(i["koszt_logistyka_pln"]),
+            _kwota(i["koszt_clo_pln"]), _kwota(i["koszt_gratisy_pln"]), _kwota(i["koszt_transport_pln"]), kurs)
+        await db.execute(text(f"""
+            UPDATE {settings.TABLE_CONTAINER_ITEMS}
+               SET cena_zakupu_pln = :zakup, koszt_jednostkowy = :koszt, koszt_updated_at = :teraz
+             WHERE id = :id
+        """), {"zakup": zakup, "koszt": koszt, "teraz": datetime.now(timezone.utc), "id": i["id"]})
+    await db.execute(text("UPDATE app_odprawy SET kurs_towaru = :k, updated_at = :teraz WHERE id = :id"),
+                     {"k": kurs, "teraz": datetime.now(timezone.utc), "id": odprawa_id})
+    await db.commit()
+    bylo = _kwota(odp["kurs_towaru"])
+    audit.note(f"przeliczył odprawę MRN {odp['mrn']} po kursie towaru {f_num('', 4)(kurs)}"
+               + (f" (było {f_num('', 4)(bylo)})" if bylo else ""),
+               changes=[{"pole": "Kurs towaru", "bylo": f_num("", 4)(bylo) if bylo else "—", "jest": f_num("", 4)(kurs)}],
+               resource_id=odprawa_id)
+    return {"kurs": kurs, "pozycji": len(itemy)}
 
 
 @router.delete("/odprawy/{odprawa_id}", status_code=204)

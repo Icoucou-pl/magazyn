@@ -385,6 +385,19 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
   }
 
   const zapisany = dane.status === "zapisana" && !plik;
+  // Zapisana odprawa po innym kursie towaru — bez pliku XML (POST /odprawy/{id}/kurs-towaru).
+  const przeliczKurs = async () => {
+    if (!dane.odprawa_id) return;
+    setBusy(true);
+    try {
+      await api.post(`/odprawy/${dane.odprawa_id}/kurs-towaru`, { kurs: liczba(fxTowar) });
+      toast(`Przeliczono odprawę po kursie ${fxTowar}`, "ok");
+      setOdswiez((n) => n + 1);
+      onSaved?.();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się przeliczyć", "error");
+    } finally { setBusy(false); }
+  };
   const bledy = dane.uwagi.filter((u) => u.poziom === "blad");
   const zleKontrole = dane.kontrole.filter((k) => !k.ok);
 
@@ -636,6 +649,13 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
                   <button onClick={() => setFxTowar(String(dane.kurs_platnosci))} style={{ ...btnSec, padding: "3px 9px", fontSize: 11 }}>użyj</button>
                 )}
               </span>
+            )}
+            {zapisany && dane.odprawa_id && fxTowar && liczba(fxTowar) !== dane.kurs_towaru && (
+              <button disabled={busy} onClick={() => { void przeliczKurs(); }}
+                title="Zapisana odprawa przeliczy się po tym kursie towaru bez ponownego wgrywania XML — zmienia się tylko wartość towaru, fracht, cło i opłaty zostają"
+                style={{ ...btnPri, alignSelf: "flex-end", padding: "6px 12px", fontSize: 12 }}>
+                {busy ? "Przeliczam…" : `Przelicz zapisaną odprawę po kursie ${fxTowar}`}
+              </button>
             )}
             <span style={{ fontSize: 11.5, color: "var(--text-lo)", alignSelf: "flex-end", flex: 1, minWidth: 180 }}>
               Kurs kosztów — z nagłówka faktury spedytora (zdanie o przeliczeniu VAT). Kurs towaru — z dni zapłaty zaliczek i balance.
