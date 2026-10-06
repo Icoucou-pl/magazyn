@@ -27,7 +27,7 @@ type Grupa = {
 };
 type Pozycja = {
   item_id: number; sku: string; nazwa: string | null; szt: number; grupa: number; krajowa: boolean; cbm_szt: number;
-  cena_planowana: number; cena_waluta: number; cena_reczna: boolean; towar: number; fracht: number; lenmar: number;
+  cena_planowana: number; cena_waluta: number; cena_reczna: boolean; cena_zrodlo: string; towar: number; fracht: number; lenmar: number;
   clo: number; transport: number; kod_cn: string | null; stawka: number; stawka_zrodlo: string;
   stawka_slownik: number | null; koszt_jednostkowy: number | null; szacunek: boolean;
   koszt_erp: number | null; erp_zrodlo: string | null;
@@ -319,7 +319,8 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
                       ) : <span>{pl(p.cena_waluta, p.krajowa ? 2 : 4)}</span>}
                       {edycja && vCena
                         ? <div><button onClick={() => przywrocCene(p.item_id)} style={btnLink}>automat</button></div>
-                        : !p.krajowa ? <div style={{ fontSize: 10.5, color: "var(--text-lo)" }}>plan {pl(p.cena_planowana)} zł</div> : null}
+                        : !p.krajowa ? <div style={{ fontSize: 10.5, color: p.cena_zrodlo === "kontener" ? "var(--info)" : "var(--text-lo)" }}>
+                            {p.cena_zrodlo === "kontener" ? "z kontenera (proforma)" : `plan ${pl(p.cena_planowana)} zł`}</div> : null}
                     </td>
                     {!k.krajowa && <>
                       <td style={tdM}>{pl(p.towar / szt)}</td>

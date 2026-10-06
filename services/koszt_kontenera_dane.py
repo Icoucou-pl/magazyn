@@ -103,7 +103,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
          ORDER BY a.position, a.id
     """), p)).mappings().all()
     pozycje = (await db.execute(text(f"""
-        SELECT ci.id AS item_id, ci.container_id, ci.lot_id, ci.sku, ci.quantity, ci.unit_cost,
+        SELECT ci.id AS item_id, ci.container_id, ci.lot_id, ci.sku, ci.quantity, ci.unit_cost, ci.cena_waluta AS cena_kontener,
                pa.cbm_per_unit, pa.dlugosc_cm, pa.szerokosc_cm, pa.wysokosc_cm, pa.szt_w_kartonie,
                pa.kod_cn, LOWER(COALESCE(f.slug, 'amh')) AS firma,
                kp.cena_waluta, kp.stawka_cla
@@ -188,6 +188,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
             unit_cost=float(r["unit_cost"] or 0), cbm_szt=cbm, grupa=gid, firma=r["firma"],
             kod_cn=r["kod_cn"], stawka_slownik=stawka_dla(stawki, r["kod_cn"]),
             cena_reczna=_f(r["cena_waluta"]), stawka_reczna=_f(r["stawka_cla"]),
+            cena_kontener=_f(r["cena_kontener"]),
         ))
         meta[r["item_id"]] = {"container_id": r["container_id"], "lot_id": r["lot_id"], "firma": r["firma"],
                               "cbm_szt": cbm, "cbm_zrodlo": cbm_zrodlo}

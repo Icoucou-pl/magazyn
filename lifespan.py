@@ -369,6 +369,11 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Migracja: cena pozycji w walucie dostawcy (USD/CNY) / szt — z proformy/FV dostawcy.
+        # Gdy jest, koszt jednostkowy (services/koszt_kontenera.py) bierze ją jako realną cenę
+        # pozycji; unit_cost (PLN) zostaje do wartości kontenera. NULL = nie wpisano.
+        await add_column_if_missing(conn, settings.TABLE_CONTAINER_ITEMS, "cena_waluta", "NUMERIC(14,4)")
+
         # Zaliczki (raty) kontenera/lotu — podpięte pod kontener ALBO lot (dokładnie jedno).
         # Backfill istniejących pojedynczych zaliczek robi migracja SQL (Session pooler),
         # tu tylko idempotentne stworzenie tabeli dla świeżych instalacji.

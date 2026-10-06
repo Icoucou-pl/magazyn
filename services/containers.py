@@ -382,7 +382,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             odp.status AS koszt_status,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
-            ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.lot_id,
+            ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.cena_waluta, ci.lot_id,
             pn.nazwa AS product_name,
             COALESCE(pp.cena, 0) AS purchase_price,   -- prod_prices ma już ręczną nadpiskę na pri 0
             COALESCE(pa.cbm_per_unit, 0) AS cbm_per_unit,
@@ -480,6 +480,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             containers_dict[cid]["items"].append(ContainerItemOut(
                 id=row["item_id"], sku=row["sku"], quantity=row["quantity"],
                 unit_cost=unit if unit else None, lot_id=row["lot_id"], product_name=row["product_name"],
+                cena_waluta=float(row["cena_waluta"]) if row["cena_waluta"] is not None else None,
                 cbm_per_unit=cbm_pu, total_cbm=round(tcb, 3),
             ))
             containers_dict[cid]["total_units"] += row["quantity"]

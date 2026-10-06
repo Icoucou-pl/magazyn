@@ -443,6 +443,7 @@ class ContainerItemIn(BaseModel):
     sku: str
     quantity: int = Field(..., gt=0)
     unit_cost: Optional[float] = None
+    cena_waluta: Optional[float] = Field(None, ge=0)   # cena w walucie dostawcy / szt (proforma, FV)
     lot_ref: Optional[int] = None   # indeks lotu w tablicy lots (przy skonsolidowanym kontenerze)
 
 
@@ -561,6 +562,7 @@ class ContainerItemOut(BaseModel):
     sku: str
     quantity: int
     unit_cost: Optional[float] = None
+    cena_waluta: Optional[float] = None       # cena w walucie dostawcy / szt (None = nie wpisano)
     id: int
     lot_id: Optional[int] = None
     product_name: Optional[str] = None
@@ -1319,6 +1321,7 @@ class KosztPozycjaOut(BaseModel):
     cena_planowana: float = 0.0               # unit_cost z pozycji (PLN)
     cena_waluta: float = 0.0                  # wartość w walucie / szt (krajowa: PLN)
     cena_reczna: bool = False
+    cena_zrodlo: str = "auto"                 # 'reczna' | 'kontener' (z pozycji kontenera) | 'auto'
     towar: float = 0.0
     fracht: float = 0.0
     lenmar: float = 0.0
@@ -1404,6 +1407,13 @@ class StawkaCnOut(BaseModel):
 
 class StawkaCnIn(BaseModel):
     stawka: float = Field(..., ge=0, le=100)
+
+
+class KursOut(BaseModel):
+    """Ostatni kurs średni NBP — formularz kontenera przelicza nim cenę USD na PLN."""
+    waluta: str
+    kurs: Optional[float] = None
+    data: Optional[date] = None
 
 
 class KodCnIn(BaseModel):

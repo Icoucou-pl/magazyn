@@ -194,3 +194,44 @@ def test_krajowa_reczna_cena_z_fv():
     g = Grupa(id=0, krajowa=True)
     w = policz(Kontener(), [g], [poz(1, 10, 100, cena_reczna=120.0)])
     assert w.pozycje[0].koszt_jednostkowy == 120.0 and w.pozycje[0].cena_reczna
+
+
+# ── cena w walucie wpisana na pozycji kontenera (proforma / FV dostawcy) ──
+
+def test_cena_z_kontenera_zostaje_a_reszta_dzieli_pozostale_platnosci():
+    # płatności 1 000 USD; pozycja 2 ma z proformy 7 USD × 100 = 700 → pozycji 1 zostaje 300
+    w = tylko_towar([poz(1, 100, 10), poz(2, 100, 30, cena_kontener=7.0)], [zap(1000, 4.0, "balance")])
+    p = w.po_item()
+    assert p[2].cena_waluta == 7.0 and p[2].cena_zrodlo == "kontener" and not p[2].cena_reczna
+    assert p[1].cena_waluta == 3.0 and p[1].cena_zrodlo == "auto"
+    assert w.towar == 4000
+
+
+def test_reczna_cena_z_zakladki_wygrywa_z_cena_z_kontenera():
+    w = tylko_towar([poz(1, 100, 10), poz(2, 100, 30, cena_kontener=7.0, cena_reczna=8.0)],
+                    [zap(1000, 4.0, "balance")])
+    p = w.po_item()
+    assert p[2].cena_waluta == 8.0 and p[2].cena_zrodlo == "reczna"
+    assert p[1].cena_waluta == 2.0
+
+
+def test_bez_platnosci_cena_z_kontenera_po_ostatnim_kursie_reszta_z_planu():
+    # kurs ostatni 4,0: pozycja 1 = 5 USD × 100 × 4 = 2 000 zł, pozycja 2 bez ceny = plan 100 × 30 zł
+    w = tylko_towar([poz(1, 100, 10, cena_kontener=5.0), poz(2, 100, 30)], [])
+    p = w.po_item()
+    assert (p[1].towar, p[2].towar) == (2000, 3000)
+    assert w.szacunek and w.grupy[0].wartosc_zrodlo == "plan"
+    assert w.grupy[0].wartosc_waluta == 1250
+
+
+def test_wszystkie_ceny_z_kontenera_zgodne_z_platnosciami_bez_ostrzezenia():
+    w = tylko_towar([poz(1, 100, 10, cena_kontener=4.0), poz(2, 100, 30, cena_kontener=6.0)],
+                    [zap(1000, 4.0, "balance")])
+    assert w.towar == 4000
+    assert not any("różnica" in u.tresc for u in w.uwagi)
+
+
+def test_sama_zaliczka_porownana_z_wartoscia_z_cen_w_walucie():
+    # zaliczka 300 USD wobec 1 000 USD z proformy to 30% — za mało, bierzemy ceny z kontenera
+    w = tylko_towar([poz(1, 100, 1, cena_kontener=10.0)], [zap(300, 4.0)])
+    assert w.towar == 4000 and w.grupy[0].wartosc_zrodlo == "plan"
