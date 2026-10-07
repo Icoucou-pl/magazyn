@@ -494,21 +494,21 @@ export default function ProductPage({
                 )}
               </div>
               <Meta label="Stan dostępny" value={`${fmtNum(product.stock)} szt`} />
-              {kosztSr?.srednia != null ? (() => {
+              {kosztSr && (kosztSr.srednia ?? kosztSr.najblizsza) != null ? (() => {
                 const erpNazwa = kosztSr.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
+                // Bez towaru na stanie — koszt z najbliższej dostawy w drodze, w tym samym wyglądzie
+                // (z którego kontenera — kafel „Najbliższa dostawa” w zakładce „Cena”).
+                const zNajblizszej = kosztSr.srednia == null;
                 return (
-                  <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.srednia)} color="var(--accent)"
-                    title="Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"
+                  <Meta label="Koszt netto / szt" value={fmtPLN((kosztSr.srednia ?? kosztSr.najblizsza) as number)} color="var(--accent)"
+                    title={zNajblizszej
+                      ? "Na stanie nie ma towaru z dostarczonych kontenerów — koszt z kontenera, który przypłynie najwcześniej"
+                      : "Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"}
                     sub={kosztSr.erp_cena
                       ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}`
                       : `${erpNazwa}: brak ceny`} />
                 );
-              })() : kosztSr?.najblizsza != null ? (
-                <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.najblizsza)} color="var(--info)"
-                  title="Na stanie nie ma towaru z dostarczonych kontenerów — koszt z kontenera, który przypłynie najwcześniej (do ceny przedsprzedaży)"
-                  sub={`w drodze${kosztSr.najblizsza_kontener ? ` · ${kosztSr.najblizsza_kontener}` : ""}`
-                    + `${kosztSr.najblizsza_data ? ` · ${fmtDay(kosztSr.najblizsza_data)}` : ""}${kosztSr.najblizsza_szacunek ? " · szac." : ""}`} />
-              ) : (
+              })() : (
                 <Meta label="Koszt netto / szt" value={showPrice ? fmtPLN(product.purchase_price) : "•••••"} />
               )}
               <Meta label="EAN" value={product.ean || "—"} mono />
