@@ -14,6 +14,7 @@
  * Widok bramkuje uprawnienie `viewOccupancy` (patrz reports.tsx).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { fmtCbmSzt } from "@/lib/format";
 
 import { api } from "@/lib/api";
 import { I, Card, Pill, containerLabel } from "@/components/ui";
@@ -622,7 +623,7 @@ export default function OccupancyReport({ scope }: { scope: string }) {
                     </td>
                   )}
                   <td className="num" style={{ ...td, textAlign: "right", color: r.no_cbm ? "var(--pending)" : "var(--text-mid)" }}>
-                    {r.no_cbm ? "brak" : r.cbm_per_unit.toFixed(3).replace(".", ",")}
+                    {r.no_cbm ? "brak" : fmtCbmSzt(r.cbm_per_unit)}
                   </td>
                   <td className="num" style={{ ...td, textAlign: "right" }}>{num(r.stock_qty)}</td>
                   <td className="num" style={{ ...td, textAlign: "right", color: r.incoming_qty ? "var(--text-mid)" : "var(--text-lo)" }}>{r.incoming_qty ? num(r.incoming_qty) : "—"}</td>

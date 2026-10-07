@@ -12,7 +12,7 @@ import { I, Pill, MfrChip, STATUS_META } from "./ui";
 import { exportCsv, toast, type CsvColumn } from "./toast";
 import { api } from "@/lib/api";
 import { canEdit, can, canSeePurchasePrice, useUser } from "@/lib/permissions";
-import { fmtNum, fmtPLNk } from "@/lib/format";
+import { fmtNum, fmtPLNk, fmtCbmSzt } from "@/lib/format";
 import { PhotoHover, ProductThumb } from "./photo-hover";
 
 // ── Typ produktu (z /api/products) ───────────────────────────
@@ -487,7 +487,7 @@ function Cell({ col, product: p, onToggleFav, showFin, showPrice }: { col: ColDe
     case "lt":
       return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{p.lead_time_days}d</span></div>;
     case "cbm":
-      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{(p.cbm_per_unit ?? 0).toFixed(3)}</span></div>;
+      return <div style={baseStyle}><span className="num" style={{ color: "var(--text-mid)" }}>{fmtCbmSzt(p.cbm_per_unit)}</span></div>;
     case "status":
       return <div style={baseStyle}><StatusPillExt status={displayStatus(p)} size="sm" /></div>;
     default:

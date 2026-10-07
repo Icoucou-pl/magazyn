@@ -23,7 +23,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
-import { fmtPLN, fmtNum } from "@/lib/format";
+import { fmtPLN, fmtNum, fmtCbmSzt } from "@/lib/format";
 import { I, Card, Pill } from "@/components/ui";
 import { toast } from "@/components/toast";
 
@@ -396,7 +396,7 @@ export function WarehouseCostReport({ scope }: { scope: string }) {
                   </td>
                   <td style={{ ...td, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }}>{r.nazwa}</td>
                   <td style={tdR} className="num">{fmtNum(r.stock_qty)}</td>
-                  <td style={tdR} className="num">{r.cbm_per_unit == null ? "—" : r.cbm_per_unit.toFixed(3).replace(".", ",")}</td>
+                  <td style={tdR} className="num">{r.cbm_per_unit == null ? "—" : fmtCbmSzt(r.cbm_per_unit)}</td>
                   <td style={tdR} className="num">{m3(r.stock_m3)}</td>
                   <td style={tdR} className="num">{pc(r.share_pct)}</td>
                   <td style={{ ...tdR, color: "var(--text-mid)" }} className="num">{pln2(r.warehouse_cost_unit_monthly_pln)}</td>

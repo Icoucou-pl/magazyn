@@ -22,7 +22,7 @@ import { api, photoUrl } from "@/lib/api";
 import { PhotoHover, ProductThumb, resetPhotoCache } from "./photo-hover";   // PhotoHover — tylko kafelki w „Danych podstawowych”
 import { toast } from "./toast";
 import { canEdit, can, canSeeProductHistory, canSeePurchasePrice, useUser } from "@/lib/permissions";
-import { fmtPLN, fmtNum } from "@/lib/format";
+import { fmtPLN, fmtNum, fmtCbmSzt } from "@/lib/format";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
 import LifecycleTabV2 from "./product-lifecycle-v2";
@@ -1398,7 +1398,7 @@ export function DimensionsCard({
         <div style={attrRowStyle}>
           <span style={attrLabelStyle}>CBM / szt</span>
           <span className="num" style={{ fontSize: 12, fontWeight: 500, color: podglad.zrodlo === "manual" ? "var(--accent)" : podglad.zrodlo === "none" ? "var(--text-disabled)" : "var(--text-hi)" }}>
-            {podglad.cbm.toFixed(3)} m³ <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>{zrodloLabel}</span>
+            {fmtCbmSzt(podglad.cbm)} m³ <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>{zrodloLabel}</span>
           </span>
         </div>
         {podglad.zrodlo === "dims" && (
@@ -1407,7 +1407,7 @@ export function DimensionsCard({
           </div>
         )}
 
-        <AttrInput label="CBM ręczny (nadpisuje)" suffix="m³" type="number" step="0.001"
+        <AttrInput label="CBM ręczny (nadpisuje)" suffix="m³" type="number" step="any"
           value={editing ? draft.cbmMan : (product.cbm_manual != null ? String(product.cbm_manual) : "—")}
           editing={editing} onChange={(v) => setDraft({ ...draft, cbmMan: v })} />
 

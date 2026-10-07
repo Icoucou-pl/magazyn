@@ -26,19 +26,21 @@ def compute_effective_cbm(row: dict) -> tuple[float, str]:
       2. wymiary kartonu uzupełnione -> (D*S*W / 1e6) / szt_w_kartonie       ("dims")
       3. brak danych                 -> 0                                    ("none")
 
+    Zaokrąglamy do 7 miejsc, nie 3: drobne produkty (np. 0,0004725 m³) dawały 0 — „brak CBM”.
+
     Wymiary opisują KARTON EKSPORTOWY, więc dzielimy przez liczbę sztuk w kartonie.
     szt_w_kartonie NULL/0 traktujemy jak 1 (produkt pakowany pojedynczo).
     """
     manual = float(row.get("cbm_per_unit") or 0)
     if manual > 0:
-        return round(manual, 3), "manual"
+        return round(manual, 7), "manual"
 
     d = float(row.get("dlugosc_cm") or 0)
     s = float(row.get("szerokosc_cm") or 0)
     w = float(row.get("wysokosc_cm") or 0)
     if d > 0 and s > 0 and w > 0:
         pcs = int(row.get("szt_w_kartonie") or 0) or 1
-        return round((d * s * w) / 1_000_000.0 / pcs, 3), "dims"
+        return round((d * s * w) / 1_000_000.0 / pcs, 7), "dims"
 
     return 0.0, "none"
 
@@ -374,7 +376,7 @@ def calculate_forecast(row: dict, incoming: List[dict],
         nearest_delivery_source=nearest_source,
         product_status=classify_product(row),
         cbm_per_unit=cbm_eff,
-        cbm_manual=(round(float(row["cbm_per_unit"]), 3) if float(row.get("cbm_per_unit") or 0) > 0 else None),
+        cbm_manual=(round(float(row["cbm_per_unit"]), 7) if float(row.get("cbm_per_unit") or 0) > 0 else None),
         cbm_source=cbm_src,
         dlugosc_cm=row.get("dlugosc_cm"),
         szerokosc_cm=row.get("szerokosc_cm"),
