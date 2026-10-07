@@ -18,12 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from services.fx import kursy_przed
-from services.koszt_kontenera import Grupa, Kontener, Platnosc, Pozycja, Wynik, policz, policz_razem
+from services.koszt_kontenera import Grupa, Kontener, KosztDodatkowy, Platnosc, Pozycja, Wynik, policz, policz_razem
 from services.products import compute_effective_cbm
 
 T_KONTENER = "app_koszt_kontenera"
 T_POZYCJA = "app_koszt_pozycji"
 T_STAWKI = "app_stawki_cn"
+T_DODATKOWE = "app_koszt_dodatkowy"
 
 
 def _f(v) -> Optional[float]:
@@ -59,7 +60,8 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
 
     `podmiana` = poprawki do podglądu bez zapisu, zamiast tych z bazy:
     {"kontener": {kurs_towaru, fracht_pln, lenmar_pln, transport_pln},
-     "pozycje": {item_id: (cena_waluta, stawka_cla, gratis)}} — dotyczy wszystkich liczonych kontenerów,
+     "pozycje": {item_id: (cena_waluta, stawka_cla, gratis)},
+     "koszty": [{nazwa, kwota, manufacturer_id, item_ids}] albo brak klucza = te z bazy} — dotyczy wszystkich liczonych kontenerów,
     więc woła się ją dla jednego.
 
     Zwraca ({container_id: Wynik}, {item_id: metadane pozycji}) — metadane to to, czego
@@ -98,8 +100,8 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         filtr_ci, filtr_l = "WHERE ci.container_id = ANY(:ids)", "WHERE l.container_id = ANY(:ids)"
 
     loty = (await db.execute(text(f"""
-        SELECT l.id, l.container_id, l.waluta_towaru, l.balance_kwota, l.balance_waluta, l.zaplacono_data,
-               COALESCE(m.name, l.order_number, '') AS nazwa
+        SELECT l.id, l.container_id, l.manufacturer_id, l.waluta_towaru, l.balance_kwota, l.balance_waluta,
+               l.zaplacono_data, COALESCE(m.name, l.order_number, '') AS nazwa
           FROM {settings.TABLE_CONTAINER_LOTS} l
           LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = l.manufacturer_id
           {filtr_l}
@@ -130,7 +132,16 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
     """), p)).mappings().all()
     nadpisania = {r["container_id"]: dict(r) for r in (await db.execute(text(
         f"SELECT * FROM {T_KONTENER} WHERE container_id = ANY(:ids)"), p)).mappings().all()}
+    dodatkowe: Dict[int, List[dict]] = {}
+    for r in (await db.execute(text(f"""
+        SELECT container_id, manufacturer_id, nazwa, kwota, item_ids FROM {T_DODATKOWE}
+         WHERE container_id = ANY(:ids) ORDER BY container_id, position, id
+    """), p)).mappings().all():
+        dodatkowe.setdefault(r["container_id"], []).append(dict(r))
     stawki = await slownik_stawek(db)
+    if podmiana is not None and podmiana.get("koszty") is not None:
+        for cid in zadane:
+            dodatkowe[cid] = list(podmiana["koszty"])
     if podmiana is not None:
         nadpisania = {**nadpisania, **{cid: podmiana.get("kontener") or {} for cid in zadane}}
         brak = (None, None, False)
@@ -224,7 +235,25 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
                 krajowa="PLN" in (wal_towaru, wal_balance),
                 waluta=wal_towaru, kurs_ostatni=k_ost, data_kursu_ostatniego=d_ost,
                 nazwa=(l["nazwa"] or "") if l else "",
+                dostawca_id=l["manufacturer_id"] if l else None,
             ))
+        # Dodatkowe koszty do grup: przypięte pozycje wskazują lot same; bez przypięcia — producent
+        # lotu (kontener skonsolidowany) albo cały kontener. Pozycje spoza lotu odpadają.
+        grupa_poz = {x.item_id: x.grupa for x in lista}
+        po_id = {g.id: g for g in grupy}
+        for d in dodatkowe.get(cid, []):
+            przypiete = [i for i in (d.get("item_ids") or []) if i in grupa_poz]
+            if przypiete:
+                gid = grupa_poz[przypiete[0]]
+            else:
+                gid = next((g.id for g in grupy if d.get("manufacturer_id") is not None
+                            and g.dostawca_id == d.get("manufacturer_id")),
+                           next((g.id for g in grupy if not g.krajowa), None))
+            g = po_id.get(gid)
+            if g is None or g.krajowa:
+                continue
+            g.koszty.append(KosztDodatkowy(nazwa=d["nazwa"], kwota=float(d["kwota"] or 0),
+                                           pozycje=[i for i in przypiete if grupa_poz[i] == gid], kontener=cid))
         n = nadpisania.get(cid)
         data_frachtu = k["delivered_date"] or k["eta_date"] or jutro
         d_fr, k_fr = kurs("USD", data_frachtu)

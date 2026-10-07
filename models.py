@@ -1342,6 +1342,30 @@ class KosztGrupaOut(BaseModel):
     wartosc_waluta: float = 0.0
     wartosc_zrodlo: str = "platnosci"         # 'platnosci' | 'plan' | 'faktura'
     platnosci: List[KosztPlatnoscOut] = []
+    dostawca_id: Optional[int] = None         # producent lotu — do wskazania lotu dodatkowemu kosztowi
+
+
+class KosztDodatkowyOut(BaseModel):
+    """Ręczny koszt z „Założeń” (przepakowanie, wysyłka próbek…) — część płatności poza ceną towaru."""
+    nazwa: str
+    kwota: float                              # w walucie grupy
+    waluta: str
+    grupa: int = 0
+    dostawca_id: Optional[int] = None
+    pozycje: List[int] = []                   # przypięte item_id; puste = cały lot/kontener po wartości
+    pln: float = 0.0
+
+
+class KosztDodatkowyIn(BaseModel):
+    nazwa: str = Field(..., min_length=1, max_length=200)
+    kwota: float = Field(..., gt=0)
+    dostawca_id: Optional[int] = None         # lot kontenera skonsolidowanego (gdy nic nie przypięto)
+    pozycje: List[int] = []
+
+    @field_validator("nazwa", mode="before")
+    @classmethod
+    def _przytnij(cls, v):
+        return v.strip() if isinstance(v, str) else v
 
 
 class KosztPozycjaOut(BaseModel):
@@ -1359,6 +1383,7 @@ class KosztPozycjaOut(BaseModel):
     towar: float = 0.0
     gratisy: float = 0.0                      # udział w różnicy płatności (gratisy z faktury / rabat)
     gratis_przypiety: bool = False
+    dodatkowe: float = 0.0                    # udział w dodatkowych kosztach z „Założeń”
     fracht: float = 0.0
     lenmar: float = 0.0
     clo: float = 0.0
@@ -1386,6 +1411,8 @@ class KosztKontenerOut(BaseModel):
     zgloszen: int = 0
     towar: float = 0.0
     gratisy: float = 0.0                      # różnica płatności vs ceny pozycji, rozłożona na towar
+    dodatkowe: float = 0.0                    # dodatkowe koszty z „Założeń” (PLN)
+    koszty: List[KosztDodatkowyOut] = []
     fracht: float = 0.0
     fracht_auto: float = 0.0
     fracht_usd: float = 0.0
@@ -1437,6 +1464,7 @@ class KosztKontenerIn(BaseModel):
     lenmar_pln: Optional[float] = Field(None, ge=0)
     transport_pln: Optional[float] = Field(None, ge=0)
     pozycje: List[KosztPozycjaIn] = []
+    koszty: Optional[List[KosztDodatkowyIn]] = Field(None, max_length=50)   # None = nie ruszaj zapisanych
 
 
 class StawkaCnOut(BaseModel):

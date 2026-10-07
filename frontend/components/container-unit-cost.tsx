@@ -24,18 +24,20 @@ type Platnosc = { typ: string; kwota: number; waluta: string; data: string | nul
 type Grupa = {
   id: number; nazwa: string; krajowa: boolean; waluta: string; kurs: number | null; kurs_auto: number | null;
   kurs_reczny: boolean; szacunek: boolean; wartosc_waluta: number; wartosc_zrodlo: string; platnosci: Platnosc[];
+  dostawca_id: number | null;
 };
+type Dodatkowy = { nazwa: string; kwota: number; waluta: string; grupa: number; dostawca_id: number | null; pozycje: number[]; pln: number };
 type Pozycja = {
   item_id: number; sku: string; nazwa: string | null; szt: number; grupa: number; krajowa: boolean; cbm_szt: number;
   cena_planowana: number; cena_waluta: number; cena_reczna: boolean; cena_zrodlo: string; towar: number;
-  gratisy: number; gratis_przypiety: boolean; fracht: number; lenmar: number;
+  gratisy: number; gratis_przypiety: boolean; dodatkowe: number; fracht: number; lenmar: number;
   clo: number; transport: number; kod_cn: string | null; stawka: number; stawka_zrodlo: string;
   stawka_slownik: number | null; koszt_jednostkowy: number | null; szacunek: boolean;
   koszt_erp: number | null; erp_zrodlo: string | null;
 };
 type Koszt = {
   container_id: number; krajowa: boolean; szacunek: boolean; podzial: string; zgloszen: number;
-  towar: number; gratisy: number; fracht: number; fracht_auto: number; fracht_usd: number; kurs_frachtu: number | null;
+  towar: number; gratisy: number; dodatkowe: number; koszty: Dodatkowy[]; fracht: number; fracht_auto: number; fracht_usd: number; kurs_frachtu: number | null;
   data_kursu_frachtu: string | null; data_frachtu: string | null; lenmar: number; lenmar_auto: number;
   clo: number; transport: number; transport_auto: number; suma: number; narzut_proc: number | null;
   kurs_towaru_reczny: number | null; fracht_reczny: number | null; lenmar_reczny: number | null;
@@ -54,7 +56,10 @@ type Szkic = {
   kurs: string; fracht: string; lenmar: string; transport: string;
   cena: Record<number, string>; stawka: Record<number, string>;
   gratis: number[];   // pozycje, na które przypięto różnicę płatności (gratisy) — zwykle żadna = cała FV
+  koszty: KosztSzkic[];   // dodatkowe koszty (przepakowanie, wysyłka…) — nazwana część płatności
 };
+// dostawca_id wskazuje lot kontenera skonsolidowanego (gdy nic nie przypięto); pozycje = przypięte item_id.
+type KosztSzkic = { nazwa: string; kwota: string; dostawca_id: number | null; pozycje: number[] };
 type PoleKontenera = "kurs" | "fracht" | "lenmar" | "transport";
 
 const pl = (n: number | null | undefined, d = 2) =>
@@ -79,6 +84,7 @@ function szkicZ(k: Koszt): Szkic {
     kurs: tekst(k.kurs_towaru_reczny, 4), fracht: tekst(k.fracht_reczny), lenmar: tekst(k.lenmar_reczny),
     transport: tekst(k.transport_reczny), cena, stawka,
     gratis: k.pozycje.filter((p) => p.gratis_przypiety).map((p) => p.item_id),
+    koszty: k.koszty.map((x) => ({ nazwa: x.nazwa, kwota: tekst(x.kwota), dostawca_id: x.dostawca_id, pozycje: x.pozycje })),
   };
 }
 
@@ -90,6 +96,9 @@ function cialo(s: Szkic) {
     pozycje: [...ids].sort((a, b) => a - b).map((id) => ({
       item_id: id, cena_waluta: liczba(s.cena[id] ?? ""), stawka_cla: liczba(s.stawka[id] ?? ""), gratis: s.gratis.includes(id),
     })).filter((p) => p.cena_waluta != null || p.stawka_cla != null || p.gratis),
+    // Wiersz bez nazwy albo kwoty to jeszcze szkic — nie liczy się i nie zapisuje.
+    koszty: s.koszty.map((x) => ({ nazwa: x.nazwa.trim(), kwota: liczba(x.kwota), dostawca_id: x.dostawca_id, pozycje: x.pozycje }))
+      .filter((x) => x.nazwa && x.kwota != null && x.kwota > 0),
   };
 }
 
@@ -155,7 +164,21 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
   const kursSzac = importowe.some((g) => g.szacunek);
   const ileRecznych = [szkic.kurs, szkic.fracht, szkic.lenmar, szkic.transport].filter(Boolean).length
     + Object.values(szkic.cena).filter(Boolean).length + Object.values(szkic.stawka).filter(Boolean).length
-    + szkic.gratis.length;
+    + szkic.gratis.length + szkic.koszty.length;
+  // ── dodatkowe koszty ──
+  const ustawKoszt = (i: number, zm: Partial<KosztSzkic>, odRazu = false) => {
+    const s = { ...szkic, koszty: szkic.koszty.map((x, j) => (j === i ? { ...x, ...zm } : x)) };
+    setSzkic(s); if (odRazu) void przelicz(s);
+  };
+  const usunKoszt = (i: number) => { const s = { ...szkic, koszty: szkic.koszty.filter((_, j) => j !== i) }; setSzkic(s); void przelicz(s); };
+  const dodajKoszt = () => setSzkic({ ...szkic, koszty: [...szkic.koszty, { nazwa: "", kwota: "", dostawca_id: wiele ? (importowe[0]?.dostawca_id ?? null) : null, pozycje: [] }] });
+  // Lot kosztu: z przypiętych pozycji, a bez nich — z wybranego dostawcy (kontener skonsolidowany).
+  const grupaKosztu = (x: KosztSzkic): Grupa | undefined => {
+    const zPoz = x.pozycje.length ? k.pozycje.find((p) => p.item_id === x.pozycje[0])?.grupa : undefined;
+    if (zPoz != null) return grupaPo.get(zPoz);
+    return (wiele ? importowe.find((g) => g.dostawca_id === x.dostawca_id) : undefined) ?? glowna;
+  };
+  const pokazDodatkowe = !k.krajowa && Math.abs(k.dodatkowe) >= 0.01;
   const ustawPole = (pole: PoleKontenera, v: string) => zmien({ ...szkic, [pole]: v });
   const przywroc = (pole: PoleKontenera) => { const s = { ...szkic, [pole]: "" }; setSzkic(s); void przelicz(s); };
   const ustawPoz = (rodzaj: "cena" | "stawka", id: number, v: string) =>
@@ -214,6 +237,8 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
     <Kafel key="t" l="Towar" v={`${pl(k.towar + k.gratisy, 0)} zł`} tag={k.szacunek ? <Tag t="szac" /> : null}
       n={(wiele ? `${importowe.length} loty z płatności` : glowna ? `${pl(glowna.wartosc_waluta, 0)} ${waluta} ${glowna.wartosc_zrodlo === "plan" ? "z cen pozycji" : "z płatności"}` : "")
         + (Math.abs(k.gratisy) >= 0.01 ? ` · w tym gratisy ${pl(k.gratisy, 0)} zł` : "")} />,
+    ...(pokazDodatkowe ? [<Kafel key="d" l="Dodatkowe koszty" v={`${pl(k.dodatkowe, 0)} zł`}
+      n={k.koszty.map((x) => x.nazwa).join(", ") || "z założeń"} />] : []),
     <Kafel key="f" l="Fracht" v={`${pl(k.fracht, 0)} zł`}
       n={k.fracht_reczny != null ? "wpisany ręcznie" : k.fracht_usd ? `${pl(k.fracht_usd, 0)} USD × ${pl(k.kurs_frachtu, 4)}` : "brak na karcie"} />,
     <Kafel key="l" l="Lenmar" v={`${pl(k.lenmar, 0)} zł`}
@@ -306,6 +331,20 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
             </div>
           );
         })}
+        {!k.krajowa && szkic.koszty.map((x, i) => (
+          <DodatkowyWiersz key={i} x={x} edycja={edycja} grupa={grupaKosztu(x)} importowe={importowe} wiele={wiele}
+            pozycje={k.pozycje.filter((p) => !p.krajowa && (!wiele || p.grupa === grupaKosztu(x)?.id))}
+            onZmien={(zm, odRazu) => ustawKoszt(i, zm, odRazu)} onBlur={zatwierdz} onUsun={() => usunKoszt(i)} />
+        ))}
+        {!k.krajowa && edycja && (
+          <div style={{ padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <button onClick={dodajKoszt} style={btnSec}>+ Dodaj koszt</button>
+            <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
+              Np. przepakowanie, wysyłka próbek samolotem — kwota, która jest już w płatnościach dostawcy.
+              Zmniejsza gratisy; rozkłada się po wartości pozycji albo na przypięte SKU.
+            </span>
+          </div>
+        )}
       </div>
 
       <div style={karta}>
@@ -317,7 +356,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
             <thead><tr>
               <Th l>SKU</Th><Th>Szt.</Th>
               <Th>{k.krajowa ? "Cena z FV/szt" : `Cena ${waluta}/szt`}</Th>
-              {!k.krajowa && <><Th>Towar/szt</Th>{pokazGratisy && <Th><span title="Różnica między płatnościami a cenami pozycji — gratisy z faktury (albo rabat). Domyślnie na całą fakturę po wartości; „przypnij” daje całość jednej pozycji.">Gratisy/szt</span></Th>}<Th>Fracht/szt</Th><Th>Lenmar/szt</Th><Th>Cło/szt · CN · stawka %</Th></>}
+              {!k.krajowa && <><Th>Towar/szt</Th>{pokazGratisy && <Th><span title="Różnica między płatnościami a cenami pozycji — gratisy z faktury (albo rabat). Domyślnie na całą fakturę po wartości; „przypnij” daje całość jednej pozycji.">Gratisy/szt</span></Th>}{pokazDodatkowe && <Th><span title="Dodatkowe koszty z założeń (przepakowanie, wysyłka…) — część płatności dostawcy poza ceną towaru.">Dodatkowe/szt</span></Th>}<Th>Fracht/szt</Th><Th>Lenmar/szt</Th><Th>Cło/szt · CN · stawka %</Th></>}
               <Th>Transport/szt</Th><Th>Koszt jedn.</Th>
               <Th><span title="Bieżący koszt zakupu w ERP spółki-importera — średnia z towaru na stanie, więc może obejmować też wcześniejsze dostawy.">{erpNazwa}</span></Th>
               <Th>Różnica</Th>
@@ -364,6 +403,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
                           ) : p.gratis_przypiety ? <div style={{ fontSize: 10.5, color: "var(--accent)" }}>przypięte</div> : null}
                         </td>
                       )}
+                      {pokazDodatkowe && <td style={tdM}><span style={{ color: p.dodatkowe ? undefined : "var(--text-disabled)" }}>{pl(p.dodatkowe / szt)}</span></td>}
                       <td style={tdM}>{pl(p.fracht / szt)}</td>
                       <td style={tdM}>{pl(p.lenmar / szt)}</td>
                       <td style={tdM}>
@@ -397,7 +437,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
               <td style={{ ...td, textAlign: "left", fontWeight: 700, color: "var(--text-mid)", borderBottom: 0 }}>Razem</td>
               <td style={tdSum}>{pl(sumaSzt, 0)}</td><td style={tdSum} />
               {!k.krajowa && <>
-                <td style={tdSum}>{pl(k.towar, 0)}</td>{pokazGratisy && <td style={tdSum}>{pl(k.gratisy, 0)}</td>}<td style={tdSum}>{pl(k.fracht, 0)}</td>
+                <td style={tdSum}>{pl(k.towar, 0)}</td>{pokazGratisy && <td style={tdSum}>{pl(k.gratisy, 0)}</td>}{pokazDodatkowe && <td style={tdSum}>{pl(k.dodatkowe, 0)}</td>}<td style={tdSum}>{pl(k.fracht, 0)}</td>
                 <td style={tdSum}>{pl(k.lenmar, 0)}</td><td style={tdSum}>{pl(k.clo, 0)}</td>
               </>}
               <td style={tdSum}>{pl(k.transport, 0)}</td><td style={tdSum}>{pl(k.suma, 0)} zł</td>
@@ -418,6 +458,75 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
               : ileRecznych ? `Zapisane poprawki: ${ileRecznych}${k.zapisal ? ` (${k.zapisal}${k.zapisano ? `, ${data(k.zapisano)}` : ""})` : ""}. Pozostałe wartości liczą się same.`
                 : "Nic nie poprawiano. Koszt liczy się sam z karty kontenera i płatności, więc ten kontener i tak wpada do FIFO."}
           </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Dodatkowy koszt (wiersz na dole „Założeń”) ──────────────
+// Nazwana część płatności dostawcy, która nie jest ceną towaru. Kwota w walucie lotu/kontenera.
+// „Przypnij do SKU” rozwija listę pozycji — zaznaczone dostają cały koszt (po wartości między sobą).
+function DodatkowyWiersz({ x, edycja, grupa, importowe, wiele, pozycje, onZmien, onBlur, onUsun }: {
+  x: KosztSzkic; edycja: boolean; grupa: Grupa | undefined; importowe: Grupa[]; wiele: boolean; pozycje: Pozycja[];
+  onZmien: (zm: Partial<KosztSzkic>, odRazu?: boolean) => void; onBlur: () => void; onUsun: () => void;
+}) {
+  const [rozwin, setRozwin] = useState(false);
+  const wal = grupa?.waluta ?? "USD";
+  const kw = liczba(x.kwota);
+  const plnStr = kw != null && grupa?.kurs ? `≈ ${pl(kw * grupa.kurs, 0)} zł` : "";
+  const sku = new Map(pozycje.map((p) => [p.item_id, p.sku]));
+  const przypiete = x.pozycje.map((i) => sku.get(i)).filter(Boolean) as string[];
+  const enter = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); };
+  const przelacz = (id: number) => onZmien({ pozycje: x.pozycje.includes(id) ? x.pozycje.filter((i) => i !== id) : [...x.pozycje, id] }, true);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border-soft)" }}>
+      <div className="kj-zal" style={{ borderBottom: 0 }}>
+        <div>
+          {edycja ? (
+            <input value={x.nazwa} placeholder="Nazwa kosztu, np. Przepakowanie" aria-label="Nazwa dodatkowego kosztu" maxLength={200}
+              onChange={(e) => onZmien({ nazwa: e.target.value })} onBlur={onBlur} onKeyDown={enter}
+              style={{ ...input, textAlign: "left", fontFamily: "inherit", fontWeight: 600, width: "100%" }} />
+          ) : <div style={{ fontSize: 13, fontWeight: 600 }}>{x.nazwa}</div>}
+          <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{wal} · dodatkowy koszt, część płatności</div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-mid)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {wiele && !x.pozycje.length && (edycja ? (
+            <select value={x.dostawca_id ?? ""} onChange={(e) => onZmien({ dostawca_id: e.target.value ? Number(e.target.value) : null }, true)}
+              aria-label="Lot (dostawca) kosztu" style={{ ...input, textAlign: "left", fontFamily: "inherit", padding: "4px 6px" }}>
+              {importowe.map((g) => <option key={g.id} value={g.dostawca_id ?? ""}>{g.nazwa || "lot"}</option>)}
+            </select>
+          ) : <span>{grupa?.nazwa}</span>)}
+          <span>{przypiete.length ? <>na: <span className="mono" style={{ color: "var(--text-hi)" }}>{przypiete.join(", ")}</span></> : wiele ? "cały lot po wartości" : "cały kontener po wartości"}</span>
+          {edycja && <button onClick={() => setRozwin((v) => !v)} style={btnLink}>{rozwin ? "zwiń" : "przypnij do SKU"}</button>}
+        </div>
+        <div>
+          {edycja ? (
+            <input value={x.kwota} placeholder="0,00" inputMode="decimal" aria-label={`Kwota w ${wal}`}
+              onChange={(e) => onZmien({ kwota: e.target.value })} onBlur={onBlur} onKeyDown={enter}
+              style={{ ...input, ...reczneStyl, width: "100%", maxWidth: 130 }} />
+          ) : <span className="mono">{x.kwota} {wal}</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>DODATKOWY</span>
+          {plnStr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>{plnStr}</span>}
+        </div>
+        <div>{edycja ? <button onClick={onUsun} style={{ ...btnLink, color: "var(--critical)" }}>usuń</button> : null}</div>
+      </div>
+      {edycja && rozwin && (
+        <div style={{ padding: "0 16px 10px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {pozycje.map((p) => {
+            const on = x.pozycje.includes(p.item_id);
+            return (
+              <button key={p.item_id} onClick={() => przelacz(p.item_id)} title={p.nazwa ?? undefined}
+                style={{ ...tag, fontSize: 11, padding: "3px 8px", cursor: "pointer", fontFamily: "var(--font-mono)",
+                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                  background: on ? "var(--accent-soft)" : "var(--surface-2)", color: on ? "var(--accent)" : "var(--text-mid)" }}>
+                {on ? "✓ " : ""}{p.sku}
+              </button>
+            );
+          })}
+          {x.pozycje.length > 0 && <button onClick={() => onZmien({ pozycje: [] }, true)} style={btnLink}>odepnij wszystkie</button>}
         </div>
       )}
     </div>
