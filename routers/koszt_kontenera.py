@@ -6,7 +6,9 @@
   GET /api/stawki-cn                 Ustawienia → Stawki cła: obserwowane, nowości i sample
   PUT /api/stawki-cn/{kod}           ręczna stawka w słowniku (superadmin)
   PUT /api/products/{sku}/kod-cn     kod CN produktu — przeniesiony z „Danych podstawowych”
-  PUT /api/kontenery/{id}/koszt/notatka  notatka do rachunku (np. skąd gratisy / dodatkowe koszty)
+  POST /api/kontenery/{id}/koszt/notatki       nowy wpis w notatkach (np. skąd gratisy / dodatkowe koszty)
+  PUT /api/kontenery/{id}/koszt/notatki/{n}    poprawka wpisu — autor albo administrator
+  DELETE /api/kontenery/{id}/koszt/notatki/{n} usunięcie wpisu — autor albo administrator
   GET /api/kursy/ostatni?waluta=USD  ostatni kurs NBP — formularz kontenera liczy z ceny USD cenę PLN
 
 Rachunek siedzi w services/koszt_kontenera.py (czysty, z testami), wejście z bazy składa
@@ -25,12 +27,12 @@ from audit_opisy import f_num, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
-    CurrentUser, KodCnIn, KontenerKrotkoOut, KursOut, RozliczenieRazemIn, RozliczenieRazemOut, KosztGrupaOut, KosztDodatkowyOut, KosztKontenerIn, KosztKontenerOut, KosztNotatkaIn, KosztPlatnoscOut,
+    CurrentUser, KodCnIn, KontenerKrotkoOut, KursOut, RozliczenieRazemIn, RozliczenieRazemOut, KosztGrupaOut, KosztDodatkowyOut, KosztKontenerIn, KosztKontenerOut, KosztNotatkaIn, KosztNotatkaOut, KosztPlatnoscOut,
     KosztPozycjaOut, KosztUwagaOut, StawkaCnIn, StawkaCnOut,
 )
 from routers.odprawy import _etykieta_sql, _koszt_erp
 from security import (
-    can_edit_landed_cost, get_current_user, require_landed_cost_edit, require_landed_cost_view,
+    can_edit_landed_cost, get_current_user, is_super_admin, require_landed_cost_edit, require_landed_cost_view,
     require_perm, require_super_admin_403, resolve_shop,
 )
 from services.fx import kursy_przed
@@ -75,21 +77,41 @@ def _podmiana(body: KosztKontenerIn) -> dict:
             "koszty": _koszty_wiersze(body)}
 
 
-async def _notatka(db: AsyncSession, cid: int) -> dict:
-    r = (await db.execute(text(
-        f"SELECT koszt_notatka, koszt_notatka_kto, koszt_notatka_kiedy FROM {settings.TABLE_CONTAINERS} WHERE id = :id"
-    ), {"id": cid})).mappings().first()
-    if not r:
+T_NOTATKI = "app_koszt_notatki"
+
+
+def _admin_notatek(user: CurrentUser) -> bool:
+    return user.role == "ADMIN" or is_super_admin(user)
+
+
+def _moze_zmieniac(user: CurrentUser, kto_id: Optional[int]) -> bool:
+    """Swój wpis poprawia i usuwa autor; cudze — tylko administrator (rola ADMIN albo superadmin).
+    Wpisy przeniesione ze starej wersji (bez autora) — tylko administrator."""
+    return _admin_notatek(user) or (kto_id is not None and kto_id == user.id and can_edit_landed_cost(user))
+
+
+async def _kontener_istnieje(db: AsyncSession, cid: int) -> None:
+    if not (await db.execute(text(f"SELECT 1 FROM {settings.TABLE_CONTAINERS} WHERE id = :id"),
+                             {"id": cid})).scalar_one_or_none():
         raise HTTPException(404, "Nie ma takiego kontenera")
-    return {"notatka": r["koszt_notatka"], "notatka_kto": r["koszt_notatka_kto"], "notatka_kiedy": r["koszt_notatka_kiedy"]}
+
+
+async def _notatki(db: AsyncSession, cid: int, user: CurrentUser) -> List[KosztNotatkaOut]:
+    rows = (await db.execute(text(
+        f"SELECT id, tresc, kto, kto_id, kiedy, edytowano FROM {T_NOTATKI} WHERE container_id = :c ORDER BY kiedy, id"
+    ), {"c": cid})).mappings().all()
+    return [KosztNotatkaOut(id=r["id"], tresc=r["tresc"], kto=r["kto"], kiedy=r["kiedy"], edytowano=r["edytowano"],
+                            moze_edytowac=_moze_zmieniac(user, r["kto_id"]))
+            for r in rows]
 
 
 async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
                     podmiana: Optional[dict] = None) -> KosztKontenerOut:
-    notatka = await _notatka(db, cid)   # przy okazji: 404, gdy kontenera nie ma
+    await _kontener_istnieje(db, cid)
+    notatki = {"notatki": await _notatki(db, cid, user)}
     wyniki, meta = await policz_kontenery(db, [cid], podmiana)
     if cid not in wyniki:
-        return KosztKontenerOut(container_id=cid, moze_edytowac=can_edit_landed_cost(user), **notatka)
+        return KosztKontenerOut(container_id=cid, moze_edytowac=can_edit_landed_cost(user), **notatki)
     w = wyniki[cid]
     k = w.kontener
 
@@ -146,7 +168,7 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
         ) for p in w.pozycje],
         uwagi=[KosztUwagaOut(poziom=u.poziom, tresc=u.tresc) for u in w.uwagi],
         zapisal=zapis["zapisal"] if zapis else None, zapisano=zapis["zapisano"] if zapis else None,
-        moze_edytowac=can_edit_landed_cost(user), **notatka,
+        moze_edytowac=can_edit_landed_cost(user), **notatki,
     )
 
 
@@ -246,27 +268,58 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
     return await _rachunek(db, container_id, user)
 
 
-@router.put("/kontenery/{container_id}/koszt/notatka", response_model=KosztKontenerOut)
-async def zapisz_notatke(container_id: int, body: KosztNotatkaIn, db: AsyncSession = Depends(get_db),
-                         user: CurrentUser = Depends(require_landed_cost_edit)):
-    """Notatka do rachunku — np. że różnica płatności to nie gratisy, tylko dopłata za przepakowanie.
-    Osobno od poprawek, bo to opis, a nie liczba: nie zmienia kosztu i nie znika przy „przywróć automat”."""
-    stara = (await _notatka(db, container_id))["notatka"]
-    nowa = (body.notatka or "").strip() or None
-    if (stara or None) == nowa:
+@router.post("/kontenery/{container_id}/koszt/notatki", response_model=List[KosztNotatkaOut])
+async def dodaj_notatke(container_id: int, body: KosztNotatkaIn, db: AsyncSession = Depends(get_db),
+                        user: CurrentUser = Depends(require_landed_cost_edit)):
+    """Nowy wpis w notatkach do rachunku — np. że różnica płatności to dopłata za przepakowanie.
+    Wpisy się nie nadpisują (szef widzi całą historię); nie zmieniają kosztu. Zwraca wszystkie wpisy."""
+    await _kontener_istnieje(db, container_id)
+    await db.execute(text(f"INSERT INTO {T_NOTATKI} (container_id, tresc, kto, kto_id) VALUES (:c, :t, :kto, :uid)"),
+                     {"c": container_id, "t": body.tresc, "kto": user.full_name or user.email, "uid": user.id})
+    await db.commit()
+    audit.note(f"dodał notatkę do kosztu jednostkowego kontenera {await audit.nazwa_kontenera(db, container_id)}: "
+               f"„{body.tresc[:200]}”", resource_type="container", resource_id=container_id)
+    return await _notatki(db, container_id, user)
+
+
+@router.put("/kontenery/{container_id}/koszt/notatki/{notatka_id}", response_model=List[KosztNotatkaOut])
+async def popraw_notatke(container_id: int, notatka_id: int, body: KosztNotatkaIn, db: AsyncSession = Depends(get_db),
+                         user: CurrentUser = Depends(require_landed_cost_view)):
+    """Poprawka wpisu — autor albo administrator (inni dopisują nowy wpis). Zostaje znacznik „edytowano”."""
+    r = (await db.execute(text(f"SELECT tresc, kto_id FROM {T_NOTATKI} WHERE id = :n AND container_id = :c"),
+                          {"n": notatka_id, "c": container_id})).mappings().first()
+    if not r:
+        raise HTTPException(404, "Nie ma takiej notatki")
+    if not _moze_zmieniac(user, r["kto_id"]):
+        raise HTTPException(403, "Notatkę poprawia tylko jej autor albo administrator — możesz dopisać nowy wpis")
+    if r["tresc"] == body.tresc:
         audit.skip()
-        return await _rachunek(db, container_id, user)
-    await db.execute(text(f"""
-        UPDATE {settings.TABLE_CONTAINERS}
-           SET koszt_notatka = :n, koszt_notatka_kto = :kto, koszt_notatka_kiedy = :teraz
-         WHERE id = :id
-    """), {"n": nowa, "kto": (user.full_name or user.email) if nowa else None,
-           "teraz": datetime.now(timezone.utc).replace(tzinfo=None) if nowa else None, "id": container_id})
+        return await _notatki(db, container_id, user)
+    await db.execute(text(f"UPDATE {T_NOTATKI} SET tresc = :t, edytowano = CURRENT_TIMESTAMP WHERE id = :n"),
+                     {"t": body.tresc, "n": notatka_id})
     await db.commit()
     audit.note_zmiany(f"kosztu jednostkowego kontenera {await audit.nazwa_kontenera(db, container_id)}",
-                      [{"pole": "notatka", "bylo": stara or "—", "jest": nowa or "—"}],
+                      [{"pole": "notatka", "bylo": r["tresc"], "jest": body.tresc}],
                       resource_type="container", resource_id=container_id)
-    return await _rachunek(db, container_id, user)
+    return await _notatki(db, container_id, user)
+
+
+@router.delete("/kontenery/{container_id}/koszt/notatki/{notatka_id}", response_model=List[KosztNotatkaOut])
+async def usun_notatke(container_id: int, notatka_id: int, db: AsyncSession = Depends(get_db),
+                       user: CurrentUser = Depends(require_landed_cost_view)):
+    """Usunięcie wpisu — autor (swojego) albo administrator (każdego)."""
+    r = (await db.execute(text(f"SELECT tresc, kto, kto_id FROM {T_NOTATKI} WHERE id = :n AND container_id = :c"),
+                          {"n": notatka_id, "c": container_id})).mappings().first()
+    if not r:
+        raise HTTPException(404, "Nie ma takiej notatki")
+    if not _moze_zmieniac(user, r["kto_id"]):
+        raise HTTPException(403, "Notatkę usuwa tylko jej autor albo administrator")
+    await db.execute(text(f"DELETE FROM {T_NOTATKI} WHERE id = :n"), {"n": notatka_id})
+    await db.commit()
+    audit.note(f"usunął notatkę ({r['kto'] or '—'}) z kosztu jednostkowego kontenera "
+               f"{await audit.nazwa_kontenera(db, container_id)}: „{(r['tresc'] or '')[:200]}”",
+               resource_type="container", resource_id=container_id)
+    return await _notatki(db, container_id, user)
 
 
 @router.get("/kursy/ostatni", response_model=KursOut)
