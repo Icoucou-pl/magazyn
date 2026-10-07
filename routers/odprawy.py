@@ -581,20 +581,23 @@ def _linie_kosztow(odprawa: Odprawa, ustawienia: OdprawaUstawieniaIn,
     if ustawienia.koszty:
         return list(ustawienia.koszty)
 
-    d = {x.kod: x.kwota for x in odprawa.doliczenia}
+    # Linie w walucie faktury spedytora (waluta frachtu z SAD), w oryginalnych kwotach —
+    # przy SAD w CNY fracht i tak przychodzi w USD.
+    wal = odprawa.waluta_kosztow
+    d = {x.kod: (x.kwota_waluta if x.waluta == wal else x.kwota) for x in odprawa.doliczenia}
     linie = [
-        OdprawaLiniaKosztuIn(lp=1, nazwa="Fracht morski", kwota=d.get("031W", 0), waluta=odprawa.waluta),
-        OdprawaLiniaKosztuIn(lp=2, nazwa="THC", kwota=d.get("071V", 0), waluta=odprawa.waluta),
-        OdprawaLiniaKosztuIn(lp=3, nazwa="Opłata dokumentacyjna", kwota=0, waluta=odprawa.waluta),
+        OdprawaLiniaKosztuIn(lp=1, nazwa="Fracht morski", kwota=d.get("031W", 0), waluta=wal),
+        OdprawaLiniaKosztuIn(lp=2, nazwa="THC", kwota=d.get("071V", 0), waluta=wal),
+        OdprawaLiniaKosztuIn(lp=3, nazwa="Opłata dokumentacyjna", kwota=0, waluta=wal),
         OdprawaLiniaKosztuIn(lp=4, nazwa="Ubezpieczenie cargo", kwota=d.get("032W", 0),
-                             waluta=odprawa.waluta, klucz="wartosc"),
-        OdprawaLiniaKosztuIn(lp=5, nazwa="Zgłoszenie do odprawy celnej", kwota=0, waluta=odprawa.waluta),
+                             waluta=wal, klucz="wartosc"),
+        OdprawaLiniaKosztuIn(lp=5, nazwa="Zgłoszenie do odprawy celnej", kwota=0, waluta=wal),
     ]
     if d.get("033W"):
         # Załadunek po stronie dostawcy (np. „Container FOB cost") — płacony dostawcy,
         # więc nie ma go na fakturze spedytora, a do kosztu towaru należy.
         linie.append(OdprawaLiniaKosztuIn(lp=LP_ZALADUNEK, nazwa="Załadunek u dostawcy (033W)",
-                                          kwota=d["033W"], waluta=odprawa.waluta))
+                                          kwota=d["033W"], waluta=wal))
     for k in kontenery:
         linie.append(OdprawaLiniaKosztuIn(
             nazwa="Transport krajowy", kwota=float(k.get("koszt_transportu_magazyn") or 0),
@@ -712,7 +715,7 @@ async def _zloz(
         gratisy=ustawienia.gratisy or None,
         klucz=klucz,
         kurs_towaru=kurs_towaru,
-        kurs_kosztow=ustawienia.kurs_kosztow,
+        kurs_kosztow=ustawienia.kurs_kosztow or odprawa.kurs_kosztow,
         ceny_reczne=ustawienia.ceny_reczne or None,
         faktury_sku=faktury_sku or None,
         udzial_kontenera=udzial,
@@ -1413,7 +1416,7 @@ async def _zapisz_wszystko(
             "clo": odprawa.clo_suma, "vat": odprawa.vat_suma,
             "klucz": out.klucz_podzialu,
             "fxt": ust.kurs_towaru or out.kurs_platnosci or odprawa.kurs_celny,
-            "fxk": ust.kurs_kosztow or odprawa.kurs_celny,
+            "fxk": ust.kurs_kosztow or odprawa.kurs_kosztow,
             "fv": ust.fv_spedytora, "fv_data": ust.fv_spedytora_data,
             "plik": nazwa_pliku, "uid": user_id, "teraz": teraz,
         },
@@ -1498,7 +1501,8 @@ async def _zapisz_wszystko(
         """), {"kody": kody})
 
     z_sad = {1: "031W", 2: "071V", 4: "032W", LP_ZALADUNEK: "033W"}
-    dolicz = {d.kod: d.kwota for d in odprawa.doliczenia}
+    dolicz = {d.kod: (d.kwota_waluta if d.waluta == odprawa.waluta_kosztow else d.kwota)
+              for d in odprawa.doliczenia}
 
     def zrodlo(l) -> str:
         if l.container_id:

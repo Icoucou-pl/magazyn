@@ -153,7 +153,7 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
           setKlucz(z.klucz_podzialu === "cbm" ? "cbm" : "waga");
           setKoszty(z.koszty ?? []);
           setFxTowar(String(z.kurs_towaru ?? z.kurs_platnosci ?? z.kurs_celny ?? ""));
-          setFxKoszty(z.kurs_kosztow != null ? String(z.kurs_kosztow) : String(z.kurs_celny || ""));
+          setFxKoszty(z.kurs_kosztow != null ? String(z.kurs_kosztow) : String(kursKosztow(z) || ""));
           setFvNr(z.fv_spedytora ?? "");
           setFvData(z.fv_spedytora_data ?? "");
         }
@@ -210,7 +210,7 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
       const zap = z.zapisane ?? null;
       setKoszty((k) => (k.length ? k : (zap?.koszty?.length ? zap.koszty : z.koszty ?? [])));
       setFxTowar((v) => v || String(zap?.kurs_towaru ?? z.kurs_platnosci ?? z.kurs_celny));
-      setFxKoszty((v) => v || String(zap?.kurs_kosztow ?? z.kurs_celny));
+      setFxKoszty((v) => v || String(zap?.kurs_kosztow ?? kursKosztow(z)));
       // Odtwarzamy raz na wczytany plik. Klucz podziału ma niepustą wartość domyślną,
       // więc po „pole jest puste" nie da się poznać, czy użytkownik już go wybrał —
       // decyduje moment, nie zawartość.
@@ -935,3 +935,10 @@ const okStyl = { background: "var(--ok-soft)", color: "var(--ok)" };
 const ostrzStyl = { background: "var(--warning-soft)", color: "var(--warning)" };
 const zlyStyl = { background: "var(--critical-soft)", color: "var(--critical)" };
 const infoStyl = { background: "var(--info-soft)", color: "var(--info)" };
+
+// Domyślny kurs kosztów = kurs z SAD dla waluty faktury spedytora (waluta linii frachtu).
+// Zwykle to waluta zgłoszenia, ale SAD bywa w CNY, a fracht i Lenmar w USD (Anji SK2605020).
+function kursKosztow(z: { kurs_celny: number; kursy?: Record<string, number>; koszty?: { lp: number | null; waluta: string }[] }): number {
+  const wal = z.koszty?.find((l) => l.lp === 1)?.waluta;
+  return (wal && z.kursy?.[wal]) || z.kurs_celny;
+}
