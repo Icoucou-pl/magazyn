@@ -160,3 +160,27 @@ def test_koszt_z_nowej_metody_i_szacunek_z_niezaplaconego_balance():
     assert w.srednia == 120 and w.srednia_pominieto_szt == 50, "szacunek nie miesza w średniej"
     assert w.ostatnia == 120 and (w.min, w.max) == (120, 120)
     assert w.sredni_narzut_proc == 20.0, "narzut tylko z pewnych dostaw importu"
+
+
+def test_wbita_dostawa_z_przyszla_data_zajmuje_stan_ale_nie_wchodzi_do_kafli():
+    # Jak F1: stary kontener (295 szt, koszt 274,03, zostało 69) i nowy policzony 261,83 —
+    # wbity do „w drodze”, ale wejście na magazyn dopiero w grudniu (towar w produkcji).
+    stary = Dostawa(item_id=1, container_id=1, container_number="MEDU5327848", data=date(2026, 5, 22),
+                    data_zrodlo="delivered", szt=295, u_nas=True, cena_fv_pln=247.37, koszt_jednostkowy=274.03)
+    nowy = Dostawa(item_id=2, container_id=2, container_number="QCM2260902", data=date(2026, 12, 21),
+                   data_zrodlo="estimate", szt=300, u_nas=True, cena_fv_pln=253.21, koszt_jednostkowy=261.83)
+    w = policz_koszty([stary, nowy], stan=369, dzis=date(2026, 10, 7))
+    na = {x.item_id: x.na_stanie for x in w.dostawy}
+    assert na == {2: 300, 1: 69}, "nowy zabiera swoje sztuki z „w drodze”"
+    assert nowy.przyszla and not stary.przyszla
+    assert w.srednia == 274.03 and w.srednia_szt == 69
+    assert w.fifo == 274.03 and w.ostatnia == 274.03
+    assert (w.min, w.max) == (274.03, 274.03), "przyszła dostawa nie wchodzi do najniższej / najwyższej"
+    assert w.przyszle_szt == 300
+
+
+def test_po_dacie_wejscia_dostawa_wraca_do_wyliczen():
+    nowy = Dostawa(item_id=2, container_id=2, container_number="X", data=date(2026, 12, 21),
+                   data_zrodlo="estimate", szt=300, u_nas=True, cena_fv_pln=253.21, koszt_jednostkowy=261.83)
+    w = policz_koszty([nowy], stan=300, dzis=date(2026, 12, 22))
+    assert not nowy.przyszla and w.srednia == 261.83 and w.przyszle_szt == 0
