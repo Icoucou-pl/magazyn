@@ -8,7 +8,7 @@ Python używał późniejszej definicji. Tu zostają TYLKO efektywne wersje (te 
 from datetime import date, datetime
 from typing import Any, List, Optional, Literal, Dict
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ===== TYPY =====
@@ -361,8 +361,18 @@ class CnSkuBulkResult(BaseModel):
 # ===== TYPY KONTENERÓW =====
 class ContainerTypeIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    capacity_cbm: float = Field(..., gt=0)
+    capacity_cbm: float = Field(0, ge=0)
     sort_order: int = 0
+    # Drobnica (LCL): towar w cudzym kontenerze — bez pojemności, karta pokazuje same CBM.
+    drobnica: bool = False
+
+    @model_validator(mode="after")
+    def _pojemnosc(self):
+        if self.drobnica:
+            self.capacity_cbm = 0
+        elif self.capacity_cbm <= 0:
+            raise ValueError("Pojemność musi być większa od zera (chyba że to drobnica)")
+        return self
 
 
 class ContainerTypeOut(ContainerTypeIn):
@@ -642,6 +652,7 @@ class ContainerOut(BaseModel):
     container_type_id: Optional[int]
     container_type_name: Optional[str]
     container_capacity_cbm: Optional[float]
+    container_drobnica: bool = False          # typ „drobnica (LCL)” — bez pojemności i % wypełnienia
     manufacturer_id: Optional[int]
     manufacturer_name: Optional[str]
     manufacturer_color: Optional[str] = None

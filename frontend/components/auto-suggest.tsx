@@ -111,7 +111,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const plus90 = () => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().slice(0, 10); };
 
 export default function AutoSuggestModal({
-  manufacturers, containerTypes, products, onClose, onCreated, initialManufacturerId,
+  manufacturers, containerTypes: wszystkieTypy, products, onClose, onCreated, initialManufacturerId,
 }: {
   manufacturers: Manufacturer[];
   containerTypes: ContainerType[];
@@ -121,6 +121,8 @@ export default function AutoSuggestModal({
   initialManufacturerId?: number | null;   // wstępnie wybrany producent (np. z listy zakupów)
 }) {
   const showFin = can(useUser(), "viewFinancials");
+  // Drobnica (LCL) nie ma pojemności — nie ma czego wypełniać, więc nie ma jej w wyborze.
+  const containerTypes = useMemo(() => wszystkieTypy.filter((t) => !t.drobnica), [wszystkieTypy]);
   const [step, setStep] = useState(1);
   const [manufacturerId, setManufacturerId] = useState(
     initialManufacturerId != null ? String(initialManufacturerId) : ""

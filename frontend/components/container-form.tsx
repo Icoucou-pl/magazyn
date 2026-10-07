@@ -18,7 +18,8 @@ import { fmtPLN, fmtNum } from "@/lib/format";
 import { computeContainerFill } from "./auto-suggest";
 import { CARRIERS, validateContainerNo, isValidContainerNo, isTracked, trackingUrl } from "@/lib/tracking";
 
-export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number };
+// drobnica: towar w cudzym kontenerze (LCL) — bez pojemności, więc bez podglądu % wypełnienia.
+export type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order?: number; drobnica?: boolean };
 
 // cena_waluta: cena w walucie dostawcy (USD/CNY) / szt z proformy albo FV. Gdy jest, koszt
 // jednostkowy bierze ją jako realną cenę pozycji, a unit_cost (PLN) liczy się z niej po
@@ -739,7 +740,7 @@ export default function ContainerFormModal({
                 <Field label="Typ kontenera">
                   <select value={containerTypeId} onChange={(e) => setContainerTypeId(e.target.value)} disabled={!showEdit} style={inputStyle}>
                     <option value="">— wybierz —</option>
-                    {containerTypes.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.capacity_cbm} m³)</option>)}
+                    {containerTypes.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.drobnica ? "drobnica" : `${t.capacity_cbm} m³`})</option>)}
                   </select>
                 </Field>
 

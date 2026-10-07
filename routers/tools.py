@@ -25,6 +25,8 @@ async def auto_suggest(payload: AutoSuggestRequest, db: AsyncSession = Depends(g
     if not capacity_row:
         raise HTTPException(404, "Typ kontenera nie znaleziony")
     capacity = float(capacity_row.capacity_cbm)
+    if capacity <= 0:
+        raise HTTPException(422, "Drobnica (LCL) nie ma pojemności — wybierz typ kontenera z pojemnością")
 
     products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK"})
     mfr_products = [p for p in products if p.manufacturer_id == payload.manufacturer_id]

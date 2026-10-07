@@ -32,7 +32,8 @@ type Manufacturer = {
 
 // Waluty rozliczeń z producentem — te same co w kontenerach (CUR_OPTS w container-form).
 const MFR_CURRENCIES: [string, string][] = [["", "— brak —"], ["USD", "USD $"], ["CNY", "CNY ¥"], ["PLN", "PLN zł"]];
-type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order: number };
+// drobnica: towar w cudzym kontenerze (LCL) — bez pojemności, karta pokazuje same CBM.
+type ContainerType = { id: number; name: string; capacity_cbm: number; sort_order: number; drobnica?: boolean };
 type UserRowT = {
   id: number; email: string; full_name?: string | null; role: string;
   is_active: boolean; is_super_admin: boolean; created_at: string; last_login?: string | null;
@@ -565,15 +566,16 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
   const [name, setName] = useState(item?.name || "");
   const [capacity, setCapacity] = useState(String(item?.capacity_cbm ?? 67));
   const [sortOrder, setSortOrder] = useState(String(item?.sort_order ?? 0));
+  const [drobnica, setDrobnica] = useState(!!item?.drobnica);
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
-    const cap = parseFloat(capacity.replace(",", "."));
+    const cap = drobnica ? 0 : parseFloat(capacity.replace(",", "."));
     if (!name.trim()) { toast("Podaj nazwę typu", "warning"); return; }
-    if (!(cap > 0)) { toast("Pojemność musi być > 0", "warning"); return; }
+    if (!drobnica && !(cap > 0)) { toast("Pojemność musi być > 0", "warning"); return; }
     setBusy(true);
     try {
-      const body = { name: name.trim(), capacity_cbm: cap, sort_order: parseInt(sortOrder, 10) || 0 };
+      const body = { name: name.trim(), capacity_cbm: cap, sort_order: parseInt(sortOrder, 10) || 0, drobnica };
       if (item) await api.patch(`/container-types/${item.id}`, body);
       else await api.post("/container-types", body);
       toast(item ? "Zapisano typ" : "Dodano typ", "ok"); onSaved();
@@ -596,9 +598,16 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
         <SettingsField label="Nazwa typu">
           <input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="np. 40′ HC" style={inputStyle}/>
         </SettingsField>
-        <SettingsField label="Pojemność (m³)">
-          <input type="number" value={capacity} onChange={(e) => setCapacity(e.target.value)} step="0.1" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}/>
-        </SettingsField>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, color: "var(--text-mid)", margin: "2px 0 10px", cursor: "pointer" }}>
+          <input type="checkbox" checked={drobnica} onChange={(e) => setDrobnica(e.target.checked)} style={{ marginTop: 2 }}/>
+          <span><b style={{ color: "var(--text-hi)" }}>Drobnica (LCL)</b> — towar w cudzym kontenerze, płacimy za miejsce.
+            Bez pojemności: karta pokaże same CBM, bez % wypełnienia.</span>
+        </label>
+        {!drobnica && (
+          <SettingsField label="Pojemność (m³)">
+            <input type="number" value={capacity} onChange={(e) => setCapacity(e.target.value)} step="0.1" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}/>
+          </SettingsField>
+        )}
         <SettingsField label="Sortowanie">
           <input type="number" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} step="1" style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}/>
         </SettingsField>
@@ -629,6 +638,12 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
         </div>
         {showEdit && <button onClick={onEdit} style={btnGhostMini}>Edytuj</button>}
       </div>
+      {item.drobnica ? (
+        <div style={{ marginTop: 14, fontSize: 12, color: "var(--text-mid)" }}>
+          <span style={{ fontSize: 10, color: "var(--info)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Drobnica (LCL)</span>
+          <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 4 }}>bez pojemności — karta kontenera pokazuje same CBM</div>
+        </div>
+      ) : (
       <div style={{ marginTop: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
           <span style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pojemność</span>
@@ -640,6 +655,7 @@ function ContainerTypeCard({ item, maxCapacity, editing, onEdit, onSaved, onCanc
           <div style={{ height: "100%", width: `${pct}%`, background: "var(--accent)", borderRadius: 99, transition: "width 0.3s" }}/>
         </div>
       </div>
+      )}
     </div>
   );
 }

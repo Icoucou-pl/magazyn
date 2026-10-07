@@ -77,6 +77,7 @@ export type Container = {
   container_type_id: number | null;
   container_type_name: string | null;
   container_capacity_cbm: number | null;
+  container_drobnica?: boolean;   // typ „drobnica (LCL)” — bez pojemności: same CBM, bez % wypełnienia
   manufacturer_id: number | null;
   manufacturer_name: string | null;
   manufacturer_color: string | null;
@@ -819,6 +820,7 @@ function ContainerCardBody({
           <DataCell label="Sztuk" value={fmtNum(c.total_units)} />
           <DataCell label="Wartość" value={showFin ? fmtPLN(c.total_value) : "•••••"} />
           {cap > 0 && <DataCell label="CBM" value={`${c.total_cbm} / ${cap}`} sub={`${fill}% wypełnienia`} />}
+          {cap <= 0 && c.container_drobnica && <DataCell label="CBM" value={`${c.total_cbm} m³`} sub="drobnica (LCL) — płacimy za miejsce" />}
           <DeliveryCell c={c} editable={showEdit && !!onSetDelivered} onSet={onSetDelivered ?? (async () => {})} />
         </div>
         <StatusTimeline current={eff(c)} />
