@@ -43,7 +43,9 @@ type Koszt = {
   grupy: Grupa[]; pozycje: Pozycja[]; uwagi: { poziom: string; tresc: string }[];
   razem_z: KontenerKrotko[];
   zapisal: string | null; zapisano: string | null; moze_edytowac: boolean;
+  notatka: string | null; notatka_kto: string | null; notatka_kiedy: string | null;
 };
+type NotatkaK = Pick<Koszt, "notatka" | "notatka_kto" | "notatka_kiedy">;
 
 type KontenerKrotko = { id: number; etykieta: string; dostawca?: string | null; eta?: string | null };
 
@@ -278,6 +280,10 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
           onZmiana={() => { wczytaj().then(przyjmij).catch(() => toast("Nie udało się wczytać kosztu", "error")); }} />
       )}
 
+      <Notatka containerId={containerId} edycja={edycja} n={k}
+        // Bierzemy z odpowiedzi tylko notatkę — niezapisane poprawki w formularzu zostają.
+        onZapis={(z) => setK((p) => p && { ...p, notatka: z.notatka, notatka_kto: z.notatka_kto, notatka_kiedy: z.notatka_kiedy })} />
+
       <div style={karta}>
         <Naglowek tytul="Założenia" hint={edycja ? "Puste pole = wartość automatyczna. Wpisana liczba zastępuje automat." : undefined} />
         {zalozenia.map((z) => {
@@ -414,6 +420,49 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Notatka do rachunku ─────────────────────────────────────
+// Automat nie wie, czemu płatności są wyższe niż ceny pozycji — gratisy, dopłata za
+// przepakowanie, wysyłka próbek samolotem… Tu się to dopisuje, żeby szef nie musiał pytać.
+// Notatka niczego nie przelicza; zapis osobny od poprawek (PUT …/koszt/notatka).
+function Notatka({ containerId, edycja, n, onZapis }: { containerId: number; edycja: boolean; n: NotatkaK; onZapis: (z: NotatkaK) => void }) {
+  const [tekst, setTekst] = useState(n.notatka || "");
+  const [busy, setBusy] = useState(false);
+  if (!edycja && !n.notatka) return null;
+  const zmieniona = tekst.trim() !== (n.notatka || "");
+  const zapisz = async () => {
+    setBusy(true);
+    try {
+      const z = (await api.put(`/kontenery/${containerId}/koszt/notatka`, { notatka: tekst })) as Koszt;
+      onZapis(z); setTekst(z.notatka || "");
+      toast(z.notatka ? "Zapisano notatkę" : "Usunięto notatkę", "ok");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się zapisać notatki", "error");
+    } finally { setBusy(false); }
+  };
+  const podpis = n.notatka && n.notatka_kto ? `${n.notatka_kto}${n.notatka_kiedy ? `, ${data(n.notatka_kiedy)}` : ""}` : undefined;
+  return (
+    <div style={karta}>
+      <Naglowek tytul="Notatka" hint={podpis ?? "np. skąd różnica płatności: dopłata za przepakowanie, wysyłka próbek samolotem…"} />
+      <div style={{ padding: "10px 16px" }}>
+        {edycja ? (
+          <>
+            <textarea value={tekst} onChange={(e) => setTekst(e.target.value)} rows={2} maxLength={4000}
+              aria-label="Notatka do kosztu jednostkowego"
+              placeholder="Np. Różnica 490 USD to wysyłka próbek samolotem (DDP), a nie gratisy."
+              style={{ ...input, textAlign: "left", fontFamily: "inherit", fontSize: 12.5, width: "100%", resize: "vertical", minHeight: 52, padding: "7px 10px" }} />
+            {zmieniona && (
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                <button onClick={() => setTekst(n.notatka || "")} disabled={busy} style={btnSec}>Anuluj</button>
+                <button onClick={() => { void zapisz(); }} disabled={busy} style={{ ...btnPri, opacity: busy ? 0.5 : 1 }}>Zapisz notatkę</button>
+              </div>
+            )}
+          </>
+        ) : <div style={{ fontSize: 12.5, color: "var(--text-hi)", whiteSpace: "pre-wrap" }}>{n.notatka}</div>}
+      </div>
     </div>
   );
 }

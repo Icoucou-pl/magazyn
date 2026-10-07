@@ -1413,6 +1413,14 @@ class KosztKontenerOut(BaseModel):
     zapisal: Optional[str] = None
     zapisano: Optional[datetime] = None
     moze_edytowac: bool = False
+    # notatka do rachunku (np. skąd różnica płatności) — wpisuje człowiek, nie liczy automat
+    notatka: Optional[str] = None
+    notatka_kto: Optional[str] = None
+    notatka_kiedy: Optional[datetime] = None
+
+
+class KosztNotatkaIn(BaseModel):
+    notatka: Optional[str] = Field(None, max_length=4000)   # pusto / null = usuń notatkę
 
 
 class KosztPozycjaIn(BaseModel):

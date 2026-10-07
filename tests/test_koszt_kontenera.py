@@ -100,7 +100,7 @@ def test_wszystkie_ceny_wpisane_a_zaplacono_wiecej_to_gratisy_na_cala_fakture():
     assert w.towar == 3600 and w.gratisy == 400, "zapłacone gratisy wchodzą do kosztu"
     assert p[1].gratisy == pytest.approx(133.33, abs=0.01) and p[2].gratisy == pytest.approx(266.67, abs=0.01)
     assert p[1].koszt_jednostkowy == pytest.approx((1200 + 133.33) / 100, abs=0.01)
-    assert any("Gratisy / różnica z płatności: 100,00 USD" in u.tresc and "całą fakturę" in u.tresc for u in w.uwagi)
+    assert any("Gratisy / dodatkowe koszty — różnica z płatności: 100,00 USD" in u.tresc and "całą fakturę" in u.tresc for u in w.uwagi)
 
 
 def test_gratisy_przypiete_do_jednej_pozycji():
