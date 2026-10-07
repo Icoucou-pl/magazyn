@@ -366,6 +366,11 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane", "BOOLEAN DEFAULT FALSE")
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane_at", "TIMESTAMP")
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslal", "VARCHAR(255)")
+        # Migracja: notatka do kosztu jednostkowego (np. „różnica płatności to dopłata za przepakowanie”),
+        # żeby przy pytaniu „skąd tyle gratisów?” wyjaśnienie było na karcie. Kto i kiedy — dla szefa.
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "koszt_notatka", "TEXT")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "koszt_notatka_kto", "VARCHAR(255)")
+        await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "koszt_notatka_kiedy", "TIMESTAMP")
 
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_CONTAINER_ITEMS} (

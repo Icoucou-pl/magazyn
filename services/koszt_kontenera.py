@@ -340,7 +340,7 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
             gdzie = "rozłożona na całą fakturę po wartości pozycji"
         gratis_waluta = _rozloz(reszta, wagi)
         if reszta > 0:
-            uwagi.append(Uwaga("info", f"Gratisy / różnica z płatności{etykieta}: {_pl(reszta)} {waluta} "
+            uwagi.append(Uwaga("info", f"Gratisy / dodatkowe koszty — różnica z płatności{etykieta}: {_pl(reszta)} {waluta} "
                                        f"(płatności {_pl(wartosc_waluta)}, ceny pozycji {_pl(suma_reczna)}) — {gdzie}"))
         else:
             uwagi.append(Uwaga("ostrzezenie", f"Płatności{etykieta} są mniejsze niż ceny pozycji o {_pl(-reszta)} {waluta} "
