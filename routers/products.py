@@ -35,7 +35,7 @@ POLA_ATRYBUTOW = {
     "cena_zakupu": ("Cena zakupu", f_zl),
     "ean": ("EAN", f_txt),
     "kod_cn": ("Kod CN", f_txt),
-    "cbm_per_unit": ("CBM / szt.", f_num("m³", 4)),
+    "cbm_per_unit": ("CBM / szt.", f_num("m³", 7)),
     "dlugosc_cm": ("Długość", f_num("cm", 1)),
     "szerokosc_cm": ("Szerokość", f_num("cm", 1)),
     "wysokosc_cm": ("Wysokość", f_num("cm", 1)),

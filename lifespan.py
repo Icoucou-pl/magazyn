@@ -321,6 +321,21 @@ async def lifespan(app: FastAPI):
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # Migracja: CBM / szt z 4 do 8 miejsc po przecinku — drobne produkty (np. 0,0004725 m³)
+        # zapisywały się jako 0,0005, a po zaokrągleniu do 3 miejsc wychodziło 0 („brak CBM”).
+        # Tylko gdy skala jest jeszcze mała; w osobnym punkcie zapisu, żeby błąd (np. zależny
+        # widok) nie przerwał całego startu.
+        skala = (await conn.execute(text(
+            "SELECT numeric_scale FROM information_schema.columns "
+            "WHERE table_name = :t AND column_name = 'cbm_per_unit'"
+        ), {"t": settings.TABLE_PRODUCT_ATTRS})).scalar()
+        if skala is not None and skala < 8:
+            try:
+                async with conn.begin_nested():
+                    await conn.execute(text(
+                        f"ALTER TABLE {settings.TABLE_PRODUCT_ATTRS} ALTER COLUMN cbm_per_unit TYPE NUMERIC(14,8)"))
+            except Exception as e:   # noqa: BLE001 — start ma się udać; stary typ dalej działa
+                print(f"[migracja] nie udało się poszerzyć cbm_per_unit do 8 miejsc (zostaje stary typ): {e}")
         # Migracja: ulubione
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "is_favorite", "BOOLEAN DEFAULT FALSE")
         # Migracja: EAN

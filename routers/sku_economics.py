@@ -394,7 +394,7 @@ async def _economics(db: AsyncSession, scope: str, mode: str, year: Optional[int
             "sku": c["sku"], "nazwa": names.get(key) or c["nazwa"] or "",
             "firma_slug": firma, "no_cbm": no_cbm,
             "stock_qty": c["stock_qty"],
-            "cbm_per_unit": round(cbm, 4) if not no_cbm else None,
+            "cbm_per_unit": round(cbm, 7) if not no_cbm else None,
             "stock_m3": stock_m3,
             "share_pct": (round(100.0 * stock_m3 / caps[firma], 2)
                           if stock_m3 and caps.get(firma) else None),

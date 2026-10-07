@@ -639,7 +639,7 @@ async def _occ_compute(db: AsyncSession, scope: str, horizon: int, include_sales
         rows.append({
             "sku": c["sku"], "nazwa": names.get(key) or c["nazwa"] or "", "firma_slug": firma,
             "no_cbm": no_cbm,
-            "cbm_per_unit": round(c["cbm"], 3),
+            "cbm_per_unit": round(c["cbm"], 7),
             "stock_qty": c["stock_qty"], "incoming_qty": c["incoming_qty"], "qty": qty,
             "sold_qty": sold_qty, "qty_left": qty - sold_qty,
             "stock_m3": round(stock_m3, 3), "incoming_m3": round(incoming_m3, 3),

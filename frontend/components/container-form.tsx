@@ -14,7 +14,7 @@ import { STATUS_FLOW, STATUS_FULL_META, SubiektSwitch, type Container, type Atta
 import { api, download } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
-import { fmtPLN, fmtNum } from "@/lib/format";
+import { fmtPLN, fmtNum, fmtCbmSzt } from "@/lib/format";
 import { computeContainerFill } from "./auto-suggest";
 import { CARRIERS, validateContainerNo, isValidContainerNo, isTracked, trackingUrl } from "@/lib/tracking";
 
@@ -1245,7 +1245,7 @@ function ItemRow({
             <option key={p.sku} value={p.sku}>
               {p.sku} — {p.name.length > 34 ? p.name.slice(0, 34) + "…" : p.name}
               {p.manufacturer_name ? ` · ${p.manufacturer_name}` : ""}
-              {p.cbm_per_unit > 0 ? ` · ${p.cbm_per_unit.toFixed(3)}m³` : ""}
+              {p.cbm_per_unit > 0 ? ` · ${fmtCbmSzt(p.cbm_per_unit)}m³` : ""}
             </option>
           ))}
         </select>
