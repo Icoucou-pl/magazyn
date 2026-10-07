@@ -297,6 +297,10 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Migracja: typ „drobnica (LCL)” — nasz towar w cudzym kontenerze, płacimy za miejsce.
+        # Nie ma pojemności (capacity_cbm = 0), więc karta pokazuje same CBM, bez % wypełnienia.
+        await add_column_if_missing(conn, settings.TABLE_CONTAINER_TYPES, "drobnica", "BOOLEAN NOT NULL DEFAULT FALSE")
+
         # Domyślne typy kontenerów - tylko jeśli tabela jest pusta
         result = await conn.execute(text(f"SELECT COUNT(*) FROM {settings.TABLE_CONTAINER_TYPES}"))
         if result.scalar() == 0:

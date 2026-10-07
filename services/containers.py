@@ -382,6 +382,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
             c.dokumenty_wyslane, c.dokumenty_wyslane_at, c.dokumenty_wyslal,
             odp.status AS koszt_status,
             ct.name AS container_type_name, ct.capacity_cbm AS container_capacity_cbm,
+            COALESCE(ct.drobnica, FALSE) AS container_drobnica,
             m.name AS manufacturer_name, m.color AS manufacturer_color,
             ci.id AS item_id, ci.sku, ci.quantity, ci.unit_cost, ci.cena_waluta, ci.lot_id,
             pn.nazwa AS product_name,
@@ -425,7 +426,9 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
     for row in rows:
         cid = row["id"]
         if cid not in containers_dict:
-            cap = float(row["container_capacity_cbm"]) if row["container_capacity_cbm"] else None
+            # Drobnica (LCL) nie ma pojemności — bez niej nie liczy się % wypełnienia.
+            cap = (float(row["container_capacity_cbm"]) if row["container_capacity_cbm"]
+                   and not row["container_drobnica"] else None)
             containers_dict[cid] = {
                 "id": cid, "container_number": row["container_number"],
                 "carrier": row["carrier"],
@@ -433,6 +436,7 @@ async def fetch_containers(db: AsyncSession, status: Optional[str] = None) -> Li
                 "container_type_id": row["container_type_id"],
                 "container_type_name": row["container_type_name"],
                 "container_capacity_cbm": cap,
+                "container_drobnica": bool(row["container_drobnica"]),
                 "manufacturer_id": row["manufacturer_id"],
                 "manufacturer_name": row["manufacturer_name"],
                 "manufacturer_color": row["manufacturer_color"],
