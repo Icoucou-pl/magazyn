@@ -388,6 +388,25 @@ async def lifespan(app: FastAPI):
         if (await conn.execute(text("SELECT to_regclass('app_koszt_pozycji')"))).scalar():
             await add_column_if_missing(conn, "app_koszt_pozycji", "gratis", "BOOLEAN NOT NULL DEFAULT FALSE")
 
+        # Dodatkowe koszty kontenera w „Założeniach” kosztu jednostkowego (przepakowanie, wysyłka
+        # próbek…) — nazwana część płatności dostawcy. Kwota w walucie lotu/kontenera. Lot wskazuje
+        # producent (manufacturer_id), bo loty dostają nowe id przy każdym zapisie karty; item_ids =
+        # pozycje, na które koszt przypięto (puste = cały lot/kontener po wartości).
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS app_koszt_dodatkowy (
+                id SERIAL PRIMARY KEY,
+                container_id INTEGER NOT NULL REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE CASCADE,
+                manufacturer_id INTEGER,
+                nazwa VARCHAR(200) NOT NULL,
+                kwota NUMERIC(14,2) NOT NULL,
+                item_ids INTEGER[] NOT NULL DEFAULT '{{}}',
+                position INTEGER NOT NULL DEFAULT 0,
+                zapisal VARCHAR(255),
+                zapisano TIMESTAMPTZ
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_koszt_dodatkowy_kontener ON app_koszt_dodatkowy (container_id)"))
+
         # Migracja: cena pozycji w walucie dostawcy (USD/CNY) / szt — z proformy/FV dostawcy.
         # Gdy jest, koszt jednostkowy (services/koszt_kontenera.py) bierze ją jako realną cenę
         # pozycji; unit_cost (PLN) zostaje do wartości kontenera. NULL = nie wpisano.

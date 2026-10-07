@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.koszt_kontenera import (  # noqa: E402
-    LENMAR_KONTENER, LENMAR_ZGLOSZENIE, Grupa, Kontener, Platnosc, Pozycja, policz,
+    LENMAR_KONTENER, LENMAR_ZGLOSZENIE, Grupa, Kontener, KosztDodatkowy, Platnosc, Pozycja, policz,
 )
 
 
@@ -116,6 +116,60 @@ def test_zaplacono_mniej_niz_ceny_to_rabat_z_ostrzezeniem():
     assert w.towar == 2000 and w.gratisy == -200
     assert w.pozycje[0].koszt_jednostkowy == 18.0
     assert any(u.poziom == "ostrzezenie" and "mniejsze niż ceny pozycji o 50,00 USD" in u.tresc for u in w.uwagi)
+
+
+def _z_kosztami(pozycje, platnosci, koszty):
+    return policz(Kontener(lenmar_pln=0.0), [Grupa(id=0, platnosci=platnosci, kurs_ostatni=4.0, koszty=koszty)], pozycje)
+
+
+def test_dodatkowy_koszt_to_nazwana_czesc_roznicy_reszta_to_gratisy():
+    # ceny 300 + 600 = 900 USD, zapłacono 1 000; z różnicy 100 USD — 60 to przepakowanie, 40 gratisy
+    w = _z_kosztami([poz(1, 100, 10, cena_reczna=3.0), poz(2, 100, 30, cena_reczna=6.0)],
+                    [zap(1000, 4.0, "balance")], [KosztDodatkowy("Przepakowanie", 60.0)])
+    p = w.po_item()
+    assert w.dodatkowe == 240 and w.gratisy == 160 and w.towar == 3600
+    assert w.suma == 4000, "suma dalej równa płatnościom — koszt był już w nich"
+    assert p[1].dodatkowe == 80 and p[2].dodatkowe == 160, "po wartości pozycji 1 : 2"
+    assert any("Przepakowanie 60,00 USD" in u.tresc for u in w.uwagi)
+    assert any(u.tresc.startswith("Gratisy — różnica z płatności po dodatkowych kosztach: 40,00 USD") for u in w.uwagi)
+
+
+def test_dodatkowy_koszt_przypiety_do_pozycji_i_cala_roznica():
+    w = _z_kosztami([poz(1, 100, 10, cena_reczna=3.0), poz(2, 100, 30, cena_reczna=6.0)],
+                    [zap(1000, 4.0, "balance")], [KosztDodatkowy("Wysyłka próbek", 100.0, pozycje=[1])])
+    p = w.po_item()
+    assert (p[1].dodatkowe, p[2].dodatkowe) == (400, 0)
+    assert w.gratisy == 0 and not any("Gratisy" in u.tresc for u in w.uwagi)
+    assert p[1].koszt_jednostkowy == 16.0
+
+
+def test_dodatkowy_koszt_zmniejsza_reszte_dla_pozycji_bez_ceny():
+    # pozycja 2 bez ceny dzieli to, co zostanie po cenie pozycji 1 i dodatkowym koszcie
+    w = _z_kosztami([poz(1, 100, 10, cena_reczna=3.0), poz(2, 100, 30)],
+                    [zap(1000, 4.0, "balance")], [KosztDodatkowy("Przepakowanie", 100.0, pozycje=[2])])
+    p = w.po_item()
+    assert p[2].towar == 2400 and p[2].dodatkowe == 400 and w.suma == 4000
+
+
+def test_dodatkowe_koszty_wieksze_niz_roznica_ostrzegaja():
+    w = _z_kosztami([poz(1, 100, 10, cena_reczna=9.0)], [zap(1000, 4.0, "balance")],
+                    [KosztDodatkowy("Przepakowanie", 150.0)])
+    assert w.dodatkowe == 600 and w.gratisy == -200 and w.suma == 4000
+    assert any(u.poziom == "ostrzezenie" and "większe niż różnica" in u.tresc for u in w.uwagi)
+
+
+def test_dodatkowy_koszt_bez_platnosci_dochodzi_ponad_ceny():
+    w = _z_kosztami([poz(1, 100, 40)], [], [KosztDodatkowy("Przepakowanie", 10.0)])
+    assert w.towar == 4000 and w.dodatkowe == 40
+    assert any("doliczone ponad ceny" in u.tresc for u in w.uwagi)
+
+
+def test_clo_liczone_takze_od_dodatkowych_kosztow():
+    w = _z_kosztami([poz(1, 100, 10, cena_kontener=2.0, stawka=10)], [zap(250, 4.0, "balance")],
+                    [KosztDodatkowy("Pakowanie", 50.0)])
+    p = w.pozycje[0]
+    assert (p.towar, p.gratisy, p.dodatkowe) == (800, 0, 200)
+    assert p.clo == pytest.approx(100.0)
 
 
 def test_clo_liczone_takze_od_gratisow():
