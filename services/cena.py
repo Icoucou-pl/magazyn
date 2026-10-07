@@ -29,6 +29,9 @@ Kontener wbity do „w drodze”, ale z datą wejścia na magazyn w PRZYSZŁOŚC
 w produkcji, a już wpisany do ERP) bierze ze stanu swoje sztuki — to one leżą w „w drodze” —
 ale nie wchodzi do FIFO, średniej, ostatniej, najniższej ani najwyższej: tych sztuk jeszcze
 nie sprzedajemy (`przyszla`, sztuki w `przyszle_szt`).
+NAJBLIŻSZA DOSTAWA = koszt z kontenera, który wejdzie na magazyn najwcześniej z tych, które
+jeszcze nie weszły — podpowiedź do ceny przedsprzedaży, gdy na stanie nic nie ma. Osobny kafel,
+nie miesza się z FIFO ani średnią (te są tylko z towaru na stanie).
 Gdy stanu jest więcej niż sztuk w znanych dostawach, nadwyżka to towar sprzed aplikacji
 (`poza_dostawami`) — liczymy ją osobno i nie zgadujemy jej kosztu.
 
@@ -129,6 +132,8 @@ class Wynik:
     min_item_id: Optional[int] = None
     max: Optional[float] = None
     max_item_id: Optional[int] = None
+    najblizsza: Optional[float] = None  # koszt z najbliższej dostawy, która jeszcze nie weszła
+    najblizsza_item_id: Optional[int] = None
     uwagi: List[str] = field(default_factory=list)
 
 
@@ -243,6 +248,14 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
         hi = max(pewne, key=lambda d: d.koszt)
         w.min, w.min_item_id = lo.koszt, lo.item_id
         w.max, w.max_item_id = hi.koszt, hi.item_id
+
+    # 7) Najbliższa dostawa: jeszcze nie na magazynie (płynie albo wbita z przyszłą datą), z kosztem —
+    #    także szacunkowym (dostawa w drodze rzadko ma wszystko zapłacone). Najwcześniejsza data wejścia.
+    w_drodze = [d for d in ds if d.koszt is not None and d.data_zrodlo != "delivered"
+                and (not d.u_nas or d.przyszla)]
+    if w_drodze:
+        nb = min(w_drodze, key=lambda d: (d.data or date.max, d.container_id, d.item_id))
+        w.najblizsza, w.najblizsza_item_id = nb.koszt, nb.item_id
     return w
 
 

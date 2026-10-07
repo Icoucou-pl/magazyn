@@ -184,3 +184,21 @@ def test_po_dacie_wejscia_dostawa_wraca_do_wyliczen():
                    data_zrodlo="estimate", szt=300, u_nas=True, cena_fv_pln=253.21, koszt_jednostkowy=261.83)
     w = policz_koszty([nowy], stan=300, dzis=date(2026, 12, 22))
     assert not nowy.przyszla and w.srednia == 261.83 and w.przyszle_szt == 0
+
+
+def test_najblizsza_dostawa_to_najwczesniejsza_z_tych_co_jeszcze_nie_weszly():
+    dzis = date(2026, 10, 7)
+    stara = Dostawa(item_id=1, container_id=1, container_number="A", data=date(2026, 5, 1), data_zrodlo="delivered",
+                    szt=10, u_nas=True, cena_fv_pln=100, koszt_jednostkowy=120)
+    grudzien = Dostawa(item_id=2, container_id=2, container_number="B", data=date(2026, 12, 21), data_zrodlo="estimate",
+                       szt=30, u_nas=True, cena_fv_pln=160.61, koszt_jednostkowy=162.55)
+    styczen = Dostawa(item_id=3, container_id=3, container_number="C", data=date(2027, 1, 15), data_zrodlo="estimate",
+                      szt=50, u_nas=False, cena_fv_pln=150, koszt_jednostkowy=155)
+    w = policz_koszty([stara, grudzien, styczen], stan=30, dzis=dzis)
+    assert w.najblizsza == 162.55 and w.najblizsza_item_id == 2
+    assert w.fifo is None and w.srednia is None, "na stanie nic z dostarczonych — FIFO i średnia puste"
+
+
+def test_bez_dostaw_w_drodze_nie_ma_najblizszej():
+    w = policz_koszty([d(1, 3, 100, 100, 120)], stan=10, dzis=date(2026, 10, 7))
+    assert w.najblizsza is None

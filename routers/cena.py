@@ -231,9 +231,13 @@ async def koszt_naglowek(sku: str, shop: str = Query(""), db: AsyncSession = Dep
     danych finansowych i bez zakładki „Cena". Nie oddajemy tu dostaw, FIFO ani zapisanych cen.
     """
     shop = resolve_shop(shop, user)
-    p, _, w, _, _, zrodlo, ceny = await _policz(db, sku, shop, user)
+    p, _, w, meta, _, zrodlo, ceny = await _policz(db, sku, shop, user)
+    nb = next((d for d in w.dostawy if d.item_id == w.najblizsza_item_id), None)
     return KosztNaglowekOut(fifo=w.fifo, srednia=w.srednia, erp_zrodlo=zrodlo,
-                            erp_cena=ceny.get(p.sku.strip().lower()))
+                            erp_cena=ceny.get(p.sku.strip().lower()),
+                            najblizsza=w.najblizsza, najblizsza_data=nb.data if nb else None,
+                            najblizsza_kontener=(nb.container_number or meta[nb.item_id]["order_number"]) if nb else None,
+                            najblizsza_szacunek=bool(nb and nb.szacunek))
 
 
 @router.get("/products/{sku:path}/cena", response_model=CenaProduktuOut)
@@ -250,7 +254,7 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
         erp_zrodlo=zrodlo, erp_cena=ceny.get(p.sku.strip().lower()),
         fifo=w.fifo, fifo_item_id=w.fifo_item_id,
         srednia=w.srednia, srednia_szt=w.srednia_szt, srednia_pominieto_szt=w.srednia_pominieto_szt,
-        przyszle_szt=w.przyszle_szt,
+        przyszle_szt=w.przyszle_szt, najblizsza=w.najblizsza, najblizsza_item_id=w.najblizsza_item_id,
         ostatnia=w.ostatnia, ostatnia_item_id=w.ostatnia_item_id,
         min=w.min, min_item_id=w.min_item_id, max=w.max, max_item_id=w.max_item_id,
         sredni_narzut_proc=w.sredni_narzut_proc, narzut_zrodlo=w.narzut_zrodlo,

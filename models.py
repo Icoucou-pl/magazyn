@@ -1270,6 +1270,11 @@ class KosztNaglowekOut(BaseModel):
     srednia: Optional[float] = None
     erp_cena: Optional[float] = None
     erp_zrodlo: Optional[str] = None          # 'subiekt' | 'fakturownia'
+    # Gdy na stanie nic z dostarczonych: koszt z kontenera, który przypłynie najwcześniej (przedsprzedaż).
+    najblizsza: Optional[float] = None
+    najblizsza_kontener: Optional[str] = None
+    najblizsza_data: Optional[date] = None
+    najblizsza_szacunek: bool = False
 
 
 class CenaProduktuOut(BaseModel):
@@ -1286,6 +1291,8 @@ class CenaProduktuOut(BaseModel):
     srednia_szt: int = 0
     srednia_pominieto_szt: int = 0     # sztuki z partii bez SAD, pominięte w średniej
     przyszle_szt: int = 0              # stan w dostawach wbitych, ale z przyszłą datą wejścia — poza kaflami
+    najblizsza: Optional[float] = None        # koszt z najbliższej dostawy, która jeszcze nie weszła
+    najblizsza_item_id: Optional[int] = None
     ostatnia: Optional[float] = None
     ostatnia_item_id: Optional[int] = None
     min: Optional[float] = None

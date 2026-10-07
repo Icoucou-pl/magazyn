@@ -143,7 +143,12 @@ export default function ProductPage({
   // a pod spodem cena z Fakturowni / Subiektu do porównania. Widzi to każdy, kto widzi
   // koszt sztuki (finanse ALBO „Cena zakupu produktu") — chudy endpoint /koszt.
   // Klucz sku|firma przy wyniku: po zmianie SKU albo firmy stara liczba po prostu przestaje pasować.
-  const [kosztSrDane, setKosztSrDane] = useState<{ klucz: string; srednia: number | null; erp_cena: number | null; erp_zrodlo: string } | null>(null);
+  // Bez towaru na stanie — koszt z kontenera, który przypłynie najwcześniej (podpowiedź do przedsprzedaży).
+  type KosztNaglowek = {
+    srednia: number | null; erp_cena: number | null; erp_zrodlo: string;
+    najblizsza: number | null; najblizsza_kontener: string | null; najblizsza_data: string | null; najblizsza_szacunek: boolean;
+  };
+  const [kosztSrDane, setKosztSrDane] = useState<(KosztNaglowek & { klucz: string }) | null>(null);
   const kosztSr = showPrice && kosztSrDane?.klucz === `${sku}|${shop}` ? kosztSrDane : null;
 
   const [tab, setTabState] = useState<ProductTab>(() => czytajTabZAdresu() || "logistyka");
@@ -153,7 +158,7 @@ export default function ProductPage({
     if (!showPrice) return;
     let alive = true;
     api.get(`/products/${encodeURIComponent(sku)}/koszt${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
-      .then((d) => { if (alive) setKosztSrDane({ ...(d as { srednia: number | null; erp_cena: number | null; erp_zrodlo: string }), klucz: `${sku}|${shop}` }); })
+      .then((d) => { if (alive) setKosztSrDane({ ...(d as KosztNaglowek), klucz: `${sku}|${shop}` }); })
       .catch(() => { /* zostaje cena z ERP — nagłówek nie może się wysypać przez koszt z kontenerów */ });
     return () => { alive = false; };
   }, [sku, shop, showPrice]);
@@ -498,7 +503,12 @@ export default function ProductPage({
                       ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}`
                       : `${erpNazwa}: brak ceny`} />
                 );
-              })() : (
+              })() : kosztSr?.najblizsza != null ? (
+                <Meta label="Koszt netto / szt" value={fmtPLN(kosztSr.najblizsza)} color="var(--info)"
+                  title="Na stanie nie ma towaru z dostarczonych kontenerów — koszt z kontenera, który przypłynie najwcześniej (do ceny przedsprzedaży)"
+                  sub={`w drodze${kosztSr.najblizsza_kontener ? ` · ${kosztSr.najblizsza_kontener}` : ""}`
+                    + `${kosztSr.najblizsza_data ? ` · ${fmtDay(kosztSr.najblizsza_data)}` : ""}${kosztSr.najblizsza_szacunek ? " · szac." : ""}`} />
+              ) : (
                 <Meta label="Koszt netto / szt" value={showPrice ? fmtPLN(product.purchase_price) : "•••••"} />
               )}
               <Meta label="EAN" value={product.ean || "—"} mono />

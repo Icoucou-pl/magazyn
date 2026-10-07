@@ -10,6 +10,7 @@ Uruchomienie:  python3 -m pytest tests/test_koszt_naglowek.py -q
 import os
 import sys
 from pathlib import Path
+from datetime import date
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -32,8 +33,9 @@ BEZ_FINANSOW = {"viewFinancials": False, "viewPurchasePrice": False, "viewProduc
 def klient(monkeypatch):
     async def atrapa(db, sku, shop, user):
         p = SimpleNamespace(sku="SZP3")
-        w = SimpleNamespace(fifo=1814.48, srednia=1850.01)
-        return p, 154, w, {}, "acti", "fakturownia", {"szp3": 1700.0}
+        nb = SimpleNamespace(item_id=9, data=date(2026, 12, 21), container_number="QCM2260902", szacunek=False)
+        w = SimpleNamespace(fifo=1814.48, srednia=1850.01, dostawy=[nb], najblizsza=1790.5, najblizsza_item_id=9)
+        return p, 154, w, {9: {"order_number": None}}, "acti", "fakturownia", {"szp3": 1700.0}
     monkeypatch.setattr(cena, "_policz", atrapa)
 
     async def db():
@@ -48,7 +50,9 @@ def klient(monkeypatch):
 def test_sam_ptaszek_ceny_zakupu_wystarcza(klient):
     r = klient({**BEZ_FINANSOW, "viewPurchasePrice": True}).get("/api/products/SZP3/koszt")
     assert r.status_code == 200
-    assert r.json() == {"fifo": 1814.48, "srednia": 1850.01, "erp_cena": 1700.0, "erp_zrodlo": "fakturownia"}
+    assert r.json() == {"fifo": 1814.48, "srednia": 1850.01, "erp_cena": 1700.0, "erp_zrodlo": "fakturownia",
+                        "najblizsza": 1790.5, "najblizsza_kontener": "QCM2260902", "najblizsza_data": "2026-12-21",
+                        "najblizsza_szacunek": False}
 
 
 def test_finanse_bez_ptaszka_tez_widza(klient):

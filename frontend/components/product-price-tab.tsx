@@ -48,6 +48,7 @@ type CenaData = {
   erp_zrodlo: "subiekt" | "fakturownia" | null; erp_cena: number | null;
   fifo: number | null; fifo_item_id: number | null;
   srednia: number | null; srednia_szt: number; srednia_pominieto_szt: number; przyszle_szt: number;
+  najblizsza: number | null; najblizsza_item_id: number | null;
   ostatnia: number | null; ostatnia_item_id: number | null;
   min: number | null; min_item_id: number | null; max: number | null; max_item_id: number | null;
   sredni_narzut_proc: number | null; narzut_zrodlo: "sku" | "wszystkie" | null;
@@ -161,6 +162,7 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
   const ostD = nr(data.ostatnia_item_id);
   const minD = nr(data.min_item_id);
   const maxD = nr(data.max_item_id);
+  const nbD = nr(data.najblizsza_item_id);
   const erpNazwa = data.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
   const erpOpis = data.erp_zrodlo === "subiekt"
     ? <>FV + Lenmar, <span style={{ color: "var(--warning)" }}>bez cła</span></>
@@ -191,6 +193,11 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
           sub={minD ? <><span className="mono">{nrDostawy(minD)}</span>{minD.data ? ` · ${fmtDay(minD.data)}` : ""}</> : "brak rozliczonych"} />
         <MetricBox label="Najwyższa" tone={maxD?.odstaje ? "critical" : "neutral"} value={v(data.max)}
           sub={maxD ? <><span className="mono">{nrDostawy(maxD)}</span>{maxD.data ? ` · ${fmtDay(maxD.data)}` : ""}</> : "brak rozliczonych"} />
+        {data.najblizsza != null && (
+          // Koszt z kontenera, który wejdzie najwcześniej — do ceny przedsprzedaży. Nie miesza się z FIFO i średnią.
+          <MetricBox label="Najbliższa dostawa" dot="var(--info)" value={<span style={{ color: "var(--info)" }}>{v(data.najblizsza)}</span>}
+            sub={nbD ? <>w drodze · <span className="mono">{nrDostawy(nbD)}</span>{nbD.data ? ` · ${fmtDay(nbD.data)}` : ""}{nbD.szacunek ? " · szac." : ""}</> : "w drodze"} />
+        )}
       </div>
     </Section>
   );
