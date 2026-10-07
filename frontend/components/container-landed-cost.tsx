@@ -403,6 +403,33 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
       toast(e instanceof Error ? e.message : "Nie udało się przeliczyć", "error");
     } finally { setBusy(false); }
   };
+  // Ceny / szt w walucie z zapisanej odprawy → pozycje kontenera (pole „cena w walucie”, jak
+  // z proformy), żeby nie przepisywać FV drugi raz. Najpierw bez nadpisywania; gdy część pozycji
+  // ma już INNĄ cenę — pytamy i ewentualnie powtarzamy z nadpisaniem.
+  const cenyNaKontener = async () => {
+    if (!dane.odprawa_id) return;
+    type W = { wpisane: number; rozne: number; szacunek: number; inna_waluta: number; bez_ceny: number; takie_same: number };
+    const url = (nadpisz: boolean) => `/odprawy/${dane.odprawa_id}/ceny-na-kontener?container_id=${containerId}&nadpisz=${nadpisz}`;
+    setBusy(true);
+    try {
+      let w = (await api.post(url(false), {})) as W;
+      let wpisane = w.wpisane;
+      if (w.rozne && window.confirm(`${w.rozne} ${w.rozne === 1 ? "pozycja ma" : "pozycji ma"} już inną cenę w walucie (np. z proformy). Nadpisać ceną z SAD?`)) {
+        w = (await api.post(url(true), {})) as W;
+        wpisane += w.wpisane;
+      }
+      const pominiete = [
+        w.szacunek && `${w.szacunek} z ceną szacowaną (kilka SKU w pozycji SAD)`,
+        w.inna_waluta && `${w.inna_waluta} w innej walucie niż odprawa`,
+        w.bez_ceny && `${w.bez_ceny} bez ceny w SAD`,
+      ].filter(Boolean).join(", ");
+      toast(`Wpisano ceny z SAD: ${wpisane}${w.takie_same ? ` · już zgodne: ${w.takie_same}` : ""}${pominiete ? ` · pominięto: ${pominiete}` : ""}`,
+        wpisane ? "ok" : "warning");
+      if (wpisane) onSaved?.();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się wpisać cen", "error");
+    } finally { setBusy(false); }
+  };
   const bledy = dane.uwagi.filter((u) => u.poziom === "blad");
   const zleKontrole = dane.kontrole.filter((k) => !k.ok);
 
@@ -424,6 +451,12 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
           <span style={{ ...plakietka, ...(zapisany ? okStyl : bledy.length ? zlyStyl : ostrzStyl) }}>
             {zapisany ? "zapisana" : bledy.length ? `${bledy.length} do poprawy` : "gotowa do zapisu"}
           </span>
+          {canEdit && zapisany && dane.odprawa_id && (
+            <button onClick={() => { void cenyNaKontener(); }} disabled={busy} style={{ ...btnSec, opacity: busy ? 0.5 : 1 }}
+              title="Przepisz cenę / szt w walucie z tej odprawy do pozycji kontenera (pole „cena w walucie”, jak z proformy) — koszt jednostkowy weźmie ją od razu">
+              Wpisz ceny z SAD na kontener
+            </button>
+          )}
           {canEdit && (
             <button onClick={wyczysc} style={btnSec}>
               {zapisany ? "Wczytaj ponownie" : "Zmień plik"}

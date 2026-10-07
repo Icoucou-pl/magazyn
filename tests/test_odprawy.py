@@ -765,3 +765,38 @@ def test_przeliczenie_zapisanej_odprawy_po_innym_kursie_rowna_sie_pelnemu_rachun
                 round(w.gratisy, 2), round(w.transport_krajowy, 2), 3.6255)
             assert abs(koszt - nowy[w.item_id].koszt_jednostkowy) <= 0.01, (klucz, w.sku)
             assert abs(zakup - nowy[w.item_id].towar / w.ilosc) <= 0.01, (klucz, w.sku)
+
+
+# ── Ceny z SAD → pozycje kontenera ──────────────────────────
+from services.odprawy import ceny_z_sad_na_kontener  # noqa: E402
+
+
+def _poz(id_, sku, cena_sad, cena_kont=None, poz=1, kontener=10, reczna=False, waluta="USD"):
+    return {"id": id_, "container_id": kontener, "sku": sku, "cena_zakupu_waluta": cena_sad,
+            "cena_waluta": cena_kont, "cena_reczna": reczna, "odprawa_poz_nr": poz, "waluta": waluta}
+
+
+def test_ceny_z_sad_wpisuje_puste_i_pomija_rozne_bez_nadpisania():
+    pozycje = [_poz(1, "A", 25.0, poz=1), _poz(2, "B", 46.5, cena_kont=40.0, poz=2),
+               _poz(3, "C", 9.7, cena_kont=9.7, poz=3)]
+    zmiany, licz = ceny_z_sad_na_kontener(pozycje, 10, "usd")
+    assert zmiany == [(1, "A", None, 25.0)]
+    assert (licz["wpisane"], licz["rozne"], licz["takie_same"]) == (1, 1, 1)
+    zmiany, _ = ceny_z_sad_na_kontener(pozycje, 10, "USD", nadpisz=True)
+    assert (2, "B", 40.0, 46.5) in zmiany
+
+
+def test_ceny_z_sad_pomija_szacunek_inna_walute_i_inny_kontener():
+    pozycje = [_poz(1, "A", 10.0, poz=1), _poz(2, "B", 12.0, poz=1),          # dwa SKU w pozycji → szacunek
+               _poz(3, "C", 8.0, poz=1, reczna=True, kontener=99),              # inny kontener (liczy się do szacunku)
+               _poz(4, "D", 5.0, poz=2, waluta="CNY"),                         # lot płaci w juanach
+               _poz(5, "E", 0, poz=3)]                                         # bez ceny z SAD
+    zmiany, licz = ceny_z_sad_na_kontener(pozycje, 10, "USD")
+    assert zmiany == []
+    assert (licz["szacunek"], licz["inna_waluta"], licz["bez_ceny"]) == (2, 1, 1)
+
+
+def test_ceny_z_sad_reczna_cena_w_pozycji_z_kilkoma_sku_nie_jest_szacunkiem():
+    pozycje = [_poz(1, "A", 10.0, poz=1, reczna=True), _poz(2, "B", 12.0, poz=1)]
+    zmiany, _ = ceny_z_sad_na_kontener(pozycje, 10, "USD")
+    assert zmiany == [(1, "A", None, 10.0)]
