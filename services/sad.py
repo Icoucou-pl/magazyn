@@ -72,6 +72,11 @@ class Doliczenie:
     kwota: float          # w walucie zgłoszenia
     klucz: str            # "waga_brutto" | "wartosc"
     do_wartosci_celnej: bool
+    # Doliczenie bywa w innej walucie niż zgłoszenie (SAD w CNY, fracht w USD — Anji
+    # SK2605020). `kwota` jest już przeliczona na walutę zgłoszenia; tu zostaje oryginał,
+    # bo w nim przychodzi faktura spedytora.
+    waluta: str = ""
+    kwota_waluta: float = 0.0
 
 
 @dataclass
@@ -131,6 +136,17 @@ class Odprawa:
     @property
     def clo_do_zaplaty(self) -> float:
         return round(sum(p.clo_pln for p in self.pozycje), 2)
+
+    @property
+    def waluta_kosztow(self) -> str:
+        """Waluta frachtu (031W), czyli faktury spedytora — inaczej waluta zgłoszenia."""
+        fr = next((d for d in self.doliczenia if d.kod == "031W" and d.waluta), None)
+        return fr.waluta if fr else self.waluta
+
+    @property
+    def kurs_kosztow(self) -> float:
+        """Kurs z SAD dla waluty kosztów (domyślny kurs faktury spedytora)."""
+        return self.kursy.get(self.waluta_kosztow) or self.kurs_celny
 
 
 # ===== pomocnicze =====
@@ -218,6 +234,15 @@ def parsuj(zrodlo: Any) -> Odprawa:
             f"Brak kursu dla waluty zgłoszenia {waluta}. W pliku są: {', '.join(kursy) or 'żadne'}."
         )
 
+    def _na_walute_sad(kwota: float, wal: Optional[str]) -> float:
+        """Doliczenie w innej walucie (fracht w USD przy SAD w CNY) → waluta zgłoszenia,
+        po kursach z tego samego pliku. Bez kursu tej waluty zostawiamy liczbę jak jest —
+        kontrola wartości celnej i tak to wychwyci."""
+        wal = (wal or "").strip().upper()
+        if not wal or wal == waluta or not kursy.get(wal):
+            return kwota
+        return kwota * kursy[wal] / kurs
+
     zestaw = next(iter(_dzieci(root, "ZestawySADu")), None)
     ais = next(iter(_dzieci(zestaw, "StatusCelnyAIS")), None) if zestaw is not None else None
     celina = next(iter(_dzieci(zestaw, "DaneCeliny")), None) if zestaw is not None else None
@@ -233,9 +258,11 @@ def parsuj(zrodlo: Any) -> Odprawa:
     dolicz_zbiorcze = [
         Doliczenie(
             kod=d.get("KodKorekty"),
-            kwota=_f(d.get("WartKorekty")),
+            kwota=_na_walute_sad(_f(d.get("WartKorekty")), d.get("WalutaKorekty")),
             klucz=KLUCZ_ROZBICIA.get(d.get("RozbijWg"), "wartosc"),
             do_wartosci_celnej=do_wartosci_celnej(d.get("KodKorekty")),
+            waluta=(d.get("WalutaKorekty") or waluta).strip().upper(),
+            kwota_waluta=_f(d.get("WartKorekty")),
         )
         for d in _dzieci(root, "KorektyZbiorcze")
     ]
@@ -259,7 +286,7 @@ def parsuj(zrodlo: Any) -> Odprawa:
         faktury: List[str] = []
         if dod is not None:
             for k in _dzieci(dod, "KorektyZrodlowe"):
-                kor[k.get("KodKorekty")] = _f(k.get("WartKorekty"))
+                kor[k.get("KodKorekty")] = _na_walute_sad(_f(k.get("WartKorekty")), k.get("WalutaKorekty"))
             for d in _dzieci(dod, "DokumWymag"):
                 if d.get("KodDokum") == "N935" and (d.get("NrDokum") or "").strip():
                     faktury.append(d.get("NrDokum").strip())
@@ -340,9 +367,12 @@ def kontrole(o: Odprawa) -> List[Kontrola]:
         suma_bazy = sum(baza(p) for p in o.pozycje)
         if suma_bazy <= 0:
             continue
+        # WinSAD rozbija doliczenie na pozycje w JEGO walucie, z groszami. Po przeliczeniu na
+        # walutę zgłoszenia (USD → CNY) grosz zaokrąglenia rośnie razem z kursem.
+        tol = 0.02 * (d.kwota / d.kwota_waluta if d.kwota_waluta else 1.0)
         for p in o.pozycje:
             chk(f"Doliczenie {d.kod} poz. {p.nr} wg {d.klucz}",
-                d.kwota * baza(p) / suma_bazy, p.doliczenia.get(d.kod, 0.0), tol=0.02)
+                d.kwota * baza(p) / suma_bazy, p.doliczenia.get(d.kod, 0.0), tol=max(0.02, tol))
 
     for p in o.pozycje:
         podstawa = p.wartosc + sum(v for k, v in p.doliczenia.items() if do_wartosci_celnej(k))

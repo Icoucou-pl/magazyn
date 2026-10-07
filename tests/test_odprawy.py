@@ -800,3 +800,34 @@ def test_ceny_z_sad_reczna_cena_w_pozycji_z_kilkoma_sku_nie_jest_szacunkiem():
     pozycje = [_poz(1, "A", 10.0, poz=1, reczna=True), _poz(2, "B", 12.0, poz=1)]
     zmiany, _ = ceny_z_sad_na_kontener(pozycje, 10, "USD")
     assert zmiany == [(1, "A", None, 10.0)]
+
+
+SAD_CNY_FRACHT_USD = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="CNY">
+  <P1Kontekst DataDekl="2026-08-28"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="CNY" Kurs="0.5" Mnoznik="1"/>
+  <P22KursyWalut Waluta="USD" Kurs="4.0" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="1000" P35BruttoZestawu="100" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="26PL00000000TESTCN"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="100" P38MasaNetto="90" P42WartoscPozycji="1000" P47WartCelna="700">
+    <P31ZnakiINumery OpisTowaru="STOL"><Opakowania RodzOpak="CT" LiczbaOpak="1"/>
+      <Kontenery Numer="TEST8888888"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94029000"/>
+    <P44DodInfo>
+      <KorektyZrodlowe KodKorekty="031W" WalutaKorekty="USD" RozbijWg="2" WartKorekty="50"/>
+    </P44DodInfo>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+  <KorektyZbiorcze ID="1" KodKorekty="031W" WalutaKorekty="USD" RozbijWg="2" WartKorekty="50"/>
+</SADUE>"""
+
+
+def test_doliczenie_w_usd_przy_sad_w_cny():
+    """Anji SK2605020: SAD w CNY, fracht w USD. 50 USD × 4,0 = 200 zł = 400 CNY,
+    więc wartość celna = (1000 + 400) CNY × 0,5 = 700 zł."""
+    o = parsuj(SAD_CNY_FRACHT_USD)
+    fr = next(d for d in o.doliczenia if d.kod == "031W")
+    assert (fr.waluta, fr.kwota_waluta, round(fr.kwota, 2)) == ("USD", 50.0, 400.0)
+    assert o.waluta_kosztow == "USD" and o.kurs_kosztow == 4.0
+    assert all(k.ok for k in kontrole(o)), [k.nazwa for k in kontrole(o) if not k.ok]
