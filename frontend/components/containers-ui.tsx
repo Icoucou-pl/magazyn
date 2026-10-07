@@ -742,11 +742,11 @@ export function ContainerCard({
           )}
         </div>
 
-        {/* Drobnica (LCL): nie ma czego wypełniać — napis zamiast %, same CBM i pełny zielony pasek. */}
+        {/* Drobnica (LCL): nie ma czego wypełniać — „LCL” zamiast %, same CBM i pełny zielony pasek. */}
         {!expanded && c.container_drobnica && (
           <div className="cc-cbm">
             <div style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 10, color: "var(--text-lo)", marginBottom: 3 }}>
-              <span>Drobnica</span><span className="num" style={{ color: "var(--text-mid)" }}>{(c.total_cbm ?? 0).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} m³</span>
+              <span>LCL</span><span className="num" style={{ color: "var(--text-mid)" }}>{(c.total_cbm ?? 0).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} m³</span>
             </div>
             <div style={{ height: 4, background: "var(--ok)", borderRadius: 99 }} />
           </div>
