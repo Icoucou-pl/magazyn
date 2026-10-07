@@ -45,7 +45,8 @@ from models import (
 )
 from security import require_sad
 from services.odprawy import (
-    KLUCZ_CBM, KLUCZ_WAGA, LiniaKosztu, PozycjaTowaru, Rachunek, Uwaga, policz, przelicz_po_kursie,
+    KLUCZ_CBM, KLUCZ_WAGA, LiniaKosztu, PozycjaTowaru, Rachunek, Uwaga, ceny_z_sad_na_kontener, policz,
+    przelicz_po_kursie,
 )
 from services.products import compute_effective_cbm
 from services.sad import BladSAD, Odprawa, kontrole, parsuj
@@ -1260,6 +1261,57 @@ async def przelicz_kurs_towaru(
                changes=[{"pole": "Kurs towaru", "bylo": f_num("", 4)(bylo) if bylo else "—", "jest": f_num("", 4)(kurs)}],
                resource_id=odprawa_id)
     return {"kurs": kurs, "pozycji": len(itemy)}
+
+
+@router.post("/odprawy/{odprawa_id}/ceny-na-kontener")
+async def ceny_na_kontener(
+    odprawa_id: int,
+    container_id: int = Query(...),
+    nadpisz: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_sad),
+):
+    """Przepisuje cenę / szt w walucie z zapisanej odprawy na pozycje kontenera (pole „cena
+    w walucie” — to samo, w które wpisuje się cenę z proformy), żeby nie przepisywać FV drugi raz.
+    Z niego bierze ją koszt jednostkowy (metoda szefa).
+
+    Pomijamy: pozycje bez ceny z SAD; ceny SZACOWANE (pozycja SAD z kilkoma SKU, cena rozdzielona
+    proporcją, a nie wpisana ręcznie — to nie jest cena z faktury); pozycje, których lot/kontener
+    płaci w innej walucie niż odprawa; oraz — bez `nadpisz` — pozycje, które mają już INNĄ cenę.
+    Zwraca podsumowanie, żeby ekran mógł zapytać o nadpisanie.
+    """
+    odp = (await db.execute(text("SELECT id, mrn, waluta FROM app_odprawy WHERE id = :id"),
+                            {"id": odprawa_id})).mappings().first()
+    if not odp:
+        raise HTTPException(404, "Nie ma takiej odprawy")
+    wal_odprawy = (odp["waluta"] or "").strip().upper()
+    wszystkie = (await db.execute(text(f"""
+        SELECT ci.id, ci.container_id, ci.sku, ci.cena_zakupu_waluta, ci.cena_waluta, ci.cena_reczna,
+               ci.odprawa_poz_nr,
+               UPPER(COALESCE(NULLIF(TRIM(CASE WHEN c.is_consolidated THEN l.balance_waluta ELSE c.balance_waluta END), ''),
+                              NULLIF(TRIM(CASE WHEN c.is_consolidated THEN l.waluta_towaru ELSE c.waluta_towaru END), ''),
+                              'USD')) AS waluta
+          FROM {settings.TABLE_CONTAINER_ITEMS} ci
+          JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
+          LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
+         WHERE ci.koszt_odprawa_id = :id
+    """), {"id": odprawa_id})).mappings().all()
+    if not any(i["container_id"] == container_id for i in wszystkie):
+        raise HTTPException(409, "Ta odprawa nie ma rozliczonych pozycji tego kontenera")
+    do_wpisania, wynik = ceny_z_sad_na_kontener([dict(i) for i in wszystkie], container_id, wal_odprawy, nadpisz)
+    zmiany: List[dict] = []
+    for item_id, sku, bylo, jest in do_wpisania:
+        await db.execute(text(f"UPDATE {settings.TABLE_CONTAINER_ITEMS} SET cena_waluta = :c WHERE id = :id"),
+                         {"c": jest, "id": item_id})
+        zmiany.append({"pole": f"{sku}: cena {wal_odprawy} / szt".strip(),
+                       "bylo": f_num("", 4)(bylo) if bylo is not None else "—", "jest": f_num("", 4)(jest)})
+    await db.commit()
+    if zmiany:
+        audit.note_zmiany(f"kontenera {await audit.nazwa_kontenera(db, container_id)} (ceny z SAD, MRN {odp['mrn']})",
+                          zmiany, resource_type="container", resource_id=container_id)
+    else:
+        audit.skip()
+    return wynik
 
 
 @router.delete("/odprawy/{odprawa_id}", status_code=204)

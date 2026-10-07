@@ -892,3 +892,48 @@ def _uwagi_o_dopasowaniu(slady: Dict[str, Any], odprawa: Odprawa,
                 f"{', '.join(sorted({t.sku for t in lista}))} — złe dopasowanie albo stare ceny planowane",
             ))
     return uwagi
+
+
+def ceny_z_sad_na_kontener(pozycje: List[dict], container_id: int, waluta_odprawy: str,
+                           nadpisz: bool = False) -> "tuple[List[tuple], Dict[str, int]]":
+    """Które ceny / szt z zapisanej odprawy przepisać na pozycje kontenera (pole „cena w walucie”).
+
+    `pozycje` = wszystkie pozycje rozliczone tą odprawą (także z innych kontenerów — potrzebne do
+    rozpoznania szacunku): id, container_id, sku, cena_zakupu_waluta, cena_waluta, cena_reczna,
+    odprawa_poz_nr, waluta (płatności lotu/kontenera).
+    Pomijamy: brak ceny; cenę SZACOWANĄ (kilka SKU w pozycji SAD i brak ręcznej ceny — rozdzielona
+    proporcją, a nie z faktury); inną walutę niż odprawa; bez `nadpisz` — inną, już wpisaną cenę.
+    Zwraca ([(item_id, sku, było, jest)], liczniki).
+    """
+    sku_w_poz: Dict[int, set] = {}
+    for i in pozycje:
+        if i.get("odprawa_poz_nr") is not None:
+            sku_w_poz.setdefault(int(i["odprawa_poz_nr"]), set()).add(i["sku"])
+    wal = (waluta_odprawy or "").strip().upper()
+    licz = {"wpisane": 0, "rozne": 0, "szacunek": 0, "inna_waluta": 0, "bez_ceny": 0, "takie_same": 0}
+    zmiany: List[tuple] = []
+    for i in pozycje:
+        if i["container_id"] != container_id:
+            continue
+        cena = float(i["cena_zakupu_waluta"] or 0)
+        if cena <= 0:
+            licz["bez_ceny"] += 1
+            continue
+        poz = int(i["odprawa_poz_nr"]) if i.get("odprawa_poz_nr") is not None else None
+        if not i.get("cena_reczna") and poz is not None and len(sku_w_poz.get(poz, ())) > 1:
+            licz["szacunek"] += 1
+            continue
+        if wal and (i.get("waluta") or "").strip().upper() != wal:
+            licz["inna_waluta"] += 1
+            continue
+        cena = round(cena, 4)
+        obecna = float(i["cena_waluta"]) if i.get("cena_waluta") is not None else None
+        if obecna is not None and abs(obecna - cena) < 0.00005:
+            licz["takie_same"] += 1
+            continue
+        if obecna is not None and not nadpisz:
+            licz["rozne"] += 1
+            continue
+        zmiany.append((i["id"], i["sku"], obecna, cena))
+        licz["wpisane"] += 1
+    return zmiany, licz
