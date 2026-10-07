@@ -664,7 +664,7 @@ export function ContainerCard({
                   Na wąskim ekranie chowany (klasa cc-nr-inline) — trafia do własnej linii `cc-sub`, żeby nie łamał chipów. */}
               {!expanded && hasMfrTitle && realNr && <span className="mono cc-nr-inline" style={{ fontSize: 11, color: "var(--text-lo)" }}>#{realNr}</span>}
               {subiektSt && <SubiektDot state={subiektSt} erpLoc={erpLocOfContainer(c)} />}
-              {c.container_type_name && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
+              {c.container_type_name && !c.container_drobnica && <Pill bg="var(--surface-3)" fg="var(--text-mid)" size="sm" mono>{c.container_type_name}</Pill>}
               {showFin && <PaymentBadge status={paymentStatusOf(c)} />}
               {consolidated && <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">skonsolidowany</Pill>}
               {c.is_auto && <Pill bg={meta.bg} fg={meta.fg} size="sm">{isCustoms ? "odprawa celna" : "auto"}</Pill>}
@@ -742,6 +742,15 @@ export function ContainerCard({
           )}
         </div>
 
+        {/* Drobnica (LCL): nie ma czego wypełniać — napis zamiast %, same CBM i pełny zielony pasek. */}
+        {!expanded && c.container_drobnica && (
+          <div className="cc-cbm">
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 10, color: "var(--text-lo)", marginBottom: 3 }}>
+              <span>Drobnica</span><span className="num" style={{ color: "var(--text-mid)" }}>{(c.total_cbm ?? 0).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} m³</span>
+            </div>
+            <div style={{ height: 4, background: "var(--ok)", borderRadius: 99 }} />
+          </div>
+        )}
         {!expanded && (c.container_capacity_cbm ?? 0) > 0 && (
           <div className="cc-cbm">
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-lo)", marginBottom: 3 }}>
