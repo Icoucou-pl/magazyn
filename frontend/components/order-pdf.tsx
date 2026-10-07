@@ -72,8 +72,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const norm = (s: string) => s.trim().toLowerCase();
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
-type PoGroup = { key: string; mfrId: number | null; mfrName: string; mfrColor: string; orderNumber: string; items: ContainerItem[] };
-type PoRow = { sku: string; cn_sku: string; name: string; en_name: string; quantity: number; unit_cost: number; selected: boolean; hasCn: boolean };
+// waluta: waluta płatności dostawcy (lotu albo kontenera) — w niej wpisuje się cenę z proformy (cena_waluta).
+type PoGroup = { key: string; mfrId: number | null; mfrName: string; mfrColor: string; orderNumber: string; waluta: string; items: ContainerItem[] };
+// cena_waluta: cena / szt w walucie dostawcy; null = pozycja jej nie ma — wtedy pokazujemy
+// przeliczenie z PLN po ostatnim kursie NBP (oznaczone), dopóki ktoś nie wpisze ręcznie.
+type PoRow = { sku: string; cn_sku: string; name: string; en_name: string; quantity: number; unit_cost: number; cena_waluta: number | null; selected: boolean; hasCn: boolean };
+// W czym pokazać cenę jednostkową w wersji PL: złotówki, waluta dostawcy albo obie obok siebie.
+type CenaTryb = "pln" | "waluta" | "obie";
+type CenaKol = { cur: string; price: (r: PoRow) => number };
+type PoField = "quantity" | "unit_cost" | "cena_waluta";
+
+// Siatka tabeli: bez cen (EN) / jedna waluta / dwie waluty (cena PLN, cena w walucie, wartość).
+const poGrid = (nCen: number) => nCen === 0
+  ? "28px 124px minmax(0, 1fr) 70px 28px"
+  : nCen === 1 ? "28px 124px minmax(0, 1fr) 70px 90px 90px 28px"
+  : "28px 110px minmax(0, 1fr) 64px 84px 84px 104px 28px";
+
+const walutaZ = (src: { balance_waluta?: string | null; waluta_towaru?: string | null }) =>
+  (src.balance_waluta || src.waluta_towaru || "USD").toUpperCase();
+const round2 = (n: number) => Math.round(n * 100) / 100;
+// PLN jak w reszcie aplikacji (pełne złote); waluta obca z groszami — tak jest na proformach.
+const fmtKwota = (n: number, cur: string) => cur === "PLN"
+  ? fmtPLN(n)
+  : new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " " + cur;
 
 // Grupowanie kontenera na PO per dostawca. Nieskonsolidowany → jedna grupa.
 function buildGroups(c: Container, mfrs: Manufacturer[]): PoGroup[] {
@@ -90,6 +111,7 @@ function buildGroups(c: Container, mfrs: Manufacturer[]): PoGroup[] {
         mfrName: lot.manufacturer_name || m?.name || "— brak dostawcy —",
         mfrColor: lot.manufacturer_color || m?.color || "var(--accent)",
         orderNumber: lot.order_number || poDefault(`${c.id}-${i + 1}`),
+        waluta: walutaZ(lot),
         items: c.items.filter(it => it.lot_id === lot.id),
       };
     });
@@ -101,6 +123,7 @@ function buildGroups(c: Container, mfrs: Manufacturer[]): PoGroup[] {
     mfrName: c.manufacturer_name || m?.name || "— brak dostawcy —",
     mfrColor: c.manufacturer_color || m?.color || "var(--accent)",
     orderNumber: c.order_number || poDefault(c.id),
+    waluta: walutaZ(c),
     items: c.items,
   }];
 }
@@ -124,6 +147,20 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
   const [deliveryDate, setDeliveryDate] = useState("");
   const [notes, setNotes] = useState(container.notes || "");
   const [generating, setGenerating] = useState(false);
+  const [cenaTryb, setCenaTryb] = useState<CenaTryb>("pln");
+  const [kursy, setKursy] = useState<Record<string, number>>({});
+  const waluta = group.waluta;
+  const kurs: number | null = waluta === "PLN" ? 1 : (kursy[waluta] ?? null);
+
+  // Ostatni kurs NBP waluty dostawcy — do przeliczenia pozycji bez ceny w walucie.
+  useEffect(() => {
+    if (waluta === "PLN") return;
+    let zywy = true;
+    api.get(`/kursy/ostatni?waluta=${encodeURIComponent(waluta)}`)
+      .then((r) => { const k = (r as { kurs?: number | null }).kurs; if (zywy && k) setKursy(p => ({ ...p, [waluta]: k })); })
+      .catch(() => { /* bez kursu brakujące ceny w walucie zostają 0 — da się je wpisać ręcznie */ });
+    return () => { zywy = false; };
+  }, [waluta]);
 
   // Mapa SKU → { CN-SKU, nazwa EN } z listy w Ustawieniach (raz przy otwarciu).
   useEffect(() => {
@@ -153,9 +190,12 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
         en_name: info?.en || "",   // EN: pusto gdy brak angielskiej nazwy (bez fallbacku na PL)
         quantity: it.quantity || 0,
         unit_cost: it.unit_cost != null ? it.unit_cost : 0,
+        cena_waluta: it.cena_waluta != null ? it.cena_waluta : null,
         selected: true,
       };
     }));
+    // Gdy kontener ma ceny z proformy — domyślnie pokaż je w walucie dostawcy.
+    setCenaTryb(group.waluta !== "PLN" && group.items.some(it => it.cena_waluta != null) ? "waluta" : "pln");
   }, [group.key, cnMap]);
 
   useEffect(() => {
@@ -164,7 +204,7 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
     return () => document.removeEventListener("keydown", esc);
   }, [onClose]);
 
-  const update = (idx: number, field: "quantity" | "unit_cost", value: string) => {
+  const update = (idx: number, field: PoField, value: string) => {
     setRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: parseFloat(value) || 0 } : r));
   };
   const toggle = (idx: number) => setRows(prev => prev.map((r, i) => i === idx ? { ...r, selected: !r.selected } : r));
@@ -172,9 +212,17 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
 
   const selected = rows.filter(r => r.selected && r.quantity > 0);
   const totalUnits = selected.reduce((s, r) => s + r.quantity, 0);
-  const totalValue = selected.reduce((s, r) => s + r.quantity * r.unit_cost, 0);
   const missingCn = lang === "en" ? selected.filter(r => !r.hasCn).length : 0;
   const showPrices = lang === "pl";   // wersja EN dla fabryki: bez cen (tylko SKU + nazwa + ilość)
+
+  // Cena w walucie: wpisana na pozycji albo przeliczona z PLN po kursie NBP.
+  const cenaWal = (r: PoRow) => r.cena_waluta != null ? r.cena_waluta : (kurs ? round2(r.unit_cost / kurs) : 0);
+  const tryb: CenaTryb = waluta === "PLN" ? "pln" : cenaTryb;
+  const kolPLN: CenaKol = { cur: "PLN", price: r => r.unit_cost };
+  const kolWal: CenaKol = { cur: waluta, price: cenaWal };
+  const kolumny: CenaKol[] = tryb === "pln" ? [kolPLN] : tryb === "waluta" ? [kolWal] : [kolPLN, kolWal];
+  const sumy = kolumny.map(k => ({ cur: k.cur, total: selected.reduce((s, r) => s + r.quantity * k.price(r), 0) }));
+  const przeliczone = tryb !== "pln" ? selected.filter(r => r.cena_waluta == null).length : 0;
 
   const generatePdf = () => {
     if (selected.length === 0) { toast(T.selectAtLeastOne, "warning"); return; }
@@ -183,13 +231,13 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
     if (!printWindow) { toast(T.enablePopup, "warning"); setGenerating(false); return; }
     const dateLocale = lang === "pl" ? "pl-PL" : "en-US";
     const html = printDocHtml({
-      lang, T, accent: group.mfrColor, showPrices,
+      lang, T, accent: group.mfrColor, showPrices, kolumny,
       orderNumber,
       today: (orderDate ? new Date(orderDate) : new Date()).toLocaleDateString(dateLocale),
       deliveryDate: deliveryDate ? new Date(deliveryDate).toLocaleDateString(dateLocale) : "",
       mfrName: group.mfrName, mfrEmail,
       containerNumber: container.container_number,
-      items: selected, totalUnits, totalValue, notes,
+      items: selected, totalUnits, sumy, notes,
     });
     printWindow.document.write(html);
     printWindow.document.close();
@@ -208,7 +256,7 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
         return `${idx + 1}. ${sku}${namePart} — ${lang === "pl" ? "ilość" : "qty"}: ${r.quantity} ${T.pdfUnits}`;
       }),
       "",
-      ...(showPrices ? [T.emailTotal(fmtPLN(totalValue)), ""] : []),
+      ...(showPrices ? [T.emailTotal(sumy.map(x => fmtKwota(x.total, x.cur)).join(" / ")), ""] : []),
       ...(notes ? [T.emailNotes(notes), ""] : []),
       T.emailRegards,
     ];
@@ -308,19 +356,37 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-mid)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{T.items}</span>
-                <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>
-                  <span style={{ color: "var(--text-hi)", fontWeight: 600 }}>{selected.length}</span> / {rows.length}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  {showPrices && waluta !== "PLN" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Cena w</span>
+                      <div style={{ display: "flex", gap: 3, background: "var(--surface-2)", padding: 2, borderRadius: 7 }}>
+                        {([["pln", "PLN"], ["waluta", waluta], ["obie", `PLN + ${waluta}`]] as [CenaTryb, string][]).map(([k, label]) => (
+                          <button key={k} onClick={() => setCenaTryb(k)} style={{ padding: "4px 10px", background: tryb === k ? "var(--surface-3)" : "transparent", color: tryb === k ? "var(--text-hi)" : "var(--text-mid)", border: "none", borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{label}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <span className="num" style={{ fontSize: 11, color: "var(--text-lo)" }}>
+                    <span style={{ color: "var(--text-hi)", fontWeight: 600 }}>{selected.length}</span> / {rows.length}
+                  </span>
+                </div>
               </div>
+              {przeliczone > 0 && (
+                <div style={{ marginBottom: 8, padding: "6px 10px", background: "var(--info-soft)", borderRadius: 7, fontSize: 11, color: "var(--info)" }}>
+                  {przeliczone} {przeliczone === 1 ? "pozycja nie ma" : "pozycji nie ma"} ceny w {waluta} z proformy —
+                  {kurs ? ` przeliczono z PLN po ostatnim kursie NBP (${kurs.toFixed(4)}).` : " brak kursu NBP, wpisz cenę ręcznie."} Możesz ją poprawić w tabeli.
+                </div>
+              )}
               <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, overflow: "hidden", maxHeight: 340, overflowY: "auto" }}>
-                <div style={{ display: "grid", gridTemplateColumns: showPrices ? "28px 124px minmax(0, 1fr) 70px 90px 90px 28px" : "28px 124px minmax(0, 1fr) 70px 28px", gap: 8, padding: "8px 10px", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: poGrid(showPrices ? kolumny.length : 0), gap: 8, padding: "8px 10px", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-soft)" }}>
                   <span/><span>{T.colSku}</span><span>{T.colName}</span>
                   <span style={{ textAlign: "right" }}>{T.colQty}</span>
-                  {showPrices && <span style={{ textAlign: "right" }}>{T.colPrice}</span>}
+                  {showPrices && kolumny.map(k => <span key={k.cur} style={{ textAlign: "right" }}>{kolumny.length > 1 ? `Cena ${k.cur}` : `${T.colPrice} (${k.cur})`}</span>)}
                   {showPrices && <span style={{ textAlign: "right" }}>{T.colTotal}</span>}<span/>
                 </div>
                 {rows.map((r, idx) => (
-                  <PoItemRow key={idx} row={r} lang={lang} showPrices={showPrices}
+                  <PoItemRow key={idx} row={r} lang={lang} showPrices={showPrices} kolumny={kolumny}
                     onToggle={() => toggle(idx)} onUpdate={(f, v) => update(idx, f, v)} onRemove={() => removeRow(idx)}/>
                 ))}
                 {rows.length === 0 && (
@@ -342,7 +408,8 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
               <div style={{ display: "grid", gridTemplateColumns: showPrices ? "repeat(3, 1fr)" : "repeat(2, 1fr)", gap: 12 }}>
                 <SummaryStat label={T.statPositions} value={String(selected.length)}/>
                 <SummaryStat label={T.statUnits} value={fmtNum(totalUnits)}/>
-                {showPrices && <SummaryStat label={T.statValue} value={fmtPLN(totalValue)} accent/>}
+                {showPrices && <SummaryStat label={T.statValue} value={fmtKwota(sumy[0].total, sumy[0].cur)}
+                  sub={sumy[1] ? fmtKwota(sumy[1].total, sumy[1].cur) : undefined} accent/>}
               </div>
             </div>
           </div>
@@ -365,22 +432,31 @@ export default function OrderPdfModal({ container, manufacturers, onClose }: {
   );
 }
 
-function PoItemRow({ row, lang, showPrices, onToggle, onUpdate, onRemove }: {
-  row: PoRow; lang: Lang; showPrices: boolean; onToggle: () => void; onUpdate: (f: "quantity" | "unit_cost", v: string) => void; onRemove: () => void;
+function PoItemRow({ row, lang, showPrices, kolumny, onToggle, onUpdate, onRemove }: {
+  row: PoRow; lang: Lang; showPrices: boolean; kolumny: CenaKol[]; onToggle: () => void; onUpdate: (f: PoField, v: string) => void; onRemove: () => void;
 }) {
   const sku = lang === "pl" ? row.sku : row.cn_sku;
   const name = lang === "pl" ? row.name : row.en_name;
   const cell: React.CSSProperties = { ...inputStyle, padding: "5px 7px", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "right" };
   return (
-    <div style={{ display: "grid", gridTemplateColumns: showPrices ? "28px 124px minmax(0, 1fr) 70px 90px 90px 28px" : "28px 124px minmax(0, 1fr) 70px 28px", gap: 8, alignItems: "center", padding: "8px 10px", background: row.selected ? "var(--surface-1)" : "var(--surface-2)", opacity: row.selected ? 1 : 0.5, borderBottom: "1px solid var(--border-soft)" }}>
+    <div style={{ display: "grid", gridTemplateColumns: poGrid(showPrices ? kolumny.length : 0), gap: 8, alignItems: "center", padding: "8px 10px", background: row.selected ? "var(--surface-1)" : "var(--surface-2)", opacity: row.selected ? 1 : 0.5, borderBottom: "1px solid var(--border-soft)" }}>
       <Checkbox checked={row.selected} onChange={onToggle}/>
       <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: lang === "en" && !row.hasCn ? "var(--warning, var(--accent))" : "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis" }} title={lang === "en" && !row.hasCn ? "Brak CN-SKU — użyto Twojego SKU" : undefined}>{sku}</span>
       <span style={{ fontSize: 12, color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
       <input type="number" value={row.quantity} onChange={(e) => onUpdate("quantity", e.target.value)} min="0" style={cell}/>
-      {showPrices && <input type="number" value={row.unit_cost} onChange={(e) => onUpdate("unit_cost", e.target.value)} step="0.01" min="0" style={cell}/>}
+      {showPrices && kolumny.map(k => {
+        const pln = k.cur === "PLN";
+        // Brak ceny z proformy → pokazujemy przeliczenie (kursywą); wpisanie liczby zapisuje ją na wierszu.
+        const przeliczona = !pln && row.cena_waluta == null;
+        return <input key={k.cur} type="number" value={k.price(row)} onChange={(e) => onUpdate(pln ? "unit_cost" : "cena_waluta", e.target.value)}
+          step="0.01" min="0" title={przeliczona ? "Przeliczone z PLN po kursie NBP" : undefined}
+          style={{ ...cell, fontStyle: przeliczona ? "italic" : undefined, color: przeliczona ? "var(--text-lo)" : cell.color }}/>;
+      })}
       {showPrices && (
-        <span className="num" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", textAlign: "right" }}>
-          {fmtPLN(row.quantity * row.unit_cost)}
+        <span className="num" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-hi)", textAlign: "right", display: "flex", flexDirection: "column", lineHeight: 1.3 }}>
+          {kolumny.map((k, i) => (
+            <span key={k.cur} style={i > 0 ? { fontSize: 11, fontWeight: 500, color: "var(--text-lo)" } : undefined}>{fmtKwota(row.quantity * k.price(row), k.cur)}</span>
+          ))}
         </span>
       )}
       <button onClick={onRemove} style={{ background: "transparent", border: "none", color: "var(--critical)", padding: 4, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><I.Close size={12}/></button>
@@ -388,22 +464,24 @@ function PoItemRow({ row, lang, showPrices, onToggle, onUpdate, onRemove }: {
   );
 }
 
-function SummaryStat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function SummaryStat({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: boolean }) {
   return (
     <div style={{ textAlign: "center" }}>
       <div style={{ fontSize: 10, color: "var(--text-lo)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>{label}</div>
       <div className="num" style={{ fontSize: 20, fontWeight: 600, color: accent ? "var(--accent)" : "var(--text-hi)", marginTop: 3, letterSpacing: "-0.02em" }}>{value}</div>
+      {sub && <div className="num" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-mid)", marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }
 
 // --- Drukowalny PDF (jasny motyw, obie wersje) ---------------
-function printDocHtml({ lang, T, accent, showPrices, orderNumber, today, deliveryDate, mfrName, mfrEmail, containerNumber, items, totalUnits, totalValue, notes }: {
-  lang: Lang; T: typeof PO_I18N[Lang]; accent: string; showPrices: boolean; orderNumber: string; today: string; deliveryDate: string;
-  mfrName: string; mfrEmail: string; containerNumber: string; items: PoRow[]; totalUnits: number; totalValue: number; notes: string;
+// kolumny: waluty cen (1 albo 2 — np. PLN i USD obok siebie); sumy: wartość zamówienia w każdej z nich.
+function printDocHtml({ lang, T, accent, showPrices, kolumny, orderNumber, today, deliveryDate, mfrName, mfrEmail, containerNumber, items, totalUnits, sumy, notes }: {
+  lang: Lang; T: typeof PO_I18N[Lang]; accent: string; showPrices: boolean; kolumny: CenaKol[]; orderNumber: string; today: string; deliveryDate: string;
+  mfrName: string; mfrEmail: string; containerNumber: string; items: PoRow[]; totalUnits: number; sumy: { cur: string; total: number }[]; notes: string;
 }) {
-  const fmtMoney = (n: number) => new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 2 }).format(n) + " zł";
-  const fmtCurrency = (n: number) => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN", minimumFractionDigits: 2 }).format(n);
+  const fmtMoney = (n: number, cur: string) => new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " " + (cur === "PLN" ? "zł" : cur);
+  const dwie = kolumny.length > 1;
 
   const itemsHtml = items.map((item, i) => {
     const sku = lang === "pl" ? item.sku : item.cn_sku;
@@ -414,7 +492,8 @@ function printDocHtml({ lang, T, accent, showPrices, orderNumber, today, deliver
         <td class="mono">${escapeHtml(sku)}</td>
         <td>${escapeHtml(name)}</td>
         <td class="right">${item.quantity}</td>
-        ${showPrices ? `<td class="right">${fmtMoney(item.unit_cost)}</td><td class="right"><strong>${fmtMoney(item.quantity * item.unit_cost)}</strong></td>` : ""}
+        ${showPrices ? kolumny.map(k => `<td class="right">${fmtMoney(k.price(item), k.cur)}</td>`).join("")
+          + kolumny.map(k => `<td class="right"><strong>${fmtMoney(item.quantity * k.price(item), k.cur)}</strong></td>`).join("") : ""}
       </tr>`;
   }).join("");
 
@@ -481,7 +560,7 @@ function printDocHtml({ lang, T, accent, showPrices, orderNumber, today, deliver
     <div class="info-block">
       <h3>${escapeHtml(T.pdfSummary)}</h3>
       <div class="name">${items.length} ${escapeHtml(T.pdfPositions)} · ${totalUnits} ${escapeHtml(T.pdfUnits)}</div>
-      ${showPrices ? `<div class="totals-big">${fmtCurrency(totalValue)}</div>` : ""}
+      ${showPrices ? sumy.map(x => `<div class="totals-big">${fmtMoney(x.total, x.cur)}</div>`).join("") : ""}
       ${deliveryDate ? `<div class="detail">${escapeHtml(T.pdfDelivery)}: ${escapeHtml(deliveryDate)}</div>` : ""}
     </div>
   </div>
@@ -492,13 +571,14 @@ function printDocHtml({ lang, T, accent, showPrices, orderNumber, today, deliver
         <th style="width:130px">${escapeHtml(T.colSku)}</th>
         <th>${escapeHtml(T.colName)}</th>
         <th class="right" style="width:70px">${escapeHtml(T.colQty)}</th>
-        ${showPrices ? `<th class="right" style="width:110px">${escapeHtml(T.colPrice)}</th><th class="right" style="width:120px">${escapeHtml(T.colTotal)}</th>` : ""}
+        ${showPrices ? kolumny.map(k => `<th class="right" style="width:${dwie ? 90 : 110}px">${escapeHtml(T.colPrice)} (${escapeHtml(k.cur)})</th>`).join("")
+          + kolumny.map(k => `<th class="right" style="width:${dwie ? 100 : 120}px">${escapeHtml(T.colTotal)} (${escapeHtml(k.cur)})</th>`).join("") : ""}
       </tr>
     </thead>
     <tbody>
       ${itemsHtml}
       ${showPrices
-        ? `<tr class="total-row"><td colspan="3">${escapeHtml(T.rowTotal)}</td><td class="right">${totalUnits} ${escapeHtml(T.pdfUnits)}</td><td></td><td class="right">${fmtCurrency(totalValue)}</td></tr>`
+        ? `<tr class="total-row"><td colspan="3">${escapeHtml(T.rowTotal)}</td><td class="right">${totalUnits} ${escapeHtml(T.pdfUnits)}</td>${kolumny.map(() => "<td></td>").join("")}${sumy.map(x => `<td class="right">${fmtMoney(x.total, x.cur)}</td>`).join("")}</tr>`
         : `<tr class="total-row"><td colspan="3">${escapeHtml(T.rowTotal)}</td><td class="right">${totalUnits} ${escapeHtml(T.pdfUnits)}</td></tr>`}
     </tbody>
   </table>
