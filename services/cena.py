@@ -25,6 +25,10 @@ najnowszej dostawy, która już jest u nas (dostarczona albo wbita do magazynu �
 i bierzemy z niej tyle sztuk, ile ma, potem z kolejnej starszej — aż wyczerpie się stan.
 To jest dokładnie założenie FIFO: najstarsze sztuki zeszły pierwsze, więc zostały najnowsze.
 Kontenery, które jeszcze płyną i nie są wbite, nie biorą udziału w rozkładzie.
+Kontener wbity do „w drodze”, ale z datą wejścia na magazyn w PRZYSZŁOŚCI (np. towar jeszcze
+w produkcji, a już wpisany do ERP) bierze ze stanu swoje sztuki — to one leżą w „w drodze” —
+ale nie wchodzi do FIFO, średniej, ostatniej, najniższej ani najwyższej: tych sztuk jeszcze
+nie sprzedajemy (`przyszla`, sztuki w `przyszle_szt`).
 Gdy stanu jest więcej niż sztuk w znanych dostawach, nadwyżka to towar sprzed aplikacji
 (`poza_dostawami`) — liczymy ją osobno i nie zgadujemy jej kosztu.
 
@@ -86,6 +90,7 @@ class Dostawa:
     na_stanie: int = 0
     odstaje: bool = False
     fifo: bool = False
+    przyszla: bool = False              # wbita, ale wejście na magazyn dopiero w przyszłości
 
     @property
     def policzona(self) -> bool:
@@ -117,6 +122,7 @@ class Wynik:
     srednia: Optional[float] = None
     srednia_szt: int = 0                # z ilu sztuk liczona średnia
     srednia_pominieto_szt: int = 0      # sztuki na stanie z partii bez SAD — poza średnią
+    przyszle_szt: int = 0               # sztuki stanu w dostawach z przyszłą datą wejścia — poza kaflami
     ostatnia: Optional[float] = None
     ostatnia_item_id: Optional[int] = None
     min: Optional[float] = None
@@ -138,7 +144,7 @@ def _narzut(koszt: Optional[float], fv: Optional[float]) -> Optional[float]:
 
 
 def policz_koszty(dostawy: List[Dostawa], stan: int,
-                  narzut_globalny_proc: Optional[float] = None) -> Wynik:
+                  narzut_globalny_proc: Optional[float] = None, dzis: Optional[date] = None) -> Wynik:
     """Koszt każdej dostawy, rozkład stanu i wskaźniki do kafli zakładki „Cena".
 
     `stan` = sztuki u nas (magazyn główny + wbite do „w drodze") w wybranej firmie.
@@ -146,7 +152,13 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
     ten SKU nie ma żadnej rozliczonej dostawy).
     """
     stan = max(0, int(stan or 0))
+    dzis = dzis or date.today()
     ds = sorted(dostawy, key=_klucz_daty, reverse=True)   # od najnowszej
+    # Wejście na magazyn dopiero w przyszłości (niedostarczona, data > dziś) — tej dostawy jeszcze
+    # nie sprzedajemy, więc nie wchodzi do żadnego kafla. Wbita bierze jednak swoje sztuki ze stanu.
+    jeszcze_nie = {d.item_id for d in ds if d.data_zrodlo != "delivered" and d.data is not None and d.data > dzis}
+    for d in ds:
+        d.przyszla = d.u_nas and d.item_id in jeszcze_nie
     w = Wynik(dostawy=ds, stan=stan)
 
     # 1) Narzut rozliczonych dostaw i odstające
@@ -198,11 +210,12 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
         d.na_stanie = min(d.szt, zostalo)
         zostalo -= d.na_stanie
     w.poza_dostawami = zostalo
+    w.przyszle_szt = sum(d.na_stanie for d in ds if d.przyszla)
     if zostalo > 0:
         w.uwagi.append(f"{zostalo} szt na stanie nie pochodzi z żadnego kontenera w aplikacji")
 
     # 5) FIFO i średnia z partii na stanie
-    na_stanie = [d for d in ds if d.na_stanie > 0 and d.koszt is not None]
+    na_stanie = [d for d in ds if d.na_stanie > 0 and d.koszt is not None and not d.przyszla]
     if na_stanie:
         najstarsza = na_stanie[-1]           # ds jest od najnowszej, więc ostatnia = najstarsza
         najstarsza.fifo = True
@@ -214,16 +227,17 @@ def policz_koszty(dostawy: List[Dostawa], stan: int,
             w.srednia = round(sum(d.koszt * d.na_stanie for d in rozl_na_stanie) / szt, 2)
         w.srednia_szt = szt
         w.srednia_pominieto_szt = sum(d.na_stanie for d in na_stanie if not d.pewna)
-    bez_kosztu = [d for d in ds if d.na_stanie > 0 and d.koszt is None]
+    bez_kosztu = [d for d in ds if d.na_stanie > 0 and d.koszt is None and not d.przyszla]
     if bez_kosztu:
         w.uwagi.append("Część stanu pochodzi z dostaw bez ceny z faktury — pominięta w FIFO i średniej")
 
     # 6) Ostatnia dostawa (najnowsza pewna, która jest u nas) oraz min / max z pewnych.
     #    Szacunek pomijamy.
-    ostatnia = next((d for d in ds if d.u_nas and d.pewna), None)
+    #    Dostawy z przyszłą datą wejścia (i niewbite, które jeszcze płyną) też — nie sprzedajemy ich.
+    ostatnia = next((d for d in ds if d.u_nas and d.pewna and not d.przyszla), None)
     if ostatnia:
         w.ostatnia, w.ostatnia_item_id = ostatnia.koszt, ostatnia.item_id
-    pewne = [d for d in ds if d.pewna]
+    pewne = [d for d in ds if d.pewna and d.item_id not in jeszcze_nie]
     if pewne:
         lo = min(pewne, key=lambda d: d.koszt)
         hi = max(pewne, key=lambda d: d.koszt)

@@ -47,7 +47,7 @@ type CenaData = {
   sku: string; shop: string; stan: number; poza_dostawami: number;
   erp_zrodlo: "subiekt" | "fakturownia" | null; erp_cena: number | null;
   fifo: number | null; fifo_item_id: number | null;
-  srednia: number | null; srednia_szt: number; srednia_pominieto_szt: number;
+  srednia: number | null; srednia_szt: number; srednia_pominieto_szt: number; przyszle_szt: number;
   ostatnia: number | null; ostatnia_item_id: number | null;
   min: number | null; min_item_id: number | null; max: number | null; max_item_id: number | null;
   sredni_narzut_proc: number | null; narzut_zrodlo: "sku" | "wszystkie" | null;
@@ -171,7 +171,9 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
 
   return (
     <Section title="Koszt zakupu / szt"
-      hint={`koszt jednostkowy z kontenerów · stan ${data.stan} szt${data.shop ? ` · firma ${data.shop.toUpperCase()}` : ""}`}>
+      hint={`koszt jednostkowy z kontenerów · stan ${data.stan} szt`
+        + (data.przyszle_szt ? ` (w tym ${data.przyszle_szt} szt w drodze z przyszłą datą wejścia — poza wyliczeniem)` : "")
+        + (data.shop ? ` · firma ${data.shop.toUpperCase()}` : "")}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
         <div style={{ borderRadius: 10, boxShadow: "0 0 0 1px color-mix(in oklch, var(--accent) 40%, transparent)" }}>
           <MetricBox label="Koszt FIFO" dot="var(--accent)" value={<span style={{ color: "var(--accent)" }}>{v(data.fifo)}</span>}
@@ -295,6 +297,7 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
         <div style={{ display: "flex", flexWrap: "wrap", gap: 14, padding: "9px 12px", borderTop: "1px solid var(--border-soft)", background: "var(--bg-elevated)", fontSize: 10.5, color: "var(--text-lo)" }}>
           <span><span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>FIFO</span> z tej partii schodzi teraz towar</span>
           <span><b style={{ color: "var(--text-mid)", fontWeight: 600 }}>Na stanie</b> przypisane wstecz od najnowszej dostawy (brak powiązania PZ ↔ kontener)</span>
+          <span><span style={{ ...pill, ...infoStyl }}>W drodze</span> jeszcze nie na magazynie (także wbita do „w drodze” z przyszłą datą wejścia) — poza FIFO, średnią, ostatnią, najniższą i najwyższą</span>
           <span><span style={{ ...pill, ...okStyl }}>Krajowa</span> zakup w Polsce (PLN): cena z FV + transport do magazynu, bez narzutu importu</span>
           <span><span style={{ ...pill, ...okStyl }}>Policzony</span> koszt z karty kontenera i zapłaconych płatności (zakładka „Koszt jednostkowy” kontenera)</span>
           <span><span style={{ ...tag, ...infoStyl }}>SZAC.</span> nie wszystko zapłacone — kurs ostatni NBP; bez cen i płatności: cena FV × {szacZ}{data.sredni_narzut_proc != null ? ` (${pct(data.sredni_narzut_proc)})` : ""}</span>

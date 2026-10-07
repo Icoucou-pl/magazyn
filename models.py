@@ -1285,6 +1285,7 @@ class CenaProduktuOut(BaseModel):
     srednia: Optional[float] = None
     srednia_szt: int = 0
     srednia_pominieto_szt: int = 0     # sztuki z partii bez SAD, pominięte w średniej
+    przyszle_szt: int = 0              # stan w dostawach wbitych, ale z przyszłą datą wejścia — poza kaflami
     ostatnia: Optional[float] = None
     ostatnia_item_id: Optional[int] = None
     min: Optional[float] = None
