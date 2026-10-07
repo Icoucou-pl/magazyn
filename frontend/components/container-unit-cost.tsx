@@ -45,9 +45,10 @@ type Koszt = {
   grupy: Grupa[]; pozycje: Pozycja[]; uwagi: { poziom: string; tresc: string }[];
   razem_z: KontenerKrotko[];
   zapisal: string | null; zapisano: string | null; moze_edytowac: boolean;
-  notatka: string | null; notatka_kto: string | null; notatka_kiedy: string | null;
+  notatki: NotatkaWpis[];
 };
-type NotatkaK = Pick<Koszt, "notatka" | "notatka_kto" | "notatka_kiedy">;
+// Wpis w dzienniku notatek; moze_edytowac = autor wpisu albo administrator (liczy backend).
+type NotatkaWpis = { id: number; tresc: string; kto: string | null; kiedy: string | null; edytowano: string | null; moze_edytowac: boolean };
 
 type KontenerKrotko = { id: number; etykieta: string; dostawca?: string | null; eta?: string | null };
 
@@ -305,9 +306,9 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
           onZmiana={() => { wczytaj().then(przyjmij).catch(() => toast("Nie udało się wczytać kosztu", "error")); }} />
       )}
 
-      <Notatka containerId={containerId} edycja={edycja} n={k}
-        // Bierzemy z odpowiedzi tylko notatkę — niezapisane poprawki w formularzu zostają.
-        onZapis={(z) => setK((p) => p && { ...p, notatka: z.notatka, notatka_kto: z.notatka_kto, notatka_kiedy: z.notatka_kiedy })} />
+      <Notatki containerId={containerId} edycja={edycja} wpisy={k.notatki}
+        // Podmieniamy tylko notatki — niezapisane poprawki w formularzu zostają.
+        onZmiana={(notatki) => setK((p) => p && { ...p, notatki })} />
 
       <div style={karta}>
         <Naglowek tytul="Założenia" hint={edycja ? "Puste pole = wartość automatyczna. Wpisana liczba zastępuje automat." : undefined} />
@@ -533,45 +534,81 @@ function DodatkowyWiersz({ x, edycja, grupa, importowe, wiele, pozycje, onZmien,
   );
 }
 
-// ── Notatka do rachunku ─────────────────────────────────────
+// ── Notatki do rachunku ─────────────────────────────────────
 // Automat nie wie, czemu płatności są wyższe niż ceny pozycji — gratisy, dopłata za
 // przepakowanie, wysyłka próbek samolotem… Tu się to dopisuje, żeby szef nie musiał pytać.
-// Notatka niczego nie przelicza; zapis osobny od poprawek (PUT …/koszt/notatka).
-function Notatka({ containerId, edycja, n, onZapis }: { containerId: number; edycja: boolean; n: NotatkaK; onZapis: (z: NotatkaK) => void }) {
-  const [tekst, setTekst] = useState(n.notatka || "");
+// Dziennik wpisów (kto, kiedy): nowy wpis nie nadpisuje starego. Swój wpis autor może
+// poprawić i usunąć, administrator — każdy. Notatki niczego nie przeliczają.
+function Notatki({ containerId, edycja, wpisy, onZmiana }: {
+  containerId: number; edycja: boolean; wpisy: NotatkaWpis[]; onZmiana: (w: NotatkaWpis[]) => void;
+}) {
+  const [nowa, setNowa] = useState("");
+  const [edytowany, setEdytowany] = useState<{ id: number; tresc: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  if (!edycja && !n.notatka) return null;
-  const zmieniona = tekst.trim() !== (n.notatka || "");
-  const zapisz = async () => {
+  if (!edycja && !wpisy.length) return null;
+  const url = `/kontenery/${containerId}/koszt/notatki`;
+  const wykonaj = async (akcja: () => Promise<unknown>, ok: string) => {
     setBusy(true);
     try {
-      const z = (await api.put(`/kontenery/${containerId}/koszt/notatka`, { notatka: tekst })) as Koszt;
-      onZapis(z); setTekst(z.notatka || "");
-      toast(z.notatka ? "Zapisano notatkę" : "Usunięto notatkę", "ok");
+      onZmiana((await akcja()) as NotatkaWpis[]);
+      toast(ok, "ok");
+      return true;
     } catch (e) {
       toast(e instanceof Error ? e.message : "Nie udało się zapisać notatki", "error");
+      return false;
     } finally { setBusy(false); }
   };
-  const podpis = n.notatka && n.notatka_kto ? `${n.notatka_kto}${n.notatka_kiedy ? `, ${data(n.notatka_kiedy)}` : ""}` : undefined;
+  const dodaj = async () => { if (await wykonaj(() => api.post(url, { tresc: nowa }), "Dodano notatkę")) setNowa(""); };
+  const zapiszEdycje = async () => {
+    if (!edytowany) return;
+    if (await wykonaj(() => api.put(`${url}/${edytowany.id}`, { tresc: edytowany.tresc }), "Poprawiono notatkę")) setEdytowany(null);
+  };
+  const usun = (w: NotatkaWpis) => {
+    if (!window.confirm(`Usunąć notatkę${w.kto ? ` (${w.kto})` : ""}?`)) return;
+    void wykonaj(() => api.del(`${url}/${w.id}`), "Usunięto notatkę");
+  };
+  const pole: React.CSSProperties = { ...input, textAlign: "left", fontFamily: "inherit", fontSize: 12.5, width: "100%", resize: "vertical", minHeight: 52, padding: "7px 10px" };
   return (
     <div style={karta}>
-      <Naglowek tytul="Notatka" hint={podpis ?? "np. skąd różnica płatności: dopłata za przepakowanie, wysyłka próbek samolotem…"} />
-      <div style={{ padding: "10px 16px" }}>
-        {edycja ? (
-          <>
-            <textarea value={tekst} onChange={(e) => setTekst(e.target.value)} rows={2} maxLength={4000}
-              aria-label="Notatka do kosztu jednostkowego"
-              placeholder="Np. Różnica 490 USD to wysyłka próbek samolotem (DDP), a nie gratisy."
-              style={{ ...input, textAlign: "left", fontFamily: "inherit", fontSize: 12.5, width: "100%", resize: "vertical", minHeight: 52, padding: "7px 10px" }} />
-            {zmieniona && (
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-                <button onClick={() => setTekst(n.notatka || "")} disabled={busy} style={btnSec}>Anuluj</button>
-                <button onClick={() => { void zapisz(); }} disabled={busy} style={{ ...btnPri, opacity: busy ? 0.5 : 1 }}>Zapisz notatkę</button>
-              </div>
+      <Naglowek tytul="Notatki" hint="np. skąd różnica płatności: dopłata za przepakowanie, wysyłka próbek samolotem…" />
+      {wpisy.map((w) => (
+        <div key={w.id} style={{ padding: "10px 16px", borderBottom: "1px solid var(--border-soft)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 11, color: "var(--text-lo)", marginBottom: 4 }}>
+            <span><b style={{ color: "var(--text-mid)" }}>{w.kto ?? "—"}</b> · {data(w.kiedy)}{w.edytowano ? ` · edytowano ${data(w.edytowano)}` : ""}</span>
+            {w.moze_edytowac && edytowany?.id !== w.id && (
+              <span style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setEdytowany({ id: w.id, tresc: w.tresc })} disabled={busy} style={btnLink}>edytuj</button>
+                <button onClick={() => usun(w)} disabled={busy} style={{ ...btnLink, color: "var(--critical)" }}>usuń</button>
+              </span>
             )}
-          </>
-        ) : <div style={{ fontSize: 12.5, color: "var(--text-hi)", whiteSpace: "pre-wrap" }}>{n.notatka}</div>}
-      </div>
+          </div>
+          {edytowany?.id === w.id ? (
+            <>
+              <textarea value={edytowany.tresc} onChange={(e) => setEdytowany({ id: w.id, tresc: e.target.value })} rows={2} maxLength={4000}
+                aria-label="Popraw notatkę" style={pole} />
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                <button onClick={() => setEdytowany(null)} disabled={busy} style={btnSec}>Anuluj</button>
+                <button onClick={() => { void zapiszEdycje(); }} disabled={busy || !edytowany.tresc.trim()}
+                  style={{ ...btnPri, opacity: busy || !edytowany.tresc.trim() ? 0.5 : 1 }}>Zapisz</button>
+              </div>
+            </>
+          ) : <div style={{ fontSize: 12.5, color: "var(--text-hi)", whiteSpace: "pre-wrap" }}>{w.tresc}</div>}
+        </div>
+      ))}
+      {edycja && (
+        <div style={{ padding: "10px 16px" }}>
+          <textarea value={nowa} onChange={(e) => setNowa(e.target.value)} rows={2} maxLength={4000}
+            aria-label="Nowa notatka do kosztu jednostkowego"
+            placeholder={wpisy.length ? "Dopisz kolejną notatkę…" : "Np. Różnica 490 USD to wysyłka próbek samolotem (DDP), a nie gratisy."}
+            style={pole} />
+          {nowa.trim() && (
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+              <button onClick={() => setNowa("")} disabled={busy} style={btnSec}>Anuluj</button>
+              <button onClick={() => { void dodaj(); }} disabled={busy} style={{ ...btnPri, opacity: busy ? 0.5 : 1 }}>Dodaj notatkę</button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

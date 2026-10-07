@@ -366,8 +366,8 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane", "BOOLEAN DEFAULT FALSE")
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslane_at", "TIMESTAMP")
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "dokumenty_wyslal", "VARCHAR(255)")
-        # Migracja: notatka do kosztu jednostkowego (np. „różnica płatności to dopłata za przepakowanie”),
-        # żeby przy pytaniu „skąd tyle gratisów?” wyjaśnienie było na karcie. Kto i kiedy — dla szefa.
+        # Pierwsza wersja notatki do kosztu jednostkowego (jedno pole). Zostaje tylko do przeniesienia
+        # starych wpisów do dziennika app_koszt_notatki (niżej) — nowe trafiają już tam.
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "koszt_notatka", "TEXT")
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "koszt_notatka_kto", "VARCHAR(255)")
         await add_column_if_missing(conn, settings.TABLE_CONTAINERS, "koszt_notatka_kiedy", "TIMESTAMP")
@@ -406,6 +406,29 @@ async def lifespan(app: FastAPI):
             )
         """))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_koszt_dodatkowy_kontener ON app_koszt_dodatkowy (container_id)"))
+
+        # Notatki do kosztu jednostkowego — dziennik wpisów (kto, kiedy), nie jedno pole do nadpisania:
+        # szef ma widzieć całą historię wyjaśnień. Swój wpis zmienia/usuwa autor, każdy — administrator.
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS app_koszt_notatki (
+                id SERIAL PRIMARY KEY,
+                container_id INTEGER NOT NULL REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE CASCADE,
+                tresc TEXT NOT NULL,
+                kto VARCHAR(255),
+                kto_id INTEGER,          -- autor: tylko on edytuje (NULL = wpis przeniesiony ze starej wersji)
+                kiedy TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                edytowano TIMESTAMP
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_koszt_notatki_kontener ON app_koszt_notatki (container_id)"))
+        # Przeniesienie notatek z pierwszej wersji (jedno pole na kontenerze) do dziennika — raz:
+        # po przeniesieniu pole jest czyszczone, więc kolejny start nic nie dubluje.
+        await conn.execute(text(f"""
+            INSERT INTO app_koszt_notatki (container_id, tresc, kto, kiedy)
+            SELECT id, koszt_notatka, koszt_notatka_kto, COALESCE(koszt_notatka_kiedy, CURRENT_TIMESTAMP)
+              FROM {settings.TABLE_CONTAINERS} WHERE koszt_notatka IS NOT NULL AND TRIM(koszt_notatka) <> ''
+        """))
+        await conn.execute(text(f"UPDATE {settings.TABLE_CONTAINERS} SET koszt_notatka = NULL WHERE koszt_notatka IS NOT NULL"))
 
         # Migracja: cena pozycji w walucie dostawcy (USD/CNY) / szt — z proformy/FV dostawcy.
         # Gdy jest, koszt jednostkowy (services/koszt_kontenera.py) bierze ją jako realną cenę

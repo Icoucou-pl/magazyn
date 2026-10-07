@@ -1440,14 +1440,29 @@ class KosztKontenerOut(BaseModel):
     zapisal: Optional[str] = None
     zapisano: Optional[datetime] = None
     moze_edytowac: bool = False
-    # notatka do rachunku (np. skąd różnica płatności) — wpisuje człowiek, nie liczy automat
-    notatka: Optional[str] = None
-    notatka_kto: Optional[str] = None
-    notatka_kiedy: Optional[datetime] = None
+    # notatki do rachunku (np. skąd różnica płatności) — dziennik wpisów, najstarszy pierwszy
+    notatki: List["KosztNotatkaOut"] = []
+
+
+class KosztNotatkaOut(BaseModel):
+    id: int
+    tresc: str
+    kto: Optional[str] = None
+    kiedy: Optional[datetime] = None
+    edytowano: Optional[datetime] = None
+    moze_edytowac: bool = False               # poprawka i usunięcie: autor albo administrator
 
 
 class KosztNotatkaIn(BaseModel):
-    notatka: Optional[str] = Field(None, max_length=4000)   # pusto / null = usuń notatkę
+    tresc: str = Field(..., max_length=4000)
+
+    @field_validator("tresc")
+    @classmethod
+    def _niepusta(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Notatka nie może być pusta")
+        return v
 
 
 class KosztPozycjaIn(BaseModel):
