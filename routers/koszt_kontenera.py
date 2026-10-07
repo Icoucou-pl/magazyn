@@ -59,15 +59,22 @@ def _koszty_wiersze(body: KosztKontenerIn) -> Optional[List[dict]]:
     if body.koszty is None:
         return None
     return [{"nazwa": x.nazwa, "kwota": x.kwota, "manufacturer_id": x.dostawca_id,
-             "item_ids": sorted(set(x.pozycje))} for x in body.koszty]
+             "item_ids": [] if x.osobna else sorted(set(x.pozycje)),
+             "osobna": x.osobna, "szt": x.szt if x.osobna else None} for x in body.koszty]
 
 
 def _opis_kosztow(wiersze) -> str:
     """Do audytu: „Przepakowanie 300 (przypięte: 2 poz.); Wysyłka 490” albo „—”."""
     if not wiersze:
         return "—"
-    return "; ".join(f"{w['nazwa']} {f_num('', 2)(float(w['kwota']))}"
-                     + (f" (przypięte: {len(w['item_ids'])} poz.)" if w["item_ids"] else "") for w in wiersze)
+    def jeden(w) -> str:
+        t = f"{w['nazwa']} {f_num('', 2)(float(w['kwota']))}"
+        if w.get("osobna"):
+            t += f" (osobna pozycja, {w['szt']} szt)" if w.get("szt") else " (osobna pozycja)"
+        if w["item_ids"]:
+            t += f" (przypięte: {len(w['item_ids'])} poz.)"
+        return t
+    return "; ".join(jeden(w) for w in wiersze)
 
 
 def _podmiana(body: KosztKontenerIn) -> dict:
@@ -154,7 +161,7 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
         razem_z=razem,
         # Tylko koszty tej karty — przy wspólnej fakturze grupa niesie też koszty partnerów.
         koszty=[KosztDodatkowyOut(nazwa=x.nazwa, kwota=x.kwota, waluta=g.waluta, grupa=g.id, dostawca_id=g.dostawca_id,
-                                  pozycje=x.pozycje, pln=round(x.kwota * (g.kurs or 0.0), 2))
+                                  pozycje=x.pozycje, pln=round(x.kwota * (g.kurs or 0.0), 2), osobna=x.osobna, szt=x.szt)
                 for g in w.grupy for x in g.koszty if x.kontener == cid],
         pozycje=[KosztPozycjaOut(
             item_id=p.item_id, sku=p.sku, nazwa=nazwy.get(p.sku.lower()), szt=p.szt, grupa=p.grupa,
@@ -241,7 +248,7 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
         if any(i not in po_id for w in nowe_koszty for i in w["item_ids"]):
             raise HTTPException(422, "Dodatkowy koszt przypięty do pozycji spoza kontenera")
         stare_koszty = [dict(r) for r in (await db.execute(text(
-            f"SELECT nazwa, kwota, item_ids FROM {T_DODATKOWE} WHERE container_id = :c ORDER BY position, id"),
+            f"SELECT nazwa, kwota, item_ids, osobna, szt FROM {T_DODATKOWE} WHERE container_id = :c ORDER BY position, id"),
             {"c": container_id})).mappings().all()]
         for w in stare_koszty:
             w["item_ids"] = sorted(w["item_ids"] or [])
@@ -250,10 +257,11 @@ async def zapisz_poprawki(container_id: int, body: KosztKontenerIn, db: AsyncSes
         await db.execute(text(f"DELETE FROM {T_DODATKOWE} WHERE container_id = :c"), {"c": container_id})
         for pos, w in enumerate(nowe_koszty):
             await db.execute(text(f"""
-                INSERT INTO {T_DODATKOWE} (container_id, manufacturer_id, nazwa, kwota, item_ids, position, zapisal, zapisano)
-                VALUES (:c, :m, :n, :k, :i, :p, :kto, :teraz)
+                INSERT INTO {T_DODATKOWE} (container_id, manufacturer_id, nazwa, kwota, item_ids, osobna, szt,
+                                           position, zapisal, zapisano)
+                VALUES (:c, :m, :n, :k, :i, :o, :s, :p, :kto, :teraz)
             """), {"c": container_id, "m": w["manufacturer_id"], "n": w["nazwa"], "k": w["kwota"],
-                   "i": w["item_ids"], "p": pos, "kto": kto, "teraz": teraz})
+                   "i": w["item_ids"], "o": w["osobna"], "s": w["szt"], "p": pos, "kto": kto, "teraz": teraz})
 
     await db.execute(text(f"DELETE FROM {T_POZYCJA} WHERE item_id = ANY(:ids)"), {"ids": list(po_id)})
     for p in wpisane.values():

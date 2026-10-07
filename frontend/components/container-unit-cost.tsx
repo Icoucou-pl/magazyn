@@ -26,7 +26,10 @@ type Grupa = {
   kurs_reczny: boolean; szacunek: boolean; wartosc_waluta: number; wartosc_zrodlo: string; platnosci: Platnosc[];
   dostawca_id: number | null;
 };
-type Dodatkowy = { nazwa: string; kwota: number; waluta: string; grupa: number; dostawca_id: number | null; pozycje: number[]; pln: number };
+type Dodatkowy = {
+  nazwa: string; kwota: number; waluta: string; grupa: number; dostawca_id: number | null; pozycje: number[]; pln: number;
+  osobna: boolean; szt: number | null;   // osobna pozycja (np. kartony) — własny wiersz w tabeli, do żadnego SKU
+};
 type Pozycja = {
   item_id: number; sku: string; nazwa: string | null; szt: number; grupa: number; krajowa: boolean; cbm_szt: number;
   cena_planowana: number; cena_waluta: number; cena_reczna: boolean; cena_zrodlo: string; towar: number;
@@ -60,7 +63,7 @@ type Szkic = {
   koszty: KosztSzkic[];   // dodatkowe koszty (przepakowanie, wysyłka…) — nazwana część płatności
 };
 // dostawca_id wskazuje lot kontenera skonsolidowanego (gdy nic nie przypięto); pozycje = przypięte item_id.
-type KosztSzkic = { nazwa: string; kwota: string; dostawca_id: number | null; pozycje: number[] };
+type KosztSzkic = { nazwa: string; kwota: string; dostawca_id: number | null; pozycje: number[]; osobna: boolean; szt: string };
 type PoleKontenera = "kurs" | "fracht" | "lenmar" | "transport";
 
 const pl = (n: number | null | undefined, d = 2) =>
@@ -85,7 +88,8 @@ function szkicZ(k: Koszt): Szkic {
     kurs: tekst(k.kurs_towaru_reczny, 4), fracht: tekst(k.fracht_reczny), lenmar: tekst(k.lenmar_reczny),
     transport: tekst(k.transport_reczny), cena, stawka,
     gratis: k.pozycje.filter((p) => p.gratis_przypiety).map((p) => p.item_id),
-    koszty: k.koszty.map((x) => ({ nazwa: x.nazwa, kwota: tekst(x.kwota), dostawca_id: x.dostawca_id, pozycje: x.pozycje })),
+    koszty: k.koszty.map((x) => ({ nazwa: x.nazwa, kwota: tekst(x.kwota), dostawca_id: x.dostawca_id, pozycje: x.pozycje,
+      osobna: x.osobna, szt: x.szt != null ? String(x.szt) : "" })),
   };
 }
 
@@ -98,7 +102,11 @@ function cialo(s: Szkic) {
       item_id: id, cena_waluta: liczba(s.cena[id] ?? ""), stawka_cla: liczba(s.stawka[id] ?? ""), gratis: s.gratis.includes(id),
     })).filter((p) => p.cena_waluta != null || p.stawka_cla != null || p.gratis),
     // Wiersz bez nazwy albo kwoty to jeszcze szkic — nie liczy się i nie zapisuje.
-    koszty: s.koszty.map((x) => ({ nazwa: x.nazwa.trim(), kwota: liczba(x.kwota), dostawca_id: x.dostawca_id, pozycje: x.pozycje }))
+    koszty: s.koszty.map((x) => {
+      const szt = Math.round(liczba(x.szt) ?? 0);
+      return { nazwa: x.nazwa.trim(), kwota: liczba(x.kwota), dostawca_id: x.dostawca_id,
+        pozycje: x.osobna ? [] : x.pozycje, osobna: x.osobna, szt: x.osobna && szt > 0 ? szt : null };
+    })
       .filter((x) => x.nazwa && x.kwota != null && x.kwota > 0),
   };
 }
@@ -172,14 +180,17 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
     setSzkic(s); if (odRazu) void przelicz(s);
   };
   const usunKoszt = (i: number) => { const s = { ...szkic, koszty: szkic.koszty.filter((_, j) => j !== i) }; setSzkic(s); void przelicz(s); };
-  const dodajKoszt = () => setSzkic({ ...szkic, koszty: [...szkic.koszty, { nazwa: "", kwota: "", dostawca_id: wiele ? (importowe[0]?.dostawca_id ?? null) : null, pozycje: [] }] });
+  const dodajKoszt = () => setSzkic({ ...szkic, koszty: [...szkic.koszty, { nazwa: "", kwota: "", dostawca_id: wiele ? (importowe[0]?.dostawca_id ?? null) : null, pozycje: [], osobna: false, szt: "" }] });
   // Lot kosztu: z przypiętych pozycji, a bez nich — z wybranego dostawcy (kontener skonsolidowany).
   const grupaKosztu = (x: KosztSzkic): Grupa | undefined => {
-    const zPoz = x.pozycje.length ? k.pozycje.find((p) => p.item_id === x.pozycje[0])?.grupa : undefined;
+    const zPoz = !x.osobna && x.pozycje.length ? k.pozycje.find((p) => p.item_id === x.pozycje[0])?.grupa : undefined;
     if (zPoz != null) return grupaPo.get(zPoz);
     return (wiele ? importowe.find((g) => g.dostawca_id === x.dostawca_id) : undefined) ?? glowna;
   };
   const pokazDodatkowe = !k.krajowa && Math.abs(k.dodatkowe) >= 0.01;
+  // Osobne pozycje (np. kartony): wyjęte z płatności, do żadnego SKU — własne wiersze tabeli.
+  const osobne = k.krajowa ? [] : k.koszty.filter((x) => x.osobna);
+  const osobnePln = osobne.reduce((s, x) => s + x.pln, 0);
   const ustawPole = (pole: PoleKontenera, v: string) => zmien({ ...szkic, [pole]: v });
   const przywroc = (pole: PoleKontenera) => { const s = { ...szkic, [pole]: "" }; setSzkic(s); void przelicz(s); };
   const ustawPoz = (rodzaj: "cena" | "stawka", id: number, v: string) =>
@@ -239,7 +250,9 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
       n={(wiele ? `${importowe.length} loty z płatności` : glowna ? `${pl(glowna.wartosc_waluta, 0)} ${waluta} ${glowna.wartosc_zrodlo === "plan" ? "z cen pozycji" : "z płatności"}` : "")
         + (Math.abs(k.gratisy) >= 0.01 ? ` · w tym gratisy ${pl(k.gratisy, 0)} zł` : "")} />,
     ...(pokazDodatkowe ? [<Kafel key="d" l="Dodatkowe koszty" v={`${pl(k.dodatkowe, 0)} zł`}
-      n={k.koszty.map((x) => x.nazwa).join(", ") || "z założeń"} />] : []),
+      n={k.koszty.filter((x) => !x.osobna).map((x) => x.nazwa).join(", ") || "z założeń"} />] : []),
+    ...(osobne.length ? [<Kafel key="o" l="Osobne pozycje" v={`${pl(osobnePln, 0)} zł`}
+      n={`${osobne.map((x) => x.nazwa).join(", ")} · poza kosztem SKU`} />] : []),
     <Kafel key="f" l="Fracht" v={`${pl(k.fracht, 0)} zł`}
       n={k.fracht_reczny != null ? "wpisany ręcznie" : k.fracht_usd ? `${pl(k.fracht_usd, 0)} USD × ${pl(k.kurs_frachtu, 4)}` : "brak na karcie"} />,
     <Kafel key="l" l="Lenmar" v={`${pl(k.lenmar, 0)} zł`}
@@ -343,6 +356,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
             <span style={{ fontSize: 11, color: "var(--text-lo)" }}>
               Np. przepakowanie, wysyłka próbek samolotem — kwota, która jest już w płatnościach dostawcy.
               Zmniejsza gratisy; rozkłada się po wartości pozycji albo na przypięte SKU.
+              „Osobna pozycja” (np. kartony) nie wchodzi w żadne SKU — ma własny wiersz w tabeli.
             </span>
           </div>
         )}
@@ -433,15 +447,38 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
                   </tr>
                 );
               })}
+              {osobne.map((x, i) => {
+                const szt = x.szt || 0;
+                const kreska = <span style={{ color: "var(--text-disabled)" }}>—</span>;
+                return (
+                  <tr key={`o${i}`} style={{ background: "color-mix(in oklch, var(--info) 5%, transparent)" }}>
+                    <td style={{ ...td, textAlign: "left" }}>
+                      <span style={{ fontWeight: 600 }}>{x.nazwa}</span>
+                      <span style={{ ...tag, marginLeft: 6, background: "var(--info-soft)", color: "var(--info)" }}>OSOBNA</span>
+                      <div style={{ fontSize: 10.5, color: "var(--text-lo)" }}>z płatności, nie wchodzi w koszt SKU{wiele && grupaPo.get(x.grupa)?.nazwa ? ` · ${grupaPo.get(x.grupa)?.nazwa}` : ""}</div>
+                    </td>
+                    <td style={tdM}>{szt ? pl(szt, 0) : "—"}</td>
+                    <td style={tdM}>{szt ? pl(x.kwota / szt, 4) : <>{pl(x.kwota)} <span style={{ fontSize: 10.5, color: "var(--text-lo)" }}>razem</span></>}</td>
+                    <td style={tdM}>{szt ? pl(x.pln / szt) : pl(x.pln)}</td>
+                    {pokazGratisy && <td style={tdM}>{kreska}</td>}
+                    {pokazDodatkowe && <td style={tdM}>{kreska}</td>}
+                    <td style={tdM}>{kreska}</td><td style={tdM}>{kreska}</td><td style={tdM}>{kreska}</td><td style={tdM}>{kreska}</td>
+                    <td style={{ ...tdM, fontWeight: 700, color: "var(--accent)", background: "color-mix(in oklch, var(--accent) 7%, transparent)" }}>
+                      {szt ? pl(x.pln / szt) : `${pl(x.pln, 0)} zł`}
+                    </td>
+                    <td style={tdM}>{kreska}</td><td style={tdM}>{kreska}</td>
+                  </tr>
+                );
+              })}
             </tbody>
             <tfoot><tr>
               <td style={{ ...td, textAlign: "left", fontWeight: 700, color: "var(--text-mid)", borderBottom: 0 }}>Razem</td>
               <td style={tdSum}>{pl(sumaSzt, 0)}</td><td style={tdSum} />
               {!k.krajowa && <>
-                <td style={tdSum}>{pl(k.towar, 0)}</td>{pokazGratisy && <td style={tdSum}>{pl(k.gratisy, 0)}</td>}{pokazDodatkowe && <td style={tdSum}>{pl(k.dodatkowe, 0)}</td>}<td style={tdSum}>{pl(k.fracht, 0)}</td>
+                <td style={tdSum}>{pl(k.towar + osobnePln, 0)}</td>{pokazGratisy && <td style={tdSum}>{pl(k.gratisy, 0)}</td>}{pokazDodatkowe && <td style={tdSum}>{pl(k.dodatkowe, 0)}</td>}<td style={tdSum}>{pl(k.fracht, 0)}</td>
                 <td style={tdSum}>{pl(k.lenmar, 0)}</td><td style={tdSum}>{pl(k.clo, 0)}</td>
               </>}
-              <td style={tdSum}>{pl(k.transport, 0)}</td><td style={tdSum}>{pl(k.suma, 0)} zł</td>
+              <td style={tdSum}>{pl(k.transport, 0)}</td><td style={tdSum}>{pl(k.suma + osobnePln, 0)} zł</td>
               <td style={tdSum} /><td style={tdSum} />
             </tr></tfoot>
           </table>
@@ -489,17 +526,37 @@ function DodatkowyWiersz({ x, edycja, grupa, importowe, wiele, pozycje, onZmien,
               onChange={(e) => onZmien({ nazwa: e.target.value })} onBlur={onBlur} onKeyDown={enter}
               style={{ ...input, textAlign: "left", fontFamily: "inherit", fontWeight: 600, width: "100%" }} />
           ) : <div style={{ fontSize: 13, fontWeight: 600 }}>{x.nazwa}</div>}
-          <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{wal} · dodatkowy koszt, część płatności</div>
+          <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2 }}>{wal} · {x.osobna ? "osobna pozycja — do żadnego SKU" : "dodatkowy koszt, część płatności"}</div>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-mid)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          {wiele && !x.pozycje.length && (edycja ? (
+          {wiele && (x.osobna || !x.pozycje.length) && (edycja ? (
             <select value={x.dostawca_id ?? ""} onChange={(e) => onZmien({ dostawca_id: e.target.value ? Number(e.target.value) : null }, true)}
               aria-label="Lot (dostawca) kosztu" style={{ ...input, textAlign: "left", fontFamily: "inherit", padding: "4px 6px" }}>
               {importowe.map((g) => <option key={g.id} value={g.dostawca_id ?? ""}>{g.nazwa || "lot"}</option>)}
             </select>
           ) : <span>{grupa?.nazwa}</span>)}
-          <span>{przypiete.length ? <>na: <span className="mono" style={{ color: "var(--text-hi)" }}>{przypiete.join(", ")}</span></> : wiele ? "cały lot po wartości" : "cały kontener po wartości"}</span>
-          {edycja && <button onClick={() => setRozwin((v) => !v)} style={btnLink}>{rozwin ? "zwiń" : "przypnij do SKU"}</button>}
+          {/* Osobna pozycja (np. kartony): własny wiersz w tabeli kosztu, do żadnego SKU — z liczbą sztuk. */}
+          {edycja ? (
+            <label style={{ display: "inline-flex", gap: 5, alignItems: "center", cursor: "pointer" }}
+              title="Np. kartony zamówione razem z towarem: kwota wychodzi z płatności, ale nie podnosi kosztu żadnego SKU — dostaje własny wiersz w tabeli">
+              <input type="checkbox" checked={x.osobna} onChange={(e) => { setRozwin(false); onZmien({ osobna: e.target.checked }, true); }} />
+              osobna pozycja
+            </label>
+          ) : x.osobna ? <span>osobna pozycja</span> : null}
+          {x.osobna ? (
+            edycja ? (
+              <span style={{ display: "inline-flex", gap: 5, alignItems: "center" }}>
+                <input value={x.szt} placeholder="szt" inputMode="numeric" aria-label="Sztuki osobnej pozycji"
+                  onChange={(e) => onZmien({ szt: e.target.value })} onBlur={onBlur} onKeyDown={enter}
+                  style={{ ...input, width: 70 }} /> szt
+              </span>
+            ) : x.szt ? <span className="mono">{x.szt} szt</span> : null
+          ) : (
+            <>
+              <span>{przypiete.length ? <>na: <span className="mono" style={{ color: "var(--text-hi)" }}>{przypiete.join(", ")}</span></> : wiele ? "cały lot po wartości" : "cały kontener po wartości"}</span>
+              {edycja && <button onClick={() => setRozwin((v) => !v)} style={btnLink}>{rozwin ? "zwiń" : "przypnij do SKU"}</button>}
+            </>
+          )}
         </div>
         <div>
           {edycja ? (
@@ -509,12 +566,14 @@ function DodatkowyWiersz({ x, edycja, grupa, importowe, wiele, pozycje, onZmien,
           ) : <span className="mono">{x.kwota} {wal}</span>}
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>DODATKOWY</span>
+          {x.osobna
+            ? <span style={{ ...tag, background: "var(--info-soft)", color: "var(--info)" }}>OSOBNA</span>
+            : <span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>DODATKOWY</span>}
           {plnStr && <span className="mono" style={{ fontSize: 11, color: "var(--text-lo)" }}>{plnStr}</span>}
         </div>
         <div>{edycja ? <button onClick={onUsun} style={{ ...btnLink, color: "var(--critical)" }}>usuń</button> : null}</div>
       </div>
-      {edycja && rozwin && (
+      {edycja && rozwin && !x.osobna && (
         <div style={{ padding: "0 16px 10px", display: "flex", gap: 6, flexWrap: "wrap" }}>
           {pozycje.map((p) => {
             const on = x.pozycje.includes(p.item_id);

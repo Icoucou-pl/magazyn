@@ -1373,6 +1373,8 @@ class KosztDodatkowyOut(BaseModel):
     dostawca_id: Optional[int] = None
     pozycje: List[int] = []                   # przypięte item_id; puste = cały lot/kontener po wartości
     pln: float = 0.0
+    osobna: bool = False                      # osobna pozycja (np. kartony) — własny wiersz, do żadnego SKU
+    szt: Optional[int] = None
 
 
 class KosztDodatkowyIn(BaseModel):
@@ -1380,6 +1382,8 @@ class KosztDodatkowyIn(BaseModel):
     kwota: float = Field(..., gt=0)
     dostawca_id: Optional[int] = None         # lot kontenera skonsolidowanego (gdy nic nie przypięto)
     pozycje: List[int] = []
+    osobna: bool = False                      # osobna pozycja (np. kartony): z płatności, ale do żadnego SKU
+    szt: Optional[int] = Field(None, gt=0)
 
     @field_validator("nazwa", mode="before")
     @classmethod

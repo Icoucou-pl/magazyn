@@ -21,6 +21,8 @@ RACHUNEK (wszystkie kwoty w PLN)
      reszta trafi na pozycje — suma się nie zmienia, zmienia się opis i rozłożenie (po wartości
      pozycji albo na przypięte SKU). Gratisy to dopiero to, co zostanie. Bez płatności (wartość
      z cen planowanych) nie ma ich z czego wyjąć, więc dochodzą ponad ceny pozycji.
+     Koszt „osobny” (np. kartony zamówione razem z towarem) też wychodzi z płatności, ale NIE
+     trafia do żadnego SKU — ekran pokazuje go jako własny wiersz (kwota × kurs ÷ szt).
   3. Fracht morski = koszt_transportu (USD) × kurs NBP sprzed dostawy (albo ETA), po CBM.
   4. Lenmar = ryczałt LENMAR_KONTENER + LENMAR_ZGLOSZENIE za każde dodatkowe zgłoszenie
      (jedno zgłoszenie na spółkę w kontenerze), po CBM.
@@ -86,6 +88,8 @@ class KosztDodatkowy:
     kwota: float
     pozycje: List[int] = field(default_factory=list)   # item_id przypiętych pozycji; puste = cała grupa
     kontener: Optional[int] = None    # czyj to koszt — przy wspólnej fakturze grupa zbiera koszty kilku kart
+    osobna: bool = False              # osobna pozycja (np. kartony): z płatności, ale do żadnego SKU
+    szt: Optional[int] = None         # sztuki osobnej pozycji — do kosztu / szt w jej wierszu
 
 
 @dataclass
@@ -382,17 +386,24 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
     dod_waluta: Dict[int, float] = {}
     moje = {p.item_id: p for p in pozycje}
     for x in koszty:
+        if x.osobna:
+            continue   # osobna pozycja — wyjęta z płatności, ale do żadnego SKU
         cel = [moje[i] for i in x.pozycje if i in moje] or pozycje
         wagi = {p.item_id: wartosc_poz.get(p.item_id, 0.0) for p in cel}
         if sum(wagi.values()) <= 0:
             wagi = {p.item_id: float(p.szt) for p in cel}
         for i, v in _rozloz(x.kwota, wagi).items():
             dod_waluta[i] = dod_waluta.get(i, 0.0) + v
-    if koszty:
-        opis = ", ".join(f"{x.nazwa} {_pl(x.kwota)}" for x in koszty)
+    if any(not x.osobna for x in koszty):
+        opis = ", ".join(f"{x.nazwa} {_pl(x.kwota)}" for x in koszty if not x.osobna)
         uwagi.append(Uwaga("info", f"Dodatkowe koszty{etykieta}: {opis} {waluta} — "
                                    + ("część płatności, rozłożona na pozycje poza ceną towaru" if zrodlo == "platnosci"
                                       else "kontener nie ma płatności, więc doliczone ponad ceny pozycji")))
+    if any(x.osobna for x in koszty):
+        opis = ", ".join(f"{x.nazwa} {_pl(x.kwota)}" for x in koszty if x.osobna)
+        uwagi.append(Uwaga("info", f"Osobne pozycje{etykieta}: {opis} {waluta} — "
+                                   + ("wyjęte z płatności, nie wchodzą w koszt żadnego SKU" if zrodlo == "platnosci"
+                                      else "nie wchodzą w koszt żadnego SKU")))
 
     towar = {k: v * (kurs or 0.0) for k, v in wartosc_poz.items()}
     gratisy = {k: v * (kurs or 0.0) for k, v in gratis_waluta.items()}

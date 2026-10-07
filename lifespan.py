@@ -425,6 +425,9 @@ async def lifespan(app: FastAPI):
             )
         """))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_koszt_dodatkowy_kontener ON app_koszt_dodatkowy (container_id)"))
+        # Osobna pozycja (np. kartony zamówione z towarem): z płatności, ale do żadnego SKU — własny wiersz.
+        await add_column_if_missing(conn, "app_koszt_dodatkowy", "osobna", "BOOLEAN NOT NULL DEFAULT FALSE")
+        await add_column_if_missing(conn, "app_koszt_dodatkowy", "szt", "INTEGER")
 
         # Notatki do kosztu jednostkowego — dziennik wpisów (kto, kiedy), nie jedno pole do nadpisania:
         # szef ma widzieć całą historię wyjaśnień. Swój wpis zmienia/usuwa autor, każdy — administrator.
