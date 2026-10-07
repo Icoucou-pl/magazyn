@@ -164,6 +164,18 @@ def test_dodatkowy_koszt_bez_platnosci_dochodzi_ponad_ceny():
     assert any("doliczone ponad ceny" in u.tresc for u in w.uwagi)
 
 
+def test_osobna_pozycja_wychodzi_z_platnosci_ale_nie_trafia_do_sku():
+    # ceny 300 + 600 = 900 USD, zapłacono 1 000; 100 USD to kartony (osobna pozycja)
+    w = _z_kosztami([poz(1, 100, 10, cena_reczna=3.0), poz(2, 100, 30, cena_reczna=6.0)],
+                    [zap(1000, 4.0, "balance")], [KosztDodatkowy("Kartony", 100.0, osobna=True, szt=500)])
+    p = w.po_item()
+    assert w.dodatkowe == 0 and w.gratisy == 0 and w.towar == 3600
+    assert (p[1].koszt_jednostkowy, p[2].koszt_jednostkowy) == (12.0, 24.0), "kartony nie podnoszą kosztu SKU"
+    assert any("Osobne pozycje: Kartony 100,00 USD" in u.tresc for u in w.uwagi)
+    assert not any("Gratisy" in u.tresc for u in w.uwagi)
+    assert w.grupy[0].koszty[0].osobna
+
+
 def test_clo_liczone_takze_od_dodatkowych_kosztow():
     w = _z_kosztami([poz(1, 100, 10, cena_kontener=2.0, stawka=10)], [zap(250, 4.0, "balance")],
                     [KosztDodatkowy("Pakowanie", 50.0)])

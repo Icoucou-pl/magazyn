@@ -134,7 +134,7 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         f"SELECT * FROM {T_KONTENER} WHERE container_id = ANY(:ids)"), p)).mappings().all()}
     dodatkowe: Dict[int, List[dict]] = {}
     for r in (await db.execute(text(f"""
-        SELECT container_id, manufacturer_id, nazwa, kwota, item_ids FROM {T_DODATKOWE}
+        SELECT container_id, manufacturer_id, nazwa, kwota, item_ids, osobna, szt FROM {T_DODATKOWE}
          WHERE container_id = ANY(:ids) ORDER BY container_id, position, id
     """), p)).mappings().all():
         dodatkowe.setdefault(r["container_id"], []).append(dict(r))
@@ -242,7 +242,8 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         grupa_poz = {x.item_id: x.grupa for x in lista}
         po_id = {g.id: g for g in grupy}
         for d in dodatkowe.get(cid, []):
-            przypiete = [i for i in (d.get("item_ids") or []) if i in grupa_poz]
+            # Osobna pozycja nie ma przypięć — idzie tylko z płatności lotu/kontenera.
+            przypiete = [] if d.get("osobna") else [i for i in (d.get("item_ids") or []) if i in grupa_poz]
             if przypiete:
                 gid = grupa_poz[przypiete[0]]
             else:
@@ -253,7 +254,8 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
             if g is None or g.krajowa:
                 continue
             g.koszty.append(KosztDodatkowy(nazwa=d["nazwa"], kwota=float(d["kwota"] or 0),
-                                           pozycje=[i for i in przypiete if grupa_poz[i] == gid], kontener=cid))
+                                           pozycje=[i for i in przypiete if grupa_poz[i] == gid], kontener=cid,
+                                           osobna=bool(d.get("osobna")), szt=d.get("szt") or None))
         n = nadpisania.get(cid)
         data_frachtu = k["delivered_date"] or k["eta_date"] or jutro
         d_fr, k_fr = kurs("USD", data_frachtu)
