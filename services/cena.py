@@ -319,7 +319,21 @@ def wylicz_cene(koszt_bazy: float, tryb: str, proc: float, wysylka: float = 0.0,
 # stawkę z najświeższej KRAJOWEJ sprzedaży tego SKU w Sellasiście — najpierw w wybranej
 # firmie, potem w dowolnej (Acti ma głównie 8%). Stawki zagraniczne (np. 21%) pomijamy,
 # tak jak przy katalogu dropów: jedna sprzedaż za granicę nie może zmienić VAT produktu.
+# Liczą się tylko zamówienia ze statusów sprzedaży (INCLUDED_STATUS_FILTER, jak zakładka
+# „Sprzedaż”) — anulowane czy testowe zamówienie z błędną stawką podpowiadało „w ostatniej
+# sprzedaży 23%” przy produkcie, który jeszcze się nie sprzedał (SZP3_Szpital).
 VAT_KRAJOWE = (23, 8, 5)
+
+
+def _vat_sprzedaz_sql() -> str:
+    """FROM + warunki „krajowa stawka z prawdziwej sprzedaży” (alias pozycji oi, zamówienia o)."""
+    from config import settings, INCLUDED_STATUS_FILTER
+    return f"""
+        FROM {settings.TABLE_ORDER_ITEMS} oi
+        JOIN {settings.TABLE_ORDERS} o
+          ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID} AND o.shop = oi.shop
+       WHERE oi.tax_rate IN ({", ".join(map(str, VAT_KRAJOWE))}) AND oi.{settings.COL_ITEM_SKU} IS NOT NULL
+         {INCLUDED_STATUS_FILTER}"""
 VAT_RECZNE = (23, 8, 5, 0)
 
 
@@ -334,9 +348,9 @@ async def vat_produktu(db, sku: str, shop: str = "") -> dict:
         {"s": sku},
     )).scalar_one_or_none()
     auto = (await db.execute(
-        text(f"""SELECT tax_rate FROM {settings.TABLE_ORDER_ITEMS}
-                  WHERE LOWER(TRIM(symbol)) = LOWER(TRIM(:s)) AND tax_rate IN ({", ".join(map(str, VAT_KRAJOWE))})
-                  ORDER BY (shop = :shop) DESC, order_date DESC NULLS LAST LIMIT 1"""),
+        text(f"""SELECT oi.tax_rate {_vat_sprzedaz_sql()}
+                    AND LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:s))
+                  ORDER BY (oi.shop = :shop) DESC, o.{settings.COL_ORDER_DATE} DESC NULLS LAST LIMIT 1"""),
         {"s": sku, "shop": (shop or "").strip().lower()},
     )).scalar_one_or_none()
     vat_manual = float(manual) if manual is not None else None
@@ -360,10 +374,10 @@ async def vat_produktow(db, shop: str = "") -> Dict[str, float]:
     from config import settings
 
     auto = (await db.execute(
-        text(f"""SELECT DISTINCT ON (LOWER(TRIM(symbol))) LOWER(TRIM(symbol)) AS k, tax_rate
-                   FROM {settings.TABLE_ORDER_ITEMS}
-                  WHERE tax_rate IN ({", ".join(map(str, VAT_KRAJOWE))}) AND symbol IS NOT NULL
-                  ORDER BY LOWER(TRIM(symbol)), (shop = :shop) DESC, order_date DESC NULLS LAST"""),
+        text(f"""SELECT DISTINCT ON (LOWER(TRIM(oi.{settings.COL_ITEM_SKU})))
+                        LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS k, oi.tax_rate {_vat_sprzedaz_sql()}
+                  ORDER BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU})), (oi.shop = :shop) DESC,
+                           o.{settings.COL_ORDER_DATE} DESC NULLS LAST"""),
         {"shop": (shop or "").strip().lower()},
     )).all()
     manual = (await db.execute(
