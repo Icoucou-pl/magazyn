@@ -36,7 +36,7 @@ import {
 } from "./products-ui";
 import {
   LogistykaKpi, Section, StockProjectionChart, buildProjection, ContainersSection,
-  AttributesCard, DimensionsCard, DeleteZone, iconBtnHeader, fmtDay,
+  AttributesCard, DimensionsCard, DeleteZone, RenameSkuZone, iconBtnHeader, fmtDay,
   type ApiProjPoint, type Projection, type DeleteCheck,
 } from "./product-modal";
 import { ProductSalesTab } from "./finance";
@@ -73,7 +73,7 @@ function czytajTabZAdresu(): ProductTab | null {
 }
 
 export default function ProductPage({
-  sku, autoShop, backLabel, onBack, onBackToList, onTabChange, onContainerClick, onUpdated, onDeleted,
+  sku, autoShop, backLabel, onBack, onBackToList, onTabChange, onContainerClick, onUpdated, onDeleted, onRenamed,
   trail, onCrumb, onManufacturerClick, onOpenContainerPage,
 }: {
   sku: string;
@@ -91,6 +91,8 @@ export default function ProductPage({
   /** Zmiana produktu (obserwuj, atrybuty, zdjęcie) — lista pod spodem ma się dowiedzieć. */
   onUpdated?: (p: Product) => void;
   onDeleted: () => void;
+  /** SKU przepisane (super-admin) — rodzic przechodzi na kartę pod nowym adresem. */
+  onRenamed?: (sku: string) => void;
   /** Sznurek do breadcrumba. Brak = domyślny „Produkty › SKU". */
   trail?: Trail;
   onCrumb?: (index: number) => void;
@@ -629,6 +631,7 @@ export default function ProductPage({
               <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} onPhotosChanged={refreshProduct} />
               <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
             </div>
+            {delChk && onRenamed && <RenameSkuZone check={delChk} onRenamed={onRenamed} />}
             {delChk && (
               <DeleteZone
                 check={delChk}

@@ -14,7 +14,7 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, ManualNewUpdate, VatOut, VatUpdate,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, SkuZmiana, ManualNewUpdate, VatOut, VatUpdate,
 )
 from security import get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
@@ -879,3 +879,93 @@ async def delete_product(sku: str, db: AsyncSession = Depends(get_db), user: Cur
         area="Produkty",
     )
     return {"sku": sku, "deleted": deleted}
+
+
+# ============================================================
+# Zmiana SKU sampla — WYŁĄCZNIE super-admin
+# ============================================================
+# Sample dodaje się ręcznie, zanim towar trafi do Subiekta/Sellasista. Gdy tam dostanie inny
+# symbol (Lxs1g → Lxs1cz_g), aplikacja go nie połączy: katalog łączy wszystko po SKU.
+# Zmiana przepisuje SKU we WSZYSTKICH tabelach aplikacji naraz (atrybuty, kontenery, zdjęcia,
+# ceny, lead time, snapshoty…), więc nic nie zostaje pod starym symbolem.
+#
+# Tabele bierzemy z information_schema, a nie z ręcznej listy: część zakłada lifespan, część
+# pliki sql/ i serwisy — ręczna lista przy następnej nowej tabeli cicho by się rozjechała.
+# Nazwy pochodzą z katalogu bazy (nie od użytkownika), wartości idą parametrami.
+# Dziennik audytu zostaje nietknięty — to historia, ma pokazywać SKU z tamtej chwili.
+_RENAME_POMIN = {settings.TABLE_AUDIT_LOG}
+
+
+async def _tabele_z_sku(db: AsyncSession) -> list:
+    """(tabela, kolumna) — tabele aplikacji (app_*) z kolumną `sku` albo `sku_canon`."""
+    r = await db.execute(text(r"""
+        SELECT table_name, column_name
+          FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name LIKE 'app\_%'
+           AND column_name IN ('sku', 'sku_canon')
+         ORDER BY table_name, column_name
+    """))
+    return [(t, c) for t, c in r.all() if t not in _RENAME_POMIN]
+
+
+def _warunek_sku(kolumna: str, param: str) -> str:
+    # sku_canon trzyma już LOWER(TRIM(sku)); zwykłe `sku` porównujemy jak w całej aplikacji.
+    if kolumna == "sku_canon":
+        return f"sku_canon = LOWER(TRIM(:{param}))"
+    return f"LOWER(TRIM(sku)) = LOWER(TRIM(:{param}))"
+
+
+@router.post("/products/{sku:path}/zmien-sku")
+async def rename_product_sku(sku: str, payload: SkuZmiana, db: AsyncSession = Depends(get_db),
+                             user: CurrentUser = Depends(require_super_admin)):
+    """Przepisuje SKU sampla (produktu żyjącego tylko w aplikacji) na nowy symbol."""
+    stare = sku.strip()
+    nowe = payload.nowe_sku.strip()
+    if not stare or not nowe:
+        raise HTTPException(400, "SKU nie może być puste")
+    if stare == nowe:
+        raise HTTPException(400, "Nowe SKU jest takie samo jak obecne")
+
+    chk = await _delete_check(db, stare)
+    if chk["external_sources"]:
+        # SKU z Subiekta/Sellasista wróciłby od razu pod starym symbolem — zmieniać trzeba tam.
+        raise HTTPException(
+            409,
+            f"{stare} jest w: {', '.join(chk['external_sources'])}. SKU zmienia się tam, nie w aplikacji.",
+        )
+    if not chk["exists_in_app"]:
+        raise HTTPException(404, f"Produkt {stare} nie istnieje")
+
+    tabele = await _tabele_z_sku(db)
+
+    # Nowe SKU nie może mieć już własnych danych w aplikacji — zlałyby się dwa produkty
+    # (a atrybuty i lead time mają SKU jako klucz). Sama zmiana wielkości liter to ten sam SKU.
+    if nowe.lower() != stare.lower():
+        zajete = []
+        for t, c in tabele:
+            r = await db.execute(text(f'SELECT 1 FROM "{t}" WHERE {_warunek_sku(c, "nowe")} LIMIT 1'),
+                                 {"nowe": nowe})
+            if r.first():
+                zajete.append(t)
+        if zajete:
+            raise HTTPException(
+                409,
+                f"{nowe} ma już dane w aplikacji ({', '.join(sorted(set(zajete)))}). "
+                "Wybierz inne SKU albo najpierw usuń tamten produkt.",
+            )
+
+    zmienione: dict = {}
+    for t, c in tabele:
+        nowa_wartosc = "LOWER(TRIM(:nowe))" if c == "sku_canon" else ":nowe"
+        r = await db.execute(
+            text(f'UPDATE "{t}" SET {c} = {nowa_wartosc} WHERE {_warunek_sku(c, "stare")}'),
+            {"nowe": nowe, "stare": stare},
+        )
+        if r.rowcount:
+            zmienione[t] = zmienione.get(t, 0) + r.rowcount
+
+    await db.commit()
+    audit.note(f"zmienił SKU sampla {stare} → {nowe}", resource_id=nowe,
+               changes=[{"pole": "SKU", "bylo": stare, "jest": nowe}])
+    return {"sku": nowe, "stare_sku": stare, "zmienione": zmienione}
