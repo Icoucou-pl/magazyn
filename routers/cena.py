@@ -184,9 +184,17 @@ async def _policz(db: AsyncSession, sku: str, shop: str, user: CurrentUser):
     p = await get_product(db, sku, shop, allowed=allowed_shops(user))
     # Stan do rozkładu: magazyn główny + to, co już wbite do „w drodze" (towar kupiony,
     # w ERP, tylko jeszcze nie przesunięty MM-ką). Kontenery niewbite nie liczą się do stanu.
-    stan = int(p.stock or 0) + int(p.stock_in_transit_wbite or 0)
+    # Powiązanie „cena z SKU": koszt (dostawy i rozkład stanu) liczymy na wzorcu — ten sam
+    # towar, tylko sprzedawany pod drugim symbolem, sam nie ma kontenerów ani stanu w ERP.
+    wzor = p
+    if p.cena_z_sku:
+        try:
+            wzor = await get_product(db, p.cena_z_sku, shop, allowed=allowed_shops(user))
+        except HTTPException:
+            wzor = p   # wzorca nie ma w tej zakładce firmy — zostaje własny rachunek
+    stan = int(wzor.stock or 0) + int(wzor.stock_in_transit_wbite or 0)
 
-    dostawy, meta, narzut = await _dostawy(db, p.sku)
+    dostawy, meta, narzut = await _dostawy(db, wzor.sku)
     w = policz_koszty(dostawy, stan, narzut)
 
     # Koszt z ERP: firmy z przełącznika, a na „Wszystkich" — firmy, która ten towar importuje.
@@ -211,12 +219,16 @@ async def cena_lista(shop: str = Query(""), db: AsyncSession = Depends(get_db),
     vaty = await vat_produktow(db, shop)
     dostawy, narzut = await _dostawy_wszystkie(db) if widzi_koszt else ({}, None)
     out: List[CenaListaPozycja] = []
+    po_kluczu = {p.sku.strip().lower(): p for p in produkty}
     for p in produkty:
         klucz = p.sku.strip().lower()
+        # Powiązanie „cena z SKU": koszt wzorca (jak w _policz); bez wzorca na liście — własny.
+        wzor = po_kluczu.get((p.cena_z_sku or "").strip().lower(), p)
+        kw = wzor.sku.strip().lower()
         fifo = srednia = None
-        if widzi_koszt and klucz in dostawy:
-            stan = int(p.stock or 0) + int(p.stock_in_transit_wbite or 0)
-            w = policz_koszty(dostawy[klucz], stan, narzut)
+        if widzi_koszt and kw in dostawy:
+            stan = int(wzor.stock or 0) + int(wzor.stock_in_transit_wbite or 0)
+            w = policz_koszty(dostawy[kw], stan, narzut)
             fifo, srednia = w.fifo, w.srednia
         out.append(CenaListaPozycja(sku=p.sku, vat=vaty.get(klucz, VAT_DOMYSLNY), fifo=fifo, srednia=srednia))
     return out
@@ -250,7 +262,7 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
 
     return CenaProduktuOut(
         vat=vat["vat"], vat_zrodlo=vat["zrodlo"],
-        sku=p.sku, shop=shop, stan=stan, poza_dostawami=w.poza_dostawami,
+        sku=p.sku, cena_z_sku=p.cena_z_sku, shop=shop, stan=stan, poza_dostawami=w.poza_dostawami,
         erp_zrodlo=zrodlo, erp_cena=ceny.get(p.sku.strip().lower()),
         fifo=w.fifo, fifo_item_id=w.fifo_item_id,
         srednia=w.srednia, srednia_szt=w.srednia_szt, srednia_pominieto_szt=w.srednia_pominieto_szt,

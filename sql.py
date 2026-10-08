@@ -211,17 +211,25 @@ SELECT
     -- sync po cichu ją kasuje), 2) Fakturownia (jedyne źródło dla Acti/Veluxa), 3) katalog,
     -- czyli nowa tabela subiektowa z fallbackiem na starą (rozstrzygnięte w CTE `catalog`).
     -- Fakturownia stoi nad Subiektem bez konfliktu — dotyczą rozłącznych firm.
-    COALESCE(NULLIF(pa.cena_zakupu, 0), NULLIF(fd.ppn, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
+    -- Powiązanie „cena z SKU" (pa.cena_z_sku): ten sam towar pod drugim symbolem bierze cenę
+    -- wzorca (jego ręczna → Fakturownia → katalog) przed własnym ERP — własnej zwykle nie ma
+    -- (Szp3_szpital nie istnieje w Fakturowni). Własna ręczna dalej wygrywa ze wszystkim.
+    COALESCE(NULLIF(pa.cena_zakupu, 0),
+             NULLIF(paz.cena_zakupu, 0), NULLIF(fdz.ppn, 0), NULLIF(pz.{settings.COL_PRODUCT_PRICE}, 0),
+             NULLIF(fd.ppn, 0), p.{settings.COL_PRODUCT_PRICE}, 0)::float AS price,
     -- Które z trzech źródeł wyżej faktycznie zadziałało. Front pokazywał na sztywno
     -- „(Subiekt)", więc dla Acti/Veluxa kłamał — ich cena idzie z Fakturowni.
     -- Kolejność CASE musi być identyczna jak w COALESCE powyżej.
     CASE
         WHEN NULLIF(pa.cena_zakupu, 0) IS NOT NULL              THEN 'manual'
+        WHEN COALESCE(NULLIF(paz.cena_zakupu, 0), NULLIF(fdz.ppn, 0),
+                      NULLIF(pz.{settings.COL_PRODUCT_PRICE}, 0)) IS NOT NULL THEN 'powiazany'
         WHEN NULLIF(fd.ppn, 0) IS NOT NULL                      THEN 'fakturownia'
         WHEN NULLIF(p.{settings.COL_PRODUCT_PRICE}, 0) IS NOT NULL THEN 'subiekt'
         ELSE NULL
     END AS price_source,
     pa.cena_zakupu::float AS cena_zakupu_manual,
+    NULLIF(TRIM(pa.cena_z_sku), '') AS cena_z_sku,
     COALESCE(lt.lead_time_days, :default_lead_time)::int AS lead_time_days,
     COALESCE(pa.cbm_per_unit, 0)::float AS cbm_per_unit,
     -- Wymiary kartonu eksportowego. Efektywny CBM liczy backend (compute_effective_cbm
@@ -283,6 +291,17 @@ LEFT JOIN (
     WHERE sku IS NOT NULL AND TRIM(sku) <> ''
     ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
 ) pa ON pa.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
+-- Wzorzec ceny (pa.cena_z_sku): jego ręczna cena, Fakturownia tej samej zakładki i katalog.
+-- (paz zdeduplikowane jak pa — jeden wiersz na SKU, bez fan-outu listy)
+LEFT JOIN (
+    SELECT DISTINCT ON (LOWER(TRIM(sku))) LOWER(TRIM(sku)) AS sku_canon, cena_zakupu
+    FROM {settings.TABLE_PRODUCT_ATTRS}
+    WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+    ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+) paz ON paz.sku_canon = LOWER(TRIM(NULLIF(TRIM(pa.cena_z_sku), '')))
+LEFT JOIN fakturownia_data fdz ON fdz.sku_canon = LOWER(TRIM(NULLIF(TRIM(pa.cena_z_sku), '')))
+LEFT JOIN catalog_dedup pz
+       ON LOWER(TRIM(pz.{settings.COL_PRODUCT_SKU})) = LOWER(TRIM(NULLIF(TRIM(pa.cena_z_sku), '')))
 LEFT JOIN main_photo mp ON mp.sku_canon = LOWER(TRIM(p.{settings.COL_PRODUCT_SKU}))
 LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = pa.manufacturer_id
 LEFT JOIN {settings.TABLE_FIRMY} f ON f.id = pa.firma_id
@@ -443,8 +462,9 @@ def product_prices_cte(shop: str = "") -> str:
     pri_fakturownia = 3 if amh else 1
     pri_subiekt_nowy = 1 if amh else 2
     pri_subiekt_stary = 2 if amh else 3
+    # Druga warstwa: SKU powiązane („cena z SKU") bierze cenę wzorca, chyba że ma własną ręczną.
     return f"""
-prod_prices AS (
+prod_prices_wlasne AS (
     SELECT DISTINCT ON (sku_canon) sku_canon, cena
     FROM (
         SELECT LOWER(TRIM(sku)) AS sku_canon, NULLIF(cena_zakupu, 0)::float AS cena, 0 AS pri
@@ -458,6 +478,21 @@ prod_prices AS (
         UNION ALL
         SELECT LOWER(TRIM({settings.COL_PRODUCT_SKU})), NULLIF({settings.COL_PRODUCT_PRICE}, 0)::float, {pri_subiekt_stary}
         FROM {settings.TABLE_PRODUCTS} WHERE {settings.COL_PRODUCT_SKU} IS NOT NULL
+    ) c
+    WHERE c.cena IS NOT NULL
+    ORDER BY sku_canon, pri
+),
+prod_prices AS (
+    SELECT DISTINCT ON (sku_canon) sku_canon, cena
+    FROM (
+        SELECT LOWER(TRIM(a.sku)) AS sku_canon, NULLIF(a.cena_zakupu, 0)::float AS cena, 0 AS pri
+        FROM {settings.TABLE_PRODUCT_ATTRS} a WHERE NULLIF(TRIM(a.cena_z_sku), '') IS NOT NULL
+        UNION ALL
+        SELECT LOWER(TRIM(a.sku)), w.cena, 1
+        FROM {settings.TABLE_PRODUCT_ATTRS} a
+        JOIN prod_prices_wlasne w ON w.sku_canon = LOWER(TRIM(a.cena_z_sku))
+        UNION ALL
+        SELECT sku_canon, cena, 2 FROM prod_prices_wlasne
     ) c
     WHERE c.cena IS NOT NULL
     ORDER BY sku_canon, pri

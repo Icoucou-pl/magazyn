@@ -456,6 +456,26 @@ async def _mrn_odpraw(db: AsyncSession, ids: Sequence[int]) -> Dict[int, str]:
 
 async def _koszt_erp(db: AsyncSession, slug: Optional[str],
                     skus: Sequence[str]) -> "tuple[Optional[str], Dict[str, float]]":
+    """Koszt z ERP jak niżej, z uwzględnieniem powiązania „cena z SKU" (app_product_attrs.cena_z_sku):
+    SKU powiązane dostaje cenę swojego wzorca — Szp3_szpital nie istnieje w Fakturowni, Szp3 tak."""
+    klucze = sorted({(x or "").strip().lower() for x in skus if x})
+    if not klucze:
+        return None, {}
+    aliasy = {r["k"]: r["z"] for r in (await db.execute(
+        text(f"""SELECT LOWER(TRIM(sku)) AS k, LOWER(TRIM(cena_z_sku)) AS z
+                   FROM {settings.TABLE_PRODUCT_ATTRS}
+                  WHERE LOWER(TRIM(sku)) = ANY(:k) AND NULLIF(TRIM(cena_z_sku), '') IS NOT NULL"""),
+        {"k": klucze},
+    )).mappings().all()}
+    zrodlo, ceny = await _koszt_erp_wlasny(db, slug, sorted(set(klucze) | set(aliasy.values())))
+    for k, z in aliasy.items():
+        if z in ceny:
+            ceny[k] = ceny[z]
+    return zrodlo, ceny
+
+
+async def _koszt_erp_wlasny(db: AsyncSession, slug: Optional[str],
+                            skus: Sequence[str]) -> "tuple[Optional[str], Dict[str, float]]":
     """Bieżący koszt zakupu SKU w ERP spółki, która importuje ten kontener.
 
     Kolumna „cena plan." z pozycji kontenera bywa nieaktualna — wpisuje się ją przy

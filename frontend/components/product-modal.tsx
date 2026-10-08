@@ -610,6 +610,70 @@ export function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
   );
 }
 
+// ── Cena zakupu z innego SKU: WYŁĄCZNIE super-admin ──────────
+// Ten sam towar pod dwoma symbolami (Szp3 i Szp3_szpital — dwie aukcje, jedno łóżko
+// w Fakturowni). Ceny z ERP są tylko pod jednym, więc drugi bierze od niego cenę zakupu
+// i koszt FIFO/średnią. Sprzedaż i prognoza zostają osobno.
+export function CenaZSkuZone({ product, shop, onSaved }: { product: Product; shop?: string; onSaved: (p: Product) => void }) {
+  const [wzor, setWzor] = useState(product.cena_z_sku ?? "");
+  const [busy, setBusy] = useState(false);
+  // Pole startuje od zapisanego powiązania; po zapisie rodzic montuje nas od nowa (key).
+
+  const zapisz = async (wartosc: string | null) => {
+    if (busy) return;
+    if (wartosc && product.cena_zakupu_manual
+        && !window.confirm(`${product.sku} ma ręczną cenę zakupu ${fmtPLN(product.cena_zakupu_manual)}. Po powiązaniu zostanie skasowana i cena przyjdzie z ${wartosc}. Dalej?`)) return;
+    setBusy(true);
+    try {
+      const p = (await api.put(
+        `/products/${encodeURIComponent(product.sku)}/cena-z-sku${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`,
+        { sku_wzorcowe: wartosc },
+      )) as Product;
+      toast(wartosc ? `${product.sku} bierze cenę z ${wartosc}` : `Zdjęto powiązanie ceny ${product.sku}`, "ok");
+      onSaved(p);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się zapisać powiązania", "warning");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cel = wzor.trim();
+  const zmienione = cel !== (product.cena_z_sku ?? "");
+  return (
+    <Section title="Cena zakupu z innego SKU" hint="tylko super-admin">
+      <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ fontSize: 12.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
+          Gdy ten sam towar sprzedajesz pod dwoma SKU, a w Fakturowni/Subiekcie jest tylko jedno — wpisz tamto SKU.
+          Ten produkt weźmie od niego cenę zakupu i koszt (FIFO, średnia). Sprzedaż i prognoza zostają osobno.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="mono" style={{ fontSize: 13, color: "var(--text-lo)" }}>cena z</span>
+          <input value={wzor} onChange={(e) => setWzor(e.target.value)} placeholder="np. Szp3" maxLength={255}
+            onKeyDown={(e) => { if (e.key === "Enter" && cel && zmienione) zapisz(cel); }}
+            className="mono"
+            style={{ flex: "1 1 180px", minWidth: 0, padding: "7px 10px", borderRadius: 7, fontSize: 13, border: "1px solid var(--border-soft)", background: "var(--surface-2)", color: "var(--text-hi)" }} />
+          <button onClick={() => zapisz(cel)} disabled={busy || !cel || !zmienione}
+            style={{
+              padding: "7px 14px", borderRadius: 7, fontSize: 12, fontWeight: 600,
+              background: cel && zmienione ? "var(--accent)" : "var(--surface-2)",
+              border: `1px solid ${cel && zmienione ? "var(--accent)" : "var(--border-soft)"}`,
+              color: cel && zmienione ? "#fff" : "var(--text-disabled)", cursor: busy || !cel || !zmienione ? "not-allowed" : "pointer",
+            }}>
+            {busy ? "Zapisuję…" : "Powiąż"}
+          </button>
+          {product.cena_z_sku && (
+            <button onClick={() => zapisz(null)} disabled={busy}
+              style={{ padding: "7px 14px", borderRadius: 7, fontSize: 12, fontWeight: 600, background: "var(--surface-2)", border: "1px solid var(--border-soft)", color: "var(--text-mid)", cursor: busy ? "not-allowed" : "pointer" }}>
+              Zdejmij powiązanie
+            </button>
+          )}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 // ── Zmiana SKU sampla: WYŁĄCZNIE super-admin ─────────────────
 // Sample dodaje się ręcznie, zanim towar trafi do Subiekta/Sellasista. Gdy tam dostanie inny
 // symbol, trzeba go tu przepisać — inaczej stany i sprzedaż nigdy się z nim nie połączą.
@@ -1259,7 +1323,9 @@ export function AttributesCard({
                 value={draft.cena}
                 placeholder={product.purchase_price ? String(product.purchase_price) : "z Subiektu"}
                 onChange={(e) => setDraft({ ...draft, cena: e.target.value })}
-                title="Puste = cena z Fakturowni (Acti/Veluxa) albo Subiektu (AMH). Wpisana wartość nadpisuje (PLN netto)."
+                title={product.cena_z_sku
+                  ? `Puste = cena z ${product.cena_z_sku}. Wpisana wartość nadpisuje (PLN netto).`
+                  : "Puste = cena z Fakturowni (Acti/Veluxa) albo Subiektu (AMH). Wpisana wartość nadpisuje (PLN netto)."}
                 style={{ padding: "4px 8px", fontSize: 12, background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: 5, color: "var(--text-hi)", outline: "none", width: 120, textAlign: "right" }}
               />
               <span style={{ fontSize: 11, color: "var(--text-lo)", minWidth: 22 }}>zł</span>
@@ -1270,6 +1336,7 @@ export function AttributesCard({
               <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>
                 {product.cena_zakupu_manual != null && product.cena_zakupu_manual > 0
                   ? "(ręczna)"
+                  : product.price_source === "powiazany" ? `(z ${product.cena_z_sku})`
                   : product.price_source === "fakturownia" ? "(Fakturownia)"
                   : product.price_source === "subiekt" ? "(Subiekt)"
                   : ""}

@@ -36,7 +36,7 @@ import {
 } from "./products-ui";
 import {
   LogistykaKpi, Section, StockProjectionChart, buildProjection, ContainersSection,
-  AttributesCard, DimensionsCard, DeleteZone, RenameSkuZone, iconBtnHeader, fmtDay,
+  AttributesCard, DimensionsCard, DeleteZone, RenameSkuZone, CenaZSkuZone, iconBtnHeader, fmtDay,
   type ApiProjPoint, type Projection, type DeleteCheck,
 } from "./product-modal";
 import { ProductSalesTab } from "./finance";
@@ -631,6 +631,7 @@ export default function ProductPage({
               <AttributesCard product={product} manufacturers={manufacturers} firmy={firmy} editing={editingAttrs} setEditing={setEditingAttrs} onSaved={applyUpdate} onPhotosChanged={refreshProduct} />
               <DimensionsCard product={product} editing={editingLT} setEditing={setEditingLT} onSaved={applyUpdate} />
             </div>
+            {isSuper && <CenaZSkuZone key={product.cena_z_sku ?? ""} product={product} shop={shop} onSaved={applyUpdate} />}
             {delChk && onRenamed && <RenameSkuZone check={delChk} onRenamed={onRenamed} />}
             {delChk && (
               <DeleteZone

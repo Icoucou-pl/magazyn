@@ -350,6 +350,9 @@ async def lifespan(app: FastAPI):
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "name_override", "VARCHAR(255)")
         # Migracja: ręczna stawka VAT (%). NULL = stawka z ostatniej krajowej sprzedaży (Sellasist). Ręka wygrywa.
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "vat_manual", "NUMERIC(4,1)")
+        # Migracja: cena zakupu z innego SKU (ten sam towar pod dwoma symbolami, np. Szp3_szpital
+        # ↔ Szp3 — w Fakturowni jest tylko Szp3). NULL = własna cena. Ustawia superadmin.
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "cena_z_sku", "VARCHAR(255)")
 
         # Kontenery
         await conn.execute(text(f"""
