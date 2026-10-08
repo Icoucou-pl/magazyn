@@ -173,8 +173,10 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
 
   return (
     <Section title="Koszt zakupu / szt"
-      hint={`koszt jednostkowy z kontenerów · stan ${data.stan} szt`
-        + (data.przyszle_szt ? ` (w tym ${data.przyszle_szt} szt w drodze z przyszłą datą wejścia — poza wyliczeniem)` : "")
+      // Stan z rachunku obejmuje też sztuki wbite do „w drodze” z przyszłą datą wejścia —
+      // rozdzielamy je, żeby liczba zgadzała się ze „Stanem dostępnym” na górze karty.
+      hint={`koszt jednostkowy z kontenerów · na stanie ${Math.max(0, data.stan - (data.przyszle_szt || 0))} szt`
+        + (data.przyszle_szt ? ` · w drodze ${data.przyszle_szt} szt (jeszcze niewliczone)` : "")
         + (data.shop ? ` · firma ${data.shop.toUpperCase()}` : "")}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
         <div style={{ borderRadius: 10, boxShadow: "0 0 0 1px color-mix(in oklch, var(--accent) 40%, transparent)" }}>
