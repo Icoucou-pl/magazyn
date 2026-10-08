@@ -610,6 +610,62 @@ export function DeleteZone({ check, onContainerClick, onClose, onDeleted }: {
   );
 }
 
+// ── Zmiana SKU sampla: WYŁĄCZNIE super-admin ─────────────────
+// Sample dodaje się ręcznie, zanim towar trafi do Subiekta/Sellasista. Gdy tam dostanie inny
+// symbol, trzeba go tu przepisać — inaczej stany i sprzedaż nigdy się z nim nie połączą.
+// Ten sam warunek co przy usuwaniu: SKU żyje tylko w aplikacji (kontenery nie przeszkadzają —
+// przepisują się razem z resztą).
+export function RenameSkuZone({ check, onRenamed }: { check: DeleteCheck; onRenamed: (sku: string) => void }) {
+  const [nowe, setNowe] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (check.external_sources.length > 0 || !check.exists_in_app) return null;
+
+  const cel = nowe.trim();
+  const mozna = Boolean(cel) && cel !== check.sku && !busy;
+
+  const zmien = async () => {
+    if (!mozna) return;
+    if (!window.confirm(`Zmienić SKU ${check.sku} na ${cel}? Przepisze się wszędzie: dane produktu, kontenery, zdjęcia i ceny.`)) return;
+    setBusy(true);
+    try {
+      const r = (await api.post(`/products/${encodeURIComponent(check.sku)}/zmien-sku`, { nowe_sku: cel })) as { sku: string };
+      toast(`SKU zmienione: ${check.sku} → ${r.sku}`, "ok");
+      onRenamed(r.sku);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Nie udało się zmienić SKU", "warning");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="Zmiana SKU" hint="tylko super-admin">
+      <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ fontSize: 12.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
+          Wpisz SKU dokładnie takie, jakie towar ma (albo dostanie) w Subiekcie i Sellasiście.
+          Zmiana obejmie wszystko w aplikacji: dane produktu, kontenery, zdjęcia, ceny.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="mono" style={{ fontSize: 13, color: "var(--text-lo)" }}>{check.sku} →</span>
+          <input value={nowe} onChange={(e) => setNowe(e.target.value)} placeholder="nowe SKU" maxLength={120}
+            onKeyDown={(e) => { if (e.key === "Enter") zmien(); }}
+            className="mono"
+            style={{ flex: "1 1 180px", minWidth: 0, padding: "7px 10px", borderRadius: 7, fontSize: 13, border: "1px solid var(--border-soft)", background: "var(--surface-2)", color: "var(--text-hi)" }} />
+          <button onClick={zmien} disabled={!mozna}
+            style={{
+              padding: "7px 14px", borderRadius: 7, fontSize: 12, fontWeight: 600,
+              background: mozna ? "var(--accent)" : "var(--surface-2)",
+              border: `1px solid ${mozna ? "var(--accent)" : "var(--border-soft)"}`,
+              color: mozna ? "#fff" : "var(--text-disabled)", cursor: mozna ? "pointer" : "not-allowed",
+            }}>
+            {busy ? "Zmieniam…" : "Zmień SKU"}
+          </button>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 // ── Metric box ───────────────────────────────────────────────
 export function MetricBox({ label, value, sub, tone = "neutral", dot }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: "neutral" | "critical" | "warning" | "info" | "ok"; dot?: string }) {
   const color = { neutral: "var(--text-hi)", critical: "var(--critical)", warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)" }[tone];

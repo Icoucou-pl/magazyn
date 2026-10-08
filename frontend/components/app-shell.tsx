@@ -562,6 +562,7 @@ export default function AppShell() {
                 onContainerClick={goContainers}
                 onUpdated={setLastUpdated}
                 onDeleted={() => { setProductsReload((n) => n + 1); router.replace(pathForView("products")); }}
+                onRenamed={(nowe: string) => { setProductsReload((n) => n + 1); router.replace(`${pathForProduct(nowe)}?tab=dane`); }}
                 trail={sznurek}
                 onCrumb={onCrumb}
                 onManufacturerClick={openManufacturerPage}

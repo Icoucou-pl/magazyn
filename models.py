@@ -287,6 +287,12 @@ class ManualNewUpdate(BaseModel):
     until: Optional[date] = None
 
 
+class SkuZmiana(BaseModel):
+    """Zmiana SKU produktu żyjącego tylko w aplikacji (ręczny sample) — np. gdy w Subiekcie
+    i Sellasiście towar dostanie inny symbol niż wpisany przy samplu."""
+    nowe_sku: str = Field(..., min_length=1, max_length=120)
+
+
 class SampleCreate(BaseModel):
     """Nowy sample — SKU, którego nie ma ani w Subiekcie, ani w Sellasiście.
     Tworzy wiersz w app_product_attrs z is_sample=TRUE; katalog (SALES_QUERY, pri 4)
