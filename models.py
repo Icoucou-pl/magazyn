@@ -153,7 +153,8 @@ class ProductSummary(BaseModel):
     stock_value: float
     purchase_price: float = 0  # cena zakupu efektywna (ręczna override, inaczej Subiekt)
     cena_zakupu_manual: Optional[float] = None  # ręczny override PLN netto (None = brak, jedzie z Subiektu)
-    price_source: Optional[str] = None          # "manual" | "fakturownia" | "subiekt" — skąd realnie przyszła cena
+    price_source: Optional[str] = None          # "manual" | "powiazany" | "fakturownia" | "subiekt" — skąd realnie przyszła cena
+    cena_z_sku: Optional[str] = None            # cena zakupu i koszt z tego SKU (ten sam towar pod innym symbolem)
     stock_in_transit: int
     stock_in_transit_wbite: int = 0          # zielone: wbite do subiektowego „w drodze"
     stock_in_transit_containers: int = 0     # czerwone: jeszcze w kontenerach (niewbite)
@@ -285,6 +286,12 @@ class ManualNewUpdate(BaseModel):
     """PUT /products/{sku}/new-until — nowość ustawiona ręcznie.
     Data końca w przyszłości = ustaw / zmień; None = zdejmij."""
     until: Optional[date] = None
+
+
+class CenaZSku(BaseModel):
+    """Powiązanie „cena z SKU": ten sam towar pod drugim symbolem (Szp3_szpital ↔ Szp3) bierze
+    cenę zakupu i koszt wzorca. Puste / None = zdjęcie powiązania."""
+    sku_wzorcowe: Optional[str] = Field(None, max_length=255)
 
 
 class SkuZmiana(BaseModel):
@@ -1296,6 +1303,7 @@ class KosztNaglowekOut(BaseModel):
 
 class CenaProduktuOut(BaseModel):
     sku: str
+    cena_z_sku: Optional[str] = None          # koszt liczony z dostaw tego SKU (ten sam towar, inny symbol)
     shop: str = ""
     stan: int = 0                             # magazyn główny + wbite do „w drodze"
     poza_dostawami: int = 0

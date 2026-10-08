@@ -44,7 +44,7 @@ type Zapisana = {
 };
 
 type CenaData = {
-  sku: string; shop: string; stan: number; poza_dostawami: number;
+  sku: string; cena_z_sku?: string | null; shop: string; stan: number; poza_dostawami: number;
   erp_zrodlo: "subiekt" | "fakturownia" | null; erp_cena: number | null;
   fifo: number | null; fifo_item_id: number | null;
   srednia: number | null; srednia_szt: number; srednia_pominieto_szt: number; przyszle_szt: number;
@@ -175,7 +175,7 @@ function Kafle({ data, poId }: { data: CenaData; poId: Map<number, Dostawa> }) {
     <Section title="Koszt zakupu / szt"
       // Stan z rachunku obejmuje też sztuki wbite do „w drodze” z przyszłą datą wejścia —
       // rozdzielamy je, żeby liczba zgadzała się ze „Stanem dostępnym” na górze karty.
-      hint={`koszt jednostkowy z kontenerów · na stanie ${Math.max(0, data.stan - (data.przyszle_szt || 0))} szt`
+      hint={`koszt jednostkowy z kontenerów${data.cena_z_sku ? ` SKU ${data.cena_z_sku} (ten sam towar)` : ""} · na stanie ${Math.max(0, data.stan - (data.przyszle_szt || 0))} szt`
         + (data.przyszle_szt ? ` · w drodze ${data.przyszle_szt} szt (jeszcze niewliczone)` : "")
         + (data.shop ? ` · firma ${data.shop.toUpperCase()}` : "")}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>

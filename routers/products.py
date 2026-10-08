@@ -14,7 +14,7 @@ from config import settings
 from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
-    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, SkuZmiana, ManualNewUpdate, VatOut, VatUpdate,
+    StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, SkuZmiana, CenaZSku, ManualNewUpdate, VatOut, VatUpdate,
 )
 from security import get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
@@ -880,6 +880,67 @@ async def delete_product(sku: str, db: AsyncSession = Depends(get_db), user: Cur
     )
     return {"sku": sku, "deleted": deleted}
 
+
+# ============================================================
+# Cena zakupu z innego SKU — WYŁĄCZNIE super-admin
+# ============================================================
+# Ten sam towar bywa sprzedawany pod dwoma symbolami (Szp3 i Szp3_szpital: dwie aukcje,
+# z Fakturowni schodzi to samo łóżko). Ceny z ERP są tylko pod jednym z nich, więc drugi
+# miał zero albo ręcznie przepisywaną cenę. Powiązanie każe drugiemu brać cenę zakupu
+# (sql.py: SALES_QUERY i prod_prices, routers/odprawy.py::_koszt_erp) oraz koszt FIFO
+# i średnią (routers/cena.py) od wzorca. Sprzedaż i prognoza zostają osobno — świadomie.
+# Bez łańcuchów: wzorzec sam nie może mieć wzorca, a SKU będące wzorcem — dostać go.
+@router.put("/products/{sku:path}/cena-z-sku", response_model=ProductSummary)
+async def set_cena_z_sku(sku: str, payload: CenaZSku, shop: str = Query(""),
+                         db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_super_admin)):
+    sku = await _sku_atrybutow(db, sku)
+    wzor = (payload.sku_wzorcowe or "").strip() or None
+    przed = (await db.execute(
+        text(f"SELECT cena_z_sku, cena_zakupu FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku},
+    )).first()
+
+    if wzor:
+        if wzor.lower() == sku.strip().lower():
+            raise HTTPException(400, "Produkt nie może brać ceny sam od siebie")
+        if not await _found_in(db, wzor, _DELETE_EXTERNAL_SOURCES):
+            raise HTTPException(404, f"{wzor} nie ma w Subiekcie, Sellasiście ani Fakturowni — sprawdź pisownię")
+        r = await db.execute(text(f"""
+            SELECT sku, cena_z_sku FROM {settings.TABLE_PRODUCT_ATTRS}
+             WHERE (LOWER(TRIM(sku)) = LOWER(TRIM(:wzor)) AND NULLIF(TRIM(cena_z_sku), '') IS NOT NULL)
+                OR LOWER(TRIM(cena_z_sku)) = LOWER(TRIM(:sku))
+             LIMIT 1
+        """), {"wzor": wzor, "sku": sku})
+        konflikt = r.first()
+        if konflikt:
+            if konflikt.sku.strip().lower() == wzor.lower():
+                if konflikt.cena_z_sku.strip().lower() == sku.strip().lower():
+                    raise HTTPException(409, f"{wzor} już bierze cenę z {sku} — powiązanie w drugą stronę nie ma sensu")
+                raise HTTPException(409, f"{wzor} sam bierze cenę z {konflikt.cena_z_sku} — wskaż od razu {konflikt.cena_z_sku}")
+            raise HTTPException(409, f"{sku} jest wzorcem ceny dla {konflikt.sku} — nie może brać ceny z innego SKU")
+
+    # Ustawienie powiązania kasuje własną ręczną cenę: ręczna stoi w łańcuchu na szczycie,
+    # więc inaczej dalej by wygrywała, a po to jest powiązanie, żeby jej nie przepisywać.
+    await db.execute(
+        text(f"""
+            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, cena_z_sku, updated_at)
+            VALUES (:sku, :wzor, CURRENT_TIMESTAMP)
+            ON CONFLICT (sku) DO UPDATE SET
+                cena_z_sku = EXCLUDED.cena_z_sku,
+                cena_zakupu = CASE WHEN EXCLUDED.cena_z_sku IS NULL
+                                   THEN {settings.TABLE_PRODUCT_ATTRS}.cena_zakupu ELSE NULL END,
+                updated_at = CURRENT_TIMESTAMP
+        """),
+        {"sku": sku, "wzor": wzor},
+    )
+    await db.commit()
+
+    zmiany = [{"pole": "Cena zakupu z SKU", "bylo": (przed.cena_z_sku if przed else None) or "—", "jest": wzor or "—"}]
+    if wzor and przed is not None and przed.cena_zakupu:
+        zmiany.append({"pole": "Cena zakupu (ręczna)", "bylo": f_zl(przed.cena_zakupu), "jest": "—"})
+    audit.note(f"powiązał cenę zakupu {sku} z {wzor}" if wzor else f"zdjął powiązanie ceny zakupu {sku}",
+               changes=zmiany, resource_id=sku)
+    shop = resolve_shop(shop, user)
+    return _mask_financials([await get_product(db, sku, shop, allowed=allowed_shops(user))], user)[0]
 
 # ============================================================
 # Zmiana SKU sampla — WYŁĄCZNIE super-admin

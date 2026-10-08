@@ -77,8 +77,10 @@ def lista(monkeypatch):
     from services.cena import Dostawa
 
     async def produkty(db, include, shop):
-        return [SimpleNamespace(sku="SZP3", stock=154, stock_in_transit_wbite=0),
-                SimpleNamespace(sku="BEZ", stock=5, stock_in_transit_wbite=0)]
+        return [SimpleNamespace(sku="SZP3", stock=154, stock_in_transit_wbite=0, cena_z_sku=None),
+                SimpleNamespace(sku="BEZ", stock=5, stock_in_transit_wbite=0, cena_z_sku=None),
+                # ten sam towar pod drugim symbolem — bez własnych kontenerów i stanu w ERP
+                SimpleNamespace(sku="SZP3_szpital", stock=0, stock_in_transit_wbite=0, cena_z_sku="Szp3")]
 
     async def vaty(db, shop):
         return {"szp3": 8.0}
@@ -109,10 +111,13 @@ def test_lista_liczy_fifo_i_srednia_jak_karta(lista):
     assert po_sku["SZP3"] == {"sku": "SZP3", "vat": 8.0, "fifo": 1814.48,
                               "srednia": round((84 * 1879.62 + 70 * 1814.48) / 154, 2)}
     assert po_sku["BEZ"] == {"sku": "BEZ", "vat": 23.0, "fifo": None, "srednia": None}
+    # Powiązanie „cena z SKU": koszt wzorca (jego dostawy i jego stan), VAT własny
+    assert (po_sku["SZP3_szpital"]["fifo"], po_sku["SZP3_szpital"]["srednia"]) == (
+        po_sku["SZP3"]["fifo"], po_sku["SZP3"]["srednia"])
 
 
 def test_lista_bez_uprawnien_daje_sam_vat(lista):
     r = lista(BEZ_FINANSOW).get("/api/cena/lista")
     assert r.status_code == 200
     assert {x["sku"]: (x["vat"], x["fifo"], x["srednia"]) for x in r.json()} == {
-        "SZP3": (8.0, None, None), "BEZ": (23.0, None, None)}
+        "SZP3": (8.0, None, None), "BEZ": (23.0, None, None), "SZP3_szpital": (23.0, None, None)}
