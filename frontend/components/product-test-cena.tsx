@@ -2,8 +2,8 @@
 // ============================================================
 // MAGAZYN — zakładka „test-cena” na pełnej karcie produktu (dla zespołu).
 //
-// Same wyniki, bez wyliczeń: ceny minimalne (detal, hurt/dropy), ceny sugerowane, średnie
-// ceny sprzedaży z 30 dni, alarm „sprzedaż poniżej minimum”, konkurencja na pasku cen.
+// Same wyniki, bez wyliczeń: ceny minimalne (detal, hurt/dropy), ceny sugerowane,
+// alarm „sprzedaż poniżej minimum”, konkurencja na pasku cen.
 // Koszt zakupu — tylko z ceną zakupu (serwer i tak go nie odda bez uprawnienia).
 // Kalkulator handlowca — ptaszek „Kalkulator handlowca” (+ cena zakupu): handlowiec wpisuje
 // swoją cenę netto i widzi swoją prowizję i zysk firmy, z kolorem względem ceny minimalnej hurt.
@@ -107,7 +107,8 @@ function AlarmPonizej({ data }: { data: CenyProduktu }) {
 
 // ── Kafle cen ────────────────────────────────────────────────
 function Ceny({ data }: { data: CenyProduktu }) {
-  const d = data.detal, h = data.hurt;
+  // Średnich cen sprzedaży tu celowo nie ma (decyzja właściciela) — dane z 30 dni zostają
+  // w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
   return (
     <Section title="Ceny" hint="same wyniki · ceny minimalne ustawia admin w zakładce „test-wycena”">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
@@ -121,10 +122,6 @@ function Ceny({ data }: { data: CenyProduktu }) {
         {data.sugerowana_dropy_netto != null && (
           <MetricBox label="Cena sugerowana · hurt / dropy" value={zl(data.sugerowana_dropy_netto)} sub="netto" />
         )}
-        <MetricBox label={`Średnia sprzedaż detal · ${data.okres_dni} dni`} value={zl(d.srednia_brutto)}
-          sub={d.szt ? `brutto · ${d.szt.toLocaleString("pl-PL")} szt${d.srednia_netto != null ? ` · ${zl2(d.srednia_netto)} zł netto` : ""}` : (d.ostatnia_data ? `ostatnia sprzedaż ${fmtDay(d.ostatnia_data)}` : "brak sprzedaży")} />
-        <MetricBox label={`Średnia sprzedaż hurt · ${data.okres_dni} dni`} value={zl(h.srednia_netto)}
-          sub={h.szt ? `netto · ${h.szt.toLocaleString("pl-PL")} szt` : (h.ostatnia_data ? `ostatnia sprzedaż ${fmtDay(h.ostatnia_data)}` : "brak sprzedaży")} />
       </div>
     </Section>
   );
