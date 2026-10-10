@@ -4,7 +4,8 @@
   · „test-wycena” i wszystkie zapisy — jak zakładka „Cena” (viewProductPrice + viewFinancials,
     zapis: editProductPrice),
   · kalkulator handlowca — useSalesCalculator ORAZ cena zakupu,
-  · link do konkurencji tylko http(s).
+  · link do konkurencji tylko http(s),
+  · NA CZAS TESTÓW wszystko tylko dla superadmina — zwykły admin dostaje 403.
 
 Uruchomienie:  python3 -m pytest tests/test_wycena_api.py -q
 """
@@ -20,6 +21,7 @@ for k, v in {"DB_HOST": "x", "DB_USER": "x", "DB_PASSWORD": "x", "DB_NAME": "x",
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from config import settings  # noqa: E402
 from database import get_db  # noqa: E402
 from main import app  # noqa: E402
 from models import CurrentUser, KonkurencjaIn  # noqa: E402
@@ -31,14 +33,19 @@ class _Baza:
         raise AssertionError("Bez uprawnień nie wolno nawet zajrzeć do bazy")
 
 
+SZEF = "szef@firma.pl"
+
+
 @pytest.fixture
-def klient():
+def klient(monkeypatch):
+    monkeypatch.setattr(settings, "SUPER_ADMIN_EMAIL", SZEF)
+
     async def db():
         yield _Baza()
     app.dependency_overrides[get_db] = db
 
-    def jako(role="VIEWER", perms=None):
-        app.dependency_overrides[get_current_user] = lambda: CurrentUser(id=1, email="x@firma.pl", role=role, perms=perms)
+    def jako(role="VIEWER", perms=None, email="x@firma.pl"):
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(id=1, email=email, role=role, perms=perms)
         return TestClient(app)
     yield jako
     app.dependency_overrides.clear()
@@ -59,8 +66,8 @@ SZABLON = {"nazwa": "X", "marza": 20, "koszty": []}
     ("put", "/api/wycena/szablony/1", SZABLON),
     ("delete", "/api/wycena/szablony/1", None),
 ])
-@pytest.mark.parametrize("role", ["VIEWER", "IMPORT"])
-def test_domyslnie_tylko_admin(klient, metoda, adres, body, role):
+@pytest.mark.parametrize("role", ["VIEWER", "IMPORT", "ADMIN"])
+def test_na_czas_testow_tylko_superadmin(klient, metoda, adres, body, role):
     kw = {"json": body} if body is not None else {}
     assert getattr(klient(role), metoda)(adres, **kw).status_code == 403
 
@@ -116,3 +123,9 @@ def test_uprawnienia_zgodne_z_frontem():
         linia = re.search(rf"^\s*{rola}:\s*\{{(.*)\}},?\s*$", js, re.M).group(1)
         front = {k: v == "true" for k, v in re.findall(r"(\w+):\s*(true|false)", linia)}
         assert front == perms, f"Rola {rola}: security.py i permissions.js się różnią"
+
+
+def test_superadmin_przechodzi_przez_bramke(klient):
+    # Zły link odrzuca walidacja (422), a nie bramka (403) — superadmin jest wpuszczony.
+    r = klient("ADMIN", email=SZEF).post("/api/wycena/konkurencja", json={**KONK, "link": "javascript:alert(1)"})
+    assert r.status_code == 422

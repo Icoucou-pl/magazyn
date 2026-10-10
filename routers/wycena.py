@@ -1,6 +1,7 @@
 """Zakładki „test-wycena” i „test-cena” na pełnej karcie produktu.
 
-Na razie obok istniejącej zakładki „Cena” (nic w niej nie zmieniamy) — właściciel testuje,
+Na razie obok istniejącej zakładki „Cena” (nic w niej nie zmieniamy) i TYLKO dla superadmina
+(zależność na całym routerze) — właściciel testuje,
 potem „test-wycena” zastąpi „Cenę”, a „test-cena” zostanie zakładką dla zespołu.
 
   GET    /api/ceny-produktu?sku=…&shop=…   „test-cena”: same wyniki dla zespołu (viewPriceSummary)
@@ -41,13 +42,16 @@ from routers.cena import _policz, _zapisane
 from security import (
     allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_purchase_price,
     has_perm, require_price_summary_view, require_product_price_edit, require_product_price_view,
-    resolve_shop,
+    require_super_admin_403, resolve_shop,
 )
 from services.cena import vat_produktu
 from services.products import get_product
 from services.wycena import BladWyceny, Koszt, wylicz_wycene
 
-router = APIRouter(prefix="/api", tags=["wycena"])
+# Na czas testów obie zakładki i wszystkie ich endpointy widzi WYŁĄCZNIE superadmin (decyzja
+# właściciela). Uprawnienia niżej (viewPriceSummary, useSalesCalculator, Cena) zostają —
+# po testach wystarczy zdjąć tę jedną zależność, żeby zadziałały dla zespołu.
+router = APIRouter(prefix="/api", tags=["wycena"], dependencies=[Depends(require_super_admin_403)])
 
 T_MIN = "app_cena_minimalna"
 T_KONK = "app_konkurencja_ceny"
