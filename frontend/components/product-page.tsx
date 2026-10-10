@@ -17,6 +17,7 @@
 //   • Dane       — atrybuty, zdjęcia, wymiary; strefa usuwania dla super-admina
 //   • Cena       — koszt FIFO / średni z kontenerów, dostawy, kalkulator ceny sprzedaży
 //                  (canSeeProductPrice: viewProductPrice ORAZ viewFinancials)
+//   • test-cena / test-wycena — na czas testów TYLKO superadmin
 //   • test-cena  — wersja testowa zakładki dla zespołu: ceny minimalne, konkurencja, średnie
 //                  ceny sprzedaży, kalkulator handlowca (canSeePriceSummary)
 //   • test-wycena — wersja testowa następczyni „Ceny”: kalkulator z szablonami, ceny minimalne,
@@ -319,10 +320,11 @@ export default function ProductPage({
     if (historyAllowed && hasHistory) out.push("historia");
     out.push("dane");
     if (priceAllowed) out.push("cena");
-    if (priceSummaryAllowed) out.push("test-cena");
-    if (priceAllowed) out.push("test-wycena");
+    // Zakładki testowe: na czas testów tylko superadmin (serwer pilnuje tego samego w routers/wycena.py).
+    if (isSuper && priceSummaryAllowed) out.push("test-cena");
+    if (isSuper && priceAllowed) out.push("test-wycena");
     return out;
-  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed, priceSummaryAllowed]);
+  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed, priceSummaryAllowed, isSuper]);
 
   // Zakładka z linku, do której ktoś nie ma dostępu (albo historia, której
   // SKU nie ma) → Logistyka. Dla historii czekamy na odpowiedź sondy.
@@ -636,11 +638,11 @@ export default function ProductPage({
           />
         )}
 
-        {tab === "test-cena" && priceSummaryAllowed && (
+        {tab === "test-cena" && isSuper && priceSummaryAllowed && (
           <ProductTestCena sku={product.sku} shop={shop} />
         )}
 
-        {tab === "test-wycena" && priceAllowed && (
+        {tab === "test-wycena" && isSuper && priceAllowed && (
           <ProductTestWycena sku={product.sku} shop={shop} onOpenContainer={onOpenContainerPage} />
         )}
 
