@@ -17,6 +17,10 @@
 //   • Dane       — atrybuty, zdjęcia, wymiary; strefa usuwania dla super-admina
 //   • Cena       — koszt FIFO / średni z kontenerów, dostawy, kalkulator ceny sprzedaży
 //                  (canSeeProductPrice: viewProductPrice ORAZ viewFinancials)
+//   • test-cena  — wersja testowa zakładki dla zespołu: ceny minimalne, konkurencja, średnie
+//                  ceny sprzedaży, kalkulator handlowca (canSeePriceSummary)
+//   • test-wycena — wersja testowa następczyni „Ceny”: kalkulator z szablonami, ceny minimalne,
+//                  konkurencja + cała dotychczasowa „Cena” pod spodem (canSeeProductPrice)
 //
 // Klocki są WSPÓLNE z modalem (eksporty z product-modal.tsx i finance.tsx),
 // więc obie drogi pokazują te same liczby tak samo policzone.
@@ -45,15 +49,17 @@ import Breadcrumbs, { type Trail } from "./breadcrumbs";
 import { containerSlug } from "@/lib/routes";
 import LifecycleTabV2 from "./product-lifecycle-v2";
 import ProductPriceTab from "./product-price-tab";
+import ProductTestCena from "./product-test-cena";
+import ProductTestWycena from "./product-test-wycena";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { ProductThumb } from "./photo-hover";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
-import { can, canSeeProductHistory, canSeeProductPrice, canSeeProductSales, canSeePurchasePrice, useUser } from "@/lib/permissions";
+import { can, canSeePriceSummary, canSeeProductHistory, canSeeProductPrice, canSeeProductSales, canSeePurchasePrice, useUser } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
-export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "cena";
+export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "cena" | "test-cena" | "test-wycena";
 
 // Prognoza na pełnej karcie: 180 dni z modala + 90. Endpoint przyjmuje dowolne `days`.
 const HORYZONT_DNI = 270;
@@ -64,6 +70,8 @@ const TAB_LABELS: Record<ProductTab, string> = {
   historia: "Historia produktu",
   dane: "Dane",
   cena: "Cena",
+  "test-cena": "test-cena",
+  "test-wycena": "test-wycena",
 };
 
 function czytajTabZAdresu(): ProductTab | null {
@@ -106,6 +114,7 @@ export default function ProductPage({
   const canEditProducts = can(user, "editProducts");
   const salesAllowed = canSeeProductSales(user);
   const priceAllowed = canSeeProductPrice(user);
+  const priceSummaryAllowed = canSeePriceSummary(user);
   // Cena jednostkowa w nagłówku: finanse ALBO osobne „Cena zakupu produktu" —
   // są osoby, które mają znać koszt sztuki, ale nie przychody i marże.
   const showPrice = canSeePurchasePrice(user);
@@ -310,8 +319,10 @@ export default function ProductPage({
     if (historyAllowed && hasHistory) out.push("historia");
     out.push("dane");
     if (priceAllowed) out.push("cena");
+    if (priceSummaryAllowed) out.push("test-cena");
+    if (priceAllowed) out.push("test-wycena");
     return out;
-  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed]);
+  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed, priceSummaryAllowed]);
 
   // Zakładka z linku, do której ktoś nie ma dostępu (albo historia, której
   // SKU nie ma) → Logistyka. Dla historii czekamy na odpowiedź sondy.
@@ -623,6 +634,14 @@ export default function ProductPage({
             shop={shop}
             onOpenContainer={onOpenContainerPage}
           />
+        )}
+
+        {tab === "test-cena" && priceSummaryAllowed && (
+          <ProductTestCena sku={product.sku} shop={shop} />
+        )}
+
+        {tab === "test-wycena" && priceAllowed && (
+          <ProductTestWycena sku={product.sku} shop={shop} onOpenContainer={onOpenContainerPage} />
         )}
 
         {tab === "dane" && (

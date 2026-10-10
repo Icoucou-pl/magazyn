@@ -6,6 +6,7 @@ Przy zamknięciu zwalnia pulę połączeń.
 """
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
@@ -645,6 +646,73 @@ async def lifespan(app: FastAPI):
                 added_by   TEXT
             )
         """))
+
+        # Zakładki „test-wycena” / „test-cena” (routers/wycena.py). Obie tabele z danymi to
+        # DZIENNIKI, nie pola do nadpisania: każdy zapis to nowy wiersz, aktualny = najnowszy.
+        # Dzięki temu „kto ustawił i kiedy” oraz historia zmian są za darmo.
+        # Cena minimalna: detal (sklepy) i hurt (= dropy), netto + brutto z VAT z chwili zapisu,
+        # razem z kosztem, przy którym ją ustawiono — karta ostrzega, gdy koszt od tego czasu urósł.
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_cena_minimalna (
+                id          SERIAL PRIMARY KEY,
+                sku_canon   TEXT          NOT NULL,          -- LOWER(TRIM(sku))
+                sku         TEXT          NOT NULL,
+                kanal       TEXT          NOT NULL CHECK (kanal IN ('detal', 'hurt')),
+                cena_netto  NUMERIC(12,2) NOT NULL,
+                cena_brutto NUMERIC(12,2) NOT NULL,
+                vat         NUMERIC(5,2)  NOT NULL,
+                baza        TEXT          NOT NULL,          -- 'fifo' | 'srednia' | 'wlasna'
+                koszt_bazy  NUMERIC(12,2) NOT NULL,
+                marza       NUMERIC(7,2)  NOT NULL,
+                koszty      JSONB         NOT NULL DEFAULT '[]',
+                szablon     TEXT,
+                ustawil_id  INTEGER,
+                ustawil     TEXT,
+                ustawiono   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cena_minimalna_sku ON app_cena_minimalna (sku_canon, kanal, ustawiono DESC)"))
+        # Ceny u konkurencji: jeden aktywny wpis na sklep (najnowszy), starsze = historia.
+        # Usunięcie sklepu oznacza wszystkie jego wiersze (usunieto), nic nie kasujemy.
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_konkurencja_ceny (
+                id          SERIAL PRIMARY KEY,
+                sku_canon   TEXT          NOT NULL,
+                sku         TEXT          NOT NULL,
+                sklep       TEXT          NOT NULL,
+                sklep_canon TEXT          NOT NULL,          -- LOWER(TRIM(sklep)) — ten sam sklep inaczej wpisany
+                cena_brutto NUMERIC(12,2) NOT NULL,
+                link        TEXT,
+                dodal_id    INTEGER,
+                dodal       TEXT,
+                dodano      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+                usunieto    TIMESTAMPTZ,
+                usunal      TEXT
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_konkurencja_ceny_sku ON app_konkurencja_ceny (sku_canon)"))
+        # Szablony kalkulatora (wspólne dla wszystkich produktów): marża + lista kosztów „+”.
+        # cel = 'detal' / 'hurt' → przycisk „Ustaw jako cenę minimalną” podpowiada ten kanał.
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_wycena_szablony (
+                id         SERIAL PRIMARY KEY,
+                nazwa      VARCHAR(120)  NOT NULL,
+                cel        TEXT,
+                marza      NUMERIC(7,2)  NOT NULL DEFAULT 0,
+                koszty     JSONB         NOT NULL DEFAULT '[]',
+                kolejnosc  INTEGER       NOT NULL DEFAULT 0,
+                zmienil    TEXT,
+                zmieniono  TIMESTAMPTZ
+            )
+        """))
+        if not (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_szablony)"))).scalar():
+            from services.wycena import DOMYSLNE_SZABLONY
+            for i, s in enumerate(DOMYSLNE_SZABLONY):
+                await conn.execute(
+                    text("""INSERT INTO app_wycena_szablony (nazwa, cel, marza, koszty, kolejnosc)
+                            VALUES (:n, :c, :m, CAST(:k AS JSONB), :o)"""),
+                    {"n": s["nazwa"], "c": s["cel"], "m": s["marza"], "k": json.dumps(s["koszty"]), "o": i},
+                )
 
         # Tworzenie domyślnego admina jeśli ustawione w env i nie ma żadnego użytkownika
         if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:

@@ -206,6 +206,12 @@ TRASY = [
     ("PUT", rf"^/api/products/{_SKU}/new-until$", "Produkty", "zmienił nowość produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/lead-time$", "Produkty", "zmienił czas dostawy produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/cena$", "Ceny", "zapisał cenę produktu {sku}", "PRICE_SAVED", "product"),
+    ("PUT", r"^/api/wycena/cena-minimalna$", "Ceny", "ustawił cenę minimalną produktu", "MIN_PRICE_SAVED", "product"),
+    ("POST", r"^/api/wycena/konkurencja$", "Ceny", "wpisał cenę konkurencji", "COMPETITOR_PRICE_SAVED", "product"),
+    ("DELETE", rf"^/api/wycena/konkurencja/{_ID}$", "Ceny", "usunął sklep z cen konkurencji", "COMPETITOR_PRICE_DELETED", "product"),
+    ("POST", r"^/api/wycena/szablony$", "Ceny", "dodał szablon kalkulatora wyceny", "PRICE_TEMPLATE_SAVED", "wycena"),
+    ("PUT", rf"^/api/wycena/szablony/{_ID}$", "Ceny", "zmienił szablon kalkulatora wyceny #{id}", "PRICE_TEMPLATE_SAVED", "wycena"),
+    ("DELETE", rf"^/api/wycena/szablony/{_ID}$", "Ceny", "usunął szablon kalkulatora wyceny #{id}", "PRICE_TEMPLATE_DELETED", "wycena"),
     ("POST", rf"^/api/products/{_SKU}/photos$", "Produkty", "dodał zdjęcie produktu {sku}", "PHOTO_ADDED", "product"),
     ("POST", r"^/api/products/import$", "Produkty", "zaimportował atrybuty produktów z pliku", "PRODUCTS_IMPORTED", "product"),
     ("DELETE", rf"^/api/products/{_SKU}$", "Produkty", "usunął produkt {sku}", "PRODUCT_DELETED", "product"),
@@ -291,7 +297,7 @@ _OBSZAR_AKCJI = {
 # Stare wpisy middleware: resource_type = pierwszy człon ścieżki.
 _OBSZAR_TYPU = {
     "products": "Produkty", "samples": "Produkty", "product-photos": "Produkty", "cn-sku": "Produkty",
-    "product": "Produkty", "cena": "Ceny",
+    "product": "Produkty", "cena": "Ceny", "wycena": "Ceny",
     "containers": "Kontenery", "attachments": "Kontenery", "kontenery": "Odprawy", "odprawy": "Odprawy",
     "manufacturers": "Producenci", "container-types": "Ustawienia", "firmy": "Firmy",
     "users": "Użytkownicy", "user": "Użytkownicy", "auth": "Logowania",

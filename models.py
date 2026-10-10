@@ -1550,3 +1550,168 @@ class KursOut(BaseModel):
 
 class KodCnIn(BaseModel):
     kod_cn: Optional[str] = None              # puste = usuń kod
+
+
+# ===== WYCENA I CENY DLA ZESPOŁU (zakładki „test-wycena” / „test-cena”) =====
+class WycenaKoszt(BaseModel):
+    """Koszt „+” w kalkulatorze: w zł albo w % od ceny końcowej (netto albo brutto)."""
+    nazwa: str = Field("", max_length=100)
+    typ: Literal["zl", "proc"]
+    wartosc: float = Field(..., ge=0, le=1_000_000)
+    od: Literal["netto", "brutto"] = "brutto"
+
+
+class CenaMinimalnaOut(BaseModel):
+    id: int
+    kanal: str                                # 'detal' | 'hurt'
+    cena_netto: float
+    cena_brutto: float
+    vat: float
+    baza: str                                 # 'fifo' | 'srednia' | 'wlasna'
+    koszt_bazy: float
+    marza: float
+    koszty: List[WycenaKoszt] = []
+    szablon: Optional[str] = None
+    ustawil: Optional[str] = None
+    ustawiono: Optional[datetime] = None
+
+
+class CenaMinimalnaKrotkoOut(BaseModel):
+    """Cena minimalna dla zespołu — sam wynik, bez kosztu i marży, z których ją policzono."""
+    cena_netto: float
+    cena_brutto: float
+    ustawil: Optional[str] = None
+    ustawiono: Optional[datetime] = None
+
+
+class CenaMinimalnaIn(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=255)
+    shop: Optional[str] = None
+    kanal: Literal["detal", "hurt"]
+    baza: Literal["fifo", "srednia", "wlasna"]
+    koszt_wlasny: Optional[float] = Field(None, gt=0, lt=10_000_000)
+    marza: float = Field(..., ge=0, lt=100)
+    koszty: List[WycenaKoszt] = Field(default_factory=list, max_length=20)
+    szablon: Optional[str] = Field(None, max_length=120)
+
+
+class KonkurencjaHistoriaOut(BaseModel):
+    cena_brutto: float
+    dodal: Optional[str] = None
+    dodano: Optional[datetime] = None
+
+
+class KonkurencjaOut(BaseModel):
+    id: int
+    sklep: str
+    cena_brutto: float
+    link: Optional[str] = None
+    dodal: Optional[str] = None
+    dodano: Optional[datetime] = None
+    historia: List[KonkurencjaHistoriaOut] = []
+
+
+class KonkurencjaIn(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=255)
+    shop: Optional[str] = None
+    sklep: str = Field(..., min_length=1, max_length=120)
+    cena_brutto: float = Field(..., gt=0, lt=10_000_000)
+    link: Optional[str] = Field(None, max_length=1000)
+
+    @field_validator("sklep")
+    @classmethod
+    def _sklep(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("Podaj nazwę sklepu")
+        return v
+
+    @field_validator("link")
+    @classmethod
+    def _link(cls, v: Optional[str]) -> Optional[str]:
+        # Link trafia do href — tylko http(s), żeby nikt nie wkleił „javascript:”.
+        v = (v or "").strip()
+        if not v:
+            return None
+        if not v.lower().startswith(("http://", "https://")):
+            raise ValueError("Link musi zaczynać się od http:// albo https://")
+        return v
+
+
+class WycenaSzablonOut(BaseModel):
+    id: int
+    nazwa: str
+    cel: Optional[str] = None                 # 'detal' | 'hurt' | None
+    marza: float
+    koszty: List[WycenaKoszt] = []
+    zmienil: Optional[str] = None
+    zmieniono: Optional[datetime] = None
+
+
+class WycenaSzablonIn(BaseModel):
+    nazwa: str = Field(..., min_length=1, max_length=120)
+    cel: Optional[Literal["detal", "hurt"]] = None
+    marza: float = Field(..., ge=0, lt=100)
+    koszty: List[WycenaKoszt] = Field(default_factory=list, max_length=20)
+
+
+class WycenaOut(BaseModel):
+    """Zakładka „test-wycena”: koszty do kalkulatora, ceny minimalne z historią, konkurencja, szablony."""
+    sku: str
+    shop: str
+    vat: float
+    vat_zrodlo: str
+    fifo: Optional[float] = None
+    srednia: Optional[float] = None
+    ceny_min: List[CenaMinimalnaOut] = []     # od najnowszej; pierwsza danego kanału = aktualna
+    konkurencja: List[KonkurencjaOut] = []
+    szablony: List[WycenaSzablonOut] = []
+    moze_zapisac: bool = False
+
+
+class SprzedazPonizejOut(BaseModel):
+    data: Optional[date] = None
+    kanal: Optional[str] = None
+    cena: float                               # detal: brutto / szt, hurt: netto / szt
+    szt: float
+
+
+class SprzedazKanaluOut(BaseModel):
+    szt: float = 0
+    srednia_netto: Optional[float] = None
+    srednia_brutto: Optional[float] = None
+    ostatnia_data: Optional[date] = None
+    ponizej_od: Optional[datetime] = None     # od kiedy porównujemy (ustawienie ceny minimalnej)
+    ponizej_z: int = 0                        # ile sprzedaży od tamtej chwili
+    ponizej_ile: int = 0                      # ile z nich poniżej ceny minimalnej
+    ponizej: List[SprzedazPonizejOut] = []    # kilka najświeższych przykładów
+
+
+class KosztZespolOut(BaseModel):
+    """Koszt zakupu dla osób z ceną zakupu — bez rozpisania, tylko skąd."""
+    fifo: Optional[float] = None
+    fifo_kontener: Optional[str] = None
+    fifo_data: Optional[date] = None
+    srednia: Optional[float] = None
+    najblizsza: Optional[float] = None
+    najblizsza_kontener: Optional[str] = None
+    najblizsza_data: Optional[date] = None
+    najblizsza_szacunek: bool = False
+
+
+class CenyProduktuOut(BaseModel):
+    """Zakładka „test-cena”: same wyniki dla zespołu."""
+    sku: str
+    shop: str
+    vat: float
+    min_detal: Optional[CenaMinimalnaKrotkoOut] = None
+    min_hurt: Optional[CenaMinimalnaKrotkoOut] = None
+    sugerowana_sklepy_brutto: Optional[float] = None
+    sugerowana_dropy_netto: Optional[float] = None
+    okres_dni: int = 30
+    detal: SprzedazKanaluOut = SprzedazKanaluOut()
+    hurt: SprzedazKanaluOut = SprzedazKanaluOut()
+    konkurencja: List[KonkurencjaOut] = []
+    koszt: Optional[KosztZespolOut] = None    # tylko z ceną zakupu
+    kalkulator: bool = False                  # kalkulator handlowca dostępny
+    prowizja_tryb: Literal["A", "B"] = "B"    # A = % ceny netto, B = % zysku
