@@ -24,7 +24,7 @@ import {
   KONKURENCJA_STARA_DNI, dniTemu, num, proc1, wyliczWycene, zl2, type KosztPlus,
 } from "@/lib/wycena";
 import {
-  Box, Kafel, KosztyEdytor, LegendaKolorow, SiatkaCen, tintKlasa, type Tint, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
+  Box, Kafel, KosztyEdytor, SiatkaCen, KOLOR_KANALU, type KanalCeny, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
   noteInfo, noteWarn, pill, pusty, rozpisStyl, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji,
   type KosztEdycja,
 } from "./wycena-ui";
@@ -57,8 +57,10 @@ const KANAL_NAZWA: Record<Kanal, string> = {
   sug_allegro: "Cena sugerowana allegro",
 };
 // Każdą cenę pokazujemy głównie brutto, netto w opisie (decyzja właściciela).
-// Kolor kafla mówi, którego kanału dotyczy cena.
-const TINT: Record<Kanal, Tint> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", sug_allegro: "allegro" };
+// Kanał zdradza cienki pasek u góry karty (kolor jak kropki w tabelce „test-cena”).
+const KANAL_CENY: Record<Kanal, KanalCeny> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", sug_allegro: "allegro" };
+// Kropka przy nazwie: czerwona = minimalna, zielona = sugerowana (jak w nagłówku tabelki „test-cena”).
+const kropka = (k: Kanal) => (k === "detal" || k === "hurt" ? "var(--critical)" : "var(--ok)");
 const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
 
@@ -113,7 +115,6 @@ function ZapisaneCeny({ data }: { data: WycenaData }) {
       <SiatkaCen>
         {KANALY.map((k) => <KartaMin key={k} kanal={k} data={data} />)}
       </SiatkaCen>
-      <LegendaKolorow />
     </Box>
   );
 }
@@ -124,7 +125,7 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
   const historia = wszystkie.slice(1);
   if (!c) {
     return (
-      <div className={tintKlasa(TINT[kanal])} style={{ ...kartaStyl, background: undefined, border: undefined, alignItems: "center", justifyContent: "center", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
+      <div style={{ ...kartaStyl, background: "var(--bg)", alignItems: "center", justifyContent: "center", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
         <b style={{ color: "var(--text-mid)" }}>{KANAL_NAZWA[kanal]}</b>
         Jeszcze nie zapisana. Wybierz ją w kalkulatorze poniżej i kliknij „Zapisz cenę”.
       </div>
@@ -134,9 +135,11 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
   const teraz = c.baza === "srednia" ? data.srednia : data.fifo;
   const zmiana = teraz != null && c.koszt_bazy ? (teraz / c.koszt_bazy - 1) * 100 : null;
   return (
-    <div className={tintKlasa(TINT[kanal])} style={{ ...kartaStyl, background: undefined, border: undefined }}>
+    <div style={{ ...kartaStyl, background: "var(--bg)", borderTop: `3px solid ${KOLOR_KANALU[KANAL_CENY[kanal]]}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>
-        <span>{KANAL_NAZWA[kanal]}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 99, background: kropka(kanal) }} />{KANAL_NAZWA[kanal]}
+        </span>
         <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 500 }}>{c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}</span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
