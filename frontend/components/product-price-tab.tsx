@@ -88,9 +88,11 @@ function wylicz(kosztBazy: number, tryb: Tryb, proc: number, wysylka: number, pr
   };
 }
 
-export default function ProductPriceTab({ sku, shop, onOpenContainer }: {
+export default function ProductPriceTab({ sku, shop, onOpenContainer, bezKalkulatora = false }: {
   sku: string;
   shop: string;
+  /** Zakładka „test-wycena” ma własny kalkulator z listą wyboru — tu wtedy tylko koszty i dostawy. */
+  bezKalkulatora?: boolean;
   /** Klik w kontener → pełna karta kontenera (klucz z containerSlug). */
   onOpenContainer?: (key: string) => void;
 }) {
@@ -141,7 +143,7 @@ export default function ProductPriceTab({ sku, shop, onOpenContainer }: {
       <Kafle data={data} poId={poId} />
       <Ostrzezenia data={data} onOpen={otworz} />
       <Dostawy data={data} onOpen={onOpenContainer ? otworz : undefined} />
-      <Section title="Sugerowana cena sprzedaży" hint="kalkulator liczy na żywo · „Zapisz cenę” zostawia ją na tej karcie">
+      {!bezKalkulatora && <Section title="Sugerowana cena sprzedaży" hint="kalkulator liczy na żywo · „Zapisz cenę” zostawia ją na tej karcie">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 430px), 1fr))", gap: 12 }}>
           {(["sklepy", "dropy"] as Kanal[]).map((k) => (
             <Kalkulator key={`${data.sku}-${k}`} sku={data.sku} shop={shop} kanal={k} bazy={bazy}
@@ -150,7 +152,7 @@ export default function ProductPriceTab({ sku, shop, onOpenContainer }: {
               vat={data.vat} vatZrodlo={data.vat_zrodlo} />
           ))}
         </div>
-      </Section>
+      </Section>}
     </>
   );
 }

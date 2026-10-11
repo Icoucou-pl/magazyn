@@ -1563,7 +1563,7 @@ class WycenaKoszt(BaseModel):
 
 class CenaMinimalnaOut(BaseModel):
     id: int
-    kanal: str                                # 'detal' | 'hurt'
+    kanal: str                                # services/wycena.py → KANALY
     cena_netto: float
     cena_brutto: float
     vat: float
@@ -1584,10 +1584,14 @@ class CenaMinimalnaKrotkoOut(BaseModel):
     ustawiono: Optional[datetime] = None
 
 
+KanalWyceny = Literal["detal", "hurt", "sug_detal", "sug_hurt", "sug_allegro"]
+
+
 class CenaMinimalnaIn(BaseModel):
+    """Zapis ceny z kalkulatora wyceny: minimalna albo sugerowana (kanal)."""
     sku: str = Field(..., min_length=1, max_length=255)
     shop: Optional[str] = None
-    kanal: Literal["detal", "hurt"]
+    kanal: KanalWyceny
     baza: Literal["fifo", "srednia", "wlasna"]
     koszt_wlasny: Optional[float] = Field(None, gt=0, lt=10_000_000)
     marza: float = Field(..., ge=0, lt=100)
@@ -1641,7 +1645,7 @@ class KonkurencjaIn(BaseModel):
 class WycenaSzablonOut(BaseModel):
     id: int
     nazwa: str
-    cel: Optional[str] = None                 # 'detal' | 'hurt' | None
+    cel: Optional[str] = None                 # kanal z KANALY albo None
     marza: float
     koszty: List[WycenaKoszt] = []
     zmienil: Optional[str] = None
@@ -1650,7 +1654,7 @@ class WycenaSzablonOut(BaseModel):
 
 class WycenaSzablonIn(BaseModel):
     nazwa: str = Field(..., min_length=1, max_length=120)
-    cel: Optional[Literal["detal", "hurt"]] = None
+    cel: Optional[KanalWyceny] = None
     marza: float = Field(..., ge=0, lt=100)
     koszty: List[WycenaKoszt] = Field(default_factory=list, max_length=20)
 
@@ -1663,7 +1667,7 @@ class WycenaOut(BaseModel):
     vat_zrodlo: str
     fifo: Optional[float] = None
     srednia: Optional[float] = None
-    ceny_min: List[CenaMinimalnaOut] = []     # od najnowszej; pierwsza danego kanału = aktualna
+    ceny_min: List[CenaMinimalnaOut] = []     # minimalne i sugerowane, od najnowszej; pierwsza danego kanału = aktualna
     konkurencja: List[KonkurencjaOut] = []
     szablony: List[WycenaSzablonOut] = []
     moze_zapisac: bool = False
@@ -1706,8 +1710,9 @@ class CenyProduktuOut(BaseModel):
     vat: float
     min_detal: Optional[CenaMinimalnaKrotkoOut] = None
     min_hurt: Optional[CenaMinimalnaKrotkoOut] = None
-    sugerowana_sklepy_brutto: Optional[float] = None
-    sugerowana_dropy_netto: Optional[float] = None
+    sugerowana_sklepy_brutto: Optional[float] = None   # cena sugerowana detal
+    sugerowana_dropy_netto: Optional[float] = None     # cena sugerowana dropy/hurt
+    sugerowana_allegro_brutto: Optional[float] = None
     okres_dni: int = 30
     detal: SprzedazKanaluOut = SprzedazKanaluOut()
     hurt: SprzedazKanaluOut = SprzedazKanaluOut()

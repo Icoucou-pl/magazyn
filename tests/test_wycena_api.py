@@ -59,7 +59,7 @@ SZABLON = {"nazwa": "X", "marza": 20, "koszty": []}
 @pytest.mark.parametrize("metoda,adres,body", [
     ("get", "/api/ceny-produktu?sku=ABC", None),
     ("get", "/api/wycena?sku=ABC", None),
-    ("put", "/api/wycena/cena-minimalna", MIN),
+    ("put", "/api/wycena/cena", MIN),
     ("post", "/api/wycena/konkurencja", KONK),
     ("delete", "/api/wycena/konkurencja/1", None),
     ("post", "/api/wycena/szablony", SZABLON),
@@ -74,7 +74,7 @@ def test_na_czas_testow_tylko_superadmin(klient, metoda, adres, body, role):
 
 @pytest.mark.parametrize("metoda,adres,body", [
     ("get", "/api/wycena?sku=ABC", None),
-    ("put", "/api/wycena/cena-minimalna", MIN),
+    ("put", "/api/wycena/cena", MIN),
     ("post", "/api/wycena/konkurencja", KONK),
 ])
 def test_ptaszek_test_ceny_nie_otwiera_wyceny(klient, metoda, adres, body):

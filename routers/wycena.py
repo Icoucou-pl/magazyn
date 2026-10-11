@@ -7,7 +7,8 @@ potem „test-wycena” zastąpi „Cenę”, a „test-cena” zostanie zakład
   GET    /api/ceny-produktu?sku=…&shop=…   „test-cena”: same wyniki dla zespołu (viewPriceSummary)
   GET    /api/wycena?sku=…&shop=…          „test-wycena”: koszty, ceny minimalne z historią,
                                             konkurencja, szablony (jak zakładka „Cena”)
-  PUT    /api/wycena/cena-minimalna         ustawienie ceny minimalnej (detal / hurt)
+  PUT    /api/wycena/cena                   zapis ceny z kalkulatora: minimalna albo sugerowana
+                                            (detal, dropy/hurt, allegro — services/wycena.py → KANALY)
   POST   /api/wycena/konkurencja            cena u konkurencji (ten sam sklep = nowa cena, stara do historii)
   DELETE /api/wycena/konkurencja/{id}       usunięcie sklepu z listy
   POST   /api/wycena/szablony               nowy szablon kalkulatora
@@ -46,7 +47,7 @@ from security import (
 )
 from services.cena import vat_produktu
 from services.products import get_product
-from services.wycena import BladWyceny, Koszt, wylicz_wycene
+from services.wycena import KANAL_NAZWA, KANALY_BRUTTO, BladWyceny, Koszt, wylicz_wycene
 
 # Na czas testów obie zakładki i wszystkie ich endpointy widzi WYŁĄCZNIE superadmin (decyzja
 # właściciela). Uprawnienia niżej (viewPriceSummary, useSalesCalculator, Cena) zostają —
@@ -60,7 +61,6 @@ T_SZABLONY = "app_wycena_szablony"
 OKRES_DNI = 30            # średnie ceny sprzedaży: ostatnie 30 dni
 MAX_WSTECZ_DNI = 365      # porównanie z ceną minimalną: najdalej rok wstecz
 PRZYKLADOW = 5            # ile sprzedaży poniżej minimum pokazujemy z nazwy
-KANAL_NAZWA = {"detal": "detal", "hurt": "hurt / dropy"}
 
 
 def _kto(user: CurrentUser) -> str:
@@ -237,14 +237,18 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
     md, mh = _aktualna(ceny, "detal"), _aktualna(ceny, "hurt")
     krotko = lambda c: CenaMinimalnaKrotkoOut(cena_netto=c.cena_netto, cena_brutto=c.cena_brutto,  # noqa: E731
                                               ustawil=c.ustawil, ustawiono=c.ustawiono) if c else None
-    zapisane = {z.kanal: z for z in await _zapisane(db, p.sku)}
+    # Ceny sugerowane: z kalkulatora wyceny, a dopóki tam ich nie ma — zapisane starą zakładką „Cena”.
+    stare = {z.kanal: z for z in await _zapisane(db, p.sku)}
+    sd, sh, sa = _aktualna(ceny, "sug_detal"), _aktualna(ceny, "sug_hurt"), _aktualna(ceny, "sug_allegro")
+    sug_detal = sd.cena_brutto if sd else (stare["sklepy"].cena_brutto if "sklepy" in stare else None)
+    sug_hurt = sh.cena_netto if sh else (stare["dropy"].cena_netto if "dropy" in stare else None)
 
     detal = await _sprzedaz_detal(db, p.sku, shop, _od_kiedy(md))
     hurt = await _sprzedaz_hurt(db, p.sku, shop, _od_kiedy(mh))
     return CenyProduktuOut(
         sku=p.sku, shop=shop, vat=vat, min_detal=krotko(md), min_hurt=krotko(mh),
-        sugerowana_sklepy_brutto=zapisane["sklepy"].cena_brutto if "sklepy" in zapisane else None,
-        sugerowana_dropy_netto=zapisane["dropy"].cena_netto if "dropy" in zapisane else None,
+        sugerowana_sklepy_brutto=sug_detal, sugerowana_dropy_netto=sug_hurt,
+        sugerowana_allegro_brutto=sa.cena_brutto if sa else None,
         okres_dni=OKRES_DNI,
         detal=_kanal_sprzedazy(detal, "brutto", md, md.cena_brutto if md else None),
         hurt=_kanal_sprzedazy(hurt, "netto", mh, mh.cena_netto if mh else None),
@@ -270,9 +274,9 @@ async def wycena(sku: str = Query(..., min_length=1), shop: str = Query(""),
     )
 
 
-# ── Cena minimalna ───────────────────────────────────────────────────────
-@router.put("/wycena/cena-minimalna", response_model=CenaMinimalnaOut)
-async def ustaw_cene_minimalna(body: CenaMinimalnaIn, db: AsyncSession = Depends(get_db),
+# ── Zapis ceny z kalkulatora (minimalna / sugerowana) ───────────────────
+@router.put("/wycena/cena", response_model=CenaMinimalnaOut)
+async def zapisz_cene(body: CenaMinimalnaIn, db: AsyncSession = Depends(get_db),
                                user: CurrentUser = Depends(require_product_price_edit)):
     shop = resolve_shop(body.shop or "", user)
     p, _, w, _, slug, _, _ = await _policz(db, body.sku, shop, user)
@@ -304,11 +308,12 @@ async def ustaw_cene_minimalna(body: CenaMinimalnaIn, db: AsyncSession = Depends
     )).mappings().first()
     await db.commit()
     nowa = _cena_min(row)
-    bylo = f" (było {f_zl(stara.cena_netto)})" if stara else ""
-    audit.note(f"ustawił cenę minimalną ({KANAL_NAZWA[body.kanal]}) produktu {p.sku}: "
-               f"{f_zl(nowa.cena_netto)} netto{bylo}",
-               changes=[{"pole": "Cena minimalna netto", "bylo": f_zl(stara.cena_netto) if stara else "—",
-                         "jest": f_zl(nowa.cena_netto)}],
+    jak = "brutto" if body.kanal in KANALY_BRUTTO else "netto"
+    kw = lambda c: c.cena_brutto if jak == "brutto" else c.cena_netto  # noqa: E731
+    bylo = f" (było {f_zl(kw(stara))})" if stara else ""
+    audit.note(f"zapisał „{KANAL_NAZWA[body.kanal]}” produktu {p.sku}: {f_zl(kw(nowa))} {jak}{bylo}",
+               changes=[{"pole": f"{KANAL_NAZWA[body.kanal]} ({jak})", "bylo": f_zl(kw(stara)) if stara else "—",
+                         "jest": f_zl(kw(nowa))}],
                area="Ceny", resource_type="product", resource_id=p.sku)
     return nowa
 

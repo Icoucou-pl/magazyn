@@ -206,7 +206,7 @@ TRASY = [
     ("PUT", rf"^/api/products/{_SKU}/new-until$", "Produkty", "zmienił nowość produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/lead-time$", "Produkty", "zmienił czas dostawy produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/cena$", "Ceny", "zapisał cenę produktu {sku}", "PRICE_SAVED", "product"),
-    ("PUT", r"^/api/wycena/cena-minimalna$", "Ceny", "ustawił cenę minimalną produktu", "MIN_PRICE_SAVED", "product"),
+    ("PUT", r"^/api/wycena/cena$", "Ceny", "zapisał cenę produktu z kalkulatora wyceny", "MIN_PRICE_SAVED", "product"),
     ("POST", r"^/api/wycena/konkurencja$", "Ceny", "wpisał cenę konkurencji", "COMPETITOR_PRICE_SAVED", "product"),
     ("DELETE", rf"^/api/wycena/konkurencja/{_ID}$", "Ceny", "usunął sklep z cen konkurencji", "COMPETITOR_PRICE_DELETED", "product"),
     ("POST", r"^/api/wycena/szablony$", "Ceny", "dodał szablon kalkulatora wyceny", "PRICE_TEMPLATE_SAVED", "wycena"),
