@@ -234,12 +234,3 @@ html[data-theme="light"] .brand-logo-light { display: block !important; }
   .responsive-scroll > div { min-width: 720px; }
 }
 
-/* Kafle cen w zakładkach „test-cena” / „test-wycena” (components/wycena-ui.tsx → Tint):
-   pełne wypełnienie w kolorze kanału — detal niebieski, dropy/hurt zielony, Allegro pomarańczowy.
-   Stałe odcienie (nie mieszanka z --info/--ok), żeby kanały nie zlewały się w jasnym motywie. */
-.wyc-tint-detal   { background: oklch(0.29 0.055 245); border: 1px solid oklch(0.46 0.10 245); }
-.wyc-tint-hurt    { background: oklch(0.29 0.055 150); border: 1px solid oklch(0.46 0.10 150); }
-.wyc-tint-allegro { background: oklch(0.30 0.060 60);  border: 1px solid oklch(0.50 0.11 60); }
-html[data-theme="light"] .wyc-tint-detal   { background: oklch(0.93 0.045 245); border-color: oklch(0.78 0.09 245); }
-html[data-theme="light"] .wyc-tint-hurt    { background: oklch(0.93 0.060 150); border-color: oklch(0.78 0.11 150); }
-html[data-theme="light"] .wyc-tint-allegro { background: oklch(0.93 0.060 70);  border-color: oklch(0.80 0.11 65); }

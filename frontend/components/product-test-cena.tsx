@@ -21,7 +21,7 @@ import {
 } from "@/lib/wycena";
 import {
   Box, Kafel, KosztyEdytor, Linia, PasekCen, Pole, Wiersz, critStyl, hint, kartaStyl, linkOk, noteCrit, noteInfo, okStyl,
-  pill, pusty, rozpisStyl, LegendaKolorow, SiatkaCen, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
+  pill, pusty, rozpisStyl, KOLOR_KANALU, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
 } from "./wycena-ui";
 
 type Krotko = { cena_netto: number; cena_brutto: number; ustawil: string | null; ustawiono: string | null };
@@ -75,7 +75,6 @@ export default function ProductTestCena({ sku, shop }: { sku: string; shop: stri
       <AlarmPonizej data={data} />
       {data.koszt && <KosztZakupu k={data.koszt} />}
       <Ceny data={data} />
-      <CenyZestawienie data={data} />
       <Konkurencja data={data} />
       {data.kalkulator && data.koszt && <KalkulatorHandlowca data={data} koszt={data.koszt} />}
     </>
@@ -106,49 +105,24 @@ function AlarmPonizej({ data }: { data: CenyProduktu }) {
   );
 }
 
-// ── Kafle cen ────────────────────────────────────────────────
-function Ceny({ data }: { data: CenyProduktu }) {
-  // Średnich cen sprzedaży tu celowo nie ma (decyzja właściciela) — dane z 30 dni zostają
-  // w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
-  // Rząd 1: detal (niebieskie), dropy/hurt (zielone); rząd 2: Allegro (pomarańczowe).
-  // Każda cena głównie brutto, netto w opisie (decyzja właściciela).
-  const kto = (c: Krotko | null) => (c ? ` · ${ktoKiedy(c)}` : "");
-  const netto = (b: number) => zl2(b / (1 + data.vat / 100));
-  return (
-    <Box title="Ceny" hint="bez wyliczeń, tylko wynik · ustawia admin w zakładce „test-wycena”">
-      <SiatkaCen>
-        <Kafel tint="detal" label="Cena minimalna detal" dot="var(--critical)" value={zl(data.min_detal?.cena_brutto)}
-          sub={data.min_detal ? `brutto · ${zl2(data.min_detal.cena_netto)} zł netto${kto(data.min_detal)}` : "nie ustawiono"} />
-        <Kafel tint="detal" label="Cena sugerowana detal" tone="accent" value={zl(data.sugerowana_sklepy_brutto)}
-          sub={data.sugerowana_sklepy_brutto != null ? `brutto · ${netto(data.sugerowana_sklepy_brutto)} zł netto` : "nie ustawiono"} />
-        <Kafel tint="hurt" label="Cena minimalna dropy/hurt" dot="var(--critical)" value={zl(data.min_hurt?.cena_brutto)}
-          sub={data.min_hurt ? `brutto · ${zl2(data.min_hurt.cena_netto)} zł netto${kto(data.min_hurt)}` : "nie ustawiono"} />
-        <Kafel tint="hurt" label="Cena sugerowana dropy/hurt" value={zl(data.sugerowana_dropy_netto != null ? data.sugerowana_dropy_netto * (1 + data.vat / 100) : null)}
-          sub={data.sugerowana_dropy_netto != null ? `brutto · ${zl2(data.sugerowana_dropy_netto)} zł netto` : "nie ustawiono"} />
-        <Kafel tint="allegro" label="Cena sugerowana allegro" value={zl(data.sugerowana_allegro_brutto)}
-          sub={data.sugerowana_allegro_brutto != null ? `brutto · ${netto(data.sugerowana_allegro_brutto)} zł netto` : "nie ustawiono"} />
-      </SiatkaCen>
-      <LegendaKolorow />
-    </Box>
-  );
-}
-
-// ── Ceny w tabelce (druga wersja do porównania) ──────────────
-// Wiersz = kanał, kolumna = minimalna / sugerowana. Bez kolorowych wypełnień: kanał zdradza
-// tylko kropka przy nazwie. Przy sugerowanej — ile jest nad minimum (Allegro liczymy względem
+// ── Ceny: tabelka kanał × minimalna / sugerowana ─────────────
+// Wybrana przez właściciela zamiast kolorowych kafli (w nich się gubił). Każda cena głównie
+// brutto, netto pod spodem. Średnich cen sprzedaży tu celowo nie ma — dane z 30 dni zostają
+// w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
+// Bez kolorowych wypełnień: kanał zdradza tylko kropka przy nazwie. Przy sugerowanej — ile jest nad minimum (Allegro liczymy względem
 // minimum detalu, bo to też sprzedaż detaliczna).
 type Komorka = { brutto: number; netto: number } | null;
 
-function CenyZestawienie({ data }: { data: CenyProduktu }) {
+function Ceny({ data }: { data: CenyProduktu }) {
   const v = 1 + data.vat / 100;
   const zBrutto = (b: number | null | undefined): Komorka => (b == null ? null : { brutto: b, netto: b / v });
   const zNetto = (n: number | null | undefined): Komorka => (n == null ? null : { brutto: n * v, netto: n });
   const minDetal: Komorka = data.min_detal ? { brutto: data.min_detal.cena_brutto, netto: data.min_detal.cena_netto } : null;
   const minHurt: Komorka = data.min_hurt ? { brutto: data.min_hurt.cena_brutto, netto: data.min_hurt.cena_netto } : null;
   const wiersze: { nazwa: string; opis: string; kolor: string; min: Komorka | "brak"; sug: Komorka; minDoPor: Komorka; kto: Krotko | null }[] = [
-    { nazwa: "Detal", opis: "I-CC, Veluxa, Acti", kolor: "var(--info)", min: minDetal, sug: zBrutto(data.sugerowana_sklepy_brutto), minDoPor: minDetal, kto: data.min_detal },
-    { nazwa: "Dropy / hurt", opis: "partnerzy, hurtownie", kolor: "var(--ok)", min: minHurt, sug: zNetto(data.sugerowana_dropy_netto), minDoPor: minHurt, kto: data.min_hurt },
-    { nazwa: "Allegro", opis: "minimum jak detal", kolor: "var(--warning)", min: "brak", sug: zBrutto(data.sugerowana_allegro_brutto), minDoPor: minDetal, kto: null },
+    { nazwa: "Detal", opis: "I-CC, Veluxa, Acti", kolor: KOLOR_KANALU.detal, min: minDetal, sug: zBrutto(data.sugerowana_sklepy_brutto), minDoPor: minDetal, kto: data.min_detal },
+    { nazwa: "Dropy / hurt", opis: "partnerzy, hurtownie", kolor: KOLOR_KANALU.hurt, min: minHurt, sug: zNetto(data.sugerowana_dropy_netto), minDoPor: minHurt, kto: data.min_hurt },
+    { nazwa: "Allegro", opis: "minimum jak detal", kolor: KOLOR_KANALU.allegro, min: "brak", sug: zBrutto(data.sugerowana_allegro_brutto), minDoPor: minDetal, kto: null },
   ];
   const cena = (k: Komorka) => k ? (
     <>
@@ -158,14 +132,14 @@ function CenyZestawienie({ data }: { data: CenyProduktu }) {
   ) : <div style={{ fontSize: 13, color: "var(--text-lo)" }}>nie ustawiono</div>;
   const kol = "minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr)";
   return (
-    <Box title="Ceny · zestawienie" hint="wersja do porównania z boxem wyżej — zostawimy jedną">
+    <Box title="Ceny">
       <style>{`.wyc-zest-cena{font-size:20px}.wyc-zest-wiersz{gap:12px;padding:12px 14px}
         @media (max-width:520px){.wyc-zest-cena{font-size:16px}.wyc-zest-wiersz{gap:8px !important;padding:10px !important}}`}</style>
       <div style={{ border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
         <div className="wyc-zest-wiersz" style={{ display: "grid", gridTemplateColumns: kol, background: "var(--surface-2)", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>
           <span />
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--critical)" }} />Minimalna</span>
-          <span>Sugerowana</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--ok)" }} />Sugerowana</span>
         </div>
         {wiersze.map((w, i) => {
           const nad = w.sug && w.minDoPor && w.minDoPor.brutto > 0 ? w.sug.brutto - w.minDoPor.brutto : null;

@@ -117,17 +117,13 @@ export function Box({ title, hint, children }: { title: string; hint?: React.Rea
   );
 }
 
-/** Kanał ceny → wypełnienie kafla: detal niebieski, dropy/hurt zielony, Allegro pomarańczowy.
- *  Kolory siedzą w globals.css (klasy .wyc-tint-*), osobno dla jasnego i ciemnego motywu. */
-export type Tint = "detal" | "hurt" | "allegro";
-export const tintKlasa = (t: Tint) => `wyc-tint-${t}`;
-export const TINT_OPIS: Record<Tint, string> = {
-  detal: "detal (I-CC, VELUXA, ACTI)",
-  hurt: "dropy / hurt",
-  allegro: "Allegro",
-};
+/** Kolor kanału ceny — tylko kropka / cienki pasek (pełne wypełnienia właściciel odrzucił:
+ *  „szpitalne” i trudno było się w nich połapać). */
+export type KanalCeny = "detal" | "hurt" | "allegro";
+// Czerwień i zieleń są zajęte (minimalna / sugerowana), więc dropy/hurt dostają fiolet.
+export const KOLOR_KANALU: Record<KanalCeny, string> = { detal: "var(--info)", hurt: "var(--anomaly)", allegro: "var(--warning)" };
 
-/** Siatka kafli cen: 4 w rzędzie (detal, detal, hurt, hurt), Allegro w rzędzie niżej;
+/** Siatka kart cen: 4 w rzędzie (detal, detal, hurt, hurt), Allegro w rzędzie niżej;
  *  na węższym ekranie 2, na telefonie 1. */
 export function SiatkaCen({ children }: { children: React.ReactNode }) {
   return (
@@ -139,27 +135,13 @@ export function SiatkaCen({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function LegendaKolorow() {
-  return (
-    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--text-lo)" }}>
-      {(Object.keys(TINT_OPIS) as Tint[]).map((t) => (
-        <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span className={tintKlasa(t)} style={{ width: 12, height: 12, borderRadius: 3 }} />
-          {TINT_OPIS[t]}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-export function Kafel({ label, value, sub, tone = "neutral", dot, tint }: {
+export function Kafel({ label, value, sub, tone = "neutral", dot }: {
   label: string; value: React.ReactNode; sub?: React.ReactNode;
-  tone?: "neutral" | "critical" | "warning" | "info" | "ok" | "accent"; dot?: string; tint?: Tint;
+  tone?: "neutral" | "critical" | "warning" | "info" | "ok" | "accent"; dot?: string;
 }) {
   const color = { neutral: "var(--text-hi)", critical: "var(--critical)", warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)", accent: "var(--accent)" }[tone];
   return (
-    <div className={tint ? tintKlasa(tint) : undefined}
-      style={{ padding: "12px 14px", borderRadius: 10, minWidth: 0, ...(tint ? {} : { background: "var(--bg)", border: "1px solid var(--border-soft)" }) }}>
+    <div style={{ padding: "12px 14px", borderRadius: 10, minWidth: 0, background: "var(--bg)", border: "1px solid var(--border-soft)" }}>
       <div style={{ fontSize: 12, color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 6 }}>
         {dot && <span style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />}
         {label}
