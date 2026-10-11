@@ -31,7 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import audit
-from audit_opisy import f_zl
+from audit_opisy import etykieta_kontenera, f_zl
 from config import INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, settings
 from database import get_db
 from models import (
@@ -222,7 +222,8 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
         p, _, w, meta, slug, _, _ = await _policz(db, sku, shop, user)
         po_id = {d.item_id: d for d in w.dostawy}
         fifo_d, nb = po_id.get(w.fifo_item_id), po_id.get(w.najblizsza_item_id)
-        nr = lambda d: (d.container_number or meta[d.item_id]["lot_order_number"] or meta[d.item_id]["order_number"]) if d else None  # noqa: E731
+        # Kontener roboczy („Draft-…”) nie ma numeru — pokazujemy wtedy „FV: nr faktury”, jak wszędzie.
+        nr = lambda d: etykieta_kontenera(d.container_number, meta[d.item_id]["lot_order_number"] or meta[d.item_id]["order_number"], d.container_id) if d else None  # noqa: E731
         koszt = KosztZespolOut(
             fifo=w.fifo, fifo_kontener=nr(fifo_d), fifo_data=fifo_d.data if fifo_d else None,
             srednia=w.srednia, najblizsza=w.najblizsza, najblizsza_kontener=nr(nb),

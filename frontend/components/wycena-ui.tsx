@@ -117,17 +117,49 @@ export function Box({ title, hint, children }: { title: string; hint?: React.Rea
   );
 }
 
-/** Kanał ceny → lekkie tło kafla: detal (w tym Allegro) niebieskawe, dropy/hurt fioletowe.
+/** Kanał ceny → lekkie tło kafla: detal niebieskie, dropy/hurt zielone, Allegro pomarańczowe.
  *  Tylko odcień — od razu widać, które kafle dotyczą tego samego. */
-export type Tint = "detal" | "hurt";
+export type Tint = "detal" | "hurt" | "allegro";
 export const TINT_TLO: Record<Tint, string> = {
   detal: "color-mix(in oklch, var(--info) 16%, var(--bg))",
-  hurt: "color-mix(in oklch, var(--anomaly) 16%, var(--bg))",
+  hurt: "color-mix(in oklch, var(--ok) 14%, var(--bg))",
+  allegro: "color-mix(in oklch, var(--warning) 15%, var(--bg))",
 };
 export const TINT_RAMKA: Record<Tint, string> = {
   detal: "color-mix(in oklch, var(--info) 45%, var(--border-soft))",
-  hurt: "color-mix(in oklch, var(--anomaly) 45%, var(--border-soft))",
+  hurt: "color-mix(in oklch, var(--ok) 45%, var(--border-soft))",
+  allegro: "color-mix(in oklch, var(--warning) 45%, var(--border-soft))",
 };
+export const TINT_OPIS: Record<Tint, string> = {
+  detal: "detal (I-CC, VELUXA, ACTI)",
+  hurt: "dropy / hurt",
+  allegro: "Allegro",
+};
+
+/** Siatka kafli cen: 4 w rzędzie (detal, detal, hurt, hurt), Allegro w rzędzie niżej;
+ *  na węższym ekranie 2, na telefonie 1. */
+export function SiatkaCen({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="wyc-siatka" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+      <style>{`@media (max-width: 900px) { .wyc-siatka { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
+        @media (max-width: 480px) { .wyc-siatka { grid-template-columns: minmax(0, 1fr) !important; } }`}</style>
+      {children}
+    </div>
+  );
+}
+
+export function LegendaKolorow() {
+  return (
+    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--text-lo)" }}>
+      {(Object.keys(TINT_OPIS) as Tint[]).map((t) => (
+        <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 3, background: TINT_TLO[t], border: `1px solid ${TINT_RAMKA[t]}` }} />
+          {TINT_OPIS[t]}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export function Kafel({ label, value, sub, tone = "neutral", dot, tint }: {
   label: string; value: React.ReactNode; sub?: React.ReactNode;
