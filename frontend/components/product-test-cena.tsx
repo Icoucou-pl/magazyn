@@ -75,6 +75,7 @@ export default function ProductTestCena({ sku, shop }: { sku: string; shop: stri
       <AlarmPonizej data={data} />
       {data.koszt && <KosztZakupu k={data.koszt} />}
       <Ceny data={data} />
+      <CenyZestawienie data={data} />
       <Konkurencja data={data} />
       {data.kalkulator && data.koszt && <KalkulatorHandlowca data={data} koszt={data.koszt} />}
     </>
@@ -128,6 +129,69 @@ function Ceny({ data }: { data: CenyProduktu }) {
           sub={data.sugerowana_allegro_brutto != null ? `brutto · ${netto(data.sugerowana_allegro_brutto)} zł netto` : "nie ustawiono"} />
       </SiatkaCen>
       <LegendaKolorow />
+    </Box>
+  );
+}
+
+// ── Ceny w tabelce (druga wersja do porównania) ──────────────
+// Wiersz = kanał, kolumna = minimalna / sugerowana. Bez kolorowych wypełnień: kanał zdradza
+// tylko kropka przy nazwie. Przy sugerowanej — ile jest nad minimum (Allegro liczymy względem
+// minimum detalu, bo to też sprzedaż detaliczna).
+type Komorka = { brutto: number; netto: number } | null;
+
+function CenyZestawienie({ data }: { data: CenyProduktu }) {
+  const v = 1 + data.vat / 100;
+  const zBrutto = (b: number | null | undefined): Komorka => (b == null ? null : { brutto: b, netto: b / v });
+  const zNetto = (n: number | null | undefined): Komorka => (n == null ? null : { brutto: n * v, netto: n });
+  const minDetal: Komorka = data.min_detal ? { brutto: data.min_detal.cena_brutto, netto: data.min_detal.cena_netto } : null;
+  const minHurt: Komorka = data.min_hurt ? { brutto: data.min_hurt.cena_brutto, netto: data.min_hurt.cena_netto } : null;
+  const wiersze: { nazwa: string; opis: string; kolor: string; min: Komorka | "brak"; sug: Komorka; minDoPor: Komorka; kto: Krotko | null }[] = [
+    { nazwa: "Detal", opis: "I-CC, Veluxa, Acti", kolor: "var(--info)", min: minDetal, sug: zBrutto(data.sugerowana_sklepy_brutto), minDoPor: minDetal, kto: data.min_detal },
+    { nazwa: "Dropy / hurt", opis: "partnerzy, hurtownie", kolor: "var(--ok)", min: minHurt, sug: zNetto(data.sugerowana_dropy_netto), minDoPor: minHurt, kto: data.min_hurt },
+    { nazwa: "Allegro", opis: "minimum jak detal", kolor: "var(--warning)", min: "brak", sug: zBrutto(data.sugerowana_allegro_brutto), minDoPor: minDetal, kto: null },
+  ];
+  const cena = (k: Komorka) => k ? (
+    <>
+      <div className="num wyc-zest-cena" style={{ fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15 }}>{zl2(k.brutto)}<small style={small}> zł</small></div>
+      <div style={{ fontSize: 11.5, color: "var(--text-lo)" }}>brutto · {zl2(k.netto)} netto</div>
+    </>
+  ) : <div style={{ fontSize: 13, color: "var(--text-lo)" }}>nie ustawiono</div>;
+  const kol = "minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr)";
+  return (
+    <Box title="Ceny · zestawienie" hint="wersja do porównania z boxem wyżej — zostawimy jedną">
+      <style>{`.wyc-zest-cena{font-size:20px}.wyc-zest-wiersz{gap:12px;padding:12px 14px}
+        @media (max-width:520px){.wyc-zest-cena{font-size:16px}.wyc-zest-wiersz{gap:8px !important;padding:10px !important}}`}</style>
+      <div style={{ border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden" }}>
+        <div className="wyc-zest-wiersz" style={{ display: "grid", gridTemplateColumns: kol, background: "var(--surface-2)", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>
+          <span />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--critical)" }} />Minimalna</span>
+          <span>Sugerowana</span>
+        </div>
+        {wiersze.map((w, i) => {
+          const nad = w.sug && w.minDoPor && w.minDoPor.brutto > 0 ? w.sug.brutto - w.minDoPor.brutto : null;
+          return (
+            <div key={w.nazwa} className="wyc-zest-wiersz" style={{ display: "grid", gridTemplateColumns: kol, alignItems: "start", borderTop: i ? "1px solid var(--border-soft)" : undefined, background: "var(--bg)" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 600 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 99, background: w.kolor, flexShrink: 0 }} />{w.nazwa}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, paddingLeft: 16 }}>{w.opis}</div>
+              </div>
+              <div style={{ minWidth: 0 }} title={w.kto ? `Ustawił(a): ${ktoKiedy(w.kto)}` : undefined}>
+                {w.min === "brak" ? <div style={{ fontSize: 12, color: "var(--text-lo)" }}>—</div> : cena(w.min)}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                {cena(w.sug)}
+                {nad != null && (
+                  <span style={{ ...pill, whiteSpace: "normal", marginTop: 5, ...(nad >= 0 ? okStyl : critStyl) }}>
+                    {nad >= 0 ? "+" : "−"}{zl2(Math.abs(nad))} zł {nad >= 0 ? "nad minimum" : "poniżej minimum"}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </Box>
   );
 }
