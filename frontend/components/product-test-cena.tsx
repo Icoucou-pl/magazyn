@@ -21,7 +21,7 @@ import {
 } from "@/lib/wycena";
 import {
   Box, Kafel, KosztyEdytor, Linia, PasekCen, Pole, Wiersz, critStyl, hint, kartaStyl, linkOk, noteCrit, noteInfo, okStyl,
-  pill, pusty, rozpisStyl, TINT_RAMKA, TINT_TLO, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
+  pill, pusty, rozpisStyl, LegendaKolorow, SiatkaCen, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
 } from "./wycena-ui";
 
 type Krotko = { cena_netto: number; cena_brutto: number; ustawil: string | null; ustawiono: string | null };
@@ -73,8 +73,8 @@ export default function ProductTestCena({ sku, shop }: { sku: string; shop: stri
   return (
     <>
       <AlarmPonizej data={data} />
-      <Ceny data={data} />
       {data.koszt && <KosztZakupu k={data.koszt} />}
+      <Ceny data={data} />
       <Konkurencja data={data} />
       {data.kalkulator && data.koszt && <KalkulatorHandlowca data={data} koszt={data.koszt} />}
     </>
@@ -109,28 +109,24 @@ function AlarmPonizej({ data }: { data: CenyProduktu }) {
 function Ceny({ data }: { data: CenyProduktu }) {
   // Średnich cen sprzedaży tu celowo nie ma (decyzja właściciela) — dane z 30 dni zostają
   // w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
-  // Dwa rzędy: detal (niebieskawe tło), pod nim dropy/hurt (fioletowe).
+  // Rząd 1: detal (niebieskie), dropy/hurt (zielone); rząd 2: Allegro (pomarańczowe).
   const kto = (c: Krotko | null) => (c ? ` · ${ktoKiedy(c)}` : "");
+  const netto = (b: number) => zl2(b / (1 + data.vat / 100));
   return (
     <Box title="Ceny" hint="bez wyliczeń, tylko wynik · ustawia admin w zakładce „test-wycena”">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+      <SiatkaCen>
         <Kafel tint="detal" label="Cena minimalna detal" dot="var(--critical)" value={zl(data.min_detal?.cena_brutto)}
           sub={data.min_detal ? `brutto · ${zl2(data.min_detal.cena_netto)} zł netto${kto(data.min_detal)}` : "nie ustawiono"} />
         <Kafel tint="detal" label="Cena sugerowana detal" tone="accent" value={zl(data.sugerowana_sklepy_brutto)}
-          sub={data.sugerowana_sklepy_brutto != null ? `brutto · ${zl2(data.sugerowana_sklepy_brutto / (1 + data.vat / 100))} zł netto` : "nie ustawiono"} />
-        <Kafel tint="detal" label="Cena sugerowana allegro" value={zl(data.sugerowana_allegro_brutto)}
-          sub={data.sugerowana_allegro_brutto != null ? `brutto · ${zl2(data.sugerowana_allegro_brutto / (1 + data.vat / 100))} zł netto` : "nie ustawiono"} />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+          sub={data.sugerowana_sklepy_brutto != null ? `brutto · ${netto(data.sugerowana_sklepy_brutto)} zł netto` : "nie ustawiono"} />
         <Kafel tint="hurt" label="Cena minimalna dropy/hurt" dot="var(--critical)" value={zl(data.min_hurt?.cena_netto)}
           sub={data.min_hurt ? `netto · ${zl2(data.min_hurt.cena_brutto)} zł brutto${kto(data.min_hurt)}` : "nie ustawiono"} />
         <Kafel tint="hurt" label="Cena sugerowana dropy/hurt" value={zl(data.sugerowana_dropy_netto)}
           sub={data.sugerowana_dropy_netto != null ? `netto · ${zl2(data.sugerowana_dropy_netto * (1 + data.vat / 100))} zł brutto` : "nie ustawiono"} />
-      </div>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", ...hint }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: TINT_TLO.detal, border: `1px solid ${TINT_RAMKA.detal}` }} />detal (nasze sklepy, Allegro)</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: TINT_TLO.hurt, border: `1px solid ${TINT_RAMKA.hurt}` }} />dropy / hurt</span>
-      </div>
+        <Kafel tint="allegro" label="Cena sugerowana allegro" value={zl(data.sugerowana_allegro_brutto)}
+          sub={data.sugerowana_allegro_brutto != null ? `brutto · ${netto(data.sugerowana_allegro_brutto)} zł netto` : "nie ustawiono"} />
+      </SiatkaCen>
+      <LegendaKolorow />
     </Box>
   );
 }
@@ -176,7 +172,6 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
   const ceny = konk.map((k) => k.cena_brutto).sort((a, b) => a - b);
   const min = ceny[0], max = ceny[ceny.length - 1], srodek = mediana(ceny) as number;
   const najt = konk.find((k) => k.cena_brutto === min), najd = konk.find((k) => k.cena_brutto === max);
-  const pozycja = nasza != null ? ceny.filter((c) => c < nasza).length + 1 : null;
   const wartosci = [min, max, ...(nasza != null ? [nasza] : []), ...(minB != null ? [minB] : [])];
   const lo = Math.floor((Math.min(...wartosci) * 0.94) / 10) * 10, hi = Math.ceil((Math.max(...wartosci) * 1.06) / 10) * 10;
   const stare = konk.filter((k) => (dniTemu(k.dodano) ?? 0) > KONKURENCJA_STARA_DNI).length;
@@ -193,14 +188,10 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
   return (
     <Box title="Konkurencja" hint={`${konk.length} ${konk.length === 1 ? "sklep" : konk.length < 5 ? "sklepy" : "sklepów"} · ceny brutto${stare ? ` · ${stare} do odświeżenia` : ""}`}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 170px), 1fr))", gap: 10 }}>
           <Kafel label="Najtaniej" tone="ok" value={zl(min)} sub={najt?.sklep} />
           <Kafel label="Środek rynku" value={zl(srodek)} sub="połowa sklepów taniej, połowa drożej" />
           <Kafel label="Najdrożej" tone="critical" value={zl(max)} sub={najd?.sklep} />
-          {pozycja != null && nasza != null && (
-            <Kafel label="Nasza pozycja" value={<span style={{ color: "var(--accent)" }}>{pozycja}.<small style={small}> z {konk.length + 1}</small></span>}
-              sub={`od najtańszego · ${naszaOpis} ${zl2(nasza)} zł`} />
-          )}
         </div>
         <div style={kartaStyl}>
           <PasekCen lo={lo} hi={hi} min={minB}

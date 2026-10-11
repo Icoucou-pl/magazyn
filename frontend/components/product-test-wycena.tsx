@@ -24,7 +24,7 @@ import {
   KONKURENCJA_STARA_DNI, dniTemu, num, proc1, wyliczWycene, zl2, type KosztPlus,
 } from "@/lib/wycena";
 import {
-  Box, Kafel, KosztyEdytor, TINT_RAMKA, TINT_TLO, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
+  Box, Kafel, KosztyEdytor, LegendaKolorow, SiatkaCen, TINT_RAMKA, TINT_TLO, type Tint, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
   noteInfo, noteWarn, pill, pusty, rozpisStyl, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji,
   type KosztEdycja,
 } from "./wycena-ui";
@@ -47,7 +47,8 @@ type WycenaData = {
   ceny_min: CenaMin[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
 };
 
-const KANALY: Kanal[] = ["detal", "sug_detal", "sug_allegro", "hurt", "sug_hurt"];
+// Kolejność kart jak w „test-cena”: detal, detal, hurt, hurt — a Allegro rząd niżej.
+const KANALY: Kanal[] = ["detal", "sug_detal", "hurt", "sug_hurt", "sug_allegro"];
 const KANAL_NAZWA: Record<Kanal, string> = {
   detal: "Cena minimalna detal",
   hurt: "Cena minimalna dropy/hurt",
@@ -57,7 +58,7 @@ const KANAL_NAZWA: Record<Kanal, string> = {
 };
 // Detal pokazujemy brutto, dropy/hurt netto; tło kafla mówi, którego kanału dotyczy cena.
 const BRUTTO: Record<Kanal, boolean> = { detal: true, sug_detal: true, sug_allegro: true, hurt: false, sug_hurt: false };
-const tintKanalu = (k: Kanal) => (BRUTTO[k] ? "detal" : "hurt") as "detal" | "hurt";
+const tintKanalu = (k: Kanal): Tint => (k === "sug_allegro" ? "allegro" : BRUTTO[k] ? "detal" : "hurt");
 const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
 
@@ -109,12 +110,10 @@ export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
 function ZapisaneCeny({ data }: { data: WycenaData }) {
   return (
     <Box title="Zapisane ceny" hint="zapisujesz z kalkulatora poniżej · zespół widzi je w zakładce „test-cena”">
-      {/* Dwa rzędy: detal (niebieskawe tło), pod nim dropy/hurt (fioletowe). */}
-      {[KANALY.filter((k) => BRUTTO[k]), KANALY.filter((k) => !BRUTTO[k])].map((rzad, i) => (
-        <div key={i} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 12 }}>
-          {rzad.map((k) => <KartaMin key={k} kanal={k} data={data} />)}
-        </div>
-      ))}
+      <SiatkaCen>
+        {KANALY.map((k) => <KartaMin key={k} kanal={k} data={data} />)}
+      </SiatkaCen>
+      <LegendaKolorow />
     </Box>
   );
 }
