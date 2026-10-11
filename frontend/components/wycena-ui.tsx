@@ -117,19 +117,10 @@ export function Box({ title, hint, children }: { title: string; hint?: React.Rea
   );
 }
 
-/** Kanał ceny → lekkie tło kafla: detal niebieskie, dropy/hurt zielone, Allegro pomarańczowe.
- *  Tylko odcień — od razu widać, które kafle dotyczą tego samego. */
+/** Kanał ceny → wypełnienie kafla: detal niebieski, dropy/hurt zielony, Allegro pomarańczowy.
+ *  Kolory siedzą w globals.css (klasy .wyc-tint-*), osobno dla jasnego i ciemnego motywu. */
 export type Tint = "detal" | "hurt" | "allegro";
-export const TINT_TLO: Record<Tint, string> = {
-  detal: "color-mix(in oklch, var(--info) 16%, var(--bg))",
-  hurt: "color-mix(in oklch, var(--ok) 14%, var(--bg))",
-  allegro: "color-mix(in oklch, var(--warning) 15%, var(--bg))",
-};
-export const TINT_RAMKA: Record<Tint, string> = {
-  detal: "color-mix(in oklch, var(--info) 45%, var(--border-soft))",
-  hurt: "color-mix(in oklch, var(--ok) 45%, var(--border-soft))",
-  allegro: "color-mix(in oklch, var(--warning) 45%, var(--border-soft))",
-};
+export const tintKlasa = (t: Tint) => `wyc-tint-${t}`;
 export const TINT_OPIS: Record<Tint, string> = {
   detal: "detal (I-CC, VELUXA, ACTI)",
   hurt: "dropy / hurt",
@@ -153,7 +144,7 @@ export function LegendaKolorow() {
     <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--text-lo)" }}>
       {(Object.keys(TINT_OPIS) as Tint[]).map((t) => (
         <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 3, background: TINT_TLO[t], border: `1px solid ${TINT_RAMKA[t]}` }} />
+          <span className={tintKlasa(t)} style={{ width: 12, height: 12, borderRadius: 3 }} />
           {TINT_OPIS[t]}
         </span>
       ))}
@@ -167,7 +158,8 @@ export function Kafel({ label, value, sub, tone = "neutral", dot, tint }: {
 }) {
   const color = { neutral: "var(--text-hi)", critical: "var(--critical)", warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)", accent: "var(--accent)" }[tone];
   return (
-    <div style={{ padding: "12px 14px", background: tint ? TINT_TLO[tint] : "var(--bg)", border: `1px solid ${tint ? TINT_RAMKA[tint] : "var(--border-soft)"}`, borderRadius: 10, minWidth: 0 }}>
+    <div className={tint ? tintKlasa(tint) : undefined}
+      style={{ padding: "12px 14px", borderRadius: 10, minWidth: 0, ...(tint ? {} : { background: "var(--bg)", border: "1px solid var(--border-soft)" }) }}>
       <div style={{ fontSize: 12, color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 6 }}>
         {dot && <span style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />}
         {label}
