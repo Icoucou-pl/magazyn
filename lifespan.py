@@ -657,7 +657,7 @@ async def lifespan(app: FastAPI):
                 id          SERIAL PRIMARY KEY,
                 sku_canon   TEXT          NOT NULL,          -- LOWER(TRIM(sku))
                 sku         TEXT          NOT NULL,
-                kanal       TEXT          NOT NULL CHECK (kanal IN ('detal', 'hurt')),
+                kanal       TEXT          NOT NULL,          -- services/wycena.py → KANALY
                 cena_netto  NUMERIC(12,2) NOT NULL,
                 cena_brutto NUMERIC(12,2) NOT NULL,
                 vat         NUMERIC(5,2)  NOT NULL,
@@ -672,6 +672,9 @@ async def lifespan(app: FastAPI):
             )
         """))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cena_minimalna_sku ON app_cena_minimalna (sku_canon, kanal, ustawiono DESC)"))
+        # Pierwsza wersja miała CHECK tylko na 'detal'/'hurt'; teraz w tym samym dzienniku są też
+        # ceny sugerowane. Listę pilnuje API (Literal w models.py), więc ograniczenie zdejmujemy.
+        await conn.execute(text("ALTER TABLE app_cena_minimalna DROP CONSTRAINT IF EXISTS app_cena_minimalna_kanal_check"))
         # Ceny u konkurencji: jeden aktywny wpis na sklep (najnowszy), starsze = historia.
         # Usunięcie sklepu oznacza wszystkie jego wiersze (usunieto), nic nie kasujemy.
         await conn.execute(text("""
@@ -705,8 +708,24 @@ async def lifespan(app: FastAPI):
                 zmieniono  TIMESTAMPTZ
             )
         """))
+        from services.wycena import DOMYSLNE_SZABLONY, KANAL_NAZWA, STARE_SZABLONY, STARY_ERLI
+        # Szablony z pierwszej wersji (stare nazwy) → nowa lista pięciu cen. Raz: po zmianie nazw
+        # stare już nie istnieją, więc kolejny start nic nie robi.
+        stare = [s[0] for s in STARE_SZABLONY] + [STARY_ERLI]
+        if (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_szablony WHERE nazwa = ANY(:n))"),
+                               {"n": stare})).scalar():
+            for stara, nowa, cel, kol in STARE_SZABLONY:
+                await conn.execute(text("UPDATE app_wycena_szablony SET nazwa = :nowa, cel = :cel, kolejnosc = :k WHERE nazwa = :stara"),
+                                   {"nowa": nowa, "cel": cel, "k": kol, "stara": stara})
+            await conn.execute(text("DELETE FROM app_wycena_szablony WHERE nazwa = :n AND zmienil IS NULL"), {"n": STARY_ERLI})
+            if not (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_szablony WHERE cel = 'sug_detal')"))).scalar():
+                s = next(x for x in DOMYSLNE_SZABLONY if x["cel"] == "sug_detal")
+                await conn.execute(
+                    text("""INSERT INTO app_wycena_szablony (nazwa, cel, marza, koszty, kolejnosc)
+                            VALUES (:n, :c, :m, CAST(:k AS JSONB), 2)"""),
+                    {"n": KANAL_NAZWA["sug_detal"], "c": "sug_detal", "m": s["marza"], "k": json.dumps(s["koszty"])},
+                )
         if not (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_szablony)"))).scalar():
-            from services.wycena import DOMYSLNE_SZABLONY
             for i, s in enumerate(DOMYSLNE_SZABLONY):
                 await conn.execute(
                     text("""INSERT INTO app_wycena_szablony (nazwa, cel, marza, koszty, kolejnosc)

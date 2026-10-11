@@ -13,15 +13,15 @@
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
-import { MetricBox, Section, fmtDay } from "./product-modal";
+import { fmtDay } from "./product-modal";
 import { api } from "@/lib/api";
 import {
   KONKURENCJA_STARA_DNI, dniTemu, liczHandlowca, mediana, num, proc1, progDobrejCeny, strefa, zl2,
   type TrybProwizji,
 } from "@/lib/wycena";
 import {
-  KosztyEdytor, Linia, PasekCen, Pole, Wiersz, critStyl, hint, kartaStyl, linkOk, noteCrit, noteInfo, okStyl,
-  pill, pusty, rozpisStyl, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
+  Box, Kafel, KosztyEdytor, Linia, PasekCen, Pole, Wiersz, critStyl, hint, kartaStyl, linkOk, noteCrit, noteInfo, okStyl,
+  pill, pusty, rozpisStyl, TINT_RAMKA, TINT_TLO, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
 } from "./wycena-ui";
 
 type Krotko = { cena_netto: number; cena_brutto: number; ustawil: string | null; ustawiono: string | null };
@@ -38,7 +38,7 @@ type Koszt = {
 export type CenyProduktu = {
   sku: string; shop: string; vat: number;
   min_detal: Krotko | null; min_hurt: Krotko | null;
-  sugerowana_sklepy_brutto: number | null; sugerowana_dropy_netto: number | null;
+  sugerowana_sklepy_brutto: number | null; sugerowana_dropy_netto: number | null; sugerowana_allegro_brutto: number | null;
   okres_dni: number; detal: Sprzedaz; hurt: Sprzedaz;
   konkurencja: Konkurent[]; koszt: Koszt | null; kalkulator: boolean; prowizja_tryb: TrybProwizji;
 };
@@ -109,21 +109,29 @@ function AlarmPonizej({ data }: { data: CenyProduktu }) {
 function Ceny({ data }: { data: CenyProduktu }) {
   // Średnich cen sprzedaży tu celowo nie ma (decyzja właściciela) — dane z 30 dni zostają
   // w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
+  // Dwa rzędy: detal (niebieskawe tło), pod nim dropy/hurt (fioletowe).
+  const kto = (c: Krotko | null) => (c ? ` · ${ktoKiedy(c)}` : "");
   return (
-    <Section title="Ceny" hint="same wyniki · ceny minimalne ustawia admin w zakładce „test-wycena”">
+    <Box title="Ceny" hint="bez wyliczeń, tylko wynik · ustawia admin w zakładce „test-wycena”">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-        <MetricBox label="Cena minimalna · detal" dot="var(--critical)" value={zl(data.min_detal?.cena_brutto)}
-          sub={data.min_detal ? `brutto · ${zl2(data.min_detal.cena_netto)} zł netto · ${ktoKiedy(data.min_detal)}` : "nie ustawiono"} />
-        <MetricBox label="Cena minimalna · hurt / dropy" dot="var(--critical)" value={zl(data.min_hurt?.cena_netto)}
-          sub={data.min_hurt ? `netto · ${zl2(data.min_hurt.cena_brutto)} zł brutto · ${ktoKiedy(data.min_hurt)}` : "nie ustawiono"} />
-        {data.sugerowana_sklepy_brutto != null && (
-          <MetricBox label="Cena sugerowana · sklepy" value={<span style={{ color: "var(--accent)" }}>{zl(data.sugerowana_sklepy_brutto)}</span>} sub="brutto" />
-        )}
-        {data.sugerowana_dropy_netto != null && (
-          <MetricBox label="Cena sugerowana · hurt / dropy" value={zl(data.sugerowana_dropy_netto)} sub="netto" />
-        )}
+        <Kafel tint="detal" label="Cena minimalna detal" dot="var(--critical)" value={zl(data.min_detal?.cena_brutto)}
+          sub={data.min_detal ? `brutto · ${zl2(data.min_detal.cena_netto)} zł netto${kto(data.min_detal)}` : "nie ustawiono"} />
+        <Kafel tint="detal" label="Cena sugerowana detal" tone="accent" value={zl(data.sugerowana_sklepy_brutto)}
+          sub={data.sugerowana_sklepy_brutto != null ? `brutto · ${zl2(data.sugerowana_sklepy_brutto / (1 + data.vat / 100))} zł netto` : "nie ustawiono"} />
+        <Kafel tint="detal" label="Cena sugerowana allegro" value={zl(data.sugerowana_allegro_brutto)}
+          sub={data.sugerowana_allegro_brutto != null ? `brutto · ${zl2(data.sugerowana_allegro_brutto / (1 + data.vat / 100))} zł netto` : "nie ustawiono"} />
       </div>
-    </Section>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+        <Kafel tint="hurt" label="Cena minimalna dropy/hurt" dot="var(--critical)" value={zl(data.min_hurt?.cena_netto)}
+          sub={data.min_hurt ? `netto · ${zl2(data.min_hurt.cena_brutto)} zł brutto${kto(data.min_hurt)}` : "nie ustawiono"} />
+        <Kafel tint="hurt" label="Cena sugerowana dropy/hurt" value={zl(data.sugerowana_dropy_netto)}
+          sub={data.sugerowana_dropy_netto != null ? `netto · ${zl2(data.sugerowana_dropy_netto * (1 + data.vat / 100))} zł brutto` : "nie ustawiono"} />
+      </div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", ...hint }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: TINT_TLO.detal, border: `1px solid ${TINT_RAMKA.detal}` }} />detal (nasze sklepy, Allegro)</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: TINT_TLO.hurt, border: `1px solid ${TINT_RAMKA.hurt}` }} />dropy / hurt</span>
+      </div>
+    </Box>
   );
 }
 
@@ -131,13 +139,13 @@ function Ceny({ data }: { data: CenyProduktu }) {
 function KosztZakupu({ k }: { k: Koszt }) {
   const zmiana = k.najblizsza != null && k.fifo ? (k.najblizsza / k.fifo - 1) * 100 : null;
   return (
-    <Section title="Koszt zakupu" hint="widzą osoby z „Ceną zakupu produktu” · bez rozpisania">
+    <Box title="Koszt zakupu" hint="widzą osoby z „Ceną zakupu produktu” · bez rozpisania">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-        <MetricBox label="Koszt FIFO / szt" dot="var(--accent)" value={zl(k.fifo)}
+        <Kafel label="Koszt FIFO / szt" dot="var(--accent)" value={zl(k.fifo)}
           sub={k.fifo_kontener ? `z dostawy ${k.fifo_kontener}${k.fifo_data ? ` · na magazynie od ${fmtDay(k.fifo_data)}` : ""}` : "z towaru na stanie"} />
-        <MetricBox label="Średnia ze stanu" value={zl(k.srednia)} sub="ważona sztukami na stanie" />
+        <Kafel label="Średnia ze stanu" value={zl(k.srednia)} sub="ważona sztukami na stanie" />
         {k.najblizsza != null && (
-          <MetricBox label="Najbliższa dostawa" dot="var(--info)" value={<span style={{ color: "var(--info)" }}>{zl(k.najblizsza)}</span>}
+          <Kafel label="Najbliższa dostawa" dot="var(--info)" value={<span style={{ color: "var(--info)" }}>{zl(k.najblizsza)}</span>}
             sub={<>
               {k.najblizsza_kontener || ""}{k.najblizsza_data ? ` · ok. ${fmtDay(k.najblizsza_data)}` : ""}
               {k.najblizsza_szacunek ? " · szacunek" : ""}
@@ -147,7 +155,7 @@ function KosztZakupu({ k }: { k: Koszt }) {
             </>} />
         )}
       </div>
-    </Section>
+    </Box>
   );
 }
 
@@ -160,9 +168,9 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
   const minB = data.min_detal?.cena_brutto ?? null;
   if (!konk.length) {
     return (
-      <Section title="Konkurencja">
+      <Box title="Konkurencja">
         <div style={{ ...pusty, padding: 20 }}>Nikt jeszcze nie wpisał cen konkurencji. Wpisuje się je w zakładce „test-wycena”.</div>
-      </Section>
+      </Box>
     );
   }
   const ceny = konk.map((k) => k.cena_brutto).sort((a, b) => a - b);
@@ -183,14 +191,14 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
   }
 
   return (
-    <Section title="Konkurencja" hint={`${konk.length} ${konk.length === 1 ? "sklep" : konk.length < 5 ? "sklepy" : "sklepów"} · ceny brutto${stare ? ` · ${stare} do odświeżenia` : ""}`}>
+    <Box title="Konkurencja" hint={`${konk.length} ${konk.length === 1 ? "sklep" : konk.length < 5 ? "sklepy" : "sklepów"} · ceny brutto${stare ? ` · ${stare} do odświeżenia` : ""}`}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-          <MetricBox label="Najtaniej" tone="ok" value={zl(min)} sub={najt?.sklep} />
-          <MetricBox label="Środek rynku" value={zl(srodek)} sub="połowa sklepów taniej, połowa drożej" />
-          <MetricBox label="Najdrożej" tone="critical" value={zl(max)} sub={najd?.sklep} />
+          <Kafel label="Najtaniej" tone="ok" value={zl(min)} sub={najt?.sklep} />
+          <Kafel label="Środek rynku" value={zl(srodek)} sub="połowa sklepów taniej, połowa drożej" />
+          <Kafel label="Najdrożej" tone="critical" value={zl(max)} sub={najd?.sklep} />
           {pozycja != null && nasza != null && (
-            <MetricBox label="Nasza pozycja" value={<span style={{ color: "var(--accent)" }}>{pozycja}.<small style={small}> z {konk.length + 1}</small></span>}
+            <Kafel label="Nasza pozycja" value={<span style={{ color: "var(--accent)" }}>{pozycja}.<small style={small}> z {konk.length + 1}</small></span>}
               sub={`od najtańszego · ${naszaOpis} ${zl2(nasza)} zł`} />
           )}
         </div>
@@ -228,7 +236,7 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
           </table>
         </div>
       </div>
-    </Section>
+    </Box>
   );
 }
 
@@ -266,9 +274,9 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
 
   if (!bazy.length) {
     return (
-      <Section title="Kalkulator handlowca · hurt / dropy">
+      <Box title="Kalkulator handlowca · hurt / dropy">
         <div style={{ ...pusty, padding: 20 }}>Brak kosztu zakupu tego produktu — kalkulator nie ma od czego liczyć.</div>
-      </Section>
+      </Box>
     );
   }
 
@@ -279,7 +287,7 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
   const najtanszyKonkNetto = kolKonk.length ? Math.min(...kolKonk) / (1 + data.vat / 100) : null;
 
   return (
-    <Section title="Kalkulator handlowca · hurt / dropy" hint="liczy na żywo · nic się nie zapisuje">
+    <Box title="Kalkulator handlowca · hurt / dropy" hint="liczy na żywo · nic się nie zapisuje">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 12 }}>
         <div style={kartaStyl}>
           <Wiersz label="Twoja cena netto" htmlFor="hand-cena">
@@ -339,9 +347,9 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <MetricBox label="Ty zarobisz" value={<span style={{ color: "var(--accent)" }}>{zl2(w.prowizja)}<small style={small}> zł</small></span>}
+            <Kafel label="Ty zarobisz" value={<span style={{ color: "var(--accent)" }}>{zl2(w.prowizja)}<small style={small}> zł</small></span>}
               sub={tryb === "A" ? `${proc1(num(proc))} od ceny netto` : `${proc1(num(proc))} od zysku ${zl2(Math.max(0, w.zyskPrzed))} zł`} />
-            <MetricBox label="Firma zarobi" tone={w.zyskFirmy < 0 ? "critical" : "neutral"}
+            <Kafel label="Firma zarobi" tone={w.zyskFirmy < 0 ? "critical" : "neutral"}
               value={<>{zl2(w.zyskFirmy)}<small style={small}> zł</small></>}
               sub={w.marzaFirmy != null ? `marża ${proc1(w.marzaFirmy)} od ceny` : undefined} />
           </div>
@@ -363,6 +371,6 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
           )}
         </div>
       </div>
-    </Section>
+    </Box>
   );
 }

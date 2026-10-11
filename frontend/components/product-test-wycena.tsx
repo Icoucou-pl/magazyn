@@ -2,19 +2,21 @@
 // ============================================================
 // MAGAZYN — zakładka „test-wycena” na pełnej karcie produktu.
 //
-//   • Ceny minimalne (detal, hurt/dropy): aktualna + kto i kiedy + historia; ostrzeżenie,
+//   • Zapisane ceny (minimalne i sugerowane: detal, dropy/hurt, allegro): aktualna + kto i kiedy
+//     + historia; ostrzeżenie,
 //     gdy koszt od ustawienia urósł albo spadł
 //   • Kalkulator z szablonami: koszt bazowy (FIFO / średnia / własny), marża, koszty „+”
-//     (zł albo % od netto / brutto, doliczane PO marży), „Ustaw jako cenę minimalną”
+//     (zł albo % od netto / brutto, doliczane PO marży), „Zapisz jako …”
 //   • Konkurencja: jeden wpis na sklep, nowa cena tego samego sklepu → stara do historii
-//   • Pod spodem cała dotychczasowa zakładka „Cena” (koszty, dostawy, sugerowana cena) — bez zmian
+//   • Pod spodem dotychczasowa zakładka „Cena” bez jej dwóch kalkulatorów (koszty, dostawy) —
+//     kalkulatory „Nasze sklepy” i „Dropy/Hurt” zastąpił jeden kalkulator z listą wyboru
 //
 // Wersja testowa obok zakładki „Cena” — po akceptacji ją zastąpi.
 // Dane: GET /api/wycena (routers/wycena.py). Formuła: lib/wycena.ts (lustro services/wycena.py).
 // ============================================================
 
 import React, { useEffect, useMemo, useState } from "react";
-import { MetricBox, Section, fmtDay } from "./product-modal";
+import { fmtDay } from "./product-modal";
 import ProductPriceTab from "./product-price-tab";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
@@ -22,12 +24,13 @@ import {
   KONKURENCJA_STARA_DNI, dniTemu, num, proc1, wyliczWycene, zl2, type KosztPlus,
 } from "@/lib/wycena";
 import {
-  KosztyEdytor, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
+  Box, Kafel, KosztyEdytor, TINT_RAMKA, TINT_TLO, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
   noteInfo, noteWarn, pill, pusty, rozpisStyl, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji,
   type KosztEdycja,
 } from "./wycena-ui";
 
-type Kanal = "detal" | "hurt";
+// Ceny zapisywane z kalkulatora — lustro services/wycena.py → KANALY / KANAL_NAZWA.
+type Kanal = "detal" | "hurt" | "sug_detal" | "sug_hurt" | "sug_allegro";
 type Baza = "fifo" | "srednia" | "wlasna";
 type CenaMin = {
   id: number; kanal: Kanal; cena_netto: number; cena_brutto: number; vat: number; baza: Baza;
@@ -44,7 +47,17 @@ type WycenaData = {
   ceny_min: CenaMin[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
 };
 
-const KANAL_NAZWA: Record<Kanal, string> = { detal: "detal", hurt: "hurt / dropy" };
+const KANALY: Kanal[] = ["detal", "sug_detal", "sug_allegro", "hurt", "sug_hurt"];
+const KANAL_NAZWA: Record<Kanal, string> = {
+  detal: "Cena minimalna detal",
+  hurt: "Cena minimalna dropy/hurt",
+  sug_detal: "Cena sugerowana detal",
+  sug_hurt: "Cena sugerowana dropy/hurt",
+  sug_allegro: "Cena sugerowana allegro",
+};
+// Detal pokazujemy brutto, dropy/hurt netto; tło kafla mówi, którego kanału dotyczy cena.
+const BRUTTO: Record<Kanal, boolean> = { detal: true, sug_detal: true, sug_allegro: true, hurt: false, sug_hurt: false };
+const tintKanalu = (k: Kanal) => (BRUTTO[k] ? "detal" : "hurt") as "detal" | "hurt";
 const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
 
@@ -78,27 +91,31 @@ export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
 
   return (
     <>
-      <CenyMinimalne data={data} />
+      <ZapisaneCeny data={data} />
       <Kalkulator key={data.sku} data={data} shop={shop}
         onCenaMin={(c) => popraw((d) => ({ ...d, ceny_min: [c, ...d.ceny_min] }))}
         onSzablony={(s) => popraw((d) => ({ ...d, szablony: s }))} />
       <KonkurencjaEdycja data={data} shop={shop} onZmiana={(k) => popraw((d) => ({ ...d, konkurencja: k }))} />
-      <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 18, ...hint }}>
-        Niżej bez zmian to samo, co w zakładce „Cena”: koszt zakupu, dostawy i sugerowana cena.
-      </div>
-      <ProductPriceTab sku={sku} shop={shop} onOpenContainer={onOpenContainer} />
+      <Box title="Koszt zakupu i dostawy" hint="to samo, co w zakładce „Cena” · kalkulatory cen są już w jednym, wyżej">
+        <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+          <ProductPriceTab sku={sku} shop={shop} onOpenContainer={onOpenContainer} bezKalkulatora />
+        </div>
+      </Box>
     </>
   );
 }
 
-// ── Ceny minimalne ───────────────────────────────────────────
-function CenyMinimalne({ data }: { data: WycenaData }) {
+// ── Zapisane ceny (minimalne i sugerowane) ───────────────────
+function ZapisaneCeny({ data }: { data: WycenaData }) {
   return (
-    <Section title="Ceny minimalne" hint="ustawiasz z kalkulatora poniżej · zespół widzi je w zakładce „test-cena”">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 12 }}>
-        {(["detal", "hurt"] as Kanal[]).map((k) => <KartaMin key={k} kanal={k} data={data} />)}
-      </div>
-    </Section>
+    <Box title="Zapisane ceny" hint="zapisujesz z kalkulatora poniżej · zespół widzi je w zakładce „test-cena”">
+      {/* Dwa rzędy: detal (niebieskawe tło), pod nim dropy/hurt (fioletowe). */}
+      {[KANALY.filter((k) => BRUTTO[k]), KANALY.filter((k) => !BRUTTO[k])].map((rzad, i) => (
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 12 }}>
+          {rzad.map((k) => <KartaMin key={k} kanal={k} data={data} />)}
+        </div>
+      ))}
+    </Box>
   );
 }
 
@@ -106,22 +123,23 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
   const wszystkie = data.ceny_min.filter((c) => c.kanal === kanal);
   const c = wszystkie[0];
   const historia = wszystkie.slice(1);
+  const tlo = { background: TINT_TLO[tintKanalu(kanal)], border: `1px solid ${TINT_RAMKA[tintKanalu(kanal)]}` };
   if (!c) {
     return (
-      <div style={{ ...kartaStyl, alignItems: "center", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
-        <b style={{ color: "var(--text-mid)" }}>Cena minimalna · {KANAL_NAZWA[kanal]}</b>
-        Jeszcze nie ustawiona. Policz ją w kalkulatorze i kliknij „Ustaw jako cenę minimalną”.
+      <div style={{ ...kartaStyl, ...tlo, alignItems: "center", justifyContent: "center", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
+        <b style={{ color: "var(--text-mid)" }}>{KANAL_NAZWA[kanal]}</b>
+        Jeszcze nie zapisana. Wybierz ją w kalkulatorze poniżej i kliknij „Zapisz cenę”.
       </div>
     );
   }
   // Koszt teraz w tej samej bazie, co przy ustawieniu (własny — porównujemy z FIFO).
   const teraz = c.baza === "srednia" ? data.srednia : data.fifo;
   const zmiana = teraz != null && c.koszt_bazy ? (teraz / c.koszt_bazy - 1) * 100 : null;
-  const brutto = kanal === "detal";
+  const brutto = BRUTTO[kanal];
   return (
-    <div style={kartaStyl}>
+    <div style={{ ...kartaStyl, ...tlo }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>
-        <span>Cena minimalna · {KANAL_NAZWA[kanal]}</span>
+        <span>{KANAL_NAZWA[kanal]}</span>
         <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 500 }}>{c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}</span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
@@ -142,7 +160,7 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
         <div style={{ ...noteWarn, fontSize: 12 }}>
           <span>▲</span>
           <div>Koszt {zmiana > 0 ? "wzrósł" : "spadł"} o <b className="mono">{proc1(Math.abs(zmiana))}</b> od ustawienia:
-            {" "}{zl2(c.koszt_bazy)} → {zl2(teraz as number)} zł ({c.baza === "srednia" ? "średnia" : "FIFO"}). Sprawdź cenę minimalną.</div>
+            {" "}{zl2(c.koszt_bazy)} → {zl2(teraz as number)} zł ({c.baza === "srednia" ? "średnia" : "FIFO"}). Sprawdź tę cenę.</div>
         </div>
       ) : zmiana != null ? <span style={{ ...pill, background: "var(--ok-soft)", color: "var(--ok)", alignSelf: "flex-start" }}>koszt bez zmian od ustawienia</span> : null}
       {historia.length > 0 && (
@@ -176,31 +194,34 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
   const [busy, setBusy] = useState(false);
   const [nowaNazwa, setNowaNazwa] = useState<string | null>(null);
   const [potwierdzUsun, setPotwierdzUsun] = useState(false);
+  // Którą cenę zapisujemy — domyślnie cel szablonu (każdy z pięciu szablonów ma swój).
+  const [cel, setCel] = useState<Kanal>(pierwszy?.cel ?? "detal");
 
   const szablon = data.szablony.find((s) => s.id === szablonId) ?? null;
   const wybierz = (id: number | null) => {
     const s = data.szablony.find((x) => x.id === id);
     setSzablonId(id);
     setPotwierdzUsun(false);
-    if (s) { setMarza(String(s.marza).replace(".", ",")); setKoszty(s.koszty.map(doEdycji)); }
+    if (s) { setMarza(String(s.marza).replace(".", ",")); setKoszty(s.koszty.map(doEdycji)); if (s.cel) setCel(s.cel); }
   };
 
   const K = baza === "wlasna" ? num(wlasny) : (baza === "fifo" ? data.fifo : data.srednia) ?? 0;
   const kosztyPlus = useMemo(() => koszty.map(zEdycji), [koszty]);
   const w = useMemo(() => wyliczWycene(K, num(marza), kosztyPlus, data.vat), [K, marza, kosztyPlus, data.vat]);
 
-  const ustawMin = async (kanal: Kanal) => {
+  const zapiszCene = async () => {
     if (!w || busy) return;
+    const kanal = cel;
     setBusy(true);
     try {
-      const c = (await api.put("/wycena/cena-minimalna", {
+      const c = (await api.put("/wycena/cena", {
         sku: data.sku, shop, kanal, baza, koszt_wlasny: baza === "wlasna" ? num(wlasny) : null,
         marza: num(marza), koszty: kosztyPlus, szablon: szablon?.nazwa ?? null,
       })) as CenaMin;
       onCenaMin(c);
-      toast(`Ustawiono cenę minimalną (${KANAL_NAZWA[kanal]}): ${zl2(c.cena_netto)} zł netto`, "ok");
+      toast(`Zapisano „${KANAL_NAZWA[kanal]}”: ${BRUTTO[kanal] ? `${zl2(c.cena_brutto)} zł brutto` : `${zl2(c.cena_netto)} zł netto`}`, "ok");
     } catch (e) {
-      toast(`Nie udało się ustawić ceny minimalnej: ${blad(e)}`, "warning");
+      toast(`Nie udało się zapisać ceny: ${blad(e)}`, "warning");
     } finally {
       setBusy(false);
     }
@@ -212,7 +233,7 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
     if (!nazwa) { toast("Podaj nazwę szablonu", "warning"); return; }
     setBusy(true);
     try {
-      const body = { nazwa, cel: nowy ? null : szablon?.cel ?? null, marza: num(marza), koszty: kosztyPlus };
+      const body = { nazwa, cel: nowy ? cel : szablon?.cel ?? cel, marza: num(marza), koszty: kosztyPlus };
       const lista = (nowy ? await api.post("/wycena/szablony", body) : await api.put(`/wycena/szablony/${szablon!.id}`, body)) as Szablon[];
       onSzablony(lista);
       if (nowy) { setSzablonId(lista[lista.length - 1]?.id ?? null); setNowaNazwa(null); }
@@ -245,7 +266,7 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
   const etykBazy = BAZA_NAZWA[baza];
 
   return (
-    <Section title="Kalkulator" hint="koszty „+” doliczają się PO marży — marża zostaje nietknięta">
+    <Box title="Kalkulator" hint="koszty „+” doliczają się PO marży — marża zostaje nietknięta">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 400px), 1fr))", gap: 12 }}>
         <div style={kartaStyl}>
           <Wiersz label="Kalkulator" htmlFor="wyc-szablon">
@@ -305,8 +326,8 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <MetricBox label="Cena netto" value={w ? <>{zl2(w.netto)}<small style={small}> zł</small></> : "—"} sub="bez VAT" />
-            <MetricBox label="Cena brutto" value={w ? <span style={{ color: "var(--accent)" }}>{zl2(w.brutto)}<small style={small}> zł</small></span> : "—"} sub={`z VAT ${data.vat}%`} />
+            <Kafel label="Cena netto" value={w ? <>{zl2(w.netto)}<small style={small}> zł</small></> : "—"} sub="bez VAT" />
+            <Kafel label="Cena brutto" value={w ? <span style={{ color: "var(--accent)" }}>{zl2(w.brutto)}<small style={small}> zł</small></span> : "—"} sub={`z VAT ${data.vat}%`} />
           </div>
           {w ? (
             <div style={rozpisStyl}>
@@ -329,21 +350,19 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
             <div style={noteWarn}>Sprawdź dane: koszt musi być większy od zera, marża poniżej 100%, a koszty procentowe nie mogą zabierać całej ceny.</div>
           )}
           {data.moze_zapisac && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {(["detal", "hurt"] as Kanal[]).map((k) => {
-                const glowny = szablon?.cel === k;
-                return (
-                  <button key={k} type="button" onClick={() => ustawMin(k)} disabled={!w || busy}
-                    style={{ ...(glowny ? btnPri : btnSec), opacity: !w || busy ? 0.5 : 1 }}>
-                    Ustaw jako cenę minimalną · {KANAL_NAZWA[k]}
-                  </button>
-                );
-              })}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <label htmlFor="wyc-cel" style={hint}>Zapisz jako</label>
+              <select id="wyc-cel" value={cel} onChange={(e) => setCel(e.target.value as Kanal)} style={{ ...inp, flex: "1 1 200px" }}>
+                {KANALY.map((k) => <option key={k} value={k}>{KANAL_NAZWA[k]}</option>)}
+              </select>
+              <button type="button" onClick={zapiszCene} disabled={!w || busy} style={{ ...btnPri, opacity: !w || busy ? 0.5 : 1 }}>
+                {busy ? "Zapisuję…" : "Zapisz cenę"}
+              </button>
             </div>
           )}
         </div>
       </div>
-    </Section>
+    </Box>
   );
 }
 
@@ -387,7 +406,7 @@ function KonkurencjaEdycja({ data, shop, onZmiana }: { data: WycenaData; shop: s
   };
 
   return (
-    <Section title="Konkurencja" hint="jeden wpis na sklep · nowa cena tego samego sklepu zastępuje starą, stara trafia do historii">
+    <Box title="Konkurencja" hint="jeden wpis na sklep · nowa cena tego samego sklepu zastępuje starą, stara trafia do historii">
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {data.moze_zapisac && (
           <form onSubmit={dodaj} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -443,6 +462,6 @@ function KonkurencjaEdycja({ data, shop, onZmiana }: { data: WycenaData; shop: s
           <div>Zespół widzi te ceny w zakładce „test-cena” na pasku: od najtańszego do najdroższego, z naszą ceną i ceną minimalną.</div>
         </div>
       </div>
-    </Section>
+    </Box>
   );
 }

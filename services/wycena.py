@@ -23,7 +23,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-KANALY_MIN = ("detal", "hurt")          # cena minimalna: detal (sklepy) i hurt (= dropy)
+# Ceny zapisywane z kalkulatora (jeden dziennik, kolumna kanal). Hurt = dropy.
+KANALY = ("detal", "hurt", "sug_detal", "sug_hurt", "sug_allegro")
+KANAL_NAZWA = {
+    "detal": "Cena minimalna detal",
+    "hurt": "Cena minimalna dropy/hurt",
+    "sug_detal": "Cena sugerowana detal",
+    "sug_hurt": "Cena sugerowana dropy/hurt",
+    "sug_allegro": "Cena sugerowana allegro",
+}
+# Detal pokazujemy brutto (tak płaci klient), dropy/hurt — netto (faktura firmie).
+KANALY_BRUTTO = ("detal", "sug_detal", "sug_allegro")
 BAZY = ("fifo", "srednia", "wlasna")
 TYPY_KOSZTU = ("zl", "proc")
 OD = ("netto", "brutto")
@@ -104,18 +114,27 @@ def wylicz_wycene(koszt_bazy: float, marza_proc: float, koszty: List[Koszt], vat
     )
 
 
-# Szablony kalkulatora wstawiane przy pierwszym starcie (tabela pusta). Stawki prowizji
-# celowo 0 — właściciel wpisuje swoje; zmyślona stawka dawałaby fałszywie pewną cenę.
+# Szablony kalkulatora wstawiane przy pierwszym starcie (tabela pusta) — po jednym na każdą
+# cenę z KANALY, w tej kolejności. Stawki prowizji celowo 0 — właściciel wpisuje swoje;
+# zmyślona stawka dawałaby fałszywie pewną cenę.
+_WYSYLKA = {"nazwa": "Wysyłka", "typ": "zl", "wartosc": 0}
 DOMYSLNE_SZABLONY = [
-    {"nazwa": "Cena minimalna — detal", "cel": "detal", "marza": 20,
-     "koszty": [{"nazwa": "Wysyłka", "typ": "zl", "wartosc": 0},
-                {"nazwa": "Prowizja kanału (średnio)", "typ": "proc", "od": "brutto", "wartosc": 0}]},
-    {"nazwa": "Cena minimalna — hurt / dropy", "cel": "hurt", "marza": 15, "koszty": []},
-    {"nazwa": "Cena detal — Allegro", "cel": None, "marza": 30,
-     "koszty": [{"nazwa": "Wysyłka", "typ": "zl", "wartosc": 0},
-                {"nazwa": "Prowizja Allegro", "typ": "proc", "od": "brutto", "wartosc": 0}]},
-    {"nazwa": "Cena detal — Erli", "cel": None, "marza": 30,
-     "koszty": [{"nazwa": "Wysyłka", "typ": "zl", "wartosc": 0},
-                {"nazwa": "Prowizja Erli", "typ": "proc", "od": "brutto", "wartosc": 0}]},
-    {"nazwa": "Cena dla dropów", "cel": None, "marza": 25, "koszty": []},
+    {"nazwa": KANAL_NAZWA["detal"], "cel": "detal", "marza": 20,
+     "koszty": [_WYSYLKA, {"nazwa": "Prowizja kanału (średnio)", "typ": "proc", "od": "brutto", "wartosc": 0}]},
+    {"nazwa": KANAL_NAZWA["hurt"], "cel": "hurt", "marza": 15, "koszty": []},
+    {"nazwa": KANAL_NAZWA["sug_detal"], "cel": "sug_detal", "marza": 30,
+     "koszty": [_WYSYLKA, {"nazwa": "Prowizja kanału (średnio)", "typ": "proc", "od": "brutto", "wartosc": 0}]},
+    {"nazwa": KANAL_NAZWA["sug_hurt"], "cel": "sug_hurt", "marza": 20, "koszty": []},
+    {"nazwa": KANAL_NAZWA["sug_allegro"], "cel": "sug_allegro", "marza": 30,
+     "koszty": [_WYSYLKA, {"nazwa": "Prowizja Allegro", "typ": "proc", "od": "brutto", "wartosc": 0}]},
 ]
+
+# Pierwsza wersja szablonów (stare nazwy) → nowe: (stara nazwa, nowa nazwa, cel, kolejność).
+# Zmieniamy tylko nazwę, cel i kolejność — marża i koszty wpisane przez właściciela zostają.
+STARE_SZABLONY = [
+    ("Cena minimalna — detal", KANAL_NAZWA["detal"], "detal", 0),
+    ("Cena minimalna — hurt / dropy", KANAL_NAZWA["hurt"], "hurt", 1),
+    ("Cena dla dropów", KANAL_NAZWA["sug_hurt"], "sug_hurt", 3),
+    ("Cena detal — Allegro", KANAL_NAZWA["sug_allegro"], "sug_allegro", 4),
+]
+STARY_ERLI = "Cena detal — Erli"     # nie ma go na nowej liście — znika, o ile nikt go nie zmieniał

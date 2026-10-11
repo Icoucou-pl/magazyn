@@ -103,6 +103,49 @@ export function KosztyEdytor({ koszty, onChange, zOd, idPrefix, disabled }: {
   );
 }
 
+// ── Ramka sekcji i kafel ─────────────────────────────────────
+/** Sekcja w ramce: tytuł w środku po lewej, opis po prawej (zawija się na telefonie). */
+export function Box({ title, hint, children }: { title: string; hint?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", padding: 16, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: "4px 16px" }}>
+        <h3 style={{ margin: 0, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)" }}>{title}</h3>
+        {hint && <span style={{ fontSize: 11.5, color: "var(--text-lo)", textAlign: "right", marginLeft: "auto" }}>{hint}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Kanał ceny → lekkie tło kafla: detal (w tym Allegro) niebieskawe, dropy/hurt fioletowe.
+ *  Tylko odcień — od razu widać, które kafle dotyczą tego samego. */
+export type Tint = "detal" | "hurt";
+export const TINT_TLO: Record<Tint, string> = {
+  detal: "color-mix(in oklch, var(--info) 16%, var(--bg))",
+  hurt: "color-mix(in oklch, var(--anomaly) 16%, var(--bg))",
+};
+export const TINT_RAMKA: Record<Tint, string> = {
+  detal: "color-mix(in oklch, var(--info) 45%, var(--border-soft))",
+  hurt: "color-mix(in oklch, var(--anomaly) 45%, var(--border-soft))",
+};
+
+export function Kafel({ label, value, sub, tone = "neutral", dot, tint }: {
+  label: string; value: React.ReactNode; sub?: React.ReactNode;
+  tone?: "neutral" | "critical" | "warning" | "info" | "ok" | "accent"; dot?: string; tint?: Tint;
+}) {
+  const color = { neutral: "var(--text-hi)", critical: "var(--critical)", warning: "var(--warning)", info: "var(--info)", ok: "var(--ok)", accent: "var(--accent)" }[tone];
+  return (
+    <div style={{ padding: "12px 14px", background: tint ? TINT_TLO[tint] : "var(--bg)", border: `1px solid ${tint ? TINT_RAMKA[tint] : "var(--border-soft)"}`, borderRadius: 10, minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 6 }}>
+        {dot && <span style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />}
+        {label}
+      </div>
+      <div className="num" style={{ fontSize: 22, fontWeight: 600, color, lineHeight: 1.15, marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11.5, color: "var(--text-mid)", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
 // ── Drobne klocki ────────────────────────────────────────────
 export function Pole({ id, value, onChange, unit, width = 86, disabled }: {
   id: string; value: string; onChange: (v: string) => void; unit: string; width?: number; disabled?: boolean;
