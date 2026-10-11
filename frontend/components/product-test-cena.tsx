@@ -110,6 +110,7 @@ function Ceny({ data }: { data: CenyProduktu }) {
   // Średnich cen sprzedaży tu celowo nie ma (decyzja właściciela) — dane z 30 dni zostają
   // w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
   // Rząd 1: detal (niebieskie), dropy/hurt (zielone); rząd 2: Allegro (pomarańczowe).
+  // Każda cena głównie brutto, netto w opisie (decyzja właściciela).
   const kto = (c: Krotko | null) => (c ? ` · ${ktoKiedy(c)}` : "");
   const netto = (b: number) => zl2(b / (1 + data.vat / 100));
   return (
@@ -119,10 +120,10 @@ function Ceny({ data }: { data: CenyProduktu }) {
           sub={data.min_detal ? `brutto · ${zl2(data.min_detal.cena_netto)} zł netto${kto(data.min_detal)}` : "nie ustawiono"} />
         <Kafel tint="detal" label="Cena sugerowana detal" tone="accent" value={zl(data.sugerowana_sklepy_brutto)}
           sub={data.sugerowana_sklepy_brutto != null ? `brutto · ${netto(data.sugerowana_sklepy_brutto)} zł netto` : "nie ustawiono"} />
-        <Kafel tint="hurt" label="Cena minimalna dropy/hurt" dot="var(--critical)" value={zl(data.min_hurt?.cena_netto)}
-          sub={data.min_hurt ? `netto · ${zl2(data.min_hurt.cena_brutto)} zł brutto${kto(data.min_hurt)}` : "nie ustawiono"} />
-        <Kafel tint="hurt" label="Cena sugerowana dropy/hurt" value={zl(data.sugerowana_dropy_netto)}
-          sub={data.sugerowana_dropy_netto != null ? `netto · ${zl2(data.sugerowana_dropy_netto * (1 + data.vat / 100))} zł brutto` : "nie ustawiono"} />
+        <Kafel tint="hurt" label="Cena minimalna dropy/hurt" dot="var(--critical)" value={zl(data.min_hurt?.cena_brutto)}
+          sub={data.min_hurt ? `brutto · ${zl2(data.min_hurt.cena_netto)} zł netto${kto(data.min_hurt)}` : "nie ustawiono"} />
+        <Kafel tint="hurt" label="Cena sugerowana dropy/hurt" value={zl(data.sugerowana_dropy_netto != null ? data.sugerowana_dropy_netto * (1 + data.vat / 100) : null)}
+          sub={data.sugerowana_dropy_netto != null ? `brutto · ${zl2(data.sugerowana_dropy_netto)} zł netto` : "nie ustawiono"} />
         <Kafel tint="allegro" label="Cena sugerowana allegro" value={zl(data.sugerowana_allegro_brutto)}
           sub={data.sugerowana_allegro_brutto != null ? `brutto · ${netto(data.sugerowana_allegro_brutto)} zł netto` : "nie ustawiono"} />
       </SiatkaCen>

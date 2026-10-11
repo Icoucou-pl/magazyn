@@ -24,7 +24,7 @@ import {
   KONKURENCJA_STARA_DNI, dniTemu, num, proc1, wyliczWycene, zl2, type KosztPlus,
 } from "@/lib/wycena";
 import {
-  Box, Kafel, KosztyEdytor, LegendaKolorow, SiatkaCen, TINT_RAMKA, TINT_TLO, type Tint, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
+  Box, Kafel, KosztyEdytor, LegendaKolorow, SiatkaCen, tintKlasa, type Tint, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
   noteInfo, noteWarn, pill, pusty, rozpisStyl, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji,
   type KosztEdycja,
 } from "./wycena-ui";
@@ -56,9 +56,9 @@ const KANAL_NAZWA: Record<Kanal, string> = {
   sug_hurt: "Cena sugerowana dropy/hurt",
   sug_allegro: "Cena sugerowana allegro",
 };
-// Detal pokazujemy brutto, dropy/hurt netto; tło kafla mówi, którego kanału dotyczy cena.
-const BRUTTO: Record<Kanal, boolean> = { detal: true, sug_detal: true, sug_allegro: true, hurt: false, sug_hurt: false };
-const tintKanalu = (k: Kanal): Tint => (k === "sug_allegro" ? "allegro" : BRUTTO[k] ? "detal" : "hurt");
+// Każdą cenę pokazujemy głównie brutto, netto w opisie (decyzja właściciela).
+// Kolor kafla mówi, którego kanału dotyczy cena.
+const TINT: Record<Kanal, Tint> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", sug_allegro: "allegro" };
 const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
 
@@ -122,10 +122,9 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
   const wszystkie = data.ceny_min.filter((c) => c.kanal === kanal);
   const c = wszystkie[0];
   const historia = wszystkie.slice(1);
-  const tlo = { background: TINT_TLO[tintKanalu(kanal)], border: `1px solid ${TINT_RAMKA[tintKanalu(kanal)]}` };
   if (!c) {
     return (
-      <div style={{ ...kartaStyl, ...tlo, alignItems: "center", justifyContent: "center", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
+      <div className={tintKlasa(TINT[kanal])} style={{ ...kartaStyl, background: undefined, border: undefined, alignItems: "center", justifyContent: "center", textAlign: "center", color: "var(--text-lo)", fontSize: 12.5 }}>
         <b style={{ color: "var(--text-mid)" }}>{KANAL_NAZWA[kanal]}</b>
         Jeszcze nie zapisana. Wybierz ją w kalkulatorze poniżej i kliknij „Zapisz cenę”.
       </div>
@@ -134,18 +133,17 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
   // Koszt teraz w tej samej bazie, co przy ustawieniu (własny — porównujemy z FIFO).
   const teraz = c.baza === "srednia" ? data.srednia : data.fifo;
   const zmiana = teraz != null && c.koszt_bazy ? (teraz / c.koszt_bazy - 1) * 100 : null;
-  const brutto = BRUTTO[kanal];
   return (
-    <div style={{ ...kartaStyl, ...tlo }}>
+    <div className={tintKlasa(TINT[kanal])} style={{ ...kartaStyl, background: undefined, border: undefined }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>
         <span>{KANAL_NAZWA[kanal]}</span>
         <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 500 }}>{c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}</span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
         <div className="num" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
-          {zl2(brutto ? c.cena_brutto : c.cena_netto)}<small style={small}> zł {brutto ? "brutto" : "netto"}</small>
+          {zl2(c.cena_brutto)}<small style={small}> zł brutto</small>
         </div>
-        <div className="num" style={{ fontSize: 12, color: "var(--text-mid)" }}>{zl2(brutto ? c.cena_netto : c.cena_brutto)} zł {brutto ? "netto" : "brutto"}</div>
+        <div className="num" style={{ fontSize: 12, color: "var(--text-mid)" }}>{zl2(c.cena_netto)} zł netto</div>
       </div>
       <div style={hint}>
         {BAZA_NAZWA[c.baza]} {zl2(c.koszt_bazy)} zł · marża {proc1(c.marza)}
@@ -168,7 +166,7 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6, ...hint }}>
             {historia.map((h) => (
               <span key={h.id} className="num">
-                {zl2(brutto ? h.cena_brutto : h.cena_netto)} zł {brutto ? "brutto" : "netto"} · {h.ustawil || "—"} · {h.ustawiono ? fmtDay(h.ustawiono) : ""} · {BAZA_NAZWA[h.baza]} {zl2(h.koszt_bazy)} zł, marża {proc1(h.marza)}
+                {zl2(h.cena_brutto)} zł brutto ({zl2(h.cena_netto)} netto) · {h.ustawil || "—"} · {h.ustawiono ? fmtDay(h.ustawiono) : ""} · {BAZA_NAZWA[h.baza]} {zl2(h.koszt_bazy)} zł, marża {proc1(h.marza)}
               </span>
             ))}
           </div>
@@ -218,7 +216,7 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
         marza: num(marza), koszty: kosztyPlus, szablon: szablon?.nazwa ?? null,
       })) as CenaMin;
       onCenaMin(c);
-      toast(`Zapisano „${KANAL_NAZWA[kanal]}”: ${BRUTTO[kanal] ? `${zl2(c.cena_brutto)} zł brutto` : `${zl2(c.cena_netto)} zł netto`}`, "ok");
+      toast(`Zapisano „${KANAL_NAZWA[kanal]}”: ${zl2(c.cena_brutto)} zł brutto (${zl2(c.cena_netto)} zł netto)`, "ok");
     } catch (e) {
       toast(`Nie udało się zapisać ceny: ${blad(e)}`, "warning");
     } finally {

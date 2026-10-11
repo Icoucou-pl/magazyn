@@ -32,8 +32,8 @@ KANAL_NAZWA = {
     "sug_hurt": "Cena sugerowana dropy/hurt",
     "sug_allegro": "Cena sugerowana allegro",
 }
-# Detal pokazujemy brutto (tak płaci klient), dropy/hurt — netto (faktura firmie).
-KANALY_BRUTTO = ("detal", "sug_detal", "sug_allegro")
+# Każdą cenę pokazujemy (i opisujemy w dzienniku) głównie brutto, netto w opisie — decyzja właściciela.
+KANALY_BRUTTO = KANALY
 BAZY = ("fifo", "srednia", "wlasna")
 TYPY_KOSZTU = ("zl", "proc")
 OD = ("netto", "brutto")
