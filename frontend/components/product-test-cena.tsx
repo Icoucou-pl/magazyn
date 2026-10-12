@@ -16,12 +16,12 @@ import React, { useEffect, useMemo, useState } from "react";
 import { fmtDay } from "./product-modal";
 import { api } from "@/lib/api";
 import {
-  KONKURENCJA_STARA_DNI, dniTemu, liczHandlowca, mediana, num, proc1, progDobrejCeny, strefa, zl2,
-  type TrybProwizji,
+  BAZA_KROTKO, KONKURENCJA_STARA_DNI, dniTemu, liczHandlowca, mediana, num, proc1, progDobrejCeny, strefa, zl2,
+  type BazaKosztu, type KosztBazy, type TrybProwizji,
 } from "@/lib/wycena";
 import {
-  Box, Kafel, KosztyEdytor, Linia, PasekCen, Pole, Wiersz, critStyl, hint, kartaStyl, linkOk, noteCrit, noteInfo, okStyl,
-  pill, pusty, rozpisStyl, KOLOR_KANALU, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji, type KosztEdycja,
+  Box, Kafel, KosztTowaru, KosztyEdytor, Linia, PasekCen, Pole, Wiersz, critStyl, hint, kartaStyl, linkOk, noteCrit, noteInfo, okStyl,
+  pill, pusty, rozpisStyl, KOLOR_KANALU, small, td, th, warnStyl, zEdycji, type KosztEdycja,
 } from "./wycena-ui";
 
 type Krotko = { cena_netto: number; cena_brutto: number; ustawil: string | null; ustawiono: string | null };
@@ -32,6 +32,7 @@ type Sprzedaz = {
 };
 type Konkurent = { id: number; sklep: string; cena_brutto: number; link: string | null; dodal: string | null; dodano: string | null; historia: unknown[] };
 type Koszt = {
+  koszty_bazy: KosztBazy[]; baza_domyslna: BazaKosztu | null;
   fifo: number | null; fifo_kontener: string | null; fifo_data: string | null; srednia: number | null;
   najblizsza: number | null; najblizsza_kontener: string | null; najblizsza_data: string | null; najblizsza_szacunek: boolean;
 };
@@ -172,23 +173,27 @@ function Ceny({ data }: { data: CenyProduktu }) {
 
 // ── Koszt zakupu (bez rozpisania) ────────────────────────────
 function KosztZakupu({ k }: { k: Koszt }) {
-  const zmiana = k.najblizsza != null && k.fifo ? (k.najblizsza / k.fifo - 1) * 100 : null;
+  // Tylko policzalne koszty; ten, od którego liczymy (FIFO → najbliższa → ostatnia dostawa),
+  // wyróżniony i podpisany „do wyceny”.
+  if (!k.koszty_bazy.length) {
+    return (
+      <Box title="Koszt zakupu" hint="widzą osoby z „Ceną zakupu produktu” · bez rozpisania">
+        <div style={{ ...pusty, padding: 20 }}>Brak dostaw tego produktu w aplikacji — koszt trzeba wpisać ręcznie w kalkulatorze.</div>
+      </Box>
+    );
+  }
   return (
     <Box title="Koszt zakupu" hint="widzą osoby z „Ceną zakupu produktu” · bez rozpisania">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-        <Kafel label="Koszt FIFO / szt" dot="var(--accent)" value={zl(k.fifo)}
-          sub={k.fifo_kontener ? `z dostawy ${k.fifo_kontener}${k.fifo_data ? ` · na magazynie od ${fmtDay(k.fifo_data)}` : ""}` : "z towaru na stanie"} />
-        <Kafel label="Średnia ze stanu" value={zl(k.srednia)} sub="ważona sztukami na stanie" />
-        {k.najblizsza != null && (
-          <Kafel label="Najbliższa dostawa" dot="var(--info)" value={<span style={{ color: "var(--info)" }}>{zl(k.najblizsza)}</span>}
-            sub={<>
-              {k.najblizsza_kontener || ""}{k.najblizsza_data ? ` · ok. ${fmtDay(k.najblizsza_data)}` : ""}
-              {k.najblizsza_szacunek ? " · szacunek" : ""}
-              {zmiana != null && Math.abs(zmiana) >= 1 && (
-                <> · <span style={{ ...pill, ...(zmiana > 0 ? warnStyl : okStyl) }}>{zmiana > 0 ? "drożej" : "taniej"} o {proc1(Math.abs(zmiana))}</span></>
-              )}
-            </>} />
-        )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 10 }}>
+        {k.koszty_bazy.map((b) => {
+          const glowny = b.baza === k.baza_domyslna;
+          return (
+            <Kafel key={b.baza} label={BAZA_KROTKO[b.baza]} dot={glowny ? "var(--accent)" : undefined}
+              value={<span style={{ color: glowny ? "var(--accent)" : undefined }}>{zl(b.koszt)}</span>}
+              sub={<>{glowny && <span style={{ ...pill, background: "var(--accent-soft)", color: "var(--accent)", marginRight: 6 }}>do wyceny</span>}
+                <span style={{ color: b.szacunek ? "var(--warning)" : undefined }}>{b.opis}</span></>} />
+          );
+        })}
       </div>
     </Box>
   );
@@ -286,18 +291,19 @@ const STREFY = {
 } as const;
 
 function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt }) {
-  const bazy = ([["fifo", "FIFO", koszt.fifo], ["srednia", "Średnia", koszt.srednia]] as const).filter(([, , v]) => v != null);
+  // Koszt towaru: ta sama zasada co w wycenie (FIFO → najbliższa → ostatnia dostawa), bez własnego.
+  const bazy = koszt.koszty_bazy;
   const minH = data.min_hurt?.cena_netto ?? null;
   const prog = minH != null ? progDobrejCeny(minH, data.sugerowana_dropy_netto) : null;
-  const startCena = data.sugerowana_dropy_netto ?? (prog ?? ((bazy[0]?.[2] ?? 0) * 1.3));
+  const startCena = data.sugerowana_dropy_netto ?? (prog ?? ((bazy[0]?.koszt ?? 0) * 1.3));
   const tryb = data.prowizja_tryb;
 
   const [cena, setCena] = useState(() => String(Math.round(startCena)));
-  const [baza, setBaza] = useState<string>(bazy[0]?.[0] ?? "fifo");
+  const [baza, setBaza] = useState<BazaKosztu | "wlasna">(koszt.baza_domyslna ?? bazy[0]?.baza ?? "fifo");
   const [proc, setProc] = useState(() => czytajProc(tryb));
   const [koszty, setKoszty] = useState<KosztEdycja[]>([]);
 
-  const K = (bazy.find(([b]) => b === baza)?.[2] ?? bazy[0]?.[2] ?? 0) as number;
+  const K = bazy.find((b) => b.baza === baza)?.koszt ?? bazy[0]?.koszt ?? 0;
   const N = num(cena);
   const w = useMemo(() => liczHandlowca(N, K, koszty.map(zEdycji), tryb, num(proc)), [N, K, koszty, tryb, proc]);
   const s = minH != null && prog != null ? strefa(N, minH, prog) : null;
@@ -354,14 +360,7 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
           )}
 
           <Wiersz label="Koszt towaru">
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <div role="group" aria-label="Koszt towaru" style={seg}>
-                {bazy.map(([b, l]) => (
-                  <button key={b} type="button" onClick={() => setBaza(b)} style={{ ...segBtn, ...(baza === b ? segOn : {}) }}>{l}</button>
-                ))}
-              </div>
-              <span className="mono" style={{ fontSize: 12, color: "var(--text-mid)" }}>{zl2(K)} zł</span>
-            </div>
+            <KosztTowaru koszty={bazy} baza={baza} onBaza={setBaza} wlasny="" onWlasny={() => { /* bez własnego */ }} idPrefix="hand" bezWlasnego />
           </Wiersz>
           <Wiersz label="Twoja prowizja" htmlFor="hand-proc">
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -385,7 +384,7 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
           </div>
           <div style={rozpisStyl}>
             <Linia l="Cena sprzedaży netto" v={`${zl2(w.netto)} zł`} />
-            <Linia wciecie l={`− koszt towaru (${bazy.find(([b]) => b === baza)?.[1] ?? ""})`} v={`${zl2(w.koszt)} zł`} />
+            <Linia wciecie l={`− koszt towaru (${BAZA_KROTKO[baza]})`} v={`${zl2(w.koszt)} zł`} />
             {w.koszty.map((k, i) => (
               <Linia key={i} wciecie l={<>− {k.nazwa || "koszt bez nazwy"}{k.typ === "proc" && <span style={hint}> {proc1(k.wartosc)}</span>}</>} v={`${zl2(k.kwota)} zł`} />
             ))}

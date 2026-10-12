@@ -21,17 +21,17 @@ import ProductPriceTab from "./product-price-tab";
 import { api } from "@/lib/api";
 import { toast } from "./toast";
 import {
-  KONKURENCJA_STARA_DNI, dniTemu, num, proc1, wyliczWycene, zl2, type KosztPlus,
+  KONKURENCJA_STARA_DNI, dniTemu, num, proc1, wyliczWycene, zl2, type BazaKosztu, type KosztBazy, type KosztPlus,
 } from "@/lib/wycena";
 import {
-  Box, Kafel, KosztyEdytor, SiatkaCen, KOLOR_KANALU, type KanalCeny, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
-  noteInfo, noteWarn, pill, pusty, rozpisStyl, seg, segBtn, segOn, small, td, th, warnStyl, zEdycji,
+  Box, Kafel, KosztTowaru, KosztyEdytor, SiatkaCen, KOLOR_KANALU, type KanalCeny, Linia, Pole, Wiersz, btnPri, btnSec, doEdycji, hint, inp, kartaStyl, linkBtn, linkOk,
+  noteInfo, noteWarn, pill, pusty, rozpisStyl, small, td, th, warnStyl, zEdycji,
   type KosztEdycja,
 } from "./wycena-ui";
 
 // Ceny zapisywane z kalkulatora — lustro services/wycena.py → KANALY / KANAL_NAZWA.
 type Kanal = "detal" | "hurt" | "sug_detal" | "sug_hurt" | "sug_allegro";
-type Baza = "fifo" | "srednia" | "wlasna";
+type Baza = BazaKosztu | "wlasna";
 type CenaMin = {
   id: number; kanal: Kanal; cena_netto: number; cena_brutto: number; vat: number; baza: Baza;
   koszt_bazy: number; marza: number; koszty: KosztPlus[]; szablon: string | null;
@@ -44,6 +44,7 @@ type Konkurent = {
 type Szablon = { id: number; nazwa: string; cel: Kanal | null; marza: number; koszty: KosztPlus[]; zmienil: string | null; zmieniono: string | null };
 type WycenaData = {
   sku: string; shop: string; vat: number; vat_zrodlo: string; fifo: number | null; srednia: number | null;
+  koszty_bazy: KosztBazy[]; baza_domyslna: BazaKosztu | null;
   ceny_min: CenaMin[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
 };
 
@@ -61,7 +62,7 @@ const KANAL_NAZWA: Record<Kanal, string> = {
 const KANAL_CENY: Record<Kanal, KanalCeny> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", sug_allegro: "allegro" };
 // Kropka przy nazwie: czerwona = minimalna, zielona = sugerowana (jak w nagłówku tabelki „test-cena”).
 const kropka = (k: Kanal) => (k === "detal" || k === "hurt" ? "var(--critical)" : "var(--ok)");
-const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", wlasna: "własny koszt" };
+const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", najblizsza: "najbliższa dostawa", ostatnia: "ostatnia dostawa", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
 
 export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
@@ -132,7 +133,8 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
     );
   }
   // Koszt teraz w tej samej bazie, co przy ustawieniu (własny — porównujemy z FIFO).
-  const teraz = c.baza === "srednia" ? data.srednia : data.fifo;
+  const kosztTeraz = (b: Baza) => data.koszty_bazy.find((k) => k.baza === b)?.koszt ?? null;
+  const teraz = c.baza === "wlasna" ? kosztTeraz(data.baza_domyslna ?? "fifo") : kosztTeraz(c.baza);
   const zmiana = teraz != null && c.koszt_bazy ? (teraz / c.koszt_bazy - 1) * 100 : null;
   return (
     <div style={{ ...kartaStyl, background: "var(--bg)", borderTop: `3px solid ${KOLOR_KANALU[KANAL_CENY[kanal]]}` }}>
@@ -187,8 +189,9 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
 }) {
   const pierwszy = data.szablony[0];
   const [szablonId, setSzablonId] = useState<number | null>(pierwszy?.id ?? null);
-  const [baza, setBaza] = useState<Baza>(data.fifo != null ? "fifo" : data.srednia != null ? "srednia" : "wlasna");
-  const [wlasny, setWlasny] = useState(String(data.fifo ?? data.srednia ?? "").replace(".", ","));
+  // Koszt bazowy: domyślnie wybrany przez serwer (FIFO → najbliższa → ostatnia dostawa).
+  const [baza, setBaza] = useState<Baza>(data.baza_domyslna ?? "wlasna");
+  const [wlasny, setWlasny] = useState("");
   const [marza, setMarza] = useState(String(pierwszy?.marza ?? 20).replace(".", ","));
   const [koszty, setKoszty] = useState<KosztEdycja[]>(() => (pierwszy?.koszty ?? []).map(doEdycji));
   const [busy, setBusy] = useState(false);
@@ -205,7 +208,7 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
     if (s) { setMarza(String(s.marza).replace(".", ",")); setKoszty(s.koszty.map(doEdycji)); if (s.cel) setCel(s.cel); }
   };
 
-  const K = baza === "wlasna" ? num(wlasny) : (baza === "fifo" ? data.fifo : data.srednia) ?? 0;
+  const K = baza === "wlasna" ? num(wlasny) : data.koszty_bazy.find((k) => k.baza === baza)?.koszt ?? 0;
   const kosztyPlus = useMemo(() => koszty.map(zEdycji), [koszty]);
   const w = useMemo(() => wyliczWycene(K, num(marza), kosztyPlus, data.vat), [K, marza, kosztyPlus, data.vat]);
 
@@ -262,7 +265,6 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
     }
   };
 
-  const brakBazy = (b: Baza) => b !== "wlasna" && (b === "fifo" ? data.fifo : data.srednia) == null;
   const etykBazy = BAZA_NAZWA[baza];
 
   return (
@@ -277,20 +279,8 @@ function Kalkulator({ data, shop, onCenaMin, onSzablony }: {
               </select>
             </div>
           </Wiersz>
-          <Wiersz label="Koszt bazowy">
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <div role="group" aria-label="Koszt bazowy" style={seg}>
-                {(["fifo", "srednia", "wlasna"] as Baza[]).map((b) => (
-                  <button key={b} type="button" disabled={brakBazy(b)} onClick={() => setBaza(b)}
-                    style={{ ...segBtn, ...(baza === b ? segOn : {}), opacity: brakBazy(b) ? 0.4 : 1, cursor: brakBazy(b) ? "default" : "pointer" }}>
-                    {b === "fifo" ? "FIFO" : b === "srednia" ? "Średnia" : "Własny"}
-                  </button>
-                ))}
-              </div>
-              {baza === "wlasna"
-                ? <Pole id="wyc-wlasny" value={wlasny} onChange={setWlasny} unit="zł" />
-                : <span className="mono" style={{ fontSize: 12, color: "var(--text-mid)" }}>{zl2(K)} zł</span>}
-            </div>
+          <Wiersz label="Koszt towaru">
+            <KosztTowaru koszty={data.koszty_bazy} baza={baza} onBaza={setBaza} wlasny={wlasny} onWlasny={setWlasny} idPrefix="wyc" />
           </Wiersz>
           <Wiersz label="Marża" htmlFor="wyc-marza">
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

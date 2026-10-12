@@ -34,7 +34,20 @@ KANAL_NAZWA = {
 }
 # Każdą cenę pokazujemy (i opisujemy w dzienniku) głównie brutto, netto w opisie — decyzja właściciela.
 KANALY_BRUTTO = KANALY
-BAZY = ("fifo", "srednia", "wlasna")
+BAZY = ("fifo", "srednia", "najblizsza", "ostatnia", "wlasna")
+
+# KOSZT DO WYCENY — od czego liczymy cenę, gdy nikt nie wybrał inaczej (ustalone z właścicielem):
+#   1. FIFO               — towar leży na magazynie (z tej partii zejdzie następna sprzedaż)
+#   2. najbliższa dostawa — na stanie nic, ale towar płynie (np. sample sprowadzany pierwszy raz)
+#   3. ostatnia dostawa   — towar się wyprzedał; koszt z importem, NIE cena z faktury z ERP
+# Ceny z ERP z doliczonym narzutem celowo nie ma: towar w kontenerze ma swój koszt, a bez
+# żadnej dostawy w aplikacji uczciwiej jest poprosić o koszt wpisany ręcznie niż zgadywać.
+KOLEJNOSC_DO_WYCENY = ("fifo", "najblizsza", "ostatnia")
+
+
+def baza_do_wyceny(koszty: dict) -> Optional[str]:
+    """{'fifo': 182.4, 'najblizsza': None, …} → pierwsza baza z KOLEJNOSC_DO_WYCENY, która ma koszt."""
+    return next((b for b in KOLEJNOSC_DO_WYCENY if koszty.get(b)), None)
 TYPY_KOSZTU = ("zl", "proc")
 OD = ("netto", "brutto")
 MAX_KOSZTOW = 20

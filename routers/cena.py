@@ -25,7 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import audit
-from audit_opisy import f_map, f_proc, f_zl
+from audit_opisy import etykieta_kontenera, f_map, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
@@ -244,12 +244,15 @@ async def koszt_naglowek(sku: str, shop: str = Query(""), db: AsyncSession = Dep
     """
     shop = resolve_shop(shop, user)
     p, _, w, meta, _, zrodlo, ceny = await _policz(db, sku, shop, user)
-    nb = next((d for d in w.dostawy if d.item_id == w.najblizsza_item_id), None)
+    po_id = {d.item_id: d for d in w.dostawy}
+    nb, ost = po_id.get(w.najblizsza_item_id), po_id.get(w.ostatnia_item_id)
+    # Kontener roboczy („Draft-…”) nie ma numeru — wtedy „FV: nr faktury”, jak wszędzie.
+    nr = lambda d: etykieta_kontenera(d.container_number, meta[d.item_id]["lot_order_number"] or meta[d.item_id]["order_number"], d.container_id) if d else None  # noqa: E731
     return KosztNaglowekOut(fifo=w.fifo, srednia=w.srednia, erp_zrodlo=zrodlo,
                             erp_cena=ceny.get(p.sku.strip().lower()),
                             najblizsza=w.najblizsza, najblizsza_data=nb.data if nb else None,
-                            najblizsza_kontener=(nb.container_number or meta[nb.item_id]["order_number"]) if nb else None,
-                            najblizsza_szacunek=bool(nb and nb.szacunek))
+                            najblizsza_kontener=nr(nb), najblizsza_szacunek=bool(nb and nb.szacunek),
+                            ostatnia=w.ostatnia, ostatnia_kontener=nr(ost), ostatnia_data=ost.data if ost else None)
 
 
 @router.get("/products/{sku:path}/cena", response_model=CenaProduktuOut)

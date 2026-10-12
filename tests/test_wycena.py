@@ -55,3 +55,16 @@ def test_koszty_zl_i_procent_razem():
 def test_bledne_dane(koszt, marza, koszty):
     with pytest.raises(BladWyceny):
         wylicz_wycene(koszt, marza, koszty, 23)
+
+
+def test_koszt_do_wyceny_kolejnosc():
+    from services.wycena import baza_do_wyceny
+    # Na stanie — FIFO, nawet gdy coś płynie i była starsza dostawa.
+    assert baza_do_wyceny({"fifo": 182.4, "srednia": 176.9, "najblizsza": 193.3, "ostatnia": 180}) == "fifo"
+    # Sample sprowadzany pierwszy raz: nic na stanie, płynie (EFK1_cz).
+    assert baza_do_wyceny({"najblizsza": 2012.11}) == "najblizsza"
+    # Wyprzedany (KPn1): ostatnia dostawa z importem, nie cena z faktury.
+    assert baza_do_wyceny({"ostatnia": 1420.67}) == "ostatnia"
+    # Sama średnia nie jest domyślną bazą; bez żadnej dostawy — koszt ręczny.
+    assert baza_do_wyceny({"srednia": 100}) is None
+    assert baza_do_wyceny({}) is None

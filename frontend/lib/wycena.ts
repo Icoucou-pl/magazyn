@@ -46,6 +46,13 @@ export function wyliczWycene(kosztBazy: number, marza: number, koszty: KosztPlus
   };
 }
 
+/** Koszt bazowy do wyboru (serwer oddaje tylko policzalne) — routers/wycena.py → _koszty_bazy. */
+export type BazaKosztu = "fifo" | "srednia" | "najblizsza" | "ostatnia";
+export type KosztBazy = { baza: BazaKosztu; koszt: number; opis: string; szacunek: boolean };
+export const BAZA_KROTKO: Record<BazaKosztu | "wlasna", string> = {
+  fifo: "FIFO", srednia: "Średnia ze stanu", najblizsza: "Najbliższa dostawa", ostatnia: "Ostatnia dostawa", wlasna: "Własny koszt",
+};
+
 export type TrybProwizji = "A" | "B";
 export type WynikHandlowca = {
   netto: number; koszt: number; koszty: PozycjaRozpisu[]; sumaKosztow: number;
