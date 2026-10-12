@@ -35,7 +35,7 @@ from audit_opisy import etykieta_kontenera, f_zl
 from config import INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, settings
 from database import get_db
 from models import (
-    CenaMinimalnaIn, CenaMinimalnaKrotkoOut, CenaMinimalnaOut, CenyProduktuOut, CurrentUser,
+    KosztBazyOut, CenaMinimalnaIn, CenaMinimalnaKrotkoOut, CenaMinimalnaOut, CenyProduktuOut, CurrentUser,
     KonkurencjaHistoriaOut, KonkurencjaIn, KonkurencjaOut, KosztZespolOut, SprzedazKanaluOut,
     SprzedazPonizejOut, WycenaKoszt, WycenaOut, WycenaSzablonIn, WycenaSzablonOut,
 )
@@ -47,7 +47,8 @@ from security import (
 )
 from services.cena import vat_produktu
 from services.products import get_product
-from services.wycena import KANAL_NAZWA, KANALY_BRUTTO, BladWyceny, Koszt, wylicz_wycene
+from services.cena import Wynik as WynikKosztow
+from services.wycena import KANAL_NAZWA, KANALY_BRUTTO, BladWyceny, Koszt, baza_do_wyceny, wylicz_wycene
 
 # Na czas testów obie zakładki i wszystkie ich endpointy widzi WYŁĄCZNIE superadmin (decyzja
 # właściciela). Uprawnienia niżej (viewPriceSummary, useSalesCalculator, Cena) zostają —
@@ -211,6 +212,34 @@ def _od_kiedy(minimum: Optional[CenaMinimalnaOut]) -> date:
     return od
 
 
+# ── Koszt bazowy: co da się policzyć i od czego liczymy domyślnie ─────────
+def _koszty_bazy(w: WynikKosztow, meta: dict) -> "tuple[List[KosztBazyOut], Optional[str]]":
+    """Tylko policzalne koszty (FIFO, średnia, najbliższa, ostatnia) z opisem skąd, i domyślna baza
+    wg services/wycena.py → baza_do_wyceny. Pusta lista = żadnej dostawy w aplikacji → koszt ręczny."""
+    po_id = {d.item_id: d for d in w.dostawy}
+    nr = lambda d: etykieta_kontenera(d.container_number, meta[d.item_id]["lot_order_number"] or meta[d.item_id]["order_number"], d.container_id)  # noqa: E731
+    dz = lambda d: d.data.strftime("%d.%m.%Y") if d and d.data else None  # noqa: E731
+    out: List[KosztBazyOut] = []
+    if w.fifo:
+        d = po_id.get(w.fifo_item_id)
+        out.append(KosztBazyOut(baza="fifo", koszt=w.fifo, opis=(
+            f"FIFO · z dostawy {nr(d)}" + (f", na magazynie od {dz(d)}" if dz(d) else "")) if d else "FIFO · z towaru na stanie"))
+    if w.srednia:
+        out.append(KosztBazyOut(baza="srednia", koszt=w.srednia, opis="średnia ważona z towaru na stanie"))
+    if w.najblizsza:
+        d = po_id.get(w.najblizsza_item_id)
+        szac = bool(d and d.szacunek)
+        out.append(KosztBazyOut(baza="najblizsza", koszt=w.najblizsza, szacunek=szac, opis=(
+            "najbliższa dostawa" + (f" {nr(d)}" if d else "") + (f" · ok. {dz(d)}" if dz(d) else "")
+            + (" · szacunek" if szac else ""))))
+    if w.ostatnia:
+        d = po_id.get(w.ostatnia_item_id)
+        out.append(KosztBazyOut(baza="ostatnia", koszt=w.ostatnia, opis=(
+            "ostatnia dostawa" + (f" {nr(d)}" if d else "") + (f" · {dz(d)}" if dz(d) else "")
+            + (" · brak na stanie" if not w.fifo else ""))))
+    return out, baza_do_wyceny({k.baza: k.koszt for k in out})
+
+
 # ── GET: „test-cena” ─────────────────────────────────────────────────────
 @router.get("/ceny-produktu", response_model=CenyProduktuOut)
 async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query(""),
@@ -224,7 +253,9 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
         fifo_d, nb = po_id.get(w.fifo_item_id), po_id.get(w.najblizsza_item_id)
         # Kontener roboczy („Draft-…”) nie ma numeru — pokazujemy wtedy „FV: nr faktury”, jak wszędzie.
         nr = lambda d: etykieta_kontenera(d.container_number, meta[d.item_id]["lot_order_number"] or meta[d.item_id]["order_number"], d.container_id) if d else None  # noqa: E731
+        kb, domyslna = _koszty_bazy(w, meta)
         koszt = KosztZespolOut(
+            koszty_bazy=kb, baza_domyslna=domyslna,
             fifo=w.fifo, fifo_kontener=nr(fifo_d), fifo_data=fifo_d.data if fifo_d else None,
             srednia=w.srednia, najblizsza=w.najblizsza, najblizsza_kontener=nr(nb),
             najblizsza_data=nb.data if nb else None, najblizsza_szacunek=bool(nb and nb.szacunek),
@@ -266,10 +297,12 @@ async def wycena(sku: str = Query(..., min_length=1), shop: str = Query(""),
                  db: AsyncSession = Depends(get_db),
                  user: CurrentUser = Depends(require_product_price_view)):
     shop = resolve_shop(shop, user)
-    p, _, w, _, slug, _, _ = await _policz(db, sku, shop, user)
+    p, _, w, meta, slug, _, _ = await _policz(db, sku, shop, user)
     vat = await vat_produktu(db, p.sku, shop or slug)
+    kb, domyslna = _koszty_bazy(w, meta)
     return WycenaOut(
         sku=p.sku, shop=shop, vat=vat["vat"], vat_zrodlo=vat["zrodlo"], fifo=w.fifo, srednia=w.srednia,
+        koszty_bazy=kb, baza_domyslna=domyslna,
         ceny_min=await _ceny_min(db, p.sku), konkurencja=await _konkurencja(db, p.sku),
         szablony=await _szablony(db), moze_zapisac=can_edit_product_price(user),
     )
@@ -284,7 +317,7 @@ async def zapisz_cene(body: CenaMinimalnaIn, db: AsyncSession = Depends(get_db),
     if body.baza == "wlasna":
         koszt = body.koszt_wlasny
     else:
-        koszt = w.fifo if body.baza == "fifo" else w.srednia
+        koszt = {"fifo": w.fifo, "srednia": w.srednia, "najblizsza": w.najblizsza, "ostatnia": w.ostatnia}[body.baza]
     if not koszt:
         raise HTTPException(422, "Brak kosztu bazowego — wybierz inny albo wpisz własny")
     vat = (await vat_produktu(db, p.sku, shop or slug))["vat"]

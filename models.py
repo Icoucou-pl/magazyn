@@ -1299,6 +1299,10 @@ class KosztNaglowekOut(BaseModel):
     najblizsza_kontener: Optional[str] = None
     najblizsza_data: Optional[date] = None
     najblizsza_szacunek: bool = False
+    # Gdy na stanie nic i nic nie płynie: koszt ostatniej dostawy (z importem) zamiast ceny z ERP.
+    ostatnia: Optional[float] = None
+    ostatnia_kontener: Optional[str] = None
+    ostatnia_data: Optional[date] = None
 
 
 class CenaProduktuOut(BaseModel):
@@ -1567,7 +1571,7 @@ class CenaMinimalnaOut(BaseModel):
     cena_netto: float
     cena_brutto: float
     vat: float
-    baza: str                                 # 'fifo' | 'srednia' | 'wlasna'
+    baza: str                                 # services/wycena.py → BAZY
     koszt_bazy: float
     marza: float
     koszty: List[WycenaKoszt] = []
@@ -1592,7 +1596,7 @@ class CenaMinimalnaIn(BaseModel):
     sku: str = Field(..., min_length=1, max_length=255)
     shop: Optional[str] = None
     kanal: KanalWyceny
-    baza: Literal["fifo", "srednia", "wlasna"]
+    baza: Literal["fifo", "srednia", "najblizsza", "ostatnia", "wlasna"]
     koszt_wlasny: Optional[float] = Field(None, gt=0, lt=10_000_000)
     marza: float = Field(..., ge=0, lt=100)
     koszty: List[WycenaKoszt] = Field(default_factory=list, max_length=20)
@@ -1659,6 +1663,14 @@ class WycenaSzablonIn(BaseModel):
     koszty: List[WycenaKoszt] = Field(default_factory=list, max_length=20)
 
 
+class KosztBazyOut(BaseModel):
+    """Jeden możliwy koszt bazowy kalkulatora (tylko te, które da się policzyć) z opisem, skąd jest."""
+    baza: str                                 # 'fifo' | 'srednia' | 'najblizsza' | 'ostatnia'
+    koszt: float
+    opis: str
+    szacunek: bool = False
+
+
 class WycenaOut(BaseModel):
     """Zakładka „test-wycena”: koszty do kalkulatora, ceny minimalne z historią, konkurencja, szablony."""
     sku: str
@@ -1667,6 +1679,8 @@ class WycenaOut(BaseModel):
     vat_zrodlo: str
     fifo: Optional[float] = None
     srednia: Optional[float] = None
+    koszty_bazy: List[KosztBazyOut] = []      # do wyboru w kalkulatorze — tylko policzalne
+    baza_domyslna: Optional[str] = None       # services/wycena.py → baza_do_wyceny
     ceny_min: List[CenaMinimalnaOut] = []     # minimalne i sugerowane, od najnowszej; pierwsza danego kanału = aktualna
     konkurencja: List[KonkurencjaOut] = []
     szablony: List[WycenaSzablonOut] = []
@@ -1693,6 +1707,8 @@ class SprzedazKanaluOut(BaseModel):
 
 class KosztZespolOut(BaseModel):
     """Koszt zakupu dla osób z ceną zakupu — bez rozpisania, tylko skąd."""
+    koszty_bazy: List[KosztBazyOut] = []
+    baza_domyslna: Optional[str] = None       # services/wycena.py → baza_do_wyceny
     fifo: Optional[float] = None
     fifo_kontener: Optional[str] = None
     fifo_data: Optional[date] = None

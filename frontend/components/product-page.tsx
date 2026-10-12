@@ -155,10 +155,12 @@ export default function ProductPage({
   // a pod spodem cena z Fakturowni / Subiektu do porównania. Widzi to każdy, kto widzi
   // koszt sztuki (finanse ALBO „Cena zakupu produktu") — chudy endpoint /koszt.
   // Klucz sku|firma przy wyniku: po zmianie SKU albo firmy stara liczba po prostu przestaje pasować.
-  // Bez towaru na stanie — koszt z kontenera, który przypłynie najwcześniej (podpowiedź do przedsprzedaży).
+  // Bez towaru na stanie — koszt z kontenera, który przypłynie najwcześniej (podpowiedź do przedsprzedaży),
+  // a gdy nic nie płynie — z ostatniej dostawy (towar wyprzedany; koszt z importem, nie cena z faktury).
   type KosztNaglowek = {
     srednia: number | null; erp_cena: number | null; erp_zrodlo: string;
     najblizsza: number | null; najblizsza_kontener: string | null; najblizsza_data: string | null; najblizsza_szacunek: boolean;
+    ostatnia: number | null; ostatnia_kontener: string | null; ostatnia_data: string | null;
   };
   const [kosztSrDane, setKosztSrDane] = useState<(KosztNaglowek & { klucz: string }) | null>(null);
   const kosztSr = showPrice && kosztSrDane?.klucz === `${sku}|${shop}` ? kosztSrDane : null;
@@ -509,16 +511,19 @@ export default function ProductPage({
                 )}
               </div>
               <Meta label="Stan dostępny" value={`${fmtNum(product.stock)} szt`} />
-              {kosztSr && (kosztSr.srednia ?? kosztSr.najblizsza) != null ? (() => {
+              {kosztSr && (kosztSr.srednia ?? kosztSr.najblizsza ?? kosztSr.ostatnia) != null ? (() => {
                 const erpNazwa = kosztSr.erp_zrodlo === "subiekt" ? "Subiekt" : "Fakturownia";
-                // Bez towaru na stanie — koszt z najbliższej dostawy w drodze, w tym samym wyglądzie
-                // (z którego kontenera — kafel „Najbliższa dostawa” w zakładce „Cena”).
-                const zNajblizszej = kosztSr.srednia == null;
+                // Kolejność: średnia ze stanu → najbliższa dostawa w drodze → ostatnia dostawa (wyprzedany).
+                // Po najechaniu — skąd liczba (z którego kontenera i kiedy).
+                const dzien = (d: string | null) => (d ? ` (${fmtDay(d)})` : "");
+                const [koszt, opis] = kosztSr.srednia != null
+                  ? [kosztSr.srednia, "Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"]
+                  : kosztSr.najblizsza != null
+                    ? [kosztSr.najblizsza, `Na stanie nie ma towaru z dostarczonych kontenerów — koszt z kontenera ${kosztSr.najblizsza_kontener || ""}, który przypłynie najwcześniej${dzien(kosztSr.najblizsza_data)}${kosztSr.najblizsza_szacunek ? " · szacunek" : ""}`]
+                    : [kosztSr.ostatnia as number, `Na stanie nie ma towaru i nic nie płynie — koszt z ostatniej dostawy ${kosztSr.ostatnia_kontener || ""}${dzien(kosztSr.ostatnia_data)}, z kosztami importu`];
                 return (
-                  <Meta label="Koszt netto / szt" value={fmtPLN((kosztSr.srednia ?? kosztSr.najblizsza) as number)} color="var(--accent)"
-                    title={zNajblizszej
-                      ? "Na stanie nie ma towaru z dostarczonych kontenerów — koszt z kontenera, który przypłynie najwcześniej"
-                      : "Średnia ważona z kontenerów rozliczonych odprawą, z których towar jest jeszcze na stanie"}
+                  <Meta label="Koszt netto / szt" value={fmtPLN(koszt)} color="var(--accent)"
+                    title={opis.replace(/ +/g, " ")}
                     sub={kosztSr.erp_cena
                       ? `${erpNazwa}: ${fmtPLN(kosztSr.erp_cena)}`
                       : `${erpNazwa}: brak ceny`} />

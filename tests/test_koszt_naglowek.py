@@ -33,9 +33,10 @@ BEZ_FINANSOW = {"viewFinancials": False, "viewPurchasePrice": False, "viewProduc
 def klient(monkeypatch):
     async def atrapa(db, sku, shop, user):
         p = SimpleNamespace(sku="SZP3")
-        nb = SimpleNamespace(item_id=9, data=date(2026, 12, 21), container_number="QCM2260902", szacunek=False)
-        w = SimpleNamespace(fifo=1814.48, srednia=1850.01, dostawy=[nb], najblizsza=1790.5, najblizsza_item_id=9)
-        return p, 154, w, {9: {"order_number": None}}, "acti", "fakturownia", {"szp3": 1700.0}
+        nb = SimpleNamespace(item_id=9, container_id=3, data=date(2026, 12, 21), container_number="QCM2260902", szacunek=False)
+        w = SimpleNamespace(fifo=1814.48, srednia=1850.01, dostawy=[nb], najblizsza=1790.5, najblizsza_item_id=9,
+                            ostatnia=None, ostatnia_item_id=None)
+        return p, 154, w, {9: {"order_number": None, "lot_order_number": None}}, "acti", "fakturownia", {"szp3": 1700.0}
     monkeypatch.setattr(cena, "_policz", atrapa)
 
     async def db():
@@ -52,7 +53,8 @@ def test_sam_ptaszek_ceny_zakupu_wystarcza(klient):
     assert r.status_code == 200
     assert r.json() == {"fifo": 1814.48, "srednia": 1850.01, "erp_cena": 1700.0, "erp_zrodlo": "fakturownia",
                         "najblizsza": 1790.5, "najblizsza_kontener": "QCM2260902", "najblizsza_data": "2026-12-21",
-                        "najblizsza_szacunek": False}
+                        "najblizsza_szacunek": False,
+                        "ostatnia": None, "ostatnia_kontener": None, "ostatnia_data": None}
 
 
 def test_finanse_bez_ptaszka_tez_widza(klient):

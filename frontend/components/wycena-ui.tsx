@@ -9,7 +9,7 @@
 // ============================================================
 
 import React from "react";
-import { num, zl2, type KosztPlus, type Od, type TypKosztu } from "@/lib/wycena";
+import { BAZA_KROTKO, num, zl2, type BazaKosztu, type KosztBazy, type KosztPlus, type Od, type TypKosztu } from "@/lib/wycena";
 
 // ── Pasek cen ────────────────────────────────────────────────
 export type StrefaPaska = { od: number; do: number; kolor: string };
@@ -148,6 +148,44 @@ export function Kafel({ label, value, sub, tone = "neutral", dot }: {
       </div>
       <div className="num" style={{ fontSize: 22, fontWeight: 600, color, lineHeight: 1.15, marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
       {sub && <div style={{ fontSize: 11.5, color: "var(--text-mid)", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ── Koszt towaru: jedna linia zamiast rzędu przycisków ───────
+/** Koszt, od którego liczy kalkulator. Domyślnie ten, który wybrał serwer (FIFO → najbliższa →
+ *  ostatnia dostawa), z opisem skąd jest; „zmień” pokazuje tylko to, co da się policzyć, plus
+ *  własny koszt. Bez żadnej dostawy w aplikacji — od razu pole na koszt wpisany ręcznie. */
+export function KosztTowaru({ koszty, baza, onBaza, wlasny, onWlasny, idPrefix, bezWlasnego }: {
+  koszty: KosztBazy[];
+  baza: BazaKosztu | "wlasna";
+  onBaza: (b: BazaKosztu | "wlasna") => void;
+  wlasny: string;
+  onWlasny: (v: string) => void;
+  idPrefix: string;
+  /** Kalkulator handlowca: tylko koszty z aplikacji, bez wpisywania własnego. */
+  bezWlasnego?: boolean;
+}) {
+  const wybrany = koszty.find((k) => k.baza === baza);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {baza === "wlasna" || !wybrany
+          ? <Pole id={`${idPrefix}-wlasny`} value={wlasny} onChange={onWlasny} unit="zł" />
+          : <span className="num" style={{ fontSize: 15, fontWeight: 600 }}>{zl2(wybrany.koszt)} zł</span>}
+        {koszty.length + (bezWlasnego ? 0 : 1) > 1 && (
+          <select aria-label="Zmień koszt" value={wybrany ? baza : "wlasna"} onChange={(e) => onBaza(e.target.value as BazaKosztu | "wlasna")}
+            style={{ ...inp, padding: "4px 6px", fontSize: 12, color: "var(--text-mid)" }}>
+            {koszty.map((k) => <option key={k.baza} value={k.baza}>{BAZA_KROTKO[k.baza]} · {zl2(k.koszt)} zł</option>)}
+            {!bezWlasnego && <option value="wlasna">{BAZA_KROTKO.wlasna}</option>}
+          </select>
+        )}
+      </div>
+      <span style={{ fontSize: 11.5, color: wybrany?.szacunek ? "var(--warning)" : "var(--text-lo)" }}>
+        {wybrany ? wybrany.opis
+          : koszty.length ? "własny koszt netto / szt"
+          : "brak dostaw w aplikacji — wpisz koszt netto / szt z kosztami importu"}
+      </span>
     </div>
   );
 }
