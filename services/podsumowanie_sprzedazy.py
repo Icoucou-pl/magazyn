@@ -4,7 +4,8 @@ Celowo liczone INACZEJ niż finanse: tak jak panel Sellasista, a nie jak Power B
   · bierzemy WSZYSTKIE zamówienia z `sellasist_orders` wg daty złożenia, w każdym statusie
     (nowe, za pobraniem, w realizacji…) — finanse liczą tylko zrealizowane (whitelista
     statusów per firma), więc tam świeże dni są „puste”, a tu widać bieżący ruch;
-  · wyjątek: statusy z `PODSUMOWANIE_POMIJANE_STATUSY`, gdyby Sellasist któreś pomijał;
+  · wyjątek: statusy z `PODSUMOWANIE_POMIJANE_STATUSY` — Sellasist nie liczy anulowanych
+    i zakończonych zwrotów (sprawdzone co do grosza na Veluxie);
   · wartość = `total` zamówienia (brutto, z wysyłką — jak w Sellasiście), przeliczona na PLN
     kursem NBP z dnia roboczego PRZED datą zamówienia (ta sama reguła co w finansach).
 
@@ -64,7 +65,8 @@ def zbuduj_serie(wiersze: Iterable[Dict[str, Any]], firmy: List[str], od: date, 
                 razem[d]["zamowien"] += v["zamowien"]
                 razem[d]["wartosc"] += v["wartosc"]
         out.append({"shop": "", "points": _lista(razem), "missing_rates": sum(bez_kursu.values())})
-    return {"from": od.isoformat(), "to": do.isoformat(), "series": out}
+    # Lista pomijanych statusów idzie na kartę (dymek „i”) — żeby było widać, co nie wchodzi.
+    return {"from": od.isoformat(), "to": do.isoformat(), "series": out, "excluded_statuses": pomijane_statusy()}
 
 
 async def podsumowanie(db: AsyncSession, firmy: List[str], dni: int = MAX_DNI,
