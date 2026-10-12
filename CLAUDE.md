@@ -113,8 +113,8 @@ cd frontend && npm install && npm run lint && npm run build
 
 ## Otwarte tematy
 
-- `SECRET_KEY` — upewnić się, że jest ustawiony w Railway (bez niego każdy deploy wylogowuje wszystkich);
-  dopisać do `.env.example`. Odłożone.
+- `SECRET_KEY` — upewnić się, że jest ustawiony w Railway (bez niego każdy deploy wylogowuje wszystkich).
+  W `.env.example` już jest.
 - Dostęp do Supabase tylko do odczytu (rola `claude_ro`, zmienna `SUPABASE_RO_URL`) — w przygotowaniu.
   Potem sprawdzić, czy `dropy.orders` ma UNIQUE na `nr` i `(partner_id, firma, external_id)`:
   `dropy_service/api.py::_next_nr` liczy numer jako „ostatni + 1”, bez blokady.
