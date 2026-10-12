@@ -23,7 +23,7 @@ import { fmtPLN, fmtNum } from "@/lib/format";
 
 type Point = { date: string; orders: number; value: number | null };
 type Series = { shop: string; points: Point[]; missing_rates: number };
-type Summary = { from: string; to: string; series: Series[] };
+type Summary = { from: string; to: string; series: Series[]; excluded_statuses?: string[] };
 
 const KPI_OKNA = [{ d: 1, l: "dziś" }, { d: 7, l: "7 dni" }, { d: 30, l: "30 dni" }];
 const WYKRES_OKNA = [30, 60, 180];
@@ -203,13 +203,15 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
   if (blad) return null;   // karta pomocnicza — jak się nie wczyta, reszta pulpitu działa dalej
   const series = (data?.series ?? []).filter((s) => !shop || s.shop === shop);
   const showValue = series.some((s) => s.points.some((p) => p.value != null));
+  const pomijane = data?.excluded_statuses ?? [];
 
   return (
     <Card>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", gap: 12, flexWrap: "wrap", borderBottom: "1px solid var(--border-soft)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>Podsumowanie sprzedaży</h3>
-          <span title={"Jak w Sellasiście: wszystkie zamówienia wg daty złożenia, w każdym statusie (nowe, za pobraniem, w realizacji…). "
+          <span title={"Jak w Sellasiście: zamówienia wg daty złożenia, w każdym statusie (nowe, za pobraniem, w realizacji…)"
+            + (pomijane.length ? ` OPRÓCZ: ${pomijane.join(", ")}` : "") + ". "
             + "Wartość brutto z wysyłką, obce waluty po kursie NBP. Bez hurtu z Fakturowni. To bieżący ruch — nie zrealizowana sprzedaż z Finansów."}
             style={{ color: "var(--text-lo)", cursor: "help", fontSize: 12 }}>ⓘ</span>
         </div>
@@ -232,6 +234,11 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
           <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 10, fontSize: 11, color: "var(--text-mid)" }}>
             <span><span style={{ color: LINE }}>●</span> Wartość zamówień (PLN)</span>
             <span><span style={{ color: BAR, opacity: 0.6 }}>■</span> Liczba zamówień</span>
+          </div>
+        )}
+        {data && pomijane.length > 0 && (
+          <div style={{ textAlign: "center", marginTop: 6, fontSize: 11, color: "var(--text-lo)" }}>
+            Wszystkie statusy oprócz: {pomijane.join(", ")}
           </div>
         )}
       </div>

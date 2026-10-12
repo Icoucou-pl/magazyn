@@ -150,3 +150,15 @@ def test_ptaszek_otwiera_karte_kazdej_roli(klient):
 def test_klucza_nie_ma_w_zadnej_roli():
     from security import ROLE_PERMS
     assert all("viewSalesSummary" not in p for p in ROLE_PERMS.values())
+
+
+def test_domyslnie_pomijamy_anulowane_i_zakonczone_zwroty():
+    """Ustalone na Veluxie: różnica do Sellasista to dokładnie te dwa statusy."""
+    from config import Settings
+    assert Settings.model_fields["PODSUMOWANIE_POMIJANE_STATUSY"].default == "Anulowane,Zwrot - zakończony"
+
+
+def test_lista_pomijanych_idzie_na_karte(klient, monkeypatch):
+    monkeypatch.setattr(settings, "PODSUMOWANIE_POMIJANE_STATUSY", "Anulowane,Zwrot - zakończony")
+    c, _ = klient()
+    assert c.get("/api/sales-summary").json()["excluded_statuses"] == ["Anulowane", "Zwrot - zakończony"]
