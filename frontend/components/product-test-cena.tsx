@@ -206,6 +206,8 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
   // Nasza cena do porównania: zapisana sugerowana dla sklepów, a bez niej — średnia z 30 dni.
   const nasza = data.sugerowana_sklepy_brutto ?? data.detal.srednia_brutto;
   const naszaOpis = data.sugerowana_sklepy_brutto != null ? "cena sugerowana" : "średnia sprzedaż 30 dni";
+  // Podpis na pasku mówi, co to za liczba — „My” sugerowało cenę, po której dziś sprzedajemy, a to nie ona.
+  const naszaEtk = data.sugerowana_sklepy_brutto != null ? "Sugerowana" : "Śr. 30 dni";
   const minB = data.min_detal?.cena_brutto ?? null;
   if (!konk.length) {
     return (
@@ -242,7 +244,7 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
           <PasekCen lo={lo} hi={hi} min={minB}
             strefy={minB != null ? [{ od: lo, do: minB, kolor: "color-mix(in oklch, var(--critical) 40%, transparent)" }] : []}
             kropki={konk.map((k) => ({ v: k.cena_brutto, t: `${k.sklep}: ${zl2(k.cena_brutto)} zł` }))}
-            my={nasza != null ? { v: nasza, etk: `My ${Math.round(nasza)}` } : null} />
+            my={nasza != null ? { v: nasza, etk: `${naszaEtk} ${Math.round(nasza)}` } : null} />
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", ...hint }}>
             <span>● konkurent (najedź, żeby zobaczyć sklep)</span>
             {nasza != null && <span style={{ color: "var(--accent)" }}>▮ nasza cena ({naszaOpis})</span>}
