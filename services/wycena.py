@@ -24,12 +24,13 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 # Ceny zapisywane z kalkulatora (jeden dziennik, kolumna kanal). Hurt = dropy.
-KANALY = ("detal", "hurt", "sug_detal", "sug_hurt", "sug_allegro")
+KANALY = ("detal", "hurt", "sug_detal", "sug_hurt", "min_allegro", "sug_allegro")
 KANAL_NAZWA = {
     "detal": "Cena minimalna detal",
     "hurt": "Cena minimalna dropy/hurt",
     "sug_detal": "Cena sugerowana detal",
     "sug_hurt": "Cena sugerowana dropy/hurt",
+    "min_allegro": "Cena minimalna allegro",   # wyższa niż detal — prowizja Allegro jest większa
     "sug_allegro": "Cena sugerowana allegro",
 }
 # Każdą cenę pokazujemy (i opisujemy w dzienniku) głównie brutto, netto w opisie — decyzja właściciela.
@@ -138,12 +139,18 @@ DOMYSLNE_SZABLONY = [
     {"nazwa": KANAL_NAZWA["sug_detal"], "cel": "sug_detal", "marza": 30,
      "koszty": [_WYSYLKA, {"nazwa": "Prowizja kanału (średnio)", "typ": "proc", "od": "brutto", "wartosc": 0}]},
     {"nazwa": KANAL_NAZWA["sug_hurt"], "cel": "sug_hurt", "marza": 20, "koszty": []},
+    {"nazwa": KANAL_NAZWA["min_allegro"], "cel": "min_allegro", "marza": 20,
+     "koszty": [_WYSYLKA, {"nazwa": "Prowizja Allegro", "typ": "proc", "od": "brutto", "wartosc": 0}]},
     {"nazwa": KANAL_NAZWA["sug_allegro"], "cel": "sug_allegro", "marza": 30,
      "koszty": [_WYSYLKA, {"nazwa": "Prowizja Allegro", "typ": "proc", "od": "brutto", "wartosc": 0}]},
 ]
 
 # Pierwsza wersja szablonów (stare nazwy) → nowe: (stara nazwa, nowa nazwa, cel, kolejność).
 # Zmieniamy tylko nazwę, cel i kolejność — marża i koszty wpisane przez właściciela zostają.
+# Szablony dodane po pierwszym wdrożeniu: (cel, kolejność). Start aplikacji dokłada brakujący
+# szablon RAZ — znacznik w app_wycena_dodane, żeby szablon usunięty przez właściciela nie wracał.
+DOSZLE_SZABLONY = [("min_allegro", 4)]
+
 STARE_SZABLONY = [
     ("Cena minimalna — detal", KANAL_NAZWA["detal"], "detal", 0),
     ("Cena minimalna — hurt / dropy", KANAL_NAZWA["hurt"], "hurt", 1),

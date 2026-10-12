@@ -1588,7 +1588,7 @@ class CenaMinimalnaKrotkoOut(BaseModel):
     ustawiono: Optional[datetime] = None
 
 
-KanalWyceny = Literal["detal", "hurt", "sug_detal", "sug_hurt", "sug_allegro"]
+KanalWyceny = Literal["detal", "hurt", "sug_detal", "sug_hurt", "min_allegro", "sug_allegro"]
 
 
 class CenaMinimalnaIn(BaseModel):
@@ -1726,6 +1726,7 @@ class CenyProduktuOut(BaseModel):
     vat: float
     min_detal: Optional[CenaMinimalnaKrotkoOut] = None
     min_hurt: Optional[CenaMinimalnaKrotkoOut] = None
+    min_allegro: Optional[CenaMinimalnaKrotkoOut] = None
     sugerowana_sklepy_brutto: Optional[float] = None   # cena sugerowana detal
     sugerowana_dropy_netto: Optional[float] = None     # cena sugerowana dropy/hurt
     sugerowana_allegro_brutto: Optional[float] = None

@@ -30,7 +30,7 @@ import {
 } from "./wycena-ui";
 
 // Ceny zapisywane z kalkulatora — lustro services/wycena.py → KANALY / KANAL_NAZWA.
-type Kanal = "detal" | "hurt" | "sug_detal" | "sug_hurt" | "sug_allegro";
+type Kanal = "detal" | "hurt" | "sug_detal" | "sug_hurt" | "min_allegro" | "sug_allegro";
 type Baza = BazaKosztu | "wlasna";
 type CenaMin = {
   id: number; kanal: Kanal; cena_netto: number; cena_brutto: number; vat: number; baza: Baza;
@@ -48,20 +48,21 @@ type WycenaData = {
   ceny_min: CenaMin[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
 };
 
-// Kolejność kart jak w „test-cena”: detal, detal, hurt, hurt — a Allegro rząd niżej.
-const KANALY: Kanal[] = ["detal", "sug_detal", "hurt", "sug_hurt", "sug_allegro"];
+// Kolejność kart jak w „test-cena”: detal, detal, hurt, hurt — a Allegro (minimalna, sugerowana) rząd niżej.
+const KANALY: Kanal[] = ["detal", "sug_detal", "hurt", "sug_hurt", "min_allegro", "sug_allegro"];
 const KANAL_NAZWA: Record<Kanal, string> = {
   detal: "Cena minimalna detal",
   hurt: "Cena minimalna dropy/hurt",
   sug_detal: "Cena sugerowana detal",
   sug_hurt: "Cena sugerowana dropy/hurt",
+  min_allegro: "Cena minimalna allegro",
   sug_allegro: "Cena sugerowana allegro",
 };
 // Każdą cenę pokazujemy głównie brutto, netto w opisie (decyzja właściciela).
 // Kanał zdradza cienki pasek u góry karty (kolor jak kropki w tabelce „test-cena”).
-const KANAL_CENY: Record<Kanal, KanalCeny> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", sug_allegro: "allegro" };
+const KANAL_CENY: Record<Kanal, KanalCeny> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", min_allegro: "allegro", sug_allegro: "allegro" };
 // Kropka przy nazwie: czerwona = minimalna, zielona = sugerowana (jak w nagłówku tabelki „test-cena”).
-const kropka = (k: Kanal) => (k === "detal" || k === "hurt" ? "var(--critical)" : "var(--ok)");
+const kropka = (k: Kanal) => (k === "detal" || k === "hurt" || k === "min_allegro" ? "var(--critical)" : "var(--ok)");
 const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", najblizsza: "najbliższa dostawa", ostatnia: "ostatnia dostawa", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
 
