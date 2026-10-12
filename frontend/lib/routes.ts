@@ -40,10 +40,11 @@ const VIEW_BY_SEGMENT: Record<string, string> = {
   producenci: "manufacturers",
 };
 
-// Podsekcje Ustawień, do których prowadzi adres. Na razie tylko producenci —
-// to korzeń breadcrumba karty producenta otwartej z linku.
+// Podsekcje Ustawień, do których prowadzi adres: producenci (korzeń breadcrumba
+// karty producenta otwartej z linku) i Moje konto (z menu pod avatarem).
 const SETTINGS_SECTION_BY_SEGMENT: Record<string, string> = {
   producenci: "manufacturers",
+  konto: "account",
 };
 
 const SEGMENT_BY_VIEW: Record<string, string> = Object.fromEntries(
@@ -78,6 +79,9 @@ export function pathForManufacturer(name: string): string {
 
 /** Ustawienia → Producenci (lista producentów, bez otwierania modala). */
 export const PATH_MANUFACTURERS_LIST = "/ustawienia/producenci";
+
+/** Ustawienia → Moje konto (hasło, imię i nazwisko, sesje). */
+export const PATH_ACCOUNT = "/ustawienia/konto";
 
 export function pathForContainer(id: number): string {
   return `/kontenery/${id}`;
