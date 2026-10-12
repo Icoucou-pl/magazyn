@@ -72,6 +72,12 @@ class Settings(BaseSettings):
         "Wysłane,Odebrane przez kuriera,Doręczone - Allegro,Doręczone - Sklep"
     )
 
+    # „Podsumowanie sprzedaży” na pulpicie liczy jak panel Sellasista: WSZYSTKIE zamówienia
+    # z dnia złożenia, w każdym statusie (nowe, za pobraniem, w realizacji…) — to „ruch”,
+    # nie zrealizowana sprzedaż z whitelist wyżej. Tu można wykluczyć statusy, których
+    # Sellasist nie liczy (nazwy 1:1 jak w bazie, po przecinku, dotyczy wszystkich firm).
+    PODSUMOWANIE_POMIJANE_STATUSY: str = ""
+
     # --- Kursy walut NBP (tabela A) → przewalutowanie na PLN ---
     # app_fx_rates trzyma kurs średni (mid) per 1 jednostka waluty, per dzień roboczy.
     # EUR/CZK/HUF są wszystkie w tabeli A NBP, mid jest znormalizowany per 1 jednostkę
