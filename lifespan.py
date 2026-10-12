@@ -725,7 +725,23 @@ async def lifespan(app: FastAPI):
                             VALUES (:n, :c, :m, CAST(:k AS JSONB), 2)"""),
                     {"n": KANAL_NAZWA["sug_detal"], "c": "sug_detal", "m": s["marza"], "k": json.dumps(s["koszty"])},
                 )
-        if not (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_szablony)"))).scalar():
+        # Szablony dołożone później (DOSZLE_SZABLONY) — raz na bazę; znacznik w app_wycena_dodane,
+        # żeby szablonu usuniętego przez właściciela nie wstawiać przy każdym starcie od nowa.
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS app_wycena_dodane (cel TEXT PRIMARY KEY, dodano TIMESTAMPTZ NOT NULL DEFAULT NOW())"))
+        nowa_baza = not (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_szablony)"))).scalar()
+        from services.wycena import DOSZLE_SZABLONY
+        for cel, kol in DOSZLE_SZABLONY:
+            if not (await conn.execute(text("SELECT EXISTS (SELECT 1 FROM app_wycena_dodane WHERE cel = :c)"), {"c": cel})).scalar():
+                if not nowa_baza:   # świeża baza dostaje go niżej razem z resztą
+                    s = next(x for x in DOMYSLNE_SZABLONY if x["cel"] == cel)
+                    await conn.execute(text("UPDATE app_wycena_szablony SET kolejnosc = kolejnosc + 1 WHERE kolejnosc >= :k"), {"k": kol})
+                    await conn.execute(
+                        text("""INSERT INTO app_wycena_szablony (nazwa, cel, marza, koszty, kolejnosc)
+                                VALUES (:n, :c, :m, CAST(:k AS JSONB), :o)"""),
+                        {"n": s["nazwa"], "c": cel, "m": s["marza"], "k": json.dumps(s["koszty"]), "o": kol},
+                    )
+                await conn.execute(text("INSERT INTO app_wycena_dodane (cel) VALUES (:c) ON CONFLICT DO NOTHING"), {"c": cel})
+        if nowa_baza:
             for i, s in enumerate(DOMYSLNE_SZABLONY):
                 await conn.execute(
                     text("""INSERT INTO app_wycena_szablony (nazwa, cel, marza, koszty, kolejnosc)

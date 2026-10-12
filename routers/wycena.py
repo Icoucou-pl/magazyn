@@ -123,8 +123,12 @@ async def _szablony(db: AsyncSession) -> List[WycenaSzablonOut]:
 
 # ── Sprzedaż: średnie z 30 dni i porównanie z ceną minimalną ──────────────
 def _kanal_sprzedazy(wiersze: list, cena_klucz: str, minimum: Optional[CenaMinimalnaOut],
-                     prog: Optional[float]) -> SprzedazKanaluOut:
-    """wiersze: dict(data, kanal, szt, netto, brutto) — ceny za sztukę, od najnowszej."""
+                     prog: Optional[float], minimum_allegro: Optional[CenaMinimalnaOut] = None) -> SprzedazKanaluOut:
+    """wiersze: dict(data, kanal, szt, netto, brutto) — ceny za sztukę, od najnowszej.
+
+    Porównanie z ceną minimalną liczy się od chwili jej ustawienia. Sprzedaż z Allegro (detal)
+    porównujemy z ceną minimalną Allegro, gdy jest ustawiona (jest wyższa — większa prowizja),
+    resztę z ceną minimalną kanału."""
     od30 = date.today() - timedelta(days=OKRES_DNI)
     ost = [w for w in wiersze if w["data"] and w["data"] >= od30]
     szt = sum(w["szt"] for w in ost)
@@ -134,11 +138,24 @@ def _kanal_sprzedazy(wiersze: list, cena_klucz: str, minimum: Optional[CenaMinim
         srednia_brutto=round(sum(w["szt"] * w["brutto"] for w in ost) / szt, 2) if szt and all(w["brutto"] for w in ost) else None,
         ostatnia_data=wiersze[0]["data"] if wiersze else None,
     )
+    reguly = []   # (cena minimalna, próg, czy wiersz jej dotyczy) — pierwsza pasująca wygrywa
+    if minimum_allegro:
+        reguly.append((minimum_allegro, minimum_allegro.cena_brutto, lambda w: w["kanal"] == "Allegro"))
     if minimum and prog:
-        od = minimum.ustawiono.date() if minimum.ustawiono else od30
-        po = [w for w in wiersze if w["data"] and w["data"] >= od]
-        ponizej = [w for w in po if w[cena_klucz] < prog - 0.005]
-        out.ponizej_od = minimum.ustawiono
+        reguly.append((minimum, prog, lambda w: True))
+    if reguly:
+        po, ponizej = [], []
+        for w in wiersze:
+            reg = next((r for r in reguly if r[2](w)), None)
+            if not reg or not w["data"]:
+                continue
+            m, pr, _ = reg
+            if w["data"] < (m.ustawiono.date() if m.ustawiono else od30):
+                continue
+            po.append(w)
+            if w[cena_klucz] < pr - 0.005:
+                ponizej.append(w)
+        out.ponizej_od = min((r[0].ustawiono for r in reguly if r[0].ustawiono), default=None)
         out.ponizej_z = len(po)
         out.ponizej_ile = len(ponizej)
         out.ponizej = [SprzedazPonizejOut(data=w["data"], kanal=w["kanal"], cena=round(w[cena_klucz], 2), szt=w["szt"])
@@ -266,7 +283,7 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
     vat = (await vat_produktu(db, p.sku, shop or slug))["vat"]
 
     ceny = await _ceny_min(db, p.sku)
-    md, mh = _aktualna(ceny, "detal"), _aktualna(ceny, "hurt")
+    md, mh, ma = _aktualna(ceny, "detal"), _aktualna(ceny, "hurt"), _aktualna(ceny, "min_allegro")
     krotko = lambda c: CenaMinimalnaKrotkoOut(cena_netto=c.cena_netto, cena_brutto=c.cena_brutto,  # noqa: E731
                                               ustawil=c.ustawil, ustawiono=c.ustawiono) if c else None
     # Ceny sugerowane: z kalkulatora wyceny, a dopóki tam ich nie ma — zapisane starą zakładką „Cena”.
@@ -275,14 +292,14 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
     sug_detal = sd.cena_brutto if sd else (stare["sklepy"].cena_brutto if "sklepy" in stare else None)
     sug_hurt = sh.cena_netto if sh else (stare["dropy"].cena_netto if "dropy" in stare else None)
 
-    detal = await _sprzedaz_detal(db, p.sku, shop, _od_kiedy(md))
+    detal = await _sprzedaz_detal(db, p.sku, shop, min(_od_kiedy(md), _od_kiedy(ma)))
     hurt = await _sprzedaz_hurt(db, p.sku, shop, _od_kiedy(mh))
     return CenyProduktuOut(
-        sku=p.sku, shop=shop, vat=vat, min_detal=krotko(md), min_hurt=krotko(mh),
+        sku=p.sku, shop=shop, vat=vat, min_detal=krotko(md), min_hurt=krotko(mh), min_allegro=krotko(ma),
         sugerowana_sklepy_brutto=sug_detal, sugerowana_dropy_netto=sug_hurt,
         sugerowana_allegro_brutto=sa.cena_brutto if sa else None,
         okres_dni=OKRES_DNI,
-        detal=_kanal_sprzedazy(detal, "brutto", md, md.cena_brutto if md else None),
+        detal=_kanal_sprzedazy(detal, "brutto", md, md.cena_brutto if md else None, ma),
         hurt=_kanal_sprzedazy(hurt, "netto", mh, mh.cena_netto if mh else None),
         konkurencja=await _konkurencja(db, p.sku),
         koszt=koszt,

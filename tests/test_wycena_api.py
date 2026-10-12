@@ -129,3 +129,25 @@ def test_superadmin_przechodzi_przez_bramke(klient):
     # Zły link odrzuca walidacja (422), a nie bramka (403) — superadmin jest wpuszczony.
     r = klient("ADMIN", email=SZEF).post("/api/wycena/konkurencja", json={**KONK, "link": "javascript:alert(1)"})
     assert r.status_code == 422
+
+
+def test_allegro_porownujemy_z_minimum_allegro():
+    """Sprzedaż z Allegro poniżej minimum Allegro (wyższego) to alarm, choć jest nad minimum detalu."""
+    from datetime import date, datetime, timedelta, timezone
+    from models import CenaMinimalnaOut
+    from routers.wycena import _kanal_sprzedazy
+    ustaw = datetime.now(timezone.utc) - timedelta(days=10)
+    cm = lambda kanal, brutto: CenaMinimalnaOut(id=1, kanal=kanal, cena_netto=brutto / 1.23, cena_brutto=brutto,  # noqa: E731
+                                                vat=23, baza="fifo", koszt_bazy=1, marza=1, ustawiono=ustaw)
+    dzis = date.today()
+    wiersze = [
+        {"data": dzis, "kanal": "Allegro", "szt": 1, "netto": 0, "brutto": 3300},   # < 3500 (min Allegro) → alarm
+        {"data": dzis, "kanal": "Erli", "szt": 1, "netto": 0, "brutto": 3100},      # > 3000 (min detal) → OK
+        {"data": dzis, "kanal": "Klaudia", "szt": 1, "netto": 0, "brutto": 2900},   # < 3000 → alarm
+    ]
+    out = _kanal_sprzedazy(wiersze, "brutto", cm("detal", 3000), 3000, cm("min_allegro", 3500))
+    assert out.ponizej_z == 3 and out.ponizej_ile == 2
+    assert [p.kanal for p in out.ponizej] == ["Allegro", "Klaudia"]
+    # Bez minimum Allegro — Allegro liczy się jak reszta detalu.
+    out = _kanal_sprzedazy(wiersze, "brutto", cm("detal", 3000), 3000)
+    assert out.ponizej_ile == 1

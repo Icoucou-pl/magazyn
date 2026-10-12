@@ -38,7 +38,7 @@ type Koszt = {
 };
 export type CenyProduktu = {
   sku: string; shop: string; vat: number;
-  min_detal: Krotko | null; min_hurt: Krotko | null;
+  min_detal: Krotko | null; min_hurt: Krotko | null; min_allegro: Krotko | null;
   sugerowana_sklepy_brutto: number | null; sugerowana_dropy_netto: number | null; sugerowana_allegro_brutto: number | null;
   okres_dni: number; detal: Sprzedaz; hurt: Sprzedaz;
   konkurencja: Konkurent[]; koszt: Koszt | null; kalkulator: boolean; prowizja_tryb: TrybProwizji;
@@ -110,8 +110,8 @@ function AlarmPonizej({ data }: { data: CenyProduktu }) {
 // Wybrana przez właściciela zamiast kolorowych kafli (w nich się gubił). Każda cena głównie
 // brutto, netto pod spodem. Średnich cen sprzedaży tu celowo nie ma — dane z 30 dni zostają
 // w odpowiedzi, bo karmią alarm „poniżej minimum” i „naszą cenę” na pasku konkurencji.
-// Bez kolorowych wypełnień: kanał zdradza tylko kropka przy nazwie. Przy sugerowanej — ile jest nad minimum (Allegro liczymy względem
-// minimum detalu, bo to też sprzedaż detaliczna).
+// Bez kolorowych wypełnień: kanał zdradza tylko kropka przy nazwie. Przy sugerowanej — ile jest nad minimum.
+// Allegro ma własną cenę minimalną (wyższą — prowizja); dopóki jej nie ma, porównujemy z minimum detalu.
 type Komorka = { brutto: number; netto: number } | null;
 
 function Ceny({ data }: { data: CenyProduktu }) {
@@ -120,10 +120,11 @@ function Ceny({ data }: { data: CenyProduktu }) {
   const zNetto = (n: number | null | undefined): Komorka => (n == null ? null : { brutto: n * v, netto: n });
   const minDetal: Komorka = data.min_detal ? { brutto: data.min_detal.cena_brutto, netto: data.min_detal.cena_netto } : null;
   const minHurt: Komorka = data.min_hurt ? { brutto: data.min_hurt.cena_brutto, netto: data.min_hurt.cena_netto } : null;
-  const wiersze: { nazwa: string; opis: string; kolor: string; min: Komorka | "brak"; sug: Komorka; minDoPor: Komorka; kto: Krotko | null }[] = [
+  const minAllegro: Komorka = data.min_allegro ? { brutto: data.min_allegro.cena_brutto, netto: data.min_allegro.cena_netto } : null;
+  const wiersze: { nazwa: string; opis: string; kolor: string; min: Komorka; sug: Komorka; minDoPor: Komorka; kto: Krotko | null }[] = [
     { nazwa: "Detal", opis: "I-CC, Veluxa, Acti", kolor: KOLOR_KANALU.detal, min: minDetal, sug: zBrutto(data.sugerowana_sklepy_brutto), minDoPor: minDetal, kto: data.min_detal },
     { nazwa: "Dropy / hurt", opis: "partnerzy, hurtownie", kolor: KOLOR_KANALU.hurt, min: minHurt, sug: zNetto(data.sugerowana_dropy_netto), minDoPor: minHurt, kto: data.min_hurt },
-    { nazwa: "Allegro", opis: "minimum jak detal", kolor: KOLOR_KANALU.allegro, min: "brak", sug: zBrutto(data.sugerowana_allegro_brutto), minDoPor: minDetal, kto: null },
+    { nazwa: "Allegro", opis: "własna cena minimalna", kolor: KOLOR_KANALU.allegro, min: minAllegro, sug: zBrutto(data.sugerowana_allegro_brutto), minDoPor: minAllegro ?? minDetal, kto: data.min_allegro },
   ];
   const cena = (k: Komorka) => k ? (
     <>
@@ -153,7 +154,7 @@ function Ceny({ data }: { data: CenyProduktu }) {
                 <div style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, paddingLeft: 16 }}>{w.opis}</div>
               </div>
               <div style={{ minWidth: 0 }} title={w.kto ? `Ustawił(a): ${ktoKiedy(w.kto)}` : undefined}>
-                {w.min === "brak" ? <div style={{ fontSize: 12, color: "var(--text-lo)" }}>—</div> : cena(w.min)}
+                {cena(w.min)}
               </div>
               <div style={{ minWidth: 0 }}>
                 {cena(w.sug)}
