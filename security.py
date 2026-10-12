@@ -125,6 +125,8 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # UWAGA — klucze CELOWO nieobecne poniżej (has_perm zwróci dla nich False dla KAŻDEJ roli,
 # łącznie z ADMIN; dostęp daje wyłącznie wpis w kolumnie `permissions` konkretnego usera):
 #   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
+#   · viewSalesSummary — „Podsumowanie sprzedaży” na pulpicie. Superadmin widzi je zawsze
+#     (can_view_sales_summary), reszta tylko z ptaszkiem postawionym w Ustawieniach.
 #
 # viewBankBalances / editBankBalances — saldo rachunku firmy i pożyczki wspólników.
 # Domyślnie TYLKO ADMIN. Oba są KONIUNKCYJNE z viewFinancials (patrz can_view_bank):
@@ -274,6 +276,18 @@ def is_super_admin(user: Optional[CurrentUser]) -> bool:
     """Adres z SUPER_ADMIN_EMAIL — ten sam test co routers/product_history.py i /auth/me."""
     super_email = (settings.SUPER_ADMIN_EMAIL or "").strip().lower()
     return bool(super_email and user and (user.email or "").strip().lower() == super_email)
+
+
+def can_view_sales_summary(user: Optional[CurrentUser]) -> bool:
+    """„Podsumowanie sprzedaży” na pulpicie: superadmin zawsze, inni tylko z ptaszkiem viewSalesSummary
+    (klucza celowo nie ma w ROLE_PERMS — żadna rola, nawet ADMIN, nie dostaje go z automatu)."""
+    return is_super_admin(user) or has_perm(user, "viewSalesSummary")
+
+
+async def require_sales_summary(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_view_sales_summary(user):
+        raise HTTPException(403, "Brak uprawnienia: viewSalesSummary")
+    return user
 
 
 async def require_sad(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

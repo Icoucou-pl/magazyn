@@ -128,7 +128,7 @@ ROLE = {"ADMIN": "Admin", "IMPORT": "Import", "VIEWER": "Viewer"}
 UPRAWNIENIA = {
     "editProducts": "Edycja produktów", "editContainers": "Edycja kontenerów",
     "import": "Import danych", "export": "Eksport danych", "generatePO": "Generowanie zamówień",
-    "viewFinancials": "Dane finansowe (PLN)", "viewDashboardKpi": "KPI Dashboard",
+    "viewFinancials": "Dane finansowe (PLN)", "viewDashboardKpi": "KPI Dashboard", "viewSalesSummary": "Podsumowanie sprzedaży",
     "assistantFinancials": "Dane finansowe – asystent", "viewForecast": "Prognoza",
     "manageUsers": "Zarządzanie userami", "viewAudit": "Dziennik audytu", "viewReports": "Raporty",
     "viewOccupancy": "Zajętość magazynu", "viewAttachments": "Załączniki kontenerów",

@@ -23,6 +23,7 @@ export const PERMISSIONS = [
   { key: "manageUsers",    label: "Zarządzanie userami",   desc: "Dodawanie, role, uprawnienia",              group: "Administracja" },
   { key: "viewAudit",      label: "Dziennik audytu",       desc: "Podgląd historii zdarzeń",                  group: "Administracja" },
   { key: "viewReports",    label: "Raporty",               desc: "Dostęp do raportów miesięcznych (KPI, PDF/Excel)", group: "Widoczność" },
+  { key: "viewSalesSummary", label: "Podsumowanie sprzedaży", desc: "Karta z liczbą i wartością zamówień per firma na pulpicie (kwoty tylko z Dane finansowe). Superadmin widzi zawsze", group: "Widoczność" },
   { key: "viewOccupancy",  label: "Zajętość magazynu",     desc: "Raport kubatury (m³) i kafelek zajętości na pulpicie", group: "Widoczność" },
   { key: "viewAttachments", label: "Załączniki kontenerów", desc: "Podgląd i pobieranie plików (faktury, proformy, packing list, BL)", group: "Widoczność" },
   { key: "viewCalendarPayments", label: "Płatności w kalendarzu", desc: "Terminy płatności „Do zapłaty” jako zdarzenia kalendarza (wymaga też Dane finansowe)", group: "Widoczność" },
@@ -45,6 +46,7 @@ export const PERMISSIONS = [
 // UWAGA — klucze CELOWO nieobecne poniżej (can() zwróci dla nich false dla KAŻDEJ roli,
 // łącznie z ADMIN; dostęp daje wyłącznie ptaszek postawiony konkretnemu userowi):
 //   · viewOccupancy — Zajętość magazynu.
+//   · viewSalesSummary — Podsumowanie sprzedaży na pulpicie (superadmin widzi zawsze, canSeeSalesSummary).
 // Lustro tej samej reguły po stronie backendu siedzi w security.py → ROLE_PERMS.
 //
 // viewBankBalances / editBankBalances — saldo rachunku i pożyczki wspólników. Domyślnie TYLKO ADMIN.
@@ -107,6 +109,9 @@ export const canSeeProductHistory = (u) =>
 // can_view_landed_cost / can_edit_landed_cost. Bez podglądu zakładki nie ma w pasku w ogóle.
 export const canSeeLandedCost = (u) => can(u, "viewLandedCost") && can(u, "viewFinancials");
 export const canEditLandedCost = (u) => canSeeLandedCost(u) && can(u, "editLandedCost");
+// Podsumowanie sprzedaży na pulpicie — superadmin zawsze, inni tylko z ptaszkiem.
+// Lustro w security.py → can_view_sales_summary.
+export const canSeeSalesSummary = (u) => Boolean(u?.is_super_admin || u?.isSuper) || can(u, "viewSalesSummary");
 // Rozliczenie z SAD (zakładka „SAD", wgrywanie XML) — tylko superadmin, jako kontrola.
 // Lustro w security.py → require_sad. Inni nie widzą zakładki ani śladu po niej.
 export const canSeeSad = (u) => Boolean(u?.is_super_admin || u?.isSuper);
