@@ -92,16 +92,18 @@ def test_pomijane_statusy_ida_jako_parametr(monkeypatch):
 
 
 @pytest.fixture
-def klient():
+def klient(monkeypatch):
+    monkeypatch.setattr(settings, "SUPER_ADMIN_EMAIL", "szef@firma.pl")
     db = _Db(WIERSZE)
 
     async def get():
         yield db
     app.dependency_overrides[get_db] = get
 
-    def zrob(perms=None, scope=None):
+    def zrob(perms=None, scope=None, email="szef@firma.pl"):
+        # Domyślnie superadmin (SUPER_ADMIN_EMAIL ustawiony w fixture) — on widzi kartę zawsze.
         app.dependency_overrides[get_current_user] = lambda: CurrentUser(
-            id=1, email="a@b.pl", role="ADMIN", perms=perms, company_scope=scope)
+            id=1, email=email, role="ADMIN", perms=perms, company_scope=scope)
         return TestClient(app), db
     yield zrob
     app.dependency_overrides.clear()
@@ -132,3 +134,19 @@ def test_bez_finansow_kwoty_sa_ukryte(klient):
 def test_za_dlugie_okno_odrzucone(klient):
     c, _ = klient()
     assert c.get("/api/sales-summary?days=999").status_code == 422
+
+
+def test_admin_bez_ptaszka_nie_widzi(klient):
+    """Z automatu tylko superadmin — nawet ADMIN potrzebuje ptaszka viewSalesSummary."""
+    c, _ = klient(email="admin@firma.pl")
+    assert c.get("/api/sales-summary").status_code == 403
+
+
+def test_ptaszek_otwiera_karte_kazdej_roli(klient):
+    c, _ = klient(email="admin@firma.pl", perms={"viewSalesSummary": True})
+    assert c.get("/api/sales-summary").status_code == 200
+
+
+def test_klucza_nie_ma_w_zadnej_roli():
+    from security import ROLE_PERMS
+    assert all("viewSalesSummary" not in p for p in ROLE_PERMS.values())
