@@ -5,13 +5,15 @@
 //   • Zapisane ceny (minimalne i sugerowane: detal, dropy/hurt, allegro): aktualna + kto i kiedy
 //     + historia; ostrzeżenie,
 //     gdy koszt od ustawienia urósł albo spadł
+//   • Aktualna cena sprzedaży (detal, brutto): wpisywana ręcznie, kto i kiedy + historia —
+//     to ona jest znaczkiem „My” na pasku konkurencji w „test-cena”
 //   • Kalkulator z szablonami: koszt bazowy (FIFO / średnia / własny), marża, koszty „+”
 //     (zł albo % od netto / brutto, doliczane PO marży), „Zapisz jako …”
 //   • Konkurencja: jeden wpis na sklep, nowa cena tego samego sklepu → stara do historii
-//   • Pod spodem dotychczasowa zakładka „Cena” bez jej dwóch kalkulatorów (koszty, dostawy) —
+//   • Pod spodem klocki ze starej zakładki „Cena” (koszty, dostawy) bez jej dwóch kalkulatorów —
 //     kalkulatory „Nasze sklepy” i „Dropy/Hurt” zastąpił jeden kalkulator z listą wyboru
 //
-// Wersja testowa obok zakładki „Cena” — po akceptacji ją zastąpi.
+// Zastąpiła starą zakładkę „Cena” (usunięta).
 // Dane: GET /api/wycena (routers/wycena.py). Formuła: lib/wycena.ts (lustro services/wycena.py).
 // ============================================================
 
@@ -41,11 +43,12 @@ type Konkurent = {
   id: number; sklep: string; cena_brutto: number; link: string | null; dodal: string | null; dodano: string | null;
   historia: { cena_brutto: number; dodal: string | null; dodano: string | null }[];
 };
+type CenaAktualna = { id: number; cena_brutto: number; cena_netto: number; vat: number; ustawil: string | null; ustawiono: string | null };
 type Szablon = { id: number; nazwa: string; cel: Kanal | null; marza: number; koszty: KosztPlus[]; zmienil: string | null; zmieniono: string | null };
 type WycenaData = {
   sku: string; shop: string; vat: number; vat_zrodlo: string; fifo: number | null; srednia: number | null;
   koszty_bazy: KosztBazy[]; baza_domyslna: BazaKosztu | null;
-  ceny_min: CenaMin[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
+  ceny_min: CenaMin[]; ceny_aktualne: CenaAktualna[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
 };
 
 // Kolejność kart jak w „test-cena”: detal, detal, hurt, hurt — a Allegro (minimalna, sugerowana) rząd niżej.
@@ -97,11 +100,12 @@ export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
   return (
     <>
       <ZapisaneCeny data={data} />
+      <AktualnaCena key={data.sku} data={data} shop={shop} onZmiana={(a) => popraw((d) => ({ ...d, ceny_aktualne: a }))} />
       <Kalkulator key={data.sku} data={data} shop={shop}
         onCenaMin={(c) => popraw((d) => ({ ...d, ceny_min: [c, ...d.ceny_min] }))}
         onSzablony={(s) => popraw((d) => ({ ...d, szablony: s }))} />
       <KonkurencjaEdycja data={data} shop={shop} onZmiana={(k) => popraw((d) => ({ ...d, konkurencja: k }))} />
-      <Box title="Koszt zakupu i dostawy" hint="to samo, co w zakładce „Cena” · kalkulatory cen są już w jednym, wyżej">
+      <Box title="Koszt zakupu i dostawy" hint="ze starej zakładki „Cena” · kalkulatory cen są już w jednym, wyżej">
         <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
           <ProductPriceTab sku={sku} shop={shop} onOpenContainer={onOpenContainer} bezKalkulatora />
         </div>
@@ -179,6 +183,86 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
         </details>
       )}
     </div>
+  );
+}
+
+// ── Aktualna cena sprzedaży (detal, brutto) ──────────────────
+// Wpisywana ręcznie, bo liczona z zamówień myliła: jedno łóżko z rabatem i średnia już „dziwna”.
+function AktualnaCena({ data, shop, onZmiana }: { data: WycenaData; shop: string; onZmiana: (a: CenaAktualna[]) => void }) {
+  const [cena, setCena] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [c, ...historia] = data.ceny_aktualne;
+  const minDetal = data.ceny_min.find((x) => x.kanal === "detal")?.cena_brutto ?? null;
+  const sugDetal = data.ceny_min.find((x) => x.kanal === "sug_detal")?.cena_brutto ?? null;
+
+  const zapisz = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    if (!(num(cena) > 0)) { toast("Podaj cenę brutto", "warning"); return; }
+    setBusy(true);
+    try {
+      onZmiana((await api.put("/wycena/cena-aktualna", { sku: data.sku, shop, cena_brutto: num(cena) })) as CenaAktualna[]);
+      setCena("");
+      toast("Zapisano aktualną cenę sprzedaży", "ok");
+    } catch (err) {
+      toast(`Nie udało się zapisać: ${blad(err)}`, "warning");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Box title="Aktualna cena sprzedaży" hint="detal, brutto · cena, po której dziś sprzedajemy — w „test-cena” to znaczek „My” na pasku konkurencji">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))", gap: 12 }}>
+        <div style={{ ...kartaStyl, background: "var(--bg)", borderTop: `3px solid ${KOLOR_KANALU.detal}` }}>
+          {c ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", ...hint }}>
+                <span>Obowiązuje</span>
+                <span>{c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
+                <div className="num" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
+                  {zl2(c.cena_brutto)}<small style={small}> zł brutto</small>
+                </div>
+                <div className="num" style={{ fontSize: 12, color: "var(--text-mid)" }}>{zl2(c.cena_netto)} zł netto · VAT {c.vat}%</div>
+              </div>
+              {minDetal != null && c.cena_brutto < minDetal ? (
+                <div style={{ ...noteWarn, fontSize: 12 }}>Sprzedajemy poniżej ceny minimalnej detal ({zl2(minDetal)} zł brutto).</div>
+              ) : sugDetal != null ? (
+                <div style={hint}>
+                  {Math.abs(c.cena_brutto - sugDetal) < 0.005 ? "Równa cenie sugerowanej." :
+                    <>Cena sugerowana {zl2(sugDetal)} zł — jesteśmy {c.cena_brutto > sugDetal ? "wyżej" : "niżej"} o <span className="num">{zl2(Math.abs(c.cena_brutto - sugDetal))} zł</span>.</>}
+                </div>
+              ) : null}
+              {historia.length > 0 && (
+                <details>
+                  <summary style={{ cursor: "pointer", ...hint }}>Historia ({historia.length})</summary>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6, ...hint }}>
+                    {historia.map((h) => (
+                      <span key={h.id} className="num">{zl2(h.cena_brutto)} zł brutto · {h.ustawil || "—"} · {h.ustawiono ? fmtDay(h.ustawiono) : ""}</span>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </>
+          ) : (
+            <div style={{ color: "var(--text-lo)", fontSize: 12.5 }}>Jeszcze nie wpisana. Wpisz cenę, po której produkt stoi dziś w sklepie.</div>
+          )}
+        </div>
+        {data.moze_zapisac && (
+          <form onSubmit={zapisz} style={{ ...kartaStyl, justifyContent: "center" }}>
+            <Wiersz label={c ? "Nowa cena" : "Cena"} htmlFor="wyc-akt-cena">
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <Pole id="wyc-akt-cena" value={cena} onChange={setCena} unit="zł brutto" width={90} />
+                <button type="submit" disabled={busy} style={btnPri}>{busy ? "Zapisywanie…" : "Zapisz"}</button>
+              </div>
+            </Wiersz>
+            <div style={hint}>Cena w sklepie się zmieniła? Wpisz nową — stara zostaje w historii.</div>
+          </form>
+        )}
+      </div>
+    </Box>
   );
 }
 

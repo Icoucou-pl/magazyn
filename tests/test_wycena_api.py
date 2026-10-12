@@ -5,7 +5,7 @@
     zapis: editProductPrice),
   · kalkulator handlowca — useSalesCalculator ORAZ cena zakupu,
   · link do konkurencji tylko http(s),
-  · NA CZAS TESTÓW wszystko tylko dla superadmina — zwykły admin dostaje 403.
+  · po testach zakładki są dla zespołu: zwykły admin przechodzi, role bez uprawnień — 403.
 
 Uruchomienie:  python3 -m pytest tests/test_wycena_api.py -q
 """
@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from config import settings  # noqa: E402
 from database import get_db  # noqa: E402
 from main import app  # noqa: E402
-from models import CurrentUser, KonkurencjaIn  # noqa: E402
+from models import CenaAktualnaIn, CurrentUser, KonkurencjaIn  # noqa: E402
 from security import can_use_sales_calculator, can_view_price_summary, get_current_user  # noqa: E402
 
 
@@ -54,22 +54,55 @@ def klient(monkeypatch):
 MIN = {"sku": "ABC", "kanal": "hurt", "baza": "fifo", "marza": 20, "koszty": []}
 KONK = {"sku": "ABC", "sklep": "Sklep", "cena_brutto": 100}
 SZABLON = {"nazwa": "X", "marza": 20, "koszty": []}
+AKT = {"sku": "ABC", "cena_brutto": 5999}
 
 
 @pytest.mark.parametrize("metoda,adres,body", [
     ("get", "/api/ceny-produktu?sku=ABC", None),
     ("get", "/api/wycena?sku=ABC", None),
     ("put", "/api/wycena/cena", MIN),
+    ("put", "/api/wycena/cena-aktualna", AKT),
     ("post", "/api/wycena/konkurencja", KONK),
     ("delete", "/api/wycena/konkurencja/1", None),
     ("post", "/api/wycena/szablony", SZABLON),
     ("put", "/api/wycena/szablony/1", SZABLON),
     ("delete", "/api/wycena/szablony/1", None),
 ])
-@pytest.mark.parametrize("role", ["VIEWER", "IMPORT", "ADMIN"])
-def test_na_czas_testow_tylko_superadmin(klient, metoda, adres, body, role):
+@pytest.mark.parametrize("role", ["VIEWER", "IMPORT"])
+def test_role_bez_uprawnien_403(klient, metoda, adres, body, role):
     kw = {"json": body} if body is not None else {}
     assert getattr(klient(role), metoda)(adres, **kw).status_code == 403
+
+
+class _DoszloDoBazy(Exception):
+    pass
+
+
+@pytest.mark.parametrize("metoda,adres,body", [
+    ("get", "/api/ceny-produktu?sku=ABC", None),
+    ("get", "/api/wycena?sku=ABC", None),
+    ("put", "/api/wycena/cena", MIN),
+    ("put", "/api/wycena/cena-aktualna", AKT),
+])
+def test_zwykly_admin_przechodzi(klient, metoda, adres, body):
+    """Koniec okresu „tylko superadmin”: admin (nie super) mija uprawnienia i dochodzi do bazy."""
+    class Baza:
+        async def execute(self, *a, **k):
+            raise _DoszloDoBazy()
+
+    async def db():
+        yield Baza()
+    k = klient("ADMIN")
+    app.dependency_overrides[get_db] = db
+    kw = {"json": body} if body is not None else {}
+    with pytest.raises(_DoszloDoBazy):
+        getattr(k, metoda)(adres, **kw)
+
+
+@pytest.mark.parametrize("cena", [0, -5, 10_000_000])
+def test_aktualna_cena_walidacja(cena):
+    with pytest.raises(ValueError):
+        CenaAktualnaIn(sku="A", cena_brutto=cena)
 
 
 @pytest.mark.parametrize("metoda,adres,body", [
@@ -151,3 +184,44 @@ def test_allegro_porownujemy_z_minimum_allegro():
     # Bez minimum Allegro — Allegro liczy się jak reszta detalu.
     out = _kanal_sprzedazy(wiersze, "brutto", cm("detal", 3000), 3000)
     assert out.ponizej_ile == 1
+
+
+def test_zapis_aktualnej_ceny_liczy_netto(klient, monkeypatch):
+    """Brutto z formularza, netto z VAT produktu; nowy wiersz w dzienniku, nic nie nadpisujemy."""
+    import routers.wycena as wyc
+    from types import SimpleNamespace
+
+    async def produkt(db, sku, shop="", allowed=None):
+        return SimpleNamespace(sku="SZP3")
+
+    async def vat(db, sku, shop=""):
+        return {"vat": 8.0, "zrodlo": "test"}
+    monkeypatch.setattr(wyc, "get_product", produkt)
+    monkeypatch.setattr(wyc, "vat_produktu", vat)
+
+    zapytania = []
+
+    class Wynik:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
+
+    class Baza:
+        async def execute(self, sql, params=None):
+            zapytania.append((str(sql), params or {}))
+            return Wynik()
+
+        async def commit(self):
+            pass
+
+    async def db():
+        yield Baza()
+    k = klient("ADMIN")
+    app.dependency_overrides[get_db] = db
+    r = k.put("/api/wycena/cena-aktualna", json={"sku": "szp3", "cena_brutto": 5999})
+    assert r.status_code == 200
+    (_, p), = [(q, p) for q, p in zapytania if "INSERT INTO app_cena_aktualna" in q]
+    assert p["sku"] == "SZP3" and p["brutto"] == 5999 and p["vat"] == 8.0
+    assert p["netto"] == round(5999 / 1.08, 2)

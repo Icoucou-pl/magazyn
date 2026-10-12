@@ -1,14 +1,15 @@
 """Zakładki „test-wycena” i „test-cena” na pełnej karcie produktu.
 
-Na razie obok istniejącej zakładki „Cena” (nic w niej nie zmieniamy) i TYLKO dla superadmina
-(zależność na całym routerze) — właściciel testuje,
-potem „test-wycena” zastąpi „Cenę”, a „test-cena” zostanie zakładką dla zespołu.
+Zastąpiły starą zakładkę „Cena” (jej klocki z kosztami i dostawami siedzą w „test-wycena”).
+Dostęp jak dawniej do „Ceny”: „test-wycena” i zapisy — uprawnienia ceny produktu,
+„test-cena” — viewPriceSummary. Okres „tylko superadmin” na czas testów się skończył.
 
   GET    /api/ceny-produktu?sku=…&shop=…   „test-cena”: same wyniki dla zespołu (viewPriceSummary)
   GET    /api/wycena?sku=…&shop=…          „test-wycena”: koszty, ceny minimalne z historią,
                                             konkurencja, szablony (jak zakładka „Cena”)
   PUT    /api/wycena/cena                   zapis ceny z kalkulatora: minimalna albo sugerowana
                                             (detal, dropy/hurt, allegro — services/wycena.py → KANALY)
+  PUT    /api/wycena/cena-aktualna          aktualna cena sprzedaży detal (brutto, wpisana ręcznie)
   POST   /api/wycena/konkurencja            cena u konkurencji (ten sam sklep = nowa cena, stara do historii)
   DELETE /api/wycena/konkurencja/{id}       usunięcie sklepu z listy
   POST   /api/wycena/szablony               nowy szablon kalkulatora
@@ -35,7 +36,7 @@ from audit_opisy import etykieta_kontenera, f_zl
 from config import INCLUDED_STATUS_FILTER, SALES_CHANNEL_CASE, settings
 from database import get_db
 from models import (
-    KosztBazyOut, CenaMinimalnaIn, CenaMinimalnaKrotkoOut, CenaMinimalnaOut, CenyProduktuOut, CurrentUser,
+    KosztBazyOut, CenaAktualnaIn, CenaAktualnaOut, CenaMinimalnaIn, CenaMinimalnaKrotkoOut, CenaMinimalnaOut, CenyProduktuOut, CurrentUser,
     KonkurencjaHistoriaOut, KonkurencjaIn, KonkurencjaOut, KosztZespolOut, SprzedazKanaluOut,
     SprzedazPonizejOut, WycenaKoszt, WycenaOut, WycenaSzablonIn, WycenaSzablonOut,
 )
@@ -43,19 +44,17 @@ from routers.cena import _policz, _zapisane
 from security import (
     allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_purchase_price,
     has_perm, require_price_summary_view, require_product_price_edit, require_product_price_view,
-    require_super_admin_403, resolve_shop,
+    resolve_shop,
 )
 from services.cena import vat_produktu
 from services.products import get_product
 from services.cena import Wynik as WynikKosztow
 from services.wycena import KANAL_NAZWA, KANALY_BRUTTO, BladWyceny, Koszt, baza_do_wyceny, wylicz_wycene
 
-# Na czas testów obie zakładki i wszystkie ich endpointy widzi WYŁĄCZNIE superadmin (decyzja
-# właściciela). Uprawnienia niżej (viewPriceSummary, useSalesCalculator, Cena) zostają —
-# po testach wystarczy zdjąć tę jedną zależność, żeby zadziałały dla zespołu.
-router = APIRouter(prefix="/api", tags=["wycena"], dependencies=[Depends(require_super_admin_403)])
+router = APIRouter(prefix="/api", tags=["wycena"])
 
 T_MIN = "app_cena_minimalna"
+T_AKT = "app_cena_aktualna"
 T_KONK = "app_konkurencja_ceny"
 T_SZABLONY = "app_wycena_szablony"
 
@@ -88,6 +87,16 @@ async def _ceny_min(db: AsyncSession, sku: str) -> List[CenaMinimalnaOut]:
         {"s": sku},
     )).mappings().all()
     return [_cena_min(r) for r in rows]
+
+
+async def _ceny_aktualne(db: AsyncSession, sku: str) -> List[CenaAktualnaOut]:
+    """Aktualna cena sprzedaży detal: najnowsza obowiązuje, starsze to historia."""
+    rows = (await db.execute(
+        text(f"SELECT * FROM {T_AKT} WHERE sku_canon = LOWER(TRIM(:s)) ORDER BY ustawiono DESC, id DESC LIMIT 50"),
+        {"s": sku},
+    )).mappings().all()
+    return [CenaAktualnaOut(id=r["id"], cena_brutto=float(r["cena_brutto"]), cena_netto=float(r["cena_netto"]),
+                            vat=float(r["vat"]), ustawil=r["ustawil"], ustawiono=r["ustawiono"]) for r in rows]
 
 
 def _aktualna(ceny: List[CenaMinimalnaOut], kanal: str) -> Optional[CenaMinimalnaOut]:
@@ -292,12 +301,14 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
     sug_detal = sd.cena_brutto if sd else (stare["sklepy"].cena_brutto if "sklepy" in stare else None)
     sug_hurt = sh.cena_netto if sh else (stare["dropy"].cena_netto if "dropy" in stare else None)
 
+    akt = (await _ceny_aktualne(db, p.sku))[:1]
     detal = await _sprzedaz_detal(db, p.sku, shop, min(_od_kiedy(md), _od_kiedy(ma)))
     hurt = await _sprzedaz_hurt(db, p.sku, shop, _od_kiedy(mh))
     return CenyProduktuOut(
         sku=p.sku, shop=shop, vat=vat, min_detal=krotko(md), min_hurt=krotko(mh), min_allegro=krotko(ma),
         sugerowana_sklepy_brutto=sug_detal, sugerowana_dropy_netto=sug_hurt,
         sugerowana_allegro_brutto=sa.cena_brutto if sa else None,
+        aktualna_detal=krotko(akt[0]) if akt else None,
         okres_dni=OKRES_DNI,
         detal=_kanal_sprzedazy(detal, "brutto", md, md.cena_brutto if md else None, ma),
         hurt=_kanal_sprzedazy(hurt, "netto", mh, mh.cena_netto if mh else None),
@@ -320,7 +331,8 @@ async def wycena(sku: str = Query(..., min_length=1), shop: str = Query(""),
     return WycenaOut(
         sku=p.sku, shop=shop, vat=vat["vat"], vat_zrodlo=vat["zrodlo"], fifo=w.fifo, srednia=w.srednia,
         koszty_bazy=kb, baza_domyslna=domyslna,
-        ceny_min=await _ceny_min(db, p.sku), konkurencja=await _konkurencja(db, p.sku),
+        ceny_min=await _ceny_min(db, p.sku), ceny_aktualne=await _ceny_aktualne(db, p.sku),
+        konkurencja=await _konkurencja(db, p.sku),
         szablony=await _szablony(db), moze_zapisac=can_edit_product_price(user),
     )
 
@@ -367,6 +379,34 @@ async def zapisz_cene(body: CenaMinimalnaIn, db: AsyncSession = Depends(get_db),
                          "jest": f_zl(kw(nowa))}],
                area="Ceny", resource_type="product", resource_id=p.sku)
     return nowa
+
+
+# ── Aktualna cena sprzedaży (detal, brutto, wpisana ręcznie) ─────────────
+@router.put("/wycena/cena-aktualna", response_model=List[CenaAktualnaOut])
+async def zapisz_cene_aktualna(body: CenaAktualnaIn, db: AsyncSession = Depends(get_db),
+                               user: CurrentUser = Depends(require_product_price_edit)):
+    """Nowy wiersz w dzienniku (nic nie nadpisujemy). Netto liczymy z VAT produktu z tej chwili."""
+    shop = resolve_shop(body.shop or "", user)
+    p = await get_product(db, body.sku, shop, allowed=allowed_shops(user))
+    vat = (await vat_produktu(db, p.sku, shop))["vat"]
+    brutto = round(body.cena_brutto, 2)
+    netto = round(brutto / (1 + vat / 100), 2)
+    stare = await _ceny_aktualne(db, p.sku)
+    await db.execute(
+        text(f"""
+            INSERT INTO {T_AKT} (sku_canon, sku, cena_brutto, cena_netto, vat, ustawil_id, ustawil, ustawiono)
+            VALUES (LOWER(TRIM(:sku)), TRIM(:sku), :brutto, :netto, :vat, :uid, :kto, :teraz)
+        """),
+        {"sku": p.sku, "brutto": brutto, "netto": netto, "vat": vat, "uid": user.id, "kto": _kto(user),
+         "teraz": datetime.now(timezone.utc)},
+    )
+    await db.commit()
+    bylo = f_zl(stare[0].cena_brutto) if stare else "—"
+    audit.note(f"zapisał „Aktualna cena sprzedaży detal” produktu {p.sku}: {f_zl(brutto)} brutto"
+               + (f" (było {bylo})" if stare else ""),
+               changes=[{"pole": "Aktualna cena sprzedaży detal (brutto)", "bylo": bylo, "jest": f_zl(brutto)}],
+               area="Ceny", resource_type="product", resource_id=p.sku)
+    return await _ceny_aktualne(db, p.sku)
 
 
 # ── Konkurencja ──────────────────────────────────────────────────────────
