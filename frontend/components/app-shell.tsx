@@ -37,7 +37,7 @@ import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/li
 import { UserContext as RawUserContext } from "@/lib/permissions";
 import { ShopProvider } from "@/lib/shop";
 import {
-  parsePath, pathForContainer, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST,
+  parsePath, pathForContainer, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST, PATH_ACCOUNT,
   pathForContainerPage, containerSlug,
 } from "@/lib/routes";
 import LoginScreen from "@/components/login";
@@ -233,8 +233,22 @@ export default function AppShell() {
     }
     setReady(true);
     const onUnauth = () => { setCurrentUser(null); router.replace("/"); };
+    // Zmiana w „Moje konto” (np. imię i nazwisko) — od razu w nagłówku, bez przelogowania.
+    const onUserPatch = (e: Event) => {
+      const patch = (e as CustomEvent<Partial<User>>).detail;
+      setCurrentUser(prev => {
+        if (!prev) return prev;
+        const next = { ...prev, ...patch };
+        setUser(next);
+        return next;
+      });
+    };
     window.addEventListener("magazyn:unauthorized", onUnauth);
-    return () => window.removeEventListener("magazyn:unauthorized", onUnauth);
+    window.addEventListener("magazyn:user-patch", onUserPatch);
+    return () => {
+      window.removeEventListener("magazyn:unauthorized", onUnauth);
+      window.removeEventListener("magazyn:user-patch", onUserPatch);
+    };
   }, []);
 
   // Auto-wylogowanie po 2h bezczynności (Model A — tylko front).
@@ -487,7 +501,7 @@ export default function AppShell() {
             onRefresh={handleRefreshSellasist}
             refreshing={refreshing}
             freshness={freshness}
-            onChangePassword={() => setView("settings")}
+            onChangePassword={() => router.push(PATH_ACCOUNT)}
           />
 
       <main className="app-main" style={{
@@ -606,7 +620,11 @@ export default function AppShell() {
           <DropyView/>
         ) : view === "settings" ? (
           <SettingsView
-            initialSection={pendingManufacturerId != null || settingsSection === "manufacturers" ? "manufacturers" : undefined}
+            // key: wejście z adresu na inną podsekcję (np. „Moje konto” z menu pod avatarem, gdy
+            // Ustawienia są już otwarte) montuje widok od nowa — inaczej zostałaby stara zakładka.
+            key={settingsSection || ""}
+            initialSection={pendingManufacturerId != null || settingsSection === "manufacturers" ? "manufacturers"
+              : settingsSection === "account" ? "account" : undefined}
             openManufacturerId={pendingManufacturerId}
             onOpenedManufacturer={() => setPendingManufacturerId(null)}
           />

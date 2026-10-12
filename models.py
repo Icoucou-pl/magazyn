@@ -71,6 +71,11 @@ class OnboardingSet(BaseModel):
     show_onboarding: bool
 
 
+class NameChange(BaseModel):
+    """Zmiana własnego imienia i nazwiska (Moje konto)."""
+    full_name: str = Field(..., min_length=1, max_length=255)
+
+
 class UserOut(BaseModel):
     id: int
     email: str

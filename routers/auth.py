@@ -14,8 +14,8 @@ from security import (
     verify_password, hash_password, validate_password_strength,
     create_jwt_token, get_current_user, parse_company_scope,
 )
-from models import CurrentUser, LoginRequest, LoginResponse, UserOut, PasswordChange, SessionOut, OnboardingSet
-from audit import log_audit
+from models import CurrentUser, LoginRequest, LoginResponse, UserOut, PasswordChange, SessionOut, OnboardingSet, NameChange
+from audit import log_audit, skip
 from services import login_limit
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -128,6 +128,29 @@ async def set_my_onboarding(payload: OnboardingSet, user: CurrentUser = Depends(
         {"v": payload.show_onboarding, "id": user.id},
     )
     await db.commit()
+    return None
+
+
+@router.patch("/auth/me/name", status_code=204)
+async def change_my_name(payload: NameChange, user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Zmiana własnego imienia i nazwiska. Osobno od PATCH /users/{id}, bo tamto jest tylko
+    dla admina (a zwykły admin nie może ruszać kont ADMIN, więc nie zmieniłby nawet siebie)."""
+    nowe = payload.full_name.strip()
+    if not nowe:
+        raise HTTPException(400, "Imię i nazwisko nie może być puste")
+    r = await db.execute(text(f"SELECT full_name FROM {settings.TABLE_USERS} WHERE id = :id"), {"id": user.id})
+    stare = r.scalar()
+    if stare == nowe:
+        skip()      # zapis tego samego — bez wpisu w dzienniku
+        return None
+    await db.execute(
+        text(f"UPDATE {settings.TABLE_USERS} SET full_name = :n, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+        {"n": nowe, "id": user.id},
+    )
+    await db.commit()
+    await log_audit(db, user, "USER_UPDATED", "user", str(user.id),
+                    message=f"zmienił swoje imię i nazwisko: {stare or '—'} → {nowe}",
+                    changes=[{"pole": "Imię i nazwisko", "bylo": stare or "—", "jest": nowe}])
     return None
 
 

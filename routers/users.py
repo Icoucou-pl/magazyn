@@ -187,8 +187,10 @@ async def update_user(uid: int, payload: UserUpdate, admin: CurrentUser = Depend
     updates = []
     params = {"id": uid}
     if payload.full_name is not None:
+        if not payload.full_name.strip():
+            raise HTTPException(400, "Imię i nazwisko nie może być puste")
         updates.append("full_name = :name")
-        params["name"] = payload.full_name
+        params["name"] = payload.full_name.strip()
     if payload.role is not None:
         updates.append("role = :role")
         params["role"] = payload.role

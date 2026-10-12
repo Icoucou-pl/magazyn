@@ -5,7 +5,7 @@
 //   Typy kontenerów GET/POST/PATCH/DELETE /container-types
 //   Użytkownicy     /users (ADMIN): lista wg ról, filtr/szukaj, zaznaczanie + zmiany masowe (POST /users/bulk),
 //                   macierz uprawnień, inline rola, 4 ikony akcji, edytor uprawnień, reset hasła
-//   Moje konto      profil + PUT /auth/me/password + aktywne sesje (/auth/me/sessions)
+//   Moje konto      profil + PATCH /auth/me/name + PUT /auth/me/password + aktywne sesje (/auth/me/sessions)
 //   Dziennik audytu GET /audit-log (super-admin): zdania, filtry, zmiany było → jest, eksport CSV
 // ============================================================
 
@@ -82,7 +82,7 @@ const SETTINGS_SECTIONS: SectionDef[] = [
   { id: "cn_sku",          label: "Chińskie SKU",    icon: I.Scan,     desc: "Odpowiedniki SKU dla fabryk — pod zamówienia (PO)" },
   { id: "stawki_cla",      label: "Stawki cła",      icon: I.Customs,  desc: "Kod CN i stawka cła obserwowanych SKU, nowości i sampli — do kosztu jednostkowego" },
   { id: "users",           label: "Użytkownicy",     icon: I.Activity, desc: "Konta, role, uprawnienia" },
-  { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Hasło, sesje" },
+  { id: "account",         label: "Moje konto",      icon: I.Settings, desc: "Imię i nazwisko, hasło, sesje" },
   { id: "audit",           label: "Dziennik audytu", icon: I.Bell,     desc: "Kto, co i kiedy zmienił w Magazynie" },
   { id: "freshness",       label: "Świeżość danych", icon: I.Refresh,  desc: "Ostatnie pobrania i dziennik synchronizacji" },
   { id: "usage",           label: "Zużycie API",     icon: I.Wallet,   desc: "Koszty asystenta AI — tokeny i saldo" },
@@ -1295,7 +1295,7 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
   const [items, setItems] = useState<UserRowT[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [expanded, setExpanded] = useState<{ id: number; mode: "perms" | "reset" } | null>(null);
+  const [expanded, setExpanded] = useState<{ id: number; mode: "perms" | "reset" | "name" } | null>(null);
   const [roleFilter, setRoleFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [showInactive, setShowInactive] = useState(true);
@@ -1387,7 +1387,7 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
     try { await api.del(`/users/${u.id}`); toast("Usunięto użytkownika", "ok"); load(); }
     catch { toast("Nie udało się usunąć", "error"); }
   };
-  const toggleMode = (id: number, mode: "perms" | "reset") =>
+  const toggleMode = (id: number, mode: "perms" | "reset" | "name") =>
     setExpanded(e => (e?.id === id && e.mode === mode) ? null : { id, mode });
 
   // „Włącz/Wyłącz wprowadzenie wszystkim” — wszystkie konta, którymi wolno zarządzać.
@@ -1502,12 +1502,19 @@ function UsersPanel({ currentUserId }: { currentUserId?: number | string }) {
                         onChangeRole={(r) => changeRole(u, r)}
                         onToggleActive={() => toggleActive(u)}
                         onResetPassword={() => toggleMode(u.id, "reset")}
+                        onRename={() => toggleMode(u.id, "name")}
                         onDelete={() => remove(u)}
                         onPerms={() => toggleMode(u.id, "perms")}/>
                       {exp && (
                         <div style={{ padding: "0 14px 14px" }}>
                           {exp === "perms"
                             ? <PermissionsEditor user={u} isSelf={isSelf} onCancel={() => setExpanded(null)} onSaved={() => { setExpanded(null); load(); }}/>
+                            : exp === "name"
+                            ? <RenameUserForm user={u} onCancel={() => setExpanded(null)} onSaved={(n) => {
+                                setExpanded(null); load();
+                                // własne konto (super-admin) — od razu też w nagłówku
+                                if (isSelf) window.dispatchEvent(new CustomEvent("magazyn:user-patch", { detail: { full_name: n } }));
+                              }}/>
                             : <ResetPasswordForm user={u} onCancel={() => setExpanded(null)} onDone={() => setExpanded(null)}/>}
                         </div>
                       )}
@@ -1586,11 +1593,11 @@ function SelectBox({ checked, indeterminate, disabled, onChange, label }: {
   );
 }
 
-function UserRow({ u, isSelf, viewerSuper, permsOpen, selectable, selected, onSelect, onChangeRole, onToggleActive, onResetPassword, onDelete, onPerms }: {
+function UserRow({ u, isSelf, viewerSuper, permsOpen, selectable, selected, onSelect, onChangeRole, onToggleActive, onResetPassword, onRename, onDelete, onPerms }: {
   u: UserRowT; isSelf: boolean; viewerSuper: boolean; permsOpen: boolean;
   selectable: boolean; selected: boolean; onSelect: () => void;
   onChangeRole: (r: string) => void; onToggleActive: () => void;
-  onResetPassword: () => void; onDelete: () => void; onPerms: () => void;
+  onResetPassword: () => void; onRename: () => void; onDelete: () => void; onPerms: () => void;
 }) {
   const meta = ROLE_META[u.role] || ROLE_META.VIEWER;
   const overrideCount = overridesOf(u);
@@ -1601,7 +1608,7 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, selectable, selected, onSe
   const lockRole = lockedBase || isSelf;
   const lockActive = lockedBase || isSelf;
   const lockDelete = lockedBase || isSelf;
-  const lockManage = lockedBase; // uprawnienia + reset hasła
+  const lockManage = lockedBase; // uprawnienia + reset hasła + zmiana nazwy
 
   // Opcje roli: rolę ADMIN może nadawać wyłącznie super-admin
   const roleOptions = viewerSuper ? ["ADMIN", "IMPORT", "VIEWER"] : ["IMPORT", "VIEWER"];
@@ -1662,6 +1669,7 @@ function UserRow({ u, isSelf, viewerSuper, permsOpen, selectable, selected, onSe
 
       <div style={{ display: "flex", gap: 4 }}>
         <button onClick={() => !lockManage && onPerms()} title={lockManage ? "Brak uprawnień" : "Uprawnienia"} disabled={lockManage} style={userActionBtn("var(--accent)", permsOpen, lockManage)}><ShieldIcon size={13}/></button>
+        <button onClick={() => !lockManage && onRename()} title={lockManage ? "Brak uprawnień" : "Zmień imię i nazwisko"} disabled={lockManage} style={userActionBtn("var(--text-mid)", false, lockManage)}><PencilIcon size={12}/></button>
         <button onClick={() => !lockManage && onResetPassword()} title={lockManage ? "Brak uprawnień" : "Reset hasła"} disabled={lockManage} style={userActionBtn("var(--info)", false, lockManage)}><PasswordIcon size={12}/></button>
         <button onClick={() => !lockActive && onToggleActive()} title={u.is_active ? "Dezaktywuj" : "Aktywuj"} disabled={lockActive} style={userActionBtn(u.is_active ? "var(--warning)" : "var(--ok)", false, lockActive)}>
           {u.is_active ? <PauseIcon size={12}/> : <PlayIcon size={12}/>}
@@ -2149,6 +2157,41 @@ function PermissionsEditor({ user, isSelf, onCancel, onSaved }: { user: UserRowT
 }
 
 // ── Reset hasła (inline) ────────────────────────────────────
+// Admin zmienia imię i nazwisko innej osoby (PATCH /users/{id} — te same reguły co reszta
+// zarządzania: kontami ADMIN tylko super-admin).
+function RenameUserForm({ user, onCancel, onSaved }: { user: UserRowT; onCancel: () => void; onSaved: (name: string) => void }) {
+  const [value, setValue] = useState(user.full_name || "");
+  const [busy, setBusy] = useState(false);
+  const trimmed = value.trim();
+  const valid = !!trimmed && trimmed !== (user.full_name || "").trim();
+
+  const submit = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try { await api.patch(`/users/${user.id}`, { full_name: trimmed }); toast("Zmieniono imię i nazwisko", "ok"); onSaved(trimmed); }
+    catch { toast("Nie udało się zapisać", "error"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fade-in" style={{ padding: 14, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <PencilIcon size={14}/>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>Imię i nazwisko: <span className="mono" style={{ color: "var(--text-mid)" }}>{user.email}</span></span>
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <input value={value} onChange={(e) => setValue(e.target.value)} autoFocus maxLength={255}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") onCancel(); }}
+          placeholder="np. Jan Kowalski" style={{ ...inputStyle, flex: 1, minWidth: 220 }}/>
+        <button onClick={onCancel} disabled={busy} style={btnSecondary}>Anuluj</button>
+        <button onClick={submit} disabled={!valid || busy} style={{ ...btnPrimary, opacity: valid ? 1 : 0.5, cursor: valid ? "pointer" : "not-allowed" }}>
+          {busy ? "…" : "Zapisz"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ResetPasswordForm({ user, onCancel, onDone }: { user: UserRowT; onCancel: () => void; onDone: () => void }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2240,6 +2283,44 @@ function OnboardingSelfCard() {
   );
 }
 
+// ── Własne imię i nazwisko ──────────────────────────────────
+function NameSelfCard({ current }: { current: string }) {
+  const [value, setValue] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const trimmed = value.trim();
+  const changed = trimmed !== current.trim();
+
+  const save = async () => {
+    if (!trimmed) { toast("Wpisz imię i nazwisko", "warning"); return; }
+    setBusy(true);
+    try {
+      await api.patch("/auth/me/name", { full_name: trimmed });
+      // app-shell podmienia usera w sesji → nagłówek i avatar od razu z nową nazwą
+      window.dispatchEvent(new CustomEvent("magazyn:user-patch", { detail: { full_name: trimmed } }));
+      toast("Zapisano imię i nazwisko", "ok");
+    } catch { toast("Nie udało się zapisać", "error"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", padding: 18 }}>
+      <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600 }}>Imię i nazwisko</h3>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <SettingsField label="Imię i nazwisko">
+            <input value={value} onChange={(e) => setValue(e.target.value)} maxLength={255}
+              onKeyDown={(e) => { if (e.key === "Enter" && changed && !busy) save(); }}
+              placeholder="np. Jan Kowalski" style={inputStyle}/>
+          </SettingsField>
+        </div>
+        <button onClick={save} disabled={busy || !changed} style={{ ...btnPrimary, opacity: changed ? 1 : 0.5, cursor: changed ? "pointer" : "not-allowed" }}>
+          {busy ? "Zapisywanie…" : "Zapisz"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AccountPanel() {
   const user = useUser() as CtxUser;
   const name = user?.full_name || user?.name || user?.email || "";
@@ -2280,6 +2361,9 @@ function AccountPanel() {
           </div>
         </div>
       </div>
+
+      {/* key: po zapisie nazwa w sesji się zmienia → pole startuje od nowej wartości */}
+      <NameSelfCard key={user?.full_name || ""} current={user?.full_name || ""}/>
 
       <div style={{ background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-lg)", padding: 18 }}>
         <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600 }}>Zmiana hasła</h3>
@@ -2638,6 +2722,13 @@ function PasswordIcon({ size = 13, color = "currentColor" }: { size?: number; co
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+    </svg>
+  );
+}
+function PencilIcon({ size = 13, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>
     </svg>
   );
 }

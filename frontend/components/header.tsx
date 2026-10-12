@@ -6,7 +6,7 @@
 //   - fragmentator AMH/Acti/Veluxa/Wszyscy: globalny (lib/shop), widoczny na każdym widoku
 //   - nawigacja gate'owana can(user, perm) z lib/permissions
 //   - Sun/Moon → onToggleTheme (shell zmienia t.theme)
-//   - menu usera: Zmień hasło / Dziennik audytu (super) / Wyloguj
+//   - menu usera: Moje konto / Dziennik audytu (super) / Wyloguj
 //   - mobile: sidebar chowany, hamburger w Topbarze otwiera drawer
 //   - logo z /public/assets (logo-white.png / logo-black.png)
 // ============================================================
@@ -20,6 +20,7 @@ export type User = {
   id?: number | string;
   email: string;
   name?: string;
+  full_name?: string | null;   // tak oddaje backend (/auth/me, logowanie)
   initials?: string;
   role: string; // 'ADMIN' | 'IMPORT' | 'VIEWER'
   isSuper?: boolean;
@@ -166,8 +167,12 @@ export function Topbar({
   }, [userMenuOpen]);
 
   const navItems = visibleNav(user);
-  const displayName = user.name || user.email;
-  const initials = user.initials || displayName.slice(0, 2).toUpperCase();
+  // Backend oddaje full_name — bez niego menu pokazywało sam e-mail i inicjały z e-maila.
+  // Inicjały liczone tak samo jak w Ustawieniach (initialsOf), żeby avatar był wszędzie ten sam.
+  const displayName = (user.full_name && user.full_name.trim()) || user.name || user.email;
+  const nameParts = displayName.split(/[\s@.]+/).filter(Boolean);
+  const initials = user.initials
+    || (nameParts.length >= 2 ? nameParts[0][0] + nameParts[1][0] : displayName.slice(0, 2)).toUpperCase();
 
   return (
     <>
@@ -273,7 +278,9 @@ export function Topbar({
                 {userMenuOpen && (
                   <UserMenuPopover
                     user={user} initials={initials} displayName={displayName}
-                    onLogout={onLogout} onChangePassword={onChangePassword} onAuditLog={onAuditLog}
+                    onLogout={onLogout}
+                    onChangePassword={onChangePassword && (() => { setUserMenuOpen(false); onChangePassword(); })}
+                    onAuditLog={onAuditLog && (() => { setUserMenuOpen(false); onAuditLog(); })}
                   />
                 )}
               </div>
@@ -413,7 +420,7 @@ function UserMenuPopover({
         <Pill bg="var(--accent-soft)" fg="var(--accent)" size="sm">{user.role}</Pill>
       </div>
       <div style={{ marginTop: 6, display: "flex", flexDirection: "column" }}>
-        <MenuItem onClick={onChangePassword}>Zmień hasło</MenuItem>
+        <MenuItem onClick={onChangePassword}>Moje konto</MenuItem>
         {isSuper && onAuditLog && <MenuItem onClick={onAuditLog}>Dziennik audytu</MenuItem>}
         <div style={{ height: 1, background: "var(--border-soft)", margin: "4px 0" }}/>
         <MenuItem danger icon={<I.Logout size={13}/>} onClick={onLogout}>Wyloguj</MenuItem>
