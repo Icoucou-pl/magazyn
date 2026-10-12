@@ -20,6 +20,7 @@ from routers import (
     sellasist, sync, firmy, assistant, cn_sku, reports,
     fakturownia, fakturownia_sales, sku_economics, bank, product_photos,
     product_history, fakturownia_history, dropy, odprawy, cena, koszt_kontenera, wycena,
+    podsumowanie,
 )
 
 app = FastAPI(title="Magazyn API", version="5.0", lifespan=lifespan)
@@ -67,5 +68,6 @@ for r in (auth, users, audit_log, meta, products, anomalies,
           containers, manufacturers, container_types, calendar, tools, fx, finance,
           sellasist, sync, firmy, assistant, cn_sku, reports,
           fakturownia, fakturownia_sales, sku_economics, bank, product_photos,
-          product_history, fakturownia_history, dropy, odprawy, cena, koszt_kontenera, wycena):
+          product_history, fakturownia_history, dropy, odprawy, cena, koszt_kontenera, wycena,
+          podsumowanie):
     app.include_router(r.router)
