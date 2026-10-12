@@ -2,8 +2,8 @@
 // ============================================================
 // MAGAZYN — wspólne klocki zakładek „test-wycena” i „test-cena”.
 //
-//   • PasekCen     — poziomy pasek: strefy kolorów, kropki konkurencji, znacznik naszej ceny
-//                    i kreska ceny minimalnej (konkurencja i kalkulator handlowca)
+//   • PasekCen     — poziomy pasek: strefy kolorów, kropki konkurencji, znacznik naszej ceny,
+//                    obrys ceny sugerowanej i kreska ceny minimalnej (konkurencja i kalkulator handlowca)
 //   • KosztyEdytor — lista kosztów „+” (nazwa, % / zł, od netto / od brutto, wartość, ×)
 //   • Pole, Linia, style — drobne rzeczy, żeby obie zakładki wyglądały tak samo
 // ============================================================
@@ -14,11 +14,13 @@ import { BAZA_KROTKO, num, zl2, type BazaKosztu, type KosztBazy, type KosztPlus,
 // ── Pasek cen ────────────────────────────────────────────────
 export type StrefaPaska = { od: number; do: number; kolor: string };
 
-export function PasekCen({ lo, hi, strefy = [], kropki = [], min, my }: {
+export function PasekCen({ lo, hi, strefy = [], kropki = [], min, my, sug }: {
   lo: number; hi: number; strefy?: StrefaPaska[];
   kropki?: { v: number; t: string }[];
   min?: number | null;
   my?: { v: number; etk: string } | null;
+  /** Cena sugerowana: obrys POD paskiem — „My” (pełny) jest nad nim, więc bliskie ceny się nie nakładają. */
+  sug?: { v: number; etk: string } | null;
 }) {
   if (!(hi > lo)) return null;
   const x = (v: number) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
@@ -26,7 +28,7 @@ export function PasekCen({ lo, hi, strefy = [], kropki = [], min, my }: {
   const podzialka: number[] = [];
   for (let t = Math.ceil(lo / krok) * krok; t <= hi; t += krok) podzialka.push(t);
   return (
-    <div style={{ position: "relative", height: 58, margin: "26px 10px 4px" }} aria-hidden>
+    <div style={{ position: "relative", height: sug ? 82 : 58, margin: "26px 10px 4px" }} aria-hidden>
       <div style={{ position: "absolute", left: 0, right: 0, top: 22, height: 10, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}>
         {strefy.map((s, i) => (
           <div key={i} style={{ position: "absolute", top: 0, bottom: 0, left: `${x(s.od)}%`, width: `${Math.max(0, x(s.do) - x(s.od))}%`, background: s.kolor }} />
@@ -43,6 +45,12 @@ export function PasekCen({ lo, hi, strefy = [], kropki = [], min, my }: {
           {t.toLocaleString("pl-PL")}
         </div>
       ))}
+      {sug && (
+        <div style={{ position: "absolute", top: 18, left: `${x(sug.v)}%`, transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+          <span style={{ width: 0, height: 38, borderLeft: "2px dashed var(--accent)" }} />
+          <span className="mono" style={{ fontSize: 10.5, fontWeight: 700, background: "var(--bg)", color: "var(--accent)", border: "1px solid var(--accent)", padding: "0 7px", borderRadius: 99, whiteSpace: "nowrap" }}>{sug.etk}</span>
+        </div>
+      )}
       {my && (
         <div style={{ position: "absolute", top: -8, left: `${x(my.v)}%`, transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, transition: "left .15s" }}>
           <span className="mono" style={{ fontSize: 10.5, fontWeight: 700, background: "var(--accent)", color: "var(--accent-ink)", padding: "1px 7px", borderRadius: 99, whiteSpace: "nowrap" }}>{my.etk}</span>

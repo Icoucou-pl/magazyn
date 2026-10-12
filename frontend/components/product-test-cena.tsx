@@ -8,7 +8,7 @@
 // Kalkulator handlowca — ptaszek „Kalkulator handlowca” (+ cena zakupu): handlowiec wpisuje
 // swoją cenę netto i widzi swoją prowizję i zysk firmy, z kolorem względem ceny minimalnej hurt.
 //
-// Wersja testowa obok zakładki „Cena” — po akceptacji przejmie nazwę „Cena”.
+// Zastąpiła (razem z „test-wycena”) starą zakładkę „Cena”.
 // Dane: GET /api/ceny-produktu (routers/wycena.py).
 // ============================================================
 
@@ -40,6 +40,7 @@ export type CenyProduktu = {
   sku: string; shop: string; vat: number;
   min_detal: Krotko | null; min_hurt: Krotko | null; min_allegro: Krotko | null;
   sugerowana_sklepy_brutto: number | null; sugerowana_dropy_netto: number | null; sugerowana_allegro_brutto: number | null;
+  aktualna_detal: Krotko | null;
   okres_dni: number; detal: Sprzedaz; hurt: Sprzedaz;
   konkurencja: Konkurent[]; koszt: Koszt | null; kalkulator: boolean; prowizja_tryb: TrybProwizji;
 };
@@ -203,11 +204,14 @@ function KosztZakupu({ k }: { k: Koszt }) {
 // ── Konkurencja ──────────────────────────────────────────────
 function Konkurencja({ data }: { data: CenyProduktu }) {
   const konk = data.konkurencja;
-  // Nasza cena do porównania: zapisana sugerowana dla sklepów, a bez niej — średnia z 30 dni.
-  const nasza = data.sugerowana_sklepy_brutto ?? data.detal.srednia_brutto;
-  const naszaOpis = data.sugerowana_sklepy_brutto != null ? "cena sugerowana" : "średnia sprzedaż 30 dni";
-  // Podpis na pasku mówi, co to za liczba — „My” sugerowało cenę, po której dziś sprzedajemy, a to nie ona.
-  const naszaEtk = data.sugerowana_sklepy_brutto != null ? "Sugerowana" : "Śr. 30 dni";
+  // Na pasku: „My” = aktualna cena sprzedaży (wpisana w „test-wycena”), „Sugerowana” = obrys pod
+  // paskiem. Gdy nie ma żadnej z nich — jak dawniej średnia sprzedaż z 30 dni (wyraźnie podpisana).
+  const akt = data.aktualna_detal?.cena_brutto ?? null;
+  const sug = data.sugerowana_sklepy_brutto;
+  const sr30 = akt == null && sug == null ? data.detal.srednia_brutto : null;
+  const nasza = akt ?? sr30;
+  const naszaOpis = akt != null ? "aktualna cena sprzedaży" : "średnia sprzedaż 30 dni";
+  const naszaEtk = akt != null ? "My" : "Śr. 30 dni";
   const minB = data.min_detal?.cena_brutto ?? null;
   if (!konk.length) {
     return (
@@ -219,7 +223,7 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
   const ceny = konk.map((k) => k.cena_brutto).sort((a, b) => a - b);
   const min = ceny[0], max = ceny[ceny.length - 1], srodek = mediana(ceny) as number;
   const najt = konk.find((k) => k.cena_brutto === min), najd = konk.find((k) => k.cena_brutto === max);
-  const wartosci = [min, max, ...(nasza != null ? [nasza] : []), ...(minB != null ? [minB] : [])];
+  const wartosci = [min, max, ...(nasza != null ? [nasza] : []), ...(sug != null ? [sug] : []), ...(minB != null ? [minB] : [])];
   const lo = Math.floor((Math.min(...wartosci) * 0.94) / 10) * 10, hi = Math.ceil((Math.max(...wartosci) * 1.06) / 10) * 10;
   const stare = konk.filter((k) => (dniTemu(k.dodano) ?? 0) > KONKURENCJA_STARA_DNI).length;
 
@@ -244,10 +248,12 @@ function Konkurencja({ data }: { data: CenyProduktu }) {
           <PasekCen lo={lo} hi={hi} min={minB}
             strefy={minB != null ? [{ od: lo, do: minB, kolor: "color-mix(in oklch, var(--critical) 40%, transparent)" }] : []}
             kropki={konk.map((k) => ({ v: k.cena_brutto, t: `${k.sklep}: ${zl2(k.cena_brutto)} zł` }))}
-            my={nasza != null ? { v: nasza, etk: `${naszaEtk} ${Math.round(nasza)}` } : null} />
+            my={nasza != null ? { v: nasza, etk: `${naszaEtk} ${Math.round(nasza)}` } : null}
+            sug={sug != null ? { v: sug, etk: `Sugerowana ${Math.round(sug)}` } : null} />
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", ...hint }}>
             <span>● konkurent (najedź, żeby zobaczyć sklep)</span>
             {nasza != null && <span style={{ color: "var(--accent)" }}>▮ nasza cena ({naszaOpis})</span>}
+            {sug != null && <span style={{ color: "var(--accent)" }}>┆ cena sugerowana</span>}
             {minB != null && <span style={{ color: "var(--critical)" }}>| nasza cena minimalna</span>}
           </div>
           {wniosek && <div style={noteInfo}><span style={{ color: "var(--info)" }}>i</span><div>{wniosek}</div></div>}

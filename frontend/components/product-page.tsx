@@ -15,13 +15,11 @@
 //                  (canSeeProductSales: viewProductSales ORAZ viewFinancials)
 //   • Historia produktu — bez zmian względem modala (super-admin + SKU z historią)
 //   • Dane       — atrybuty, zdjęcia, wymiary; strefa usuwania dla super-admina
-//   • Cena       — koszt FIFO / średni z kontenerów, dostawy, kalkulator ceny sprzedaży
-//                  (canSeeProductPrice: viewProductPrice ORAZ viewFinancials)
-//   • test-cena / test-wycena — na czas testów TYLKO superadmin
-//   • test-cena  — wersja testowa zakładki dla zespołu: ceny minimalne, konkurencja, średnie
+//   • test-cena  — zakładka dla zespołu: ceny minimalne, konkurencja, średnie
 //                  ceny sprzedaży, kalkulator handlowca (canSeePriceSummary)
-//   • test-wycena — wersja testowa następczyni „Ceny”: kalkulator z szablonami, ceny minimalne,
-//                  konkurencja + cała dotychczasowa „Cena” pod spodem (canSeeProductPrice)
+//   • test-wycena — następczyni starej „Ceny” (już usuniętej): kalkulator z szablonami, ceny
+//                  minimalne, aktualna cena sprzedaży, konkurencja + koszty i dostawy ze starej
+//                  „Ceny” pod spodem (canSeeProductPrice: viewProductPrice ORAZ viewFinancials)
 //
 // Klocki są WSPÓLNE z modalem (eksporty z product-modal.tsx i finance.tsx),
 // więc obie drogi pokazują te same liczby tak samo policzone.
@@ -49,7 +47,6 @@ import ManufacturerModal from "./manufacturer-modal";
 import Breadcrumbs, { type Trail } from "./breadcrumbs";
 import { containerSlug } from "@/lib/routes";
 import LifecycleTabV2 from "./product-lifecycle-v2";
-import ProductPriceTab from "./product-price-tab";
 import ProductTestCena from "./product-test-cena";
 import ProductTestWycena from "./product-test-wycena";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
@@ -60,7 +57,7 @@ import { can, canSeePriceSummary, canSeeProductHistory, canSeeProductPrice, canS
 import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
-export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "cena" | "test-cena" | "test-wycena";
+export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "test-cena" | "test-wycena";
 
 // Prognoza na pełnej karcie: 180 dni z modala + 90. Endpoint przyjmuje dowolne `days`.
 const HORYZONT_DNI = 270;
@@ -70,7 +67,6 @@ const TAB_LABELS: Record<ProductTab, string> = {
   sprzedaz: "Sprzedaż",
   historia: "Historia produktu",
   dane: "Dane",
-  cena: "Cena",
   "test-cena": "test-cena",
   "test-wycena": "test-wycena",
 };
@@ -78,6 +74,8 @@ const TAB_LABELS: Record<ProductTab, string> = {
 function czytajTabZAdresu(): ProductTab | null {
   if (typeof window === "undefined") return null;
   const t = new URLSearchParams(window.location.search).get("tab");
+  // Stare linki do usuniętej zakładki „Cena” prowadzą do jej następczyni.
+  if (t === "cena") return "test-wycena";
   return t && t in TAB_LABELS ? (t as ProductTab) : null;
 }
 
@@ -321,12 +319,10 @@ export default function ProductPage({
     if (salesAllowed) out.push("sprzedaz");
     if (historyAllowed && hasHistory) out.push("historia");
     out.push("dane");
-    if (priceAllowed) out.push("cena");
-    // Zakładki testowe: na czas testów tylko superadmin (serwer pilnuje tego samego w routers/wycena.py).
-    if (isSuper && priceSummaryAllowed) out.push("test-cena");
-    if (isSuper && priceAllowed) out.push("test-wycena");
+    if (priceSummaryAllowed) out.push("test-cena");
+    if (priceAllowed) out.push("test-wycena");
     return out;
-  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed, priceSummaryAllowed, isSuper]);
+  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed, priceSummaryAllowed]);
 
   // Zakładka z linku, do której ktoś nie ma dostępu (albo historia, której
   // SKU nie ma) → Logistyka. Dla historii czekamy na odpowiedź sondy.
@@ -635,19 +631,11 @@ export default function ProductPage({
           <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />
         )}
 
-        {tab === "cena" && priceAllowed && (
-          <ProductPriceTab
-            sku={product.sku}
-            shop={shop}
-            onOpenContainer={onOpenContainerPage}
-          />
-        )}
-
-        {tab === "test-cena" && isSuper && priceSummaryAllowed && (
+        {tab === "test-cena" && priceSummaryAllowed && (
           <ProductTestCena sku={product.sku} shop={shop} />
         )}
 
-        {tab === "test-wycena" && isSuper && priceAllowed && (
+        {tab === "test-wycena" && priceAllowed && (
           <ProductTestWycena sku={product.sku} shop={shop} onOpenContainer={onOpenContainerPage} />
         )}
 

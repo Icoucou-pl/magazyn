@@ -675,6 +675,23 @@ async def lifespan(app: FastAPI):
         # Pierwsza wersja miała CHECK tylko na 'detal'/'hurt'; teraz w tym samym dzienniku są też
         # ceny sugerowane. Listę pilnuje API (Literal w models.py), więc ograniczenie zdejmujemy.
         await conn.execute(text("ALTER TABLE app_cena_minimalna DROP CONSTRAINT IF EXISTS app_cena_minimalna_kanal_check"))
+        # Aktualna cena sprzedaży (detal, brutto) — wpisywana ręcznie w „test-wycena”, nie liczona.
+        # Liczona z zamówień myliła (jedno łóżko z rabatem i średnia już „dziwna”). Też dziennik:
+        # aktualna = najnowsza, starsze = historia „kto i kiedy”.
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_cena_aktualna (
+                id          SERIAL PRIMARY KEY,
+                sku_canon   TEXT          NOT NULL,          -- LOWER(TRIM(sku))
+                sku         TEXT          NOT NULL,
+                cena_brutto NUMERIC(12,2) NOT NULL,
+                cena_netto  NUMERIC(12,2) NOT NULL,
+                vat         NUMERIC(5,2)  NOT NULL,          -- VAT produktu z chwili zapisu
+                ustawil_id  INTEGER,
+                ustawil     TEXT,
+                ustawiono   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cena_aktualna_sku ON app_cena_aktualna (sku_canon, ustawiono DESC)"))
         # Ceny u konkurencji: jeden aktywny wpis na sklep (najnowszy), starsze = historia.
         # Usunięcie sklepu oznacza wszystkie jego wiersze (usunieto), nic nie kasujemy.
         await conn.execute(text("""

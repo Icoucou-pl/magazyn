@@ -1608,6 +1608,22 @@ class CenaMinimalnaIn(BaseModel):
     szablon: Optional[str] = Field(None, max_length=120)
 
 
+class CenaAktualnaIn(BaseModel):
+    """Aktualna cena sprzedaży detal (brutto) — wpisana ręcznie, bez kalkulatora."""
+    sku: str = Field(..., min_length=1, max_length=255)
+    shop: Optional[str] = None
+    cena_brutto: float = Field(..., gt=0, lt=10_000_000)
+
+
+class CenaAktualnaOut(BaseModel):
+    id: int
+    cena_brutto: float
+    cena_netto: float
+    vat: float
+    ustawil: Optional[str] = None
+    ustawiono: Optional[datetime] = None
+
+
 class KonkurencjaHistoriaOut(BaseModel):
     cena_brutto: float
     dodal: Optional[str] = None
@@ -1687,6 +1703,7 @@ class WycenaOut(BaseModel):
     koszty_bazy: List[KosztBazyOut] = []      # do wyboru w kalkulatorze — tylko policzalne
     baza_domyslna: Optional[str] = None       # services/wycena.py → baza_do_wyceny
     ceny_min: List[CenaMinimalnaOut] = []     # minimalne i sugerowane, od najnowszej; pierwsza danego kanału = aktualna
+    ceny_aktualne: List[CenaAktualnaOut] = []  # aktualna cena sprzedaży detal, od najnowszej; pierwsza = obowiązująca
     konkurencja: List[KonkurencjaOut] = []
     szablony: List[WycenaSzablonOut] = []
     moze_zapisac: bool = False
@@ -1735,6 +1752,7 @@ class CenyProduktuOut(BaseModel):
     sugerowana_sklepy_brutto: Optional[float] = None   # cena sugerowana detal
     sugerowana_dropy_netto: Optional[float] = None     # cena sugerowana dropy/hurt
     sugerowana_allegro_brutto: Optional[float] = None
+    aktualna_detal: Optional[CenaMinimalnaKrotkoOut] = None   # aktualna cena sprzedaży detal (wpisana ręcznie)
     okres_dni: int = 30
     detal: SprzedazKanaluOut = SprzedazKanaluOut()
     hurt: SprzedazKanaluOut = SprzedazKanaluOut()
