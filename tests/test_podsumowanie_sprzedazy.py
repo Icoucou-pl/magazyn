@@ -152,10 +152,12 @@ def test_klucza_nie_ma_w_zadnej_roli():
     assert all("viewSalesSummary" not in p for p in ROLE_PERMS.values())
 
 
-def test_domyslnie_pomijamy_anulowane_i_zakonczone_zwroty():
-    """Ustalone na Veluxie: różnica do Sellasista to dokładnie te dwa statusy."""
+def test_domyslnie_pomijamy_grupe_niezrealizowane():
+    """Sellasist nie liczy grupy „Niezrealizowane” — ustalone na Veluxie i AMH co do zamówienia."""
     from config import Settings
-    assert Settings.model_fields["PODSUMOWANIE_POMIJANE_STATUSY"].default == "Anulowane,Zwrot - zakończony"
+    domyslne = Settings.model_fields["PODSUMOWANIE_POMIJANE_STATUSY"].default.split(",")
+    assert domyslne == ["Anulowane", "Zwrot - zakończony", "Zwrot", "Zwrot pobranie",
+                        "zwrot - do uzupełnienia", "Rekompensaty - zakończone"]
 
 
 def test_lista_pomijanych_idzie_na_karte(klient, monkeypatch):

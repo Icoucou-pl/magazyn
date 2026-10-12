@@ -74,11 +74,15 @@ class Settings(BaseSettings):
 
     # „Podsumowanie sprzedaży” na pulpicie liczy jak panel Sellasista: WSZYSTKIE zamówienia
     # z dnia złożenia, w każdym statusie (nowe, za pobraniem, w realizacji…) — to „ruch”,
-    # nie zrealizowana sprzedaż z whitelist wyżej. Wyjątek: statusy, których Sellasist nie
-    # liczy (nazwy 1:1 jak w bazie, po przecinku, dotyczy wszystkich firm). Ustalone na Veluxie
-    # 12.10.2026: 30 dni u nas − Sellasist = dokładnie „Anulowane” + „Zwrot - zakończony”
-    # (14 zam., 5 361,26 zł, co do grosza). Nazwa nieistniejąca w danej firmie nic nie psuje.
-    PODSUMOWANIE_POMIJANE_STATUSY: str = "Anulowane,Zwrot - zakończony"
+    # nie zrealizowana sprzedaż z whitelist wyżej. Wyjątek: statusy z grupy „Niezrealizowane”
+    # w Sellasiście — panel ich nie liczy (nazwy 1:1 jak w bazie, po przecinku, wszystkie firmy;
+    # nazwa nieistniejąca w danej firmie nic nie psuje). Ustalone 12.10.2026 co do zamówienia:
+    # Veluxa — „Anulowane”, „Zwrot - zakończony”; AMH dodatkowo zwroty i rekompensaty.
+    # Nowy status w grupie „Niezrealizowane” w Sellasiście = dopisać go tutaj (lub w Railway).
+    PODSUMOWANIE_POMIJANE_STATUSY: str = (
+        "Anulowane,Zwrot - zakończony,Zwrot,Zwrot pobranie,zwrot - do uzupełnienia,"
+        "Rekompensaty - zakończone"
+    )
 
     # --- Kursy walut NBP (tabela A) → przewalutowanie na PLN ---
     # app_fx_rates trzyma kurs średni (mid) per 1 jednostka waluty, per dzień roboczy.
