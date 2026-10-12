@@ -25,7 +25,10 @@ type Point = { date: string; orders: number; value: number | null };
 type Series = { shop: string; points: Point[]; missing_rates: number };
 type Summary = { from: string; to: string; series: Series[]; excluded_statuses?: string[] };
 
-const KPI_OKNA = [{ d: 1, l: "dziś" }, { d: 7, l: "7 dni" }, { d: 30, l: "30 dni" }];
+// Okna 1:1 z Sellasistem (sprawdzone na Veluxie co do grosza, 12.10.2026): „30 dni” = dziś
+// + 29 poprzednich, ale „7 dni” = dziś + 7 poprzednich, czyli 8 dni kalendarzowych.
+// Niekonsekwencja jest po stronie Sellasista — trzymamy się jej, żeby liczby się zgadzały.
+const KPI_OKNA = [{ d: 1, l: "dziś" }, { d: 8, l: "7 dni" }, { d: 30, l: "30 dni" }];
 const WYKRES_OKNA = [30, 60, 180];
 
 const BAR = "var(--info)";
