@@ -38,15 +38,23 @@ type SeasonPoint = { year: number; month: number; qty: number; value_net: number
 export default function LifecycleTabV2({ sku, shop, showFin }: { sku: string; shop?: string; showFin: boolean }) {
   const [h, setH] = useState<Historia | null>(null);
   const [season, setSeason] = useState<SeasonPoint[] | null>(null);
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    setH(null); setSeason(null); setErr(false);
+    setH(null); setSeason(null); setErr(null);
     // Źródło danych wskazuje `shop` — patrz komentarz w product-lifecycle.tsx.
     api.get(`/products/${encodeURIComponent(sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
       .then((d) => { if (alive) setH(d as Historia); })
-      .catch(() => { if (alive) setErr(true); });
+      // Powód zamiast ogólnego „brak historii" — zakładka już się nie chowa,
+      // więc to tu widać, czy SKU nie ma ruchów w ERP, czy coś się wysypało.
+      .catch((e: { status?: number; message?: string }) => {
+        if (!alive) return;
+        const erp = shop && shop !== "amh" ? `Fakturowni (${shop.toUpperCase()})` : "Subiekcie (AMH)";
+        setErr(e?.status === 404
+          ? `W ${erp} nie ma żadnych ruchów magazynowych dla symbolu ${sku}.`
+          : `Nie udało się wczytać historii: ${e?.message || "nieznany błąd"}`);
+      });
     // Przychód jest opcjonalny — bez niego po prostu nie ma wykresu marży.
     api.get(`/products/${encodeURIComponent(sku)}/sales-season`)
       .then((d) => { if (alive) setSeason(d as SeasonPoint[]); })
@@ -58,6 +66,7 @@ export default function LifecycleTabV2({ sku, shop, showFin }: { sku: string; sh
     return (
       <div style={{ ...box, padding: 22, textAlign: "center" }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-mid)" }}>Brak historii dla tego SKU</div>
+        <div style={{ fontSize: 12, color: "var(--text-lo)", marginTop: 6 }}>{err}</div>
       </div>
     );
   }

@@ -146,7 +146,6 @@ export default function ProductPage({
   // null = sonda jeszcze nie odpowiedziała. Rozróżnienie jest potrzebne, żeby
   // wejście z linkiem ?tab=historia nie zostało zepchnięte na Logistykę,
   // zanim backend w ogóle powie, czy historia istnieje.
-  const [hasHistory, setHasHistory] = useState<boolean | null>(null);
   const [delChk, setDelChk] = useState<DeleteCheck | null>(null);
   const [nowoscOpen, setNowoscOpen] = useState(false);
   // Koszt w nagłówku: średnia ważona z kontenerów na stanie (jak w zakładce „Cena"),
@@ -210,7 +209,7 @@ export default function ProductPage({
   useEffect(() => {
     setProduct(null); setNieZnaleziono(false); setBrakWFirmie(false);
     setPozaWlascicielem(null); setBladWczytania(null);
-    setProj(null); setSeason(null); setHasHistory(null); setDelChk(null);
+    setProj(null); setSeason(null); setDelChk(null);
     setEditingAttrs(false); setEditingLT(false);
     window.scrollTo({ top: 0 });
   }, [sku]);
@@ -310,15 +309,6 @@ export default function ProductPage({
 
   // ── Sondy super-admina (jak w modalu) ──────────────────────
   useEffect(() => {
-    if (!historyAllowed) { setHasHistory(false); return; }
-    let alive = true;
-    api.get(`/products/${encodeURIComponent(sku)}/historia${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)
-      .then(() => { if (alive) setHasHistory(true); })
-      .catch(() => { if (alive) setHasHistory(false); });
-    return () => { alive = false; };
-  }, [sku, historyAllowed, shop]);
-
-  useEffect(() => {
     if (!isSuper) { setDelChk(null); return; }
     let alive = true;
     api.get(`/products/${encodeURIComponent(sku)}/delete-check`)
@@ -331,21 +321,23 @@ export default function ProductPage({
   const tabs = useMemo(() => {
     const out: ProductTab[] = ["logistyka"];
     if (salesAllowed) out.push("sprzedaz");
-    if (historyAllowed && hasHistory) out.push("historia");
+    // Zakładka historii jest zawsze, gdy ktoś ma do niej prawo. Wcześniej
+    // chowała się po cichu przy każdym błędzie sondy i nie było wiadomo,
+    // czy SKU nie ma ruchów, czy coś się wysypało (Mkp1). Teraz powód
+    // pokazuje sama zakładka.
+    if (historyAllowed) out.push("historia");
     out.push("dane");
     if (priceSummaryAllowed) out.push("test-cena");
     if (priceAllowed) out.push("test-wycena");
     return out;
-  }, [salesAllowed, historyAllowed, hasHistory, priceAllowed, priceSummaryAllowed]);
+  }, [salesAllowed, historyAllowed, priceAllowed, priceSummaryAllowed]);
 
-  // Zakładka z linku, do której ktoś nie ma dostępu (albo historia, której
-  // SKU nie ma) → Logistyka. Dla historii czekamy na odpowiedź sondy.
+  // Zakładka z linku, do której ktoś nie ma dostępu → Logistyka.
   useEffect(() => {
     if (tabs.includes(tab)) return;
-    if (tab === "historia" && hasHistory === null) return;
     setTab("logistyka");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs, tab, hasHistory]);
+  }, [tabs, tab]);
 
   // ── Akcje nagłówka ─────────────────────────────────────────
   // Zapis idzie po SKU z ODPOWIEDZI backendu, nie z adresu. Adres ktoś może
@@ -650,7 +642,7 @@ export default function ProductPage({
           />
         )}
 
-        {tab === "historia" && historyAllowed && hasHistory && (
+        {tab === "historia" && historyAllowed && (
           <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />
         )}
 
