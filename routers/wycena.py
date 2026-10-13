@@ -1,12 +1,12 @@
-"""Zakładki „test-wycena” i „test-cena” na pełnej karcie produktu.
+"""Zakładki „test-wycena” i „Cena” na pełnej karcie produktu.
 
-Zastąpiły starą zakładkę „Cena” (jej klocki z kosztami i dostawami siedzą w „test-wycena”).
+Zastąpiły pierwszą zakładkę „Cena” z kalkulatorem FIFO (jej klocki z kosztami i dostawami siedzą w „test-wycena”).
 Dostęp jak dawniej do „Ceny”: „test-wycena” i zapisy — uprawnienia ceny produktu,
-„test-cena” — viewPriceSummary. Okres „tylko superadmin” na czas testów się skończył.
+„Cena” (dawniej „test-cena”) — viewPriceSummary. Okres „tylko superadmin” na czas testów się skończył.
 
-  GET    /api/ceny-produktu?sku=…&shop=…   „test-cena”: same wyniki dla zespołu (viewPriceSummary)
+  GET    /api/ceny-produktu?sku=…&shop=…   „Cena”: same wyniki dla zespołu (viewPriceSummary)
   GET    /api/wycena?sku=…&shop=…          „test-wycena”: koszty, ceny minimalne z historią,
-                                            konkurencja, szablony (jak zakładka „Cena”)
+                                            konkurencja, szablony (jak pierwsza „Cena”)
   PUT    /api/wycena/cena                   zapis ceny z kalkulatora: minimalna albo sugerowana
                                             (detal, dropy/hurt, allegro — services/wycena.py → KANALY)
   PUT    /api/wycena/cena-aktualna          aktualna cena sprzedaży detal (brutto, wpisana ręcznie)
@@ -42,7 +42,8 @@ from models import (
 )
 from routers.cena import _policz, _zapisane
 from security import (
-    allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_purchase_price,
+    allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_price_summary_competition,
+    can_view_price_summary_cost,
     has_perm, require_price_summary_view, require_product_price_edit, require_product_price_view,
     resolve_shop,
 )
@@ -266,14 +267,18 @@ def _koszty_bazy(w: WynikKosztow, meta: dict) -> "tuple[List[KosztBazyOut], Opti
     return out, baza_do_wyceny({k.baza: k.koszt for k in out})
 
 
-# ── GET: „test-cena” ─────────────────────────────────────────────────────
+# ── GET: „Cena” ─────────────────────────────────────────────────────
 @router.get("/ceny-produktu", response_model=CenyProduktuOut)
 async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query(""),
                         db: AsyncSession = Depends(get_db),
                         user: CurrentUser = Depends(require_price_summary_view)):
     shop = resolve_shop(shop, user)
     koszt = None
-    if can_view_purchase_price(user):
+    # Koszt liczymy dla boksu „Koszt zakupu” albo dla kalkulatora handlowca (on też go potrzebuje);
+    # boks pokazuje się tylko z koszt_widoczny — sam kalkulator go nie odsłania.
+    koszt_widoczny, kalkulator = can_view_price_summary_cost(user), can_use_sales_calculator(user)
+    konkurencja_widoczna = can_view_price_summary_competition(user)
+    if koszt_widoczny or kalkulator:
         p, _, w, meta, slug, _, _ = await _policz(db, sku, shop, user)
         po_id = {d.item_id: d for d in w.dostawy}
         fifo_d, nb = po_id.get(w.fifo_item_id), po_id.get(w.najblizsza_item_id)
@@ -295,7 +300,7 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
     md, mh, ma = _aktualna(ceny, "detal"), _aktualna(ceny, "hurt"), _aktualna(ceny, "min_allegro")
     krotko = lambda c: CenaMinimalnaKrotkoOut(cena_netto=c.cena_netto, cena_brutto=c.cena_brutto,  # noqa: E731
                                               ustawil=c.ustawil, ustawiono=c.ustawiono) if c else None
-    # Ceny sugerowane: z kalkulatora wyceny, a dopóki tam ich nie ma — zapisane starą zakładką „Cena”.
+    # Ceny sugerowane: z kalkulatora wyceny, a dopóki tam ich nie ma — zapisane pierwszą „Ceną” (PUT /products/{sku}/cena).
     stare = {z.kanal: z for z in await _zapisane(db, p.sku)}
     sd, sh, sa = _aktualna(ceny, "sug_detal"), _aktualna(ceny, "sug_hurt"), _aktualna(ceny, "sug_allegro")
     sug_detal = sd.cena_brutto if sd else (stare["sklepy"].cena_brutto if "sklepy" in stare else None)
@@ -312,9 +317,10 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
         okres_dni=OKRES_DNI,
         detal=_kanal_sprzedazy(detal, "brutto", md, md.cena_brutto if md else None, ma),
         hurt=_kanal_sprzedazy(hurt, "netto", mh, mh.cena_netto if mh else None),
-        konkurencja=await _konkurencja(db, p.sku),
-        koszt=koszt,
-        kalkulator=can_use_sales_calculator(user),
+        konkurencja=await _konkurencja(db, p.sku) if konkurencja_widoczna else [],
+        konkurencja_widoczna=konkurencja_widoczna,
+        koszt=koszt, koszt_widoczny=koszt_widoczny,
+        kalkulator=kalkulator,
         prowizja_tryb="A" if has_perm(user, "prowizjaOdCeny") else "B",
     )
 

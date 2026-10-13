@@ -145,11 +145,12 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # XML odprawy, wpisywanie kwot z faktury spedytora i zapis kosztu na pozycje kontenera.
 # Bez viewLandedCost samo editLandedCost nic nie daje — nie ma czego edytować.
 #
-# viewProductPrice / editProductPrice — zakładka „Cena" na pełnej karcie produktu (koszt FIFO,
-# średnia ważona, dostawy z kosztem jednostkowym, kalkulator ceny sprzedaży). Domyślnie TYLKO ADMIN.
+# viewProductPrice / editProductPrice — zakładka „test-wycena” na pełnej karcie produktu (kalkulator
+# z szablonami, koszty FIFO i dostawy). Klucze zostały po pierwszej zakładce „Cena” z kalkulatorem FIFO (już usuniętej) —
+# nie zmieniamy nazw, bo siedzą w ustawieniach użytkowników w bazie. Domyślnie TYLKO ADMIN.
 # viewProductPrice jest KONIUNKCYJNE z viewFinancials (patrz can_view_product_price) — zakładka
-# pokazuje marże i koszty importu. editProductPrice (zapis sugerowanej ceny) działa tylko
-# NA WIERZCHU podglądu (can_edit_product_price).
+# pokazuje marże i koszty importu. editProductPrice (zapis cen minimalnych, konkurencji, szablonów)
+# działa tylko NA WIERZCHU podglądu (can_edit_product_price).
 #
 # viewPurchasePrice — sama cena zakupu (koszt netto / szt) dla osób BEZ viewFinancials.
 # Odczytywane w routers/products.py::_mask_financials — cena zostaje w odpowiedzi,
@@ -165,11 +166,15 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # z viewFinancials (patrz can_see_calendar_payments) — kalendarz pokazuje kwoty zobowiązań,
 # więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy tylnymi drzwiami.
 #
-# viewPriceSummary — zakładka „test-cena” na karcie produktu: same wyniki dla zespołu (ceny
+# viewPriceSummary — zakładka „Cena” (dawniej „test-cena”) na karcie produktu: same wyniki dla zespołu (ceny
 # minimalne, konkurencja, średnie ceny sprzedaży), bez wyliczeń. Domyślnie TYLKO ADMIN —
-# zespołowi ptaszek stawia admin. Koszt zakupu pokazuje się tam tylko przy can_view_purchase_price.
+# zespołowi ptaszek stawia admin.
 #
-# useSalesCalculator — kalkulator handlowca w „test-cena”. KONIUNKCYJNE z viewPriceSummary
+# priceSummaryCost / priceSummaryCompetition — widoczność boksów „Koszt zakupu” i „Konkurencja”
+# w „Cena”. Domyślnie TYLKO ADMIN — reszcie ptaszek stawia admin. Same nic nie otwierają — działają na wierzchu zakładki,
+# a koszt zakupu dodatkowo tylko z ceną zakupu (can_view_price_summary_cost).
+#
+# useSalesCalculator — kalkulator handlowca w „Cena”. KONIUNKCYJNE z viewPriceSummary
 # i z ceną zakupu (can_use_sales_calculator): z ceny i zysku i tak widać koszt sztuki.
 # prowizjaOdCeny — nie uprawnienie, tylko ustawienie handlowca trzymane w tym samym miejscu,
 # żeby admin klikał je w tym samym panelu: ptaszek = prowizja jako % ceny netto (sposób A),
@@ -178,9 +183,9 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # viewDashboardKpi — tylko front (karty KPI na pulpicie); tu dla zgodności z permissions.js,
 # żeby zmiana masowa w /users/bulk liczyła „wyjątek względem roli” tak samo jak front.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True,  "viewProductPrice": True,  "editProductPrice": True,  "viewPriceSummary": True,  "useSalesCalculator": True,  "prowizjaOdCeny": False},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "prowizjaOdCeny": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "viewDashboardKpi": False, "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "prowizjaOdCeny": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True,  "viewProductPrice": True,  "editProductPrice": True,  "viewPriceSummary": True,  "useSalesCalculator": True,  "priceSummaryCost": True,  "priceSummaryCompetition": True,  "prowizjaOdCeny": False},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "priceSummaryCost": False, "priceSummaryCompetition": False,  "prowizjaOdCeny": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "viewDashboardKpi": False, "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "priceSummaryCost": False, "priceSummaryCompetition": False,  "prowizjaOdCeny": False},
 }
 
 
@@ -322,18 +327,30 @@ async def require_purchase_price_view(user: CurrentUser = Depends(get_current_us
 
 
 def can_view_product_price(user: CurrentUser) -> bool:
-    """Zakładka „Cena" = viewProductPrice ORAZ viewFinancials (lustro: permissions.js → canSeeProductPrice)."""
+    """Zakładka „test-wycena” = viewProductPrice ORAZ viewFinancials (lustro: permissions.js → canSeeProductPrice)."""
     return has_perm(user, "viewProductPrice") and has_perm(user, "viewFinancials")
 
 
 def can_edit_product_price(user: CurrentUser) -> bool:
-    """Zapis sugerowanej ceny — prawo na wierzchu podglądu zakładki."""
+    """Zapisy w „test-wycena” (ceny minimalne, konkurencja, szablony) — prawo na wierzchu podglądu zakładki."""
     return can_view_product_price(user) and has_perm(user, "editProductPrice")
 
 
 def can_view_price_summary(user: CurrentUser) -> bool:
-    """Zakładka „test-cena” (lustro: permissions.js → canSeePriceSummary)."""
+    """Zakładka „Cena” (lustro: permissions.js → canSeePriceSummary)."""
     return has_perm(user, "viewPriceSummary")
+
+
+def can_view_price_summary_cost(user: CurrentUser) -> bool:
+    """Boks „Koszt zakupu” w „Cena” = zakładka ORAZ priceSummaryCost ORAZ cena zakupu
+    (lustro: permissions.js → canSeePriceSummaryCost)."""
+    return can_view_price_summary(user) and has_perm(user, "priceSummaryCost") and can_view_purchase_price(user)
+
+
+def can_view_price_summary_competition(user: CurrentUser) -> bool:
+    """Boks „Konkurencja” w „Cena” = zakładka ORAZ priceSummaryCompetition
+    (lustro: permissions.js → canSeePriceSummaryCompetition)."""
+    return can_view_price_summary(user) and has_perm(user, "priceSummaryCompetition")
 
 
 def can_use_sales_calculator(user: CurrentUser) -> bool:

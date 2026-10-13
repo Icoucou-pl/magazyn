@@ -1250,12 +1250,15 @@ const PERM_REQUIRES: Record<string, string[]> = {
   viewCalendarPayments: ["viewFinancials"],
   viewBankBalances: ["viewFinancials"],
   editBankBalances: ["viewBankBalances", "viewFinancials"],
+  priceSummaryCost: ["viewPriceSummary"],
+  priceSummaryCompetition: ["viewPriceSummary"],
+  useSalesCalculator: ["viewPriceSummary"],
 };
 
 // Gotowe pakiety do zmiany masowej („Nadaj” na wszystkich kluczach pakietu).
 const PERM_PRESETS: { id: string; label: string; perms: string[] }[] = [
-  { id: "cena",     label: "Cena produktu (podgląd)",            perms: ["viewFinancials", "viewProductPrice"] },
-  { id: "cenaEdit", label: "Cena produktu + zapis",              perms: ["viewFinancials", "viewProductPrice", "editProductPrice"] },
+  { id: "cena",     label: "Wycena (podgląd)",                   perms: ["viewFinancials", "viewProductPrice"] },
+  { id: "cenaEdit", label: "Wycena + zapis",                     perms: ["viewFinancials", "viewProductPrice", "editProductPrice"] },
   { id: "produkt",  label: "Karta produktu: historia + sprzedaż", perms: ["viewFinancials", "viewProductHistory", "viewProductSales"] },
   { id: "koszt",    label: "Koszt kontenera",                    perms: ["viewFinancials", "viewLandedCost"] },
 ];

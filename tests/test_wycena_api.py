@@ -1,6 +1,6 @@
-"""Zakładki „test-cena” / „test-wycena” — uprawnienia i walidacja, bez bazy.
+"""Zakładki „Cena” / „test-wycena” — uprawnienia i walidacja, bez bazy.
 
-  · „test-cena” (GET /api/ceny-produktu) — viewPriceSummary,
+  · „Cena” (GET /api/ceny-produktu) — viewPriceSummary,
   · „test-wycena” i wszystkie zapisy — jak zakładka „Cena” (viewProductPrice + viewFinancials,
     zapis: editProductPrice),
   · kalkulator handlowca — useSalesCalculator ORAZ cena zakupu,
@@ -25,7 +25,10 @@ from config import settings  # noqa: E402
 from database import get_db  # noqa: E402
 from main import app  # noqa: E402
 from models import CenaAktualnaIn, CurrentUser, KonkurencjaIn  # noqa: E402
-from security import can_use_sales_calculator, can_view_price_summary, get_current_user  # noqa: E402
+from security import (  # noqa: E402
+    can_use_sales_calculator, can_view_price_summary, can_view_price_summary_competition,
+    can_view_price_summary_cost, get_current_user,
+)
 
 
 class _Baza:
@@ -133,6 +136,40 @@ def test_kalkulator_wymaga_ceny_zakupu():
 def test_admin_ma_obie_zakladki_domyslnie():
     admin = CurrentUser(id=1, email="a@f.pl", role="ADMIN")
     assert can_view_price_summary(admin) and can_use_sales_calculator(admin)
+
+
+def test_boksy_ceny_domyslnie_tylko_admin():
+    admin = CurrentUser(id=1, email="a@f.pl", role="ADMIN")
+    assert can_view_price_summary_cost(admin) and can_view_price_summary_competition(admin)
+    # Zespół z samą zakładką nie widzi boksów, dopóki admin nie postawi ptaszków.
+    zespol = CurrentUser(id=1, email="z@f.pl", role="VIEWER", perms={"viewPriceSummary": True})
+    assert not can_view_price_summary_cost(zespol)
+    assert not can_view_price_summary_competition(zespol)
+    z_ptaszkami = CurrentUser(id=1, email="z@f.pl", role="VIEWER",
+                              perms={"viewPriceSummary": True, "priceSummaryCost": True, "priceSummaryCompetition": True})
+    assert can_view_price_summary_cost(z_ptaszkami)     # VIEWER ma viewFinancials → cena zakupu
+    assert can_view_price_summary_competition(z_ptaszkami)
+
+
+def test_boksy_ceny_mozna_zdjac():
+    u = CurrentUser(id=1, email="z@f.pl", role="VIEWER",
+                    perms={"viewPriceSummary": True, "useSalesCalculator": True,
+                           "priceSummaryCost": False, "priceSummaryCompetition": False})
+    assert not can_view_price_summary_cost(u)
+    assert not can_view_price_summary_competition(u)
+    # Kalkulator to osobny ptaszek — zdjęcie boksu kosztu go nie wyłącza.
+    assert can_use_sales_calculator(u)
+
+
+def test_boksy_ceny_wymagaja_zakladki_i_ceny_zakupu():
+    bez_zakladki = CurrentUser(id=1, email="z@f.pl", role="ADMIN", perms={"viewPriceSummary": False})
+    assert not can_view_price_summary_cost(bez_zakladki)
+    assert not can_view_price_summary_competition(bez_zakladki)
+    bez_ceny_zakupu = CurrentUser(id=1, email="z@f.pl", role="VIEWER",
+                                  perms={"viewFinancials": False, "viewPriceSummary": True,
+                                         "priceSummaryCost": True, "priceSummaryCompetition": True})
+    assert not can_view_price_summary_cost(bez_ceny_zakupu)
+    assert can_view_price_summary_competition(bez_ceny_zakupu)
 
 
 @pytest.mark.parametrize("link", ["javascript:alert(1)", "ftp://x", "www.sklep.pl"])

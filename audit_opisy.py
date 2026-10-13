@@ -136,7 +136,10 @@ UPRAWNIENIA = {
     "editBankBalances": "Wpisywanie stanu konta", "viewProductHistory": "Historia produktu",
     "viewPurchasePrice": "Cena zakupu produktu", "viewProductSales": "Sprzedaż na karcie produktu",
     "viewLandedCost": "Koszt jednostkowy kontenera", "editLandedCost": "Liczenie kosztu jednostkowego",
-    "viewProductPrice": "Cena na karcie produktu", "editProductPrice": "Zapis sugerowanej ceny",
+    "viewProductPrice": "Wycena (test-wycena)", "editProductPrice": "Zapis w wycenie",
+    "viewPriceSummary": "Ceny dla zespołu (Cena)", "priceSummaryCost": "Cena: Koszt zakupu",
+    "priceSummaryCompetition": "Cena: Konkurencja", "useSalesCalculator": "Kalkulator handlowca",
+    "prowizjaOdCeny": "Prowizja od ceny (sposób A)",
     "viewDropy": "Dropy",
 }
 

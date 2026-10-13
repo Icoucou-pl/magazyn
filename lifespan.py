@@ -678,7 +678,7 @@ async def lifespan(app: FastAPI):
             )
         """))
 
-        # Zakładki „test-wycena” / „test-cena” (routers/wycena.py). Obie tabele z danymi to
+        # Zakładki „test-wycena” / „Cena” (routers/wycena.py). Obie tabele z danymi to
         # DZIENNIKI, nie pola do nadpisania: każdy zapis to nowy wiersz, aktualny = najnowszy.
         # Dzięki temu „kto ustawił i kiedy” oraz historia zmian są za darmo.
         # Cena minimalna: detal (sklepy) i hurt (= dropy), netto + brutto z VAT z chwili zapisu,

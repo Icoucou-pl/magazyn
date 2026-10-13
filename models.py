@@ -1607,7 +1607,7 @@ class KodCnIn(BaseModel):
     kod_cn: Optional[str] = None              # puste = usuń kod
 
 
-# ===== WYCENA I CENY DLA ZESPOŁU (zakładki „test-wycena” / „test-cena”) =====
+# ===== WYCENA I CENY DLA ZESPOŁU (zakładki „test-wycena” / „Cena”) =====
 class WycenaKoszt(BaseModel):
     """Koszt „+” w kalkulatorze: w zł albo w % od ceny końcowej (netto albo brutto)."""
     nazwa: str = Field("", max_length=100)
@@ -1788,7 +1788,7 @@ class KosztZespolOut(BaseModel):
 
 
 class CenyProduktuOut(BaseModel):
-    """Zakładka „test-cena”: same wyniki dla zespołu."""
+    """Zakładka „Cena”: same wyniki dla zespołu."""
     sku: str
     shop: str
     vat: float
@@ -1802,8 +1802,10 @@ class CenyProduktuOut(BaseModel):
     okres_dni: int = 30
     detal: SprzedazKanaluOut = SprzedazKanaluOut()
     hurt: SprzedazKanaluOut = SprzedazKanaluOut()
-    konkurencja: List[KonkurencjaOut] = []
-    koszt: Optional[KosztZespolOut] = None    # tylko z ceną zakupu
+    konkurencja: List[KonkurencjaOut] = []    # pusta bez ptaszka priceSummaryCompetition
+    konkurencja_widoczna: bool = False        # boks „Konkurencja”
+    koszt: Optional[KosztZespolOut] = None    # tylko z ceną zakupu (dla boksu albo kalkulatora)
+    koszt_widoczny: bool = False              # boks „Koszt zakupu” (priceSummaryCost)
     kalkulator: bool = False                  # kalkulator handlowca dostępny
     prowizja_tryb: Literal["A", "B"] = "B"    # A = % ceny netto, B = % zysku
 

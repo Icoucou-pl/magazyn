@@ -20,7 +20,7 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
   **Koszt jednostkowy** liczy „metoda szefa” (`services/koszt_kontenera.py`, wejście z bazy
   `services/koszt_kontenera_dane.py`): płatności × kurs NBP sprzed zapłaty, fracht i transport po CBM,
   ryczałt Lenmara, cło ze słownika `app_stawki_cn` (kod CN → stawka). Na bieżąco, w bazie tylko ręczne
-  poprawki (`app_koszt_kontenera`, `app_koszt_pozycji`). Z niego biorą FIFO/średnią zakładki „test-cena” / „test-wycena” (stara „Cena” usunięta) i lista.
+  poprawki (`app_koszt_kontenera`, `app_koszt_pozycji`). Z niego biorą FIFO/średnią zakładki „Cena” (dawniej „test-cena”) / „test-wycena” (pierwsza „Cena” z kalkulatorem usunięta) i lista.
   Odprawa z XML WinSAD (`services/sad.py`, `services/odprawy.py`) to już tylko kontrola —
   zakładka „SAD”, wyłącznie superadmin (`require_sad`); dalej uzupełnia kody CN, wagi i słownik stawek.
 - **Prognoza:** średnia ważona sprzedaży 1–4 mies. (`services/products.py`), lead time per SKU,

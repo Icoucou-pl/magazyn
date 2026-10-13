@@ -1,6 +1,6 @@
 "use client";
 // ============================================================
-// MAGAZYN — wspólne klocki zakładek „test-wycena” i „test-cena”.
+// MAGAZYN — wspólne klocki zakładek „test-wycena” i „Cena”.
 //
 //   • PasekCen     — poziomy pasek: strefy kolorów, kropki konkurencji, znacznik naszej ceny,
 //                    obrys ceny sugerowanej i kreska ceny minimalnej (konkurencja i kalkulator handlowca)
