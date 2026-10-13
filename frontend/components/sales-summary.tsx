@@ -121,10 +121,10 @@ function SegBtns<T extends string | number>({ value, options, onChange }: {
   value: T; options: { v: T; l: string }[]; onChange: (v: T) => void;
 }) {
   return (
-    <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
+    <div style={{ display: "flex", gap: 2, background: "var(--surface-2)", padding: 2, borderRadius: 7 }}>
       {options.map((o) => (
         <button key={o.v} onClick={() => onChange(o.v)} className="num" style={{
-          padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: "pointer", border: "none",
+          padding: "3px 9px", fontSize: 10, fontWeight: 600, borderRadius: 5, cursor: "pointer", border: "none",
           background: value === o.v ? "var(--surface-3)" : "transparent",
           color: value === o.v ? "var(--text-hi)" : "var(--text-mid)",
         }}>{o.l}</button>
@@ -249,7 +249,7 @@ function ComboChart({ points, grupa, showValue, selOd, selDo, height = 220 }: {
 function Kpi({ label, value, info }: { label: string; value: React.ReactNode; info?: string }) {
   return (
     <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: 11, color: "var(--text-lo)" }}>{label}</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>{label}</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3, minWidth: 0 }}>
         <span className="num" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {value}
@@ -282,7 +282,6 @@ function Panel({ s, firmy, od, do_, wykresOd, grupa, showValue, height, prawy }:
     <div style={{ minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>{nazwa(s.shop)}</span>
           {showValue && s.missing_rates > 0 && (
             <span title="Zamówienia w obcej walucie bez kursu NBP — ich kwota nie weszła do wartości."
               style={{ fontSize: 11, color: "var(--warning)", cursor: "help" }}>
