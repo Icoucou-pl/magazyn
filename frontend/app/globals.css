@@ -175,6 +175,13 @@ html[data-theme="light"] .brand-logo-light { display: block !important; }
 @media (hover: none), (max-width: 760px) {
   .tylko-desktop { display: none !important; }
 }
+/* Kafelek z kwotą: pełna kwota na komputerze, skrót („1,426 mln”) na wąskim ekranie. */
+.kpi-krotka { display: none; }
+@media (max-width: 760px) {
+  .kpi-pelna { display: none; }
+  .kpi-krotka { display: inline; }
+  .kpi-liczba { font-size: 17px !important; }
+}
 @media (max-width: 980px) {
   :root { --app-header-h: 56px; }
 }
