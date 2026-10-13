@@ -548,3 +548,41 @@ async def _write_sync_log(source: str, started: datetime, finished: datetime,
             await session.commit()
     except Exception as e:
         print(f"[fakturownia_history] dziennik: {e}")
+
+
+# ===== POCHODZENIE TOWARU (pasek na karcie produktu) =====
+
+async def od_spolki_z_grupy(db: AsyncSession, slug: str, sku: str) -> Optional[str]:
+    """Nazwa naszej spółki, od której firma `slug` kupiła ostatnią dostawę SKU.
+
+    PO CO: kontener Acti bywa opłacony przez AMH, a Acti odkupuje towar od AMH
+    po cenie transferowej. Osoba wystawiająca fakturę widziała tylko różnicę
+    w cenie, bez informacji, skąd się wzięła. Karta produktu pokazuje wtedy
+    pasek „Ten towar sprowadziło i opłaciło AMH" — bez kwot, bo koszt zakupu
+    ma być docelowo schowany przed zwykłymi użytkownikami.
+
+    Patrzymy na OSTATNIE przyjęcie PZ: jeśli firma później kupiła ten sam
+    towar sama z zewnątrz, pasek nie ma już sensu. None = nie od grupy albo
+    brak danych (Subiekt/AMH, SKU bez ruchów, tabela jeszcze nie istnieje).
+    """
+    try:
+        r = (await db.execute(text(f"""
+            SELECT r.is_internal, COALESCE(g.name, g.slug) AS spolka
+              FROM {TABELA} r
+              JOIN {settings.TABLE_FIRMY} f ON f.id = r.firma_id
+              LEFT JOIN {settings.TABLE_FIRMY} g
+                     ON g.id <> f.id AND r.kontrahent_nip <> ''
+                    AND regexp_replace(COALESCE(g.nip, ''), '\\D', '', 'g') = r.kontrahent_nip
+             WHERE lower(f.slug) = lower(:slug)
+               AND r.sku_canon = lower(:sku)
+               AND r.kind = 'pz' AND r.ilosc > 0
+             ORDER BY r.data DESC NULLS LAST, r.action_id DESC
+             LIMIT 1
+        """), {"slug": slug, "sku": (sku or "").strip()})).first()
+    except Exception:
+        # Pasek to podpowiedź — brak tabeli ruchów nie może wywalić karty produktu.
+        await db.rollback()
+        return None
+    if not r or not r[0]:
+        return None
+    return r[1] or "spółka z grupy"

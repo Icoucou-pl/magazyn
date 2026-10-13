@@ -15,8 +15,9 @@ from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
     StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, SkuZmiana, CenaZSku, ManualNewUpdate, VatOut, VatUpdate,
+    PochodzenieOut,
 )
-from security import get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
+from security import ALL_SHOPS, get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
 import audit
 from audit import log_audit
@@ -566,6 +567,21 @@ async def set_manual_new(sku: str, body: ManualNewUpdate, db: AsyncSession = Dep
         audit.note(f"oznaczył produkt {sku} jako nowość do {f_data(body.until)}" if body.until
                    else f"zdjął ręczną nowość z produktu {sku}", changes=ch, resource_id=sku)
     return await get_product(db, sku)
+
+
+@router.get("/products/{sku:path}/pochodzenie", response_model=PochodzenieOut)
+async def get_pochodzenie(sku: str, shop: str = Query(""), db: AsyncSession = Depends(get_db),
+                          user: CurrentUser = Depends(get_current_user)):
+    """Czy ostatnią dostawę tej firmy sprowadziła i opłaciła inna spółka z grupy.
+
+    Bez kwot — widzi to każdy zalogowany, bo to informacja „od kogo”, nie „za ile”.
+    AMH (Subiekt) i widok wszystkich firm nie mają tej informacji — zawsze puste.
+    """
+    from services.fakturownia_history import od_spolki_z_grupy
+    shop = resolve_shop(shop, user)
+    if not shop or shop not in ALL_SHOPS or shop == "amh":
+        return PochodzenieOut()
+    return PochodzenieOut(od_spolki=await od_spolki_z_grupy(db, shop, sku))
 
 
 @router.get("/products/{sku:path}/vat", response_model=VatOut)
