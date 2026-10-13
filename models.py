@@ -400,10 +400,44 @@ class ContainerTypeOut(ContainerTypeIn):
 # ===== PIENIĄDZE FIRMY (saldo konta + pożyczki wspólników) =====
 # Oba byty są RĘCZNE i zawsze przypisane do jednej firmy (firma_slug: amh/acti/veluxa).
 # Rozdzielone celowo: saldo to POMIAR stanu na dany dzień, pożyczka to ZDARZENIE.
+# Waluty, w jakich firma trzyma pieniądze na rachunku (Acti: PLN + subkonta EUR/USD/CZK).
+WALUTY_KONTA = ("PLN", "EUR", "USD", "CZK")
+
+
+class BankBalanceLineIn(BaseModel):
+    """Jedna linijka odczytu: subkonto w jednej walucie. Kurs dobiera serwer (NBP), nie front."""
+    label: Optional[str] = Field(None, max_length=60)      # „EUR 1”, „VAT”… — żeby za miesiąc wiedzieć które
+    currency: str = "PLN"
+    amount: float                                          # minus = debet na tym subkoncie
+
+    @field_validator("currency")
+    @classmethod
+    def _waluta(cls, v: str) -> str:
+        v = (v or "").strip().upper()
+        if v not in WALUTY_KONTA:
+            raise ValueError(f"Nieobsługiwana waluta: {v or '—'}")
+        return v
+
+    @field_validator("label")
+    @classmethod
+    def _label_trim(cls, v: Optional[str]) -> Optional[str]:
+        v = " ".join((v or "").split())
+        return v or None
+
+
+class BankBalanceLineOut(BankBalanceLineIn):
+    rate: float                         # 1 dla PLN
+    rate_date: Optional[date] = None    # dzień notowania NBP (dzień roboczy przed datą stanu)
+    amount_pln: float
+
+
 class BankBalanceIn(BaseModel):
+    """Odczyt salda. Nowy front wysyła `lines` — wtedy sumę w zł liczy serwer, a `amount_pln`
+    jest ignorowane. Sama `amount_pln` (bez linijek) = jedna linijka w PLN, jak dawniej."""
     firma_slug: str = Field(..., min_length=1, max_length=32)
     balance_date: date
-    amount_pln: float
+    amount_pln: Optional[float] = None
+    lines: List[BankBalanceLineIn] = Field(default_factory=list, max_length=30)
     note: Optional[str] = Field(None, max_length=500)
 
     @field_validator("firma_slug")
@@ -411,9 +445,20 @@ class BankBalanceIn(BaseModel):
     def _slug_lower(cls, v: str) -> str:
         return v.strip().lower()
 
+    @model_validator(mode="after")
+    def _kwota_albo_linijki(self):
+        if not self.lines and self.amount_pln is None:
+            raise ValueError("Podaj kwotę")
+        return self
 
-class BankBalanceOut(BankBalanceIn):
+
+class BankBalanceOut(BaseModel):
     id: int
+    firma_slug: str
+    balance_date: date
+    amount_pln: float                   # suma w zł (może być ujemna — wykres przycina do 0)
+    note: Optional[str] = None
+    lines: List[BankBalanceLineOut] = []
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

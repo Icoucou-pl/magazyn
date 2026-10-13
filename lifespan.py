@@ -604,6 +604,34 @@ async def lifespan(app: FastAPI):
             )
         """))
 
+        # Rozbicie odczytu salda na subkonta i waluty (rachunek Acti ma PLN, EUR, USD…).
+        # Kurs NBP i jego data zapisują się przy wpisie — „zamrożone”, żeby suma w zł nie
+        # zmieniała się po fakcie. Stare odczyty nie mają linijek: to jedna kwota w zł.
+        # Tabelę salda zakładano ręcznie w Supabase, więc linijki dokładamy tylko, gdy ona już jest,
+        # a typ klucza bierzemy z niej (integer/bigint) — błąd REFERENCES przerwałby całą transakcję startu.
+        typ_id = (await conn.execute(text(
+            "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+            "WHERE attrelid = to_regclass(:t) AND attname = 'id' AND NOT attisdropped"
+        ), {"t": settings.TABLE_BANK_BALANCES})).scalar()
+        if typ_id in ("integer", "bigint"):
+            await conn.execute(text(f"""
+                CREATE TABLE IF NOT EXISTS {settings.TABLE_BANK_BALANCE_LINES} (
+                    id         SERIAL PRIMARY KEY,
+                    balance_id {typ_id} NOT NULL REFERENCES {settings.TABLE_BANK_BALANCES}(id) ON DELETE CASCADE,
+                    position   INTEGER NOT NULL DEFAULT 0,
+                    label      VARCHAR(60),
+                    currency   VARCHAR(3) NOT NULL,
+                    amount     NUMERIC(16,2) NOT NULL,
+                    rate       NUMERIC(18,8) NOT NULL,
+                    rate_date  DATE,
+                    amount_pln NUMERIC(16,2) NOT NULL
+                )
+            """))
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_bank_balance_lines_balance "
+                f"ON {settings.TABLE_BANK_BALANCE_LINES} (balance_id)"
+            ))
+
         # Dziennik synchronizacji (świeżość danych): po jednym wierszu na każdy bieg
         # pobrania (Sellasist auto/ręczny zapisuje sam; Subiekt — jeśli skrypt loguje).
         await conn.execute(text(f"""

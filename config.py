@@ -132,7 +132,9 @@ class Settings(BaseSettings):
     # Pieniądze firmy (wykres na pulpicie + zakładka w Cashflow) — wpisy RĘCZNE, per firma.
     #   app_bank_balances — odczyty salda podane przez księgową (jeden na firmę i dzień)
     #   app_owner_loans   — wpłaty wspólników (+) i zwroty (−), odejmowane od salda narastająco
+    #   app_bank_balance_lines — rozbicie odczytu na subkonta/waluty z zamrożonym kursem NBP
     TABLE_BANK_BALANCES: str = "app_bank_balances"
+    TABLE_BANK_BALANCE_LINES: str = "app_bank_balance_lines"
     TABLE_OWNER_LOANS: str = "app_owner_loans"
 
     DEFAULT_LEAD_TIME_DAYS: int = 90

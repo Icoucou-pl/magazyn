@@ -4,7 +4,9 @@ Oba zbiory są RĘCZNE i zawsze przypisane do jednej firmy (firma_slug: amh/acti
 Karmią wykres na pulpicie („Pieniądze firmy") i zakładkę w Cashflow.
 
 Rozdział bytów jest celowy:
-  • app_bank_balances — POMIAR stanu na dany dzień (jeden wpis na firmę i datę → UPSERT)
+  • app_bank_balances — POMIAR stanu na dany dzień (jeden wpis na firmę i datę → UPSERT);
+    amount_pln to suma w zł, a rozbicie na subkonta/waluty z zamrożonym kursem NBP leży
+    w app_bank_balance_lines (services/stan_konta.py). Stary wpis bez linijek = jedna kwota w zł.
   • app_owner_loans   — ZDARZENIE: wpłata wspólnika (+) albo zwrot (−); jednego dnia
     może ich być kilka, więc bez klucza unikalnego
 
@@ -28,17 +30,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import audit
-from audit_opisy import f_data, f_zl
+from audit_opisy import f_data, f_kwota, f_zl
 from config import settings
 from database import get_db
 from models import (
-    BankBalanceIn, BankBalanceOut, CurrentUser,
+    BankBalanceIn, BankBalanceLineIn, BankBalanceLineOut, BankBalanceOut, CurrentUser,
     MoneyBundle, OwnerLoanIn, OwnerLoanOut,
 )
 from security import (
     can_edit_bank, get_current_user, require_bank_edit, require_bank_view, resolve_shop,
 )
 from services.containers import fetch_containers
+from services.stan_konta import BrakKursu, kursy_dla, przelicz
 
 router = APIRouter(prefix="/api", tags=["bank"])
 
@@ -47,12 +50,84 @@ _LOAN_COLS = ("id, firma_slug, loan_date, amount_pln, partner, numer_umowy, data
               "termin_splaty, oprocentowanie, splacono_data, note, created_at, updated_at")
 
 
-def _bal_out(r) -> BankBalanceOut:
+_LINE_COLS = "balance_id, label, currency, amount, rate, rate_date, amount_pln"
+
+
+def _line_out(l) -> BankBalanceLineOut:
+    return BankBalanceLineOut(
+        label=l["label"], currency=l["currency"], amount=float(l["amount"]),
+        rate=float(l["rate"]), rate_date=l["rate_date"], amount_pln=float(l["amount_pln"]),
+    )
+
+
+def _bal_out(r, lines=None) -> BankBalanceOut:
+    amount = float(r["amount_pln"] or 0)
+    # Wpis sprzed rozbicia na waluty nie ma linijek — pokazujemy go jako jedną linijkę w zł,
+    # żeby edycja otwierała się tak samo jak przy nowych wpisach.
+    out_lines = [_line_out(l) for l in lines] if lines else [
+        BankBalanceLineOut(currency="PLN", amount=amount, rate=1.0, amount_pln=amount)
+    ]
     return BankBalanceOut(
         id=r["id"], firma_slug=r["firma_slug"], balance_date=r["balance_date"],
-        amount_pln=float(r["amount_pln"] or 0), note=r["note"],
+        amount_pln=amount, note=r["note"], lines=out_lines,
         created_at=r["created_at"], updated_at=r["updated_at"],
     )
+
+
+async def _lines_of(db: AsyncSession, ids) -> dict:
+    """{balance_id: [linijki w kolejności z formularza]}."""
+    ids = list(ids)
+    if not ids:
+        return {}
+    r = await db.execute(
+        text(f"SELECT {_LINE_COLS} FROM {settings.TABLE_BANK_BALANCE_LINES} "
+             f"WHERE balance_id = ANY(:ids) ORDER BY balance_id, position, id"),
+        {"ids": ids},
+    )
+    out: dict = {}
+    for l in r.mappings():
+        out.setdefault(l["balance_id"], []).append(l)
+    return out
+
+
+async def _zamrozone(db: AsyncSession, bid) -> dict:
+    """Kursy zapisane przy poprzedniej wersji wpisu: {waluta: (kurs, data notowania)}."""
+    if bid is None:
+        return {}
+    r = await db.execute(
+        text(f"SELECT currency, rate, rate_date FROM {settings.TABLE_BANK_BALANCE_LINES} "
+             f"WHERE balance_id = :b AND currency <> 'PLN'"),
+        {"b": bid},
+    )
+    return {x["currency"]: (float(x["rate"]), x["rate_date"]) for x in r.mappings()}
+
+
+async def _przelicz(db: AsyncSession, payload: BankBalanceIn, zamrozone: dict):
+    """Linijki z kursem NBP i suma w zł. Brak kursu = 400 z nazwą waluty, nie cichy zły wynik."""
+    linie = payload.lines or [BankBalanceLineIn(currency="PLN", amount=payload.amount_pln)]
+    try:
+        kursy = await kursy_dla(db, [l.currency for l in linie], payload.balance_date, zamrozone)
+        return przelicz(linie, kursy)
+    except BrakKursu as e:
+        raise HTTPException(400, f"Brak kursu NBP dla {e} przed {f_data(payload.balance_date)} — spróbuj później")
+
+
+async def _zapisz_linie(db: AsyncSession, bid, wiersze) -> None:
+    await db.execute(text(f"DELETE FROM {settings.TABLE_BANK_BALANCE_LINES} WHERE balance_id = :b"), {"b": bid})
+    await db.execute(
+        text(f"INSERT INTO {settings.TABLE_BANK_BALANCE_LINES} "
+             f"(balance_id, position, label, currency, amount, rate, rate_date, amount_pln) "
+             f"VALUES (:b, :position, :label, :currency, :amount, :rate, :rate_date, :amount_pln)"),
+        [{"b": bid, **w} for w in wiersze],
+    )
+
+
+def _opis_kwoty(wiersze, suma: float) -> str:
+    """„225 080,50 zł (PLN 120 000,00 zł, EUR 1: 15 000,00 EUR …)” — rozbicie tylko gdy jest co rozbijać."""
+    if len(wiersze) == 1 and wiersze[0]["currency"] == "PLN" and not wiersze[0]["label"]:
+        return f_zl(suma)
+    czesci = [f"{w['label'] + ': ' if w['label'] else ''}{f_kwota(w['currency'])(w['amount'])}" for w in wiersze]
+    return f"{f_zl(suma)} ({', '.join(czesci)})"
 
 
 def _loan_out(r) -> OwnerLoanOut:
@@ -107,9 +182,11 @@ async def get_money(shop: str = "", db: AsyncSession = Depends(get_db),
              f"WHERE firma_slug = :s ORDER BY loan_date ASC, id ASC"),
         {"s": s},
     )
+    bal_rows = list(bal.mappings())
+    lines = await _lines_of(db, [r["id"] for r in bal_rows])
     return MoneyBundle(
         shop=s,
-        balances=[_bal_out(r) for r in bal.mappings()],
+        balances=[_bal_out(r, lines.get(r["id"])) for r in bal_rows],
         loans=[_loan_out(r) for r in loans.mappings()],
         can_edit=can_edit_bank(user),
     )
@@ -120,8 +197,14 @@ async def get_money(shop: str = "", db: AsyncSession = Depends(get_db),
 @router.post("/bank-balances", response_model=BankBalanceOut)
 async def upsert_balance(payload: BankBalanceIn, db: AsyncSession = Depends(get_db),
                          user: CurrentUser = Depends(require_bank_edit)):
-    """Jedna firma + jedna data = jeden odczyt. Powtórny wpis NADPISUJE, nie duplikuje."""
+    """Jedna firma + jedna data = jeden odczyt. Powtórny wpis NADPISUJE, nie duplikuje
+    (i bierze kursy zamrożone w nadpisywanym wpisie — ta sama data, ten sam kurs)."""
     s = await _guard_slug(db, payload.firma_slug, user)
+    old = (await db.execute(
+        text(f"SELECT id FROM {settings.TABLE_BANK_BALANCES} WHERE firma_slug = :s AND balance_date = :d"),
+        {"s": s, "d": payload.balance_date},
+    )).first()
+    wiersze, suma = await _przelicz(db, payload, await _zamrozone(db, old[0] if old else None))
     r = await db.execute(
         text(f"""
             INSERT INTO {settings.TABLE_BANK_BALANCES}
@@ -133,40 +216,44 @@ async def upsert_balance(payload: BankBalanceIn, db: AsyncSession = Depends(get_
                     updated_at = now()
             RETURNING {_BAL_COLS}
         """),
-        {"s": s, "d": payload.balance_date, "a": payload.amount_pln,
-         "n": payload.note, "u": user.id},
+        {"s": s, "d": payload.balance_date, "a": suma, "n": payload.note, "u": user.id},
     )
     row = r.mappings().first()
+    await _zapisz_linie(db, row["id"], wiersze)
     await db.commit()
-    audit.note(f"wpisał stan konta {s.upper()} na {f_data(payload.balance_date)}: {f_zl(payload.amount_pln)}",
-               resource_id=row["id"] if row else None)
-    return _bal_out(row)
+    audit.note(f"wpisał stan konta {s.upper()} na {f_data(payload.balance_date)}: {_opis_kwoty(wiersze, suma)}",
+               resource_id=row["id"])
+    return _bal_out(row, (await _lines_of(db, [row["id"]])).get(row["id"]))
 
 
 @router.patch("/bank-balances/{bid}", response_model=BankBalanceOut)
 async def update_balance(bid: int, payload: BankBalanceIn, db: AsyncSession = Depends(get_db),
                          user: CurrentUser = Depends(require_bank_edit)):
+    """Poprawka odczytu. Ta sama data → kursy zostają zamrożone; inna data → nowy kurs NBP."""
     s = await _guard_slug(db, payload.firma_slug, user)
     old = (await db.execute(
-        text(f"SELECT firma_slug FROM {settings.TABLE_BANK_BALANCES} WHERE id = :id"), {"id": bid}
+        text(f"SELECT firma_slug, balance_date FROM {settings.TABLE_BANK_BALANCES} WHERE id = :id"), {"id": bid}
     )).mappings().first()
     if not old:
         raise HTTPException(404, "Wpis nie znaleziony")
     await _guard_slug(db, old["firma_slug"], user)
+    zamrozone = await _zamrozone(db, bid) if old["balance_date"] == payload.balance_date else {}
+    wiersze, suma = await _przelicz(db, payload, zamrozone)
     try:
         r = await db.execute(
             text(f"UPDATE {settings.TABLE_BANK_BALANCES} SET firma_slug = :s, balance_date = :d, "
                  f"amount_pln = :a, note = :n, updated_at = now() WHERE id = :id RETURNING {_BAL_COLS}"),
-            {"s": s, "d": payload.balance_date, "a": payload.amount_pln, "n": payload.note, "id": bid},
+            {"s": s, "d": payload.balance_date, "a": suma, "n": payload.note, "id": bid},
         )
         row = r.mappings().first()
+        await _zapisz_linie(db, bid, wiersze)
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(409, "Na ten dzień jest już odczyt salda tej firmy")
-    audit.note(f"poprawił stan konta {s.upper()} na {f_data(payload.balance_date)}: {f_zl(payload.amount_pln)}",
+    audit.note(f"poprawił stan konta {s.upper()} na {f_data(payload.balance_date)}: {_opis_kwoty(wiersze, suma)}",
                resource_id=bid)
-    return _bal_out(row)
+    return _bal_out(row, (await _lines_of(db, [bid])).get(bid))
 
 
 @router.delete("/bank-balances/{bid}", status_code=204)
