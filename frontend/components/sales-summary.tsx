@@ -246,13 +246,15 @@ function ComboChart({ points, grupa, showValue, selOd, selDo, height = 220 }: {
 
 // `info` = podział „Razem” na firmy, w dymku po najechaniu na „ⓘ” — tylko na komputerze
 // (klasa tylko-desktop w globals.css); na telefonie dymek i tak by się nie otworzył.
-function Kpi({ label, value, info }: { label: string; value: React.ReactNode; info?: string }) {
+// `krotko` = ta sama liczba skrótem na telefon (np. „1,426 mln”) — pełna kwota
+// w milionach nie mieści się w jednej trzeciej szerokości ekranu i ucinała się.
+function Kpi({ label, value, info, krotko }: { label: string; value: React.ReactNode; info?: string; krotko?: string }) {
   return (
     <div style={{ minWidth: 0 }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mid)" }}>{label}</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3, minWidth: 0 }}>
-        <span className="num" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {value}
+        <span className="num kpi-liczba" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {krotko ? <><span className="kpi-pelna">{value}</span><span className="kpi-krotka">{krotko}</span></> : value}
         </span>
         {info && (
           <span className="tylko-desktop" title={info} style={{ color: "var(--text-lo)", cursor: "help", fontSize: 12, flexShrink: 0 }}>ⓘ</span>
@@ -261,6 +263,11 @@ function Kpi({ label, value, info }: { label: string; value: React.ReactNode; in
     </div>
   );
 }
+
+// Skrót kwoty na telefon: od miliona „1,426 mln” (3 miejsca po przecinku; „zł” nie mieści się
+// w jednej trzeciej ekranu, a podpis „Wartość” i tak mówi, że to kwota), poniżej bez zmian.
+const kwotaKrotko = (v: number) =>
+  Math.abs(v) >= 1_000_000 ? `${(v / 1_000_000).toFixed(3).replace(".", ",")} mln` : undefined;
 
 // Suma zamówień i wartości serii w zakresie od–do (włącznie) — tyle pokazują kafelki.
 const sumaZakresu = (s: Series, od: string, do_: string) => {
@@ -293,7 +300,7 @@ function Panel({ s, firmy, od, do_, wykresOd, grupa, showValue, height, prawy }:
       </div>
       <div style={{ display: "grid", gridTemplateColumns: showValue ? "repeat(3, minmax(0, 1fr))" : "1fr", gap: 12, margin: "10px 0 8px" }}>
         <Kpi label="Liczba zamówień" value={fmtNum(zam)} info={dymek((f) => fmtNum(f.zam))} />
-        {showValue && <Kpi label="Wartość" value={fmtPLN(wart)} info={dymek((f) => fmtPLN(f.wart))} />}
+        {showValue && <Kpi label="Wartość" value={fmtPLN(wart)} krotko={kwotaKrotko(wart)} info={dymek((f) => fmtPLN(f.wart))} />}
         {showValue && <Kpi label="Średnia wartość" value={zam ? fmtPLN(wart / zam) : "—"}
           info={dymek((f) => (f.zam ? fmtPLN(f.wart / f.zam) : "—"))} />}
       </div>
