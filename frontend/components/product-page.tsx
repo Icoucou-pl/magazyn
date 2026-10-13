@@ -35,6 +35,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I, Pill, STATUS_META } from "./ui";
 import {
   StatusPillExt, displayStatus, NewBadge, SampleBadge,
+  potwierdzOdobserwowanie,
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import {
@@ -345,9 +346,14 @@ export default function ProductPage({
   // tworzą wiersz atrybutów dokładnie pod podanym SKU — tak powstały dziś
   // dublujące się „YFG2" / „YFg2" w app_product_attrs.
   const skuZapisu = product?.sku ?? sku;
+  // Obserwowanie w firmie z fragmentatora; firma-matka i „Wszyscy" z pytaniem.
   const toggleFav = async () => {
+    if (!product) return;
+    if (product.is_favorite && !potwierdzOdobserwowanie([product], shop)) return;
     try {
-      applyUpdate((await api.put(`/products/${encodeURIComponent(skuZapisu)}/favorite`)) as Product);
+      applyUpdate((await api.put(
+        `/products/${encodeURIComponent(skuZapisu)}/favorite?shop=${encodeURIComponent(shop)}&on=${!product.is_favorite}`,
+      )) as Product);
     } catch { toast("Nie udało się zmienić obserwowania", "warning"); }
   };
   const toggleNoReorder = async () => {

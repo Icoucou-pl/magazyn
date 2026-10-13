@@ -195,7 +195,8 @@ class ProductSummary(BaseModel):
     # nie ma tego towaru u siebie, bo stan i sprzedaż żyją w innej firmie (np. AMH).
     shop_resolved: Optional[str] = None
     seasonality_enabled: bool
-    is_favorite: bool = False
+    is_favorite: bool = False          # obserwowany w firmie z zapytania (shop); „Wszyscy" = w którejkolwiek
+    unwatched_shops: List[str] = []    # firmy, w których mimo gwiazdki go nie obserwujemy
     is_sample: bool = False            # etykieta: wszedł jako sampel. Status SAMPLE do wejścia do magazynu w drodze, potem NOWOŚĆ
     sample_stock: int = 0              # ręczny licznik sztuk — używany tylko gdy SKU nie ma innego źródła stanu
     first_arrival_date: Optional[date] = None  # sample: pierwsze wejście na magazyn główny (None = jeszcze nie dotarł)
@@ -1810,3 +1811,14 @@ class CenyProduktuOut(BaseModel):
 class PochodzenieOut(BaseModel):
     """Od której naszej spółki firma kupiła ostatnią dostawę (pasek na karcie produktu)."""
     od_spolki: Optional[str] = None
+
+
+class ObserwowanieBulk(BaseModel):
+    """Masowe obserwowanie z paska zaznaczenia w Produktach (PUT /api/favorites/bulk)."""
+    skus: List[str] = Field(..., min_length=1, max_length=5000)
+    shop: str = ""          # firma z fragmentatora; "" = wszystkie firmy naraz
+    on: bool                # True = obserwuj, False = przestań obserwować
+
+
+class ObserwowanieBulkOut(BaseModel):
+    zmienione: int          # ilu produktom faktycznie zmienił się stan

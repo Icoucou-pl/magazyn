@@ -3,7 +3,7 @@ import atrybutów, eksport do XLSX, ulubione."""
 
 import io
 from datetime import date, timedelta
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -15,10 +15,11 @@ from database import get_db
 from models import (
     ProductSummary, LeadTimeUpdate, ProductAttrsUpdate,
     StockProjectionPoint, ImportRow, ImportResult, CurrentUser, TopSellerOut, SampleCreate, SkuZmiana, CenaZSku, ManualNewUpdate, VatOut, VatUpdate,
-    PochodzenieOut,
+    PochodzenieOut, ObserwowanieBulk, ObserwowanieBulkOut,
 )
 from security import ALL_SHOPS, get_current_user, has_perm, require_perm, resolve_shop, allowed_shops
 from services.products import fetch_products, get_product
+from services.obserwowanie import obserwowany_w, ustaw_obserwowanie
 import audit
 from audit import log_audit
 from audit_opisy import etykieta_kontenera, f_bool, f_data, f_num, f_status_produktu, f_txt, f_zl
@@ -489,27 +490,62 @@ async def export_xlsx(include: str = Query("ACTIVE,ACTIVE_NO_STOCK"), favorites_
     )
 
 
-@router.put("/products/{sku:path}/favorite", response_model=ProductSummary)
-async def toggle_favorite(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
-    """Przełącza status ulubione - jeśli był true, robi false i odwrotnie.
-    Wymaga editProducts (VIEWER nie może zmieniać obserwowania)."""
-    sku = await _sku_atrybutow(db, sku)
-    existing = await db.execute(text(f"SELECT is_favorite FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"), {"sku": sku})
-    e = existing.first()
-    new_val = not e.is_favorite if e else True
+_NAZWA_FIRMY = {"amh": "AMH", "acti": "Acti", "veluxa": "Veluxa"}
 
-    await db.execute(
-        text(f"""
-            INSERT INTO {settings.TABLE_PRODUCT_ATTRS} (sku, is_favorite, updated_at)
-            VALUES (:sku, :fav, CURRENT_TIMESTAMP)
-            ON CONFLICT (sku) DO UPDATE SET is_favorite = EXCLUDED.is_favorite, updated_at = CURRENT_TIMESTAMP
-        """),
-        {"sku": sku, "fav": new_val}
-    )
+
+def _gdzie(shop: str) -> str:
+    return f"w firmie {_NAZWA_FIRMY.get(shop, shop)}" if shop else "we wszystkich firmach"
+
+
+@router.put("/products/{sku:path}/favorite", response_model=ProductSummary)
+async def toggle_favorite(sku: str, shop: str = Query(""), on: Optional[bool] = Query(None),
+                          db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_perm("editProducts"))):
+    """Obserwowanie produktu w firmie `shop` ("" = we wszystkich, jak dawniej).
+    Bez `on` przełącza stan, który produkt ma w tej firmie. Logika: services/obserwowanie.py.
+    Wymaga editProducts (VIEWER nie może zmieniać obserwowania)."""
+    shop = resolve_shop(shop, user)
+    sku = await _sku_atrybutow(db, sku)
+    if on is None:
+        r = await db.execute(text(f"""
+            SELECT COALESCE(is_favorite, FALSE) AS fav, unwatched_shops
+            FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku = :sku"""), {"sku": sku})
+        e = r.mappings().first()
+        on = not obserwowany_w(bool(e["fav"]), e["unwatched_shops"], shop) if e else True
+
+    await ustaw_obserwowanie(db, [sku], shop, on)
     await db.commit()
-    audit.note(f"dodał produkt {sku} do obserwowanych" if new_val else f"usunął produkt {sku} z obserwowanych",
+    audit.note(f"dodał produkt {sku} do obserwowanych {_gdzie(shop)}" if on
+               else f"usunął produkt {sku} z obserwowanych {_gdzie(shop)}",
                resource_id=sku)
-    return await get_product(db, sku)
+    # Wiersz w liczbach tej samej firmy, którą ogląda lista — inaczej łatka wiersza
+    # podmieniała stan i sprzedaż firmy na sumę wszystkich.
+    try:
+        p = await get_product(db, sku, shop, allowed=allowed_shops(user))
+    except HTTPException:
+        p = await get_product(db, sku, "auto", allowed=allowed_shops(user))
+    _mask_financials([p], user)
+    return p
+
+
+@router.put("/favorites/bulk", response_model=ObserwowanieBulkOut)
+async def favorites_bulk(body: ObserwowanieBulk, db: AsyncSession = Depends(get_db),
+                         user: CurrentUser = Depends(require_perm("editProducts"))):
+    """Masowe włączenie/wyłączenie obserwowania zaznaczonych produktów w firmie `shop`.
+    Jedno żądanie i jeden wpis w audycie zamiast N przełączników z frontu."""
+    shop = resolve_shop(body.shop, user)
+    skus: List[str] = []
+    for s in body.skus:
+        s2 = await _sku_atrybutow(db, s)
+        if s2 and s2 not in skus:
+            skus.append(s2)
+    zmienione = await ustaw_obserwowanie(db, skus, shop, body.on)
+    await db.commit()
+    if zmienione:
+        lista = ", ".join(zmienione[:10]) + ("…" if len(zmienione) > 10 else "")
+        ile = f"{len(zmienione)} {audit.opisy.plural(len(zmienione), 'produkt', 'produkty', 'produktów')}"
+        audit.note(f"dodał {ile} do obserwowanych {_gdzie(shop)} ({lista})" if body.on
+                   else f"usunął {ile} z obserwowanych {_gdzie(shop)} ({lista})")
+    return ObserwowanieBulkOut(zmienione=len(zmienione))
 
 
 @router.put("/products/{sku:path}/no-reorder", response_model=ProductSummary)

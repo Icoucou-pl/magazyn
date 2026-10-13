@@ -16,6 +16,7 @@ import { I, Pill, MfrChip, STATUS_META, ContainerNr, isDraftNumber } from "./ui"
 import {
   StatusPillExt, displayStatus, monthsDisplay, NewBadge, SampleBadge,
   modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal,
+  potwierdzOdobserwowanie,
   type Product, type Manufacturer, type Firma,
 } from "./products-ui";
 import { api, photoUrl } from "@/lib/api";
@@ -241,9 +242,13 @@ export default function ProductModal({
       .catch(() => { /* zdjęcie i tak się zapisało — brak odświeżenia nie jest błędem do pokazania */ });
   };
 
+  // Obserwowanie w firmie z fragmentatora; firma-matka i „Wszyscy" z pytaniem.
   const toggleFav = async () => {
+    if (product.is_favorite && !potwierdzOdobserwowanie([product], shop)) return;
     try {
-      const updated = (await api.put(`/products/${encodeURIComponent(product.sku)}/favorite`)) as Product;
+      const updated = (await api.put(
+        `/products/${encodeURIComponent(product.sku)}/favorite?shop=${encodeURIComponent(shop)}&on=${!product.is_favorite}`,
+      )) as Product;
       applyUpdate(updated);
     } catch { toast("Nie udało się zmienić obserwowania", "warning"); }
   };

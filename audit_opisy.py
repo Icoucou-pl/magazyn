@@ -202,6 +202,7 @@ TRASY = [
     # Produkty
     ("PUT", rf"^/api/products/{_SKU}/attrs$", "Produkty", "zmienił atrybuty produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/favorite$", "Produkty", "zmienił obserwowanie produktu {sku}", "PRODUCT_UPDATED", "product"),
+    ("PUT", r"^/api/favorites/bulk$", "Produkty", "zmienił obserwowanie zaznaczonych produktów", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/no-reorder$", "Produkty", "zmienił „nie dozamawiamy” produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/new-until$", "Produkty", "zmienił nowość produktu {sku}", "PRODUCT_UPDATED", "product"),
     ("PUT", rf"^/api/products/{_SKU}/lead-time$", "Produkty", "zmienił czas dostawy produktu {sku}", "PRODUCT_UPDATED", "product"),

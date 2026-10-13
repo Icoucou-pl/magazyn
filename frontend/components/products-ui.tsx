@@ -65,8 +65,13 @@ export type Product = {
   /** Tylko przy ?shop=auto: firma, w której backend faktycznie znalazł produkt
    *  ("" = suma wszystkich firm). Może się różnić od firmy z atrybutów. */
   shop_resolved?: string | null;
+  /** Firma-matka produktu (właściciel z atrybutów; brak = AMH). */
+  firma_slug?: string;
   seasonality_enabled: boolean;
+  /** Obserwowany w firmie z fragmentatora („Wszyscy" = w którejkolwiek). */
   is_favorite: boolean;
+  /** Firmy, w których mimo gwiazdki produktu nie obserwujemy. */
+  unwatched_shops?: string[];
   no_reorder?: boolean;
   /** Sztuki leżące na magazynie w ERP, gdy sklep nie zna tego SKU (stan = 0). */
   stan_erp_niewystawione?: number;
@@ -619,11 +624,39 @@ export function Checkbox({ checked, onChange, disabled }: { checked: boolean; on
 }
 
 // ── BulkBar (akcje na zaznaczonych) ──────────────────────────
+const NAZWA_FIRMY: Record<string, string> = { amh: "AMH", acti: "Acti", veluxa: "Veluxa" };
+
+/** Obserwowanie jest osobne w każdej firmie. Zdjęcie gwiazdki w firmie-matce produktu
+ *  (jego właścicielu) albo naraz we wszystkich firmach pytamy, bo to zwykle pomyłka —
+ *  z firmy-córki (np. produkt Veluxy sprzedawany w AMH) zdejmujemy bez pytania.
+ *  Zwraca true, gdy można działać. */
+export function potwierdzOdobserwowanie(rows: Product[], shop: string): boolean {
+  if (rows.length === 0) return true;
+  if (!shop) {
+    const kto = rows.length === 1 ? rows[0].sku : `${rows.length} produktów`;
+    return window.confirm(
+      `Wybrana jest zakładka „Wszyscy" — ${kto} przestanie być obserwowane we WSZYSTKICH firmach, także w firmie matce.\n\n`
+      + `Żeby zdjąć tylko z jednej firmy, przełącz fragmentator na tę firmę.\n\nNa pewno?`);
+  }
+  const matka = rows.filter((p) => (p.firma_slug || "amh") === shop);
+  if (matka.length === 0) return true;
+  const firma = NAZWA_FIRMY[shop] || shop;
+  const lista = matka.slice(0, 8).map((p) => p.sku).join(", ") + (matka.length > 8 ? "…" : "");
+  const kto = matka.length === 1
+    ? `${matka[0].sku} to produkt firmy ${firma}`
+    : `${matka.length} z zaznaczonych to produkty firmy ${firma} (${lista})`;
+  return window.confirm(
+    `${kto} — to jego firma MATKA, nie córka.\n\nNa pewno przestać obserwować w ${firma}?`);
+}
+
 export function BulkBar({
-  count, selectedSkus, rows, manufacturers, firmy, onClear, onReload,
+  count, selectedSkus, rows, manufacturers, firmy, shop, onClear, onReload,
 }: {
   count: number; selectedSkus: string[]; rows: Product[];
-  manufacturers: Manufacturer[]; firmy?: Firma[]; onClear: () => void; onReload: () => void;
+  manufacturers: Manufacturer[]; firmy?: Firma[];
+  /** Firma z fragmentatora — obserwowanie zmieniamy tylko w niej ("" = wszystkie). */
+  shop: string;
+  onClear: () => void; onReload: () => void;
 }) {
   const [mfrOpen, setMfrOpen] = useState(false);
   const [firmaOpen, setFirmaOpen] = useState(false);
@@ -671,10 +704,24 @@ export function BulkBar({
     }
   };
 
-  const watch = () => {
-    // tylko te, które jeszcze nie są obserwowane (endpoint /favorite jest togglem)
-    const toAdd = selectedRows().filter((p) => !p.is_favorite).map((p) => p.sku);
-    runBulk(`Dodano ${toAdd.length} do obserwowanych`, (sku) => api.put(`/products/${encodeURIComponent(sku)}/favorite`), toAdd);
+  // Obserwowanie jednym żądaniem dla całej paczki, w firmie z fragmentatora.
+  const setWatch = async (on: boolean) => {
+    if (busy) return;
+    const rowsSel = selectedRows().filter((p) => p.is_favorite !== on);
+    if (rowsSel.length === 0) { toast(on ? "Wszystkie zaznaczone już są obserwowane" : "Żaden z zaznaczonych nie jest obserwowany", "info"); return; }
+    if (!on && !potwierdzOdobserwowanie(rowsSel, shop)) return;
+    const gdzie = shop ? ` w ${NAZWA_FIRMY[shop] || shop}` : "";
+    setBusy(true);
+    try {
+      const r = (await api.put("/favorites/bulk", { skus: rowsSel.map((p) => p.sku), shop, on })) as { zmienione: number };
+      toast(on ? `Dodano ${r.zmienione} do obserwowanych${gdzie}` : `Usunięto ${r.zmienione} z obserwowanych${gdzie}`, "ok");
+      onClear();
+    } catch {
+      toast("Nie udało się zmienić obserwowania", "warning");
+    } finally {
+      setBusy(false);
+      onReload();
+    }
   };
   const assignMfr = (m: Manufacturer) => {
     setMfrOpen(false);
@@ -705,8 +752,12 @@ export function BulkBar({
       <span style={{ fontSize: 12, color: "var(--text-mid)", marginRight: 4 }}>zaznaczonych</span>
       <span style={{ width: 1, height: 22, background: "var(--border)" }} />
 
-      <button onClick={watch} disabled={busy} style={bulkBtn}>
+      <button onClick={() => setWatch(true)} disabled={busy} style={bulkBtn}>
         <I.StarFill size={12} style={{ color: "var(--accent)" }} /> Obserwuj
+      </button>
+      <button onClick={() => setWatch(false)} disabled={busy} style={bulkBtn}
+              title={shop ? `Przestań obserwować w ${NAZWA_FIRMY[shop] || shop} — w innych firmach zostaje` : "Przestań obserwować we wszystkich firmach"}>
+        <I.Star size={12} /> Nie obserwuj
       </button>
       <div style={{ position: "relative" }}>
         <button onClick={() => { setMfrOpen(!mfrOpen); setStatusOpen(false); setFirmaOpen(false); }} disabled={busy} style={bulkBtn}>

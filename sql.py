@@ -253,7 +253,11 @@ SELECT
     f.color AS firma_color,
     LOWER(COALESCE(f.slug, 'amh')) AS firma_slug,
     COALESCE(pa.seasonality_enabled, FALSE) AS seasonality_enabled,
-    COALESCE(pa.is_favorite, FALSE) AS is_favorite,
+    -- Obserwowanie jest per firma (services/obserwowanie.py): w zakładce firmy produkt
+    -- odznaczony w tej firmie nie jest obserwowany. „Wszyscy" = obserwowany choćby w jednej.
+    (COALESCE(pa.is_favorite, FALSE)
+     AND NOT (:shop <> '' AND :shop = ANY(COALESCE(pa.unwatched_shops, ARRAY[]::text[])))) AS is_favorite,
+    COALESCE(pa.unwatched_shops, ARRAY[]::text[]) AS unwatched_shops,
     COALESCE(pa.no_reorder, FALSE) AS no_reorder,
     pa.manual_new_until AS manual_new_until,
     pa.ean AS ean,

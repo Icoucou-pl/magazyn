@@ -339,6 +339,9 @@ async def lifespan(app: FastAPI):
                 print(f"[migracja] nie udało się poszerzyć cbm_per_unit do 8 miejsc (zostaje stary typ): {e}")
         # Migracja: ulubione
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "is_favorite", "BOOLEAN DEFAULT FALSE")
+        # Obserwowanie per firma: lista firm, w których produktu NIE obserwujemy mimo is_favorite
+        # (services/obserwowanie.py). NULL = obserwowany we wszystkich — stare gwiazdki bez zmian.
+        await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "unwatched_shops", "TEXT[]")
         # Migracja: EAN
         await add_column_if_missing(conn, settings.TABLE_PRODUCT_ATTRS, "ean", "VARCHAR(50)")
         # Migracja: ręczne wymuszenie statusu
