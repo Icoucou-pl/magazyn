@@ -137,8 +137,8 @@ UPRAWNIENIA = {
     "viewPurchasePrice": "Cena zakupu produktu", "viewProductSales": "Sprzedaż na karcie produktu",
     "viewLandedCost": "Koszt jednostkowy kontenera", "editLandedCost": "Liczenie kosztu jednostkowego",
     "viewProductPrice": "Wycena (test-wycena)", "editProductPrice": "Zapis w wycenie",
-    "viewPriceSummary": "Ceny dla zespołu (test-cena)", "priceSummaryCost": "test-cena: Koszt zakupu",
-    "priceSummaryCompetition": "test-cena: Konkurencja", "useSalesCalculator": "Kalkulator handlowca",
+    "viewPriceSummary": "Ceny dla zespołu (Cena)", "priceSummaryCost": "Cena: Koszt zakupu",
+    "priceSummaryCompetition": "Cena: Konkurencja", "useSalesCalculator": "Kalkulator handlowca",
     "prowizjaOdCeny": "Prowizja od ceny (sposób A)",
     "viewDropy": "Dropy",
 }

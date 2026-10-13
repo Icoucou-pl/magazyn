@@ -1607,7 +1607,7 @@ class KodCnIn(BaseModel):
     kod_cn: Optional[str] = None              # puste = usuń kod
 
 
-# ===== WYCENA I CENY DLA ZESPOŁU (zakładki „test-wycena” / „test-cena”) =====
+# ===== WYCENA I CENY DLA ZESPOŁU (zakładki „test-wycena” / „Cena”) =====
 class WycenaKoszt(BaseModel):
     """Koszt „+” w kalkulatorze: w zł albo w % od ceny końcowej (netto albo brutto)."""
     nazwa: str = Field("", max_length=100)
@@ -1788,7 +1788,7 @@ class KosztZespolOut(BaseModel):
 
 
 class CenyProduktuOut(BaseModel):
-    """Zakładka „test-cena”: same wyniki dla zespołu."""
+    """Zakładka „Cena”: same wyniki dla zespołu."""
     sku: str
     shop: str
     vat: float

@@ -15,7 +15,7 @@
 //                  (canSeeProductSales: viewProductSales ORAZ viewFinancials)
 //   • Historia produktu — bez zmian względem modala (super-admin + SKU z historią)
 //   • Dane       — atrybuty, zdjęcia, wymiary; strefa usuwania dla super-admina
-//   • test-cena  — zakładka dla zespołu: ceny minimalne, konkurencja, średnie
+//   • Cena       — zakładka (dawniej „test-cena”) dla zespołu: ceny minimalne, konkurencja, średnie
 //                  ceny sprzedaży, kalkulator handlowca (canSeePriceSummary)
 //   • test-wycena — następczyni starej „Ceny” (już usuniętej): kalkulator z szablonami, ceny
 //                  minimalne, aktualna cena sprzedaży, konkurencja + koszty i dostawy ze starej
@@ -48,7 +48,7 @@ import ManufacturerModal from "./manufacturer-modal";
 import Breadcrumbs, { type Trail } from "./breadcrumbs";
 import { containerSlug } from "@/lib/routes";
 import LifecycleTabV2 from "./product-lifecycle-v2";
-import ProductTestCena from "./product-test-cena";
+import ProductCena from "./product-cena";
 import ProductTestWycena from "./product-test-wycena";
 import { SeasonChart, type SeasonPoint } from "./season-chart";
 import { ProductThumb } from "./photo-hover";
@@ -58,7 +58,7 @@ import { can, canSeePriceSummary, canSeeProductHistory, canSeeProductPrice, canS
 import { useShop } from "@/lib/shop";
 import { fmtPLN, fmtNum } from "@/lib/format";
 
-export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "test-cena" | "test-wycena";
+export type ProductTab = "logistyka" | "sprzedaz" | "historia" | "dane" | "cena" | "test-wycena";
 
 // Prognoza na pełnej karcie: 180 dni z modala + 90. Endpoint przyjmuje dowolne `days`.
 const HORYZONT_DNI = 270;
@@ -68,15 +68,15 @@ const TAB_LABELS: Record<ProductTab, string> = {
   sprzedaz: "Sprzedaż",
   historia: "Historia produktu",
   dane: "Dane",
-  "test-cena": "test-cena",
+  cena: "Cena",
   "test-wycena": "test-wycena",
 };
 
 function czytajTabZAdresu(): ProductTab | null {
   if (typeof window === "undefined") return null;
   const t = new URLSearchParams(window.location.search).get("tab");
-  // Stare linki do usuniętej zakładki „Cena” prowadzą do jej następczyni.
-  if (t === "cena") return "test-wycena";
+  // Stare linki do „test-cena” (dziś „Cena”) prowadzą do nowej nazwy.
+  if (t === "test-cena") return "cena";
   return t && t in TAB_LABELS ? (t as ProductTab) : null;
 }
 
@@ -328,7 +328,7 @@ export default function ProductPage({
     // pokazuje sama zakładka.
     if (historyAllowed) out.push("historia");
     out.push("dane");
-    if (priceSummaryAllowed) out.push("test-cena");
+    if (priceSummaryAllowed) out.push("cena");
     if (priceAllowed) out.push("test-wycena");
     return out;
   }, [salesAllowed, historyAllowed, priceAllowed, priceSummaryAllowed]);
@@ -652,8 +652,8 @@ export default function ProductPage({
           <LifecycleTabV2 sku={product.sku} shop={shop} showFin={showFin} />
         )}
 
-        {tab === "test-cena" && priceSummaryAllowed && (
-          <ProductTestCena sku={product.sku} shop={shop} />
+        {tab === "cena" && priceSummaryAllowed && (
+          <ProductCena sku={product.sku} shop={shop} />
         )}
 
         {tab === "test-wycena" && priceAllowed && (

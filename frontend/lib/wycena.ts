@@ -1,5 +1,5 @@
 // ============================================================
-// MAGAZYN — rachunek kalkulatorów z zakładek „test-wycena” i „test-cena”.
+// MAGAZYN — rachunek kalkulatorów z zakładek „test-wycena” i „Cena”.
 //
 // wyliczWycene jest LUSTREM services/wycena.py → wylicz_wycene (serwer przy zapisie ceny
 // minimalnej liczy ją jeszcze raz sam). Zasada ustalona z właścicielem: najpierw marża,

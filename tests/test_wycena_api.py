@@ -1,6 +1,6 @@
-"""Zakładki „test-cena” / „test-wycena” — uprawnienia i walidacja, bez bazy.
+"""Zakładki „Cena” / „test-wycena” — uprawnienia i walidacja, bez bazy.
 
-  · „test-cena” (GET /api/ceny-produktu) — viewPriceSummary,
+  · „Cena” (GET /api/ceny-produktu) — viewPriceSummary,
   · „test-wycena” i wszystkie zapisy — jak zakładka „Cena” (viewProductPrice + viewFinancials,
     zapis: editProductPrice),
   · kalkulator handlowca — useSalesCalculator ORAZ cena zakupu,
@@ -138,14 +138,20 @@ def test_admin_ma_obie_zakladki_domyslnie():
     assert can_view_price_summary(admin) and can_use_sales_calculator(admin)
 
 
-def test_boksy_test_ceny_domyslnie_wlaczone():
-    # Ptaszki boksów są domyślnie włączone — kto dostał zakładkę, widzi to, co widział przed ich wprowadzeniem.
+def test_boksy_ceny_domyslnie_tylko_admin():
+    admin = CurrentUser(id=1, email="a@f.pl", role="ADMIN")
+    assert can_view_price_summary_cost(admin) and can_view_price_summary_competition(admin)
+    # Zespół z samą zakładką nie widzi boksów, dopóki admin nie postawi ptaszków.
     zespol = CurrentUser(id=1, email="z@f.pl", role="VIEWER", perms={"viewPriceSummary": True})
-    assert can_view_price_summary_cost(zespol)          # VIEWER ma viewFinancials → cena zakupu
-    assert can_view_price_summary_competition(zespol)
+    assert not can_view_price_summary_cost(zespol)
+    assert not can_view_price_summary_competition(zespol)
+    z_ptaszkami = CurrentUser(id=1, email="z@f.pl", role="VIEWER",
+                              perms={"viewPriceSummary": True, "priceSummaryCost": True, "priceSummaryCompetition": True})
+    assert can_view_price_summary_cost(z_ptaszkami)     # VIEWER ma viewFinancials → cena zakupu
+    assert can_view_price_summary_competition(z_ptaszkami)
 
 
-def test_boksy_test_ceny_mozna_zdjac():
+def test_boksy_ceny_mozna_zdjac():
     u = CurrentUser(id=1, email="z@f.pl", role="VIEWER",
                     perms={"viewPriceSummary": True, "useSalesCalculator": True,
                            "priceSummaryCost": False, "priceSummaryCompetition": False})
@@ -155,12 +161,13 @@ def test_boksy_test_ceny_mozna_zdjac():
     assert can_use_sales_calculator(u)
 
 
-def test_boksy_test_ceny_wymagaja_zakladki_i_ceny_zakupu():
+def test_boksy_ceny_wymagaja_zakladki_i_ceny_zakupu():
     bez_zakladki = CurrentUser(id=1, email="z@f.pl", role="ADMIN", perms={"viewPriceSummary": False})
     assert not can_view_price_summary_cost(bez_zakladki)
     assert not can_view_price_summary_competition(bez_zakladki)
     bez_ceny_zakupu = CurrentUser(id=1, email="z@f.pl", role="VIEWER",
-                                  perms={"viewFinancials": False, "viewPriceSummary": True})
+                                  perms={"viewFinancials": False, "viewPriceSummary": True,
+                                         "priceSummaryCost": True, "priceSummaryCompetition": True})
     assert not can_view_price_summary_cost(bez_ceny_zakupu)
     assert can_view_price_summary_competition(bez_ceny_zakupu)
 

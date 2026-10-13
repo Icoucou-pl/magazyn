@@ -1,6 +1,6 @@
 "use client";
 // ============================================================
-// MAGAZYN — zakładka „test-cena” na pełnej karcie produktu (dla zespołu).
+// MAGAZYN — zakładka „Cena” na pełnej karcie produktu (dla zespołu).
 //
 // Same wyniki, bez wyliczeń: ceny minimalne (detal, hurt/dropy), ceny sugerowane,
 // alarm „sprzedaż poniżej minimum”, konkurencja na pasku cen.
@@ -10,7 +10,8 @@
 // Kalkulator handlowca — ptaszek „Kalkulator handlowca” (+ cena zakupu): handlowiec wpisuje
 // swoją cenę netto i widzi swoją prowizję i zysk firmy, z kolorem względem ceny minimalnej hurt.
 //
-// Zastąpiła (razem z „test-wycena”) starą zakładkę „Cena”.
+// Do października 2026 nazywała się „test-cena”. Razem z „test-wycena” zastąpiła pierwszą
+// zakładkę „Cena” (z kalkulatorem FIFO), już usuniętą — stąd ta sama nazwa.
 // Dane: GET /api/ceny-produktu (routers/wycena.py).
 // ============================================================
 
@@ -51,7 +52,7 @@ export type CenyProduktu = {
 const zl = (n: number | null | undefined) => (n == null ? "—" : <>{zl2(n)}<small style={small}> zł</small></>);
 const ktoKiedy = (c: Krotko | null) => (c ? `${c.ustawil || "—"} · ${c.ustawiono ? fmtDay(c.ustawiono) : ""}` : "nie ustawiono");
 
-export default function ProductTestCena({ sku, shop }: { sku: string; shop: string }) {
+export default function ProductCena({ sku, shop }: { sku: string; shop: string }) {
   const klucz = `${sku}|${shop}`;
   const [wynik, setWynik] = useState<{ klucz: string; data?: CenyProduktu; blad?: string } | null>(null);
   const data = wynik?.klucz === klucz ? wynik.data ?? null : null;

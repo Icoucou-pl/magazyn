@@ -36,10 +36,10 @@ export const PERMISSIONS = [
   { key: "editLandedCost", label: "Liczenie kosztu jednostkowego", desc: "Wczytanie odprawy z XML, wpisywanie kwot z faktury spedytora i zapis kosztu na pozycje kontenera", group: "Dane" },
   { key: "viewProductPrice", label: "Wycena (test-wycena)", desc: "Zakładka „test-wycena” na karcie produktu: kalkulator z szablonami, koszt FIFO i średni z kontenerów, dostawy (wymaga też Dane finansowe)", group: "Widoczność" },
   { key: "editProductPrice", label: "Zapis w wycenie", desc: "Zapisywanie w „test-wycena” cen minimalnych i sugerowanych, cen konkurencji i szablonów kalkulatora", group: "Dane" },
-  { key: "viewPriceSummary", label: "Ceny dla zespołu (test-cena)", desc: "Zakładka „test-cena” na karcie produktu: ceny minimalne, średnie ceny sprzedaży — bez wyliczeń", group: "Widoczność" },
-  { key: "priceSummaryCost", label: "test-cena: Koszt zakupu", desc: "Boks „Koszt zakupu” w zakładce „test-cena” (wymaga też Cena zakupu produktu)", group: "Widoczność" },
-  { key: "priceSummaryCompetition", label: "test-cena: Konkurencja", desc: "Boks „Konkurencja” w zakładce „test-cena”: ceny innych sklepów", group: "Widoczność" },
-  { key: "useSalesCalculator", label: "Kalkulator handlowca", desc: "Kalkulator marży i prowizji w zakładce „test-cena” (wymaga też Cena zakupu produktu)", group: "Handlowiec" },
+  { key: "viewPriceSummary", label: "Ceny dla zespołu (Cena)", desc: "Zakładka „Cena” na karcie produktu: ceny minimalne, średnie ceny sprzedaży — bez wyliczeń", group: "Widoczność" },
+  { key: "priceSummaryCost", label: "Cena: Koszt zakupu", desc: "Boks „Koszt zakupu” w zakładce „Cena” (wymaga też Cena zakupu produktu)", group: "Widoczność" },
+  { key: "priceSummaryCompetition", label: "Cena: Konkurencja", desc: "Boks „Konkurencja” w zakładce „Cena”: ceny innych sklepów", group: "Widoczność" },
+  { key: "useSalesCalculator", label: "Kalkulator handlowca", desc: "Kalkulator marży i prowizji w zakładce „Cena” (wymaga też Cena zakupu produktu)", group: "Handlowiec" },
   { key: "prowizjaOdCeny", label: "Prowizja od ceny (sposób A)", desc: "Kalkulator handlowca liczy prowizję jako % ceny netto. Bez ptaszka: % od zysku (sposób B)", group: "Handlowiec" },
 ];
 
@@ -74,8 +74,8 @@ export const PERMISSIONS = [
 // nie przez samo can() — uprawnienie jest koniunkcyjne z viewFinancials.
 export const ROLE_PERMS = {
   ADMIN:  { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: true,  viewForecast: true,  manageUsers: true,  viewAudit: true,  viewReports: true,  viewAttachments: true,  viewCalendarPayments: true,  viewBankBalances: true,  editBankBalances: true,  viewProductSales: true,  viewPurchasePrice: true,  viewProductHistory: true,  viewLandedCost: true,  editLandedCost: true,  viewProductPrice: true,  editProductPrice: true,  viewPriceSummary: true,  useSalesCalculator: true,  priceSummaryCost: true,  priceSummaryCompetition: true,  prowizjaOdCeny: false },
-  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false, viewProductPrice: false, editProductPrice: false, viewPriceSummary: false, useSalesCalculator: false, priceSummaryCost: true,  priceSummaryCompetition: true,  prowizjaOdCeny: false },
-  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false, viewProductPrice: false, editProductPrice: false, viewPriceSummary: false, useSalesCalculator: false, priceSummaryCost: true,  priceSummaryCompetition: true,  prowizjaOdCeny: false },
+  IMPORT: { editProducts: true,  editContainers: true,  import: true,  export: true,  generatePO: true,  viewFinancials: true,  viewDashboardKpi: true,  assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: true,  viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false, viewProductPrice: false, editProductPrice: false, viewPriceSummary: false, useSalesCalculator: false, priceSummaryCost: false, priceSummaryCompetition: false,  prowizjaOdCeny: false },
+  VIEWER: { editProducts: false, editContainers: false, import: false, export: true,  generatePO: false, viewFinancials: true,  viewDashboardKpi: false, assistantFinancials: false, viewForecast: true,  manageUsers: false, viewAudit: false, viewReports: false, viewAttachments: false, viewCalendarPayments: false, viewBankBalances: false, editBankBalances: false, viewProductSales: false, viewPurchasePrice: false, viewProductHistory: false, viewLandedCost: false, editLandedCost: false, viewProductPrice: false, editProductPrice: false, viewPriceSummary: false, useSalesCalculator: false, priceSummaryCost: false, priceSummaryCompetition: false,  prowizjaOdCeny: false },
 };
 
 // Kontekst użytkownika (provider zakładamy w page.js / shell — etap 0.4)
@@ -123,12 +123,12 @@ export const canSeeSad = (u) => Boolean(u?.is_super_admin || u?.isSuper);
 export const canSeeProductPrice = (u) => can(u, "viewProductPrice") && can(u, "viewFinancials");
 export const canEditProductPrice = (u) => canSeeProductPrice(u) && can(u, "editProductPrice");
 
-// Zakładka „test-cena” i kalkulator handlowca. Lustro w security.py →
+// Zakładka „Cena” i kalkulator handlowca. Lustro w security.py →
 // can_view_price_summary / can_use_sales_calculator. Kalkulator pokazuje zysk, a z niego
 // widać koszt sztuki, więc wymaga też ceny zakupu. prowizjaOdCeny to ustawienie handlowca
 // (sposób A = % ceny netto), nie dostęp — trzymane tu, żeby admin klikał je w tym samym panelu.
 export const canSeePriceSummary = (u) => can(u, "viewPriceSummary");
-// Boksy w „test-cena” — domyślnie włączone każdej roli, admin zdejmuje je konkretnym osobom.
+// Boksy w „Cena” — domyślnie tylko ADMIN, reszcie ptaszek stawia admin.
 // Koszt zakupu tylko z ceną zakupu. Lustro: can_view_price_summary_cost / _competition.
 export const canSeePriceSummaryCost = (u) => canSeePriceSummary(u) && can(u, "priceSummaryCost") && canSeePurchasePrice(u);
 export const canSeePriceSummaryCompetition = (u) => canSeePriceSummary(u) && can(u, "priceSummaryCompetition");

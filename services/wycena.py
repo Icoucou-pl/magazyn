@@ -1,4 +1,4 @@
-"""Zakładki „test-wycena” i „test-cena” na karcie produktu: kalkulator z kosztami „+”.
+"""Zakładki „test-wycena” i „Cena” na karcie produktu: kalkulator z kosztami „+”.
 
 Moduł jest CZYSTY (bez bazy) — router (routers/wycena.py) zbiera dane i woła stąd
 `wylicz_wycene`. Ta sama formuła żyje we froncie (frontend/lib/wycena.ts); serwer przy

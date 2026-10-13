@@ -6,7 +6,7 @@
 //     + historia; ostrzeżenie,
 //     gdy koszt od ustawienia urósł albo spadł
 //   • Aktualna cena sprzedaży (detal, brutto): wpisywana ręcznie, kto i kiedy + historia —
-//     to ona jest znaczkiem „My” na pasku konkurencji w „test-cena”
+//     to ona jest znaczkiem „My” na pasku konkurencji w „Cena”
 //   • Kalkulator z szablonami: koszt bazowy (FIFO / średnia / własny), marża, koszty „+”
 //     (zł albo % od netto / brutto, doliczane PO marży), „Zapisz jako …”
 //   • Konkurencja: jeden wpis na sklep, nowa cena tego samego sklepu → stara do historii
@@ -51,7 +51,7 @@ type WycenaData = {
   ceny_min: CenaMin[]; ceny_aktualne: CenaAktualna[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
 };
 
-// Kolejność kart jak w „test-cena”: detal, detal, hurt, hurt — a Allegro (minimalna, sugerowana) rząd niżej.
+// Kolejność kart jak w „Cena”: detal, detal, hurt, hurt — a Allegro (minimalna, sugerowana) rząd niżej.
 const KANALY: Kanal[] = ["detal", "sug_detal", "hurt", "sug_hurt", "min_allegro", "sug_allegro"];
 const KANAL_NAZWA: Record<Kanal, string> = {
   detal: "Cena minimalna detal",
@@ -62,9 +62,9 @@ const KANAL_NAZWA: Record<Kanal, string> = {
   sug_allegro: "Cena sugerowana allegro",
 };
 // Każdą cenę pokazujemy głównie brutto, netto w opisie (decyzja właściciela).
-// Kanał zdradza cienki pasek u góry karty (kolor jak kropki w tabelce „test-cena”).
+// Kanał zdradza cienki pasek u góry karty (kolor jak kropki w tabelce „Cena”).
 const KANAL_CENY: Record<Kanal, KanalCeny> = { detal: "detal", sug_detal: "detal", hurt: "hurt", sug_hurt: "hurt", min_allegro: "allegro", sug_allegro: "allegro" };
-// Kropka przy nazwie: czerwona = minimalna, zielona = sugerowana (jak w nagłówku tabelki „test-cena”).
+// Kropka przy nazwie: czerwona = minimalna, zielona = sugerowana (jak w nagłówku tabelki „Cena”).
 const kropka = (k: Kanal) => (k === "detal" || k === "hurt" || k === "min_allegro" ? "var(--critical)" : "var(--ok)");
 const BAZA_NAZWA: Record<Baza, string> = { fifo: "FIFO", srednia: "średnia", najblizsza: "najbliższa dostawa", ostatnia: "ostatnia dostawa", wlasna: "własny koszt" };
 const blad = (e: unknown) => (e instanceof Error ? e.message : "błąd");
@@ -117,7 +117,7 @@ export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
 // ── Zapisane ceny (minimalne i sugerowane) ───────────────────
 function ZapisaneCeny({ data }: { data: WycenaData }) {
   return (
-    <Box title="Zapisane ceny" hint="zapisujesz z kalkulatora poniżej · zespół widzi je w zakładce „test-cena”">
+    <Box title="Zapisane ceny" hint="zapisujesz z kalkulatora poniżej · zespół widzi je w zakładce „Cena”">
       <SiatkaCen>
         {KANALY.map((k) => <KartaMin key={k} kanal={k} data={data} />)}
       </SiatkaCen>
@@ -212,7 +212,7 @@ function AktualnaCena({ data, shop, onZmiana }: { data: WycenaData; shop: string
   };
 
   return (
-    <Box title="Aktualna cena sprzedaży" hint="detal, brutto · cena, po której dziś sprzedajemy — w „test-cena” to znaczek „My” na pasku konkurencji">
+    <Box title="Aktualna cena sprzedaży" hint="detal, brutto · cena, po której dziś sprzedajemy — w „Cena” to znaczek „My” na pasku konkurencji">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))", gap: 12 }}>
         <div style={{ ...kartaStyl, background: "var(--bg)", borderTop: `3px solid ${KOLOR_KANALU.detal}` }}>
           {c ? (
@@ -534,7 +534,7 @@ function KonkurencjaEdycja({ data, shop, onZmiana }: { data: WycenaData; shop: s
         )}
         <div style={noteInfo}>
           <span style={{ color: "var(--info)" }}>i</span>
-          <div>Zespół widzi te ceny w zakładce „test-cena” na pasku: od najtańszego do najdroższego, z naszą ceną i ceną minimalną.</div>
+          <div>Zespół widzi te ceny w zakładce „Cena” na pasku: od najtańszego do najdroższego, z naszą ceną i ceną minimalną.</div>
         </div>
       </div>
     </Box>
