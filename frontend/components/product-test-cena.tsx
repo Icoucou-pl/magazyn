@@ -308,6 +308,13 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
   const tryb = data.prowizja_tryb;
 
   const [cena, setCena] = useState(() => String(Math.round(startCena)));
+  // Cenę można wpisać netto albo brutto (np. przepisując ostatnią sprzedaż z paragonu).
+  // Liczymy zawsze od netto; dopóki handlowiec pisze w polu brutto, trzymamy jego tekst,
+  // żeby przeliczenie w tle nie przestawiało mu cyfr pod kursorem.
+  const [bruttoTxt, setBruttoTxt] = useState<string | null>(null);
+  const mnoznikVat = 1 + data.vat / 100;
+  const zmienNetto = (v: string) => { setCena(v); setBruttoTxt(null); };
+  const zmienBrutto = (v: string) => { setBruttoTxt(v); setCena(String(Math.round((num(v) / mnoznikVat) * 100) / 100)); };
   const [baza, setBaza] = useState<BazaKosztu | "wlasna">(koszt.baza_domyslna ?? bazy[0]?.baza ?? "fifo");
   const [proc, setProc] = useState(() => czytajProc(tryb));
   const [koszty, setKoszty] = useState<KosztEdycja[]>([]);
@@ -335,14 +342,15 @@ function KalkulatorHandlowca({ data, koszt }: { data: CenyProduktu; koszt: Koszt
     <Box title="Kalkulator handlowca · hurt / dropy" hint="liczy na żywo · nic się nie zapisuje">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 12 }}>
         <div style={kartaStyl}>
-          <Wiersz label="Twoja cena netto" htmlFor="hand-cena">
+          <Wiersz label="Twoja cena" htmlFor="hand-cena">
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <Pole id="hand-cena" value={cena} onChange={setCena} unit="zł" />
-              <span style={hint}>{zl2(N * (1 + data.vat / 100))} zł brutto · VAT {data.vat}%</span>
+              <Pole id="hand-cena" value={cena} onChange={zmienNetto} unit="zł netto" />
+              <Pole id="hand-cena-brutto" value={bruttoTxt ?? String(Math.round(N * mnoznikVat * 100) / 100)} onChange={zmienBrutto} unit="zł brutto" />
+              <span style={hint}>VAT {data.vat}%</span>
             </div>
           </Wiersz>
           <input type="range" aria-label="Cena netto (suwak)" min={lo} max={hi} step={1} value={Math.min(hi, Math.max(lo, N))}
-            onChange={(e) => setCena(e.target.value)} style={{ width: "100%", accentColor: "var(--accent)" }} />
+            onChange={(e) => zmienNetto(e.target.value)} style={{ width: "100%", accentColor: "var(--accent)" }} />
           {minH != null && prog != null ? (
             <PasekCen lo={lo} hi={hi} min={minH}
               strefy={[
