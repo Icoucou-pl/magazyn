@@ -3,7 +3,7 @@
 // MAGAZYN — „Podsumowanie sprzedaży" na pulpicie (wzór: panel Sellasista).
 //
 // Jedna karta. Każdy panel:
-//   · JEDEN wybór zakresu (od–do, najwcześniej 01.01.2026, skróty dziś / 7D / 30D) —
+//   · JEDEN wybór zakresu (od–do, najwcześniej 01.01.2026, skróty dziś / 7D / 30D / Ten rok) —
 //     kafelki (liczba zamówień, wartość, średnia) liczą DOKŁADNIE ten zakres,
 //   · wykres: słupki = liczba zamówień (oś lewa), linia = wartość w PLN (oś prawa),
 //     ten sam zakres, ale zawsze min. 30 dni (przy „dziś”/7D wykres sięga wstecz,
@@ -321,6 +321,7 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
   const minD = data && data.from > POCZATEK ? data.from : POCZATEK;
   const clamp = (d: string) => (d < minD ? minD : d > maxD ? maxD : d);
   const odSkrotu = (d: number) => clamp(addDays(maxD, -(d - 1)));
+  const odRoku = clamp(maxD.slice(0, 4) + "-01-01");   // „Ten rok” = od 1 stycznia roku z „dziś”
   const od = zakres ? clamp(zakres.od) : odSkrotu(30);
   const do_ = zakres ? clamp(zakres.do_) : maxD;
   // Wykres: wybrany zakres, ale min. 30 dni — krótszy wydłużamy wstecz od daty „do”.
@@ -361,9 +362,13 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
                 title={k.d === 8 ? "Jak w Sellasiście: dziś + 7 poprzednich dni" : undefined}
                 style={presetBtn(od === odSkrotu(k.d) && do_ === maxD)}>{k.l}</button>
             ))}
+            <button onClick={() => ustaw(odRoku, maxD)} style={presetBtn(od === odRoku && do_ === maxD && odRoku !== odSkrotu(30))}>Ten rok</button>
           </div>
-          <SegBtns value={grupa} options={GRUPY} onChange={setGrupaSel} />
         </div>
+      </div>
+      {/* Grupowanie osobnym wierszem pod nagłówkiem — w jednym rzędzie z datami było za ciasno. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 14px 0" }}>
+        <SegBtns value={grupa} options={GRUPY} onChange={setGrupaSel} />
       </div>
       <div style={{ padding: 14 }}>
         {!data ? (
