@@ -60,6 +60,14 @@ function niceMax(v: number) {
   return step * 4;
 }
 
+// Oś wartości skrótem („1,5 mln”, „400 tys”) — pełne kwoty roczne nie mieściły się z prawej.
+const osKwota = (v: number) => {
+  const r = (x: number) => (Math.round(x * 10) / 10).toString().replace(".", ",");
+  if (v >= 1_000_000) return `${r(v / 1_000_000)} mln`;
+  if (v >= 1000) return `${r(v / 1000)} tys`;
+  return fmtNum(Math.round(v));
+};
+
 const dzienLabel = (iso: string) =>
   new Date(iso + "T12:00:00").toLocaleDateString("pl-PL", { day: "numeric", month: "short" });
 const miesiacLabel = (iso: string, rok = false) =>
@@ -141,7 +149,7 @@ function ComboChart({ points, grupa, showValue, selOd, selDo, height = 220 }: {
   }, []);
 
   const n = points.length;
-  const padL = 34, padR = showValue ? 54 : 10, padT = 10, padB = 24;
+  const padL = 40, padR = showValue ? 56 : 10, padT = 10, padB = 24;
   const innerW = Math.max(10, w - padL - padR);
   const innerH = height - padT - padB;
   const maxO = niceMax(Math.max(0, ...points.map((p) => p.orders)));
@@ -185,7 +193,7 @@ function ComboChart({ points, grupa, showValue, selOd, selDo, height = 220 }: {
             </text>
             {showValue && (
               <text x={w - padR + 6} y={padT + innerH * (1 - t) + 3} fill="var(--text-lo)" fontSize="10" fontFamily="var(--font-mono)">
-                {fmtNum(Math.round(maxV * t))}
+                {osKwota(maxV * t)}
               </text>
             )}
           </g>
@@ -260,8 +268,9 @@ const sumaZakresu = (s: Series, od: string, do_: string) => {
   return { zam: okno.reduce((a, p) => a + p.orders, 0), wart: okno.reduce((a, p) => a + (p.value ?? 0), 0) };
 };
 
-function Panel({ s, firmy, od, do_, wykresOd, grupa, showValue, height }: {
+function Panel({ s, firmy, od, do_, wykresOd, grupa, showValue, height, prawy }: {
   s: Series; firmy: Series[]; od: string; do_: string; wykresOd: string; grupa: Grupa; showValue: boolean; height: number;
+  prawy?: React.ReactNode;
 }) {
   const { zam, wart } = sumaZakresu(s, od, do_);
   // Panel „Razem”: podział na firmy w dymku „ⓘ” (szef nie chce 3 osobnych wykresów ani
@@ -270,15 +279,18 @@ function Panel({ s, firmy, od, do_, wykresOd, grupa, showValue, height }: {
   const dymek = (fmt: (f: { zam: number; wart: number }) => string) => podzial?.map((f) => `${f.l}: ${fmt(f)}`).join("\n");
   const slupki = grupuj(s.points.filter((p) => p.date >= wykresOd && p.date <= do_), grupa);
   return (
-    <div style={{ border: "1px solid var(--border-soft)", borderRadius: "var(--r-md)", padding: "12px 14px 6px", minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>{nazwa(s.shop)}</span>
-        {showValue && s.missing_rates > 0 && (
-          <span title="Zamówienia w obcej walucie bez kursu NBP — ich kwota nie weszła do wartości."
-            style={{ fontSize: 11, color: "var(--warning)", cursor: "help" }}>
-            {fmtNum(s.missing_rates)} bez kursu
-          </span>
-        )}
+    <div style={{ minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{nazwa(s.shop)}</span>
+          {showValue && s.missing_rates > 0 && (
+            <span title="Zamówienia w obcej walucie bez kursu NBP — ich kwota nie weszła do wartości."
+              style={{ fontSize: 11, color: "var(--warning)", cursor: "help" }}>
+              {fmtNum(s.missing_rates)} bez kursu
+            </span>
+          )}
+        </div>
+        {prawy}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: showValue ? "repeat(3, minmax(0, 1fr))" : "1fr", gap: 12, margin: "10px 0 8px" }}>
         <Kpi label="Liczba zamówień" value={fmtNum(zam)} info={dymek((f) => fmtNum(f.zam))} />
@@ -327,7 +339,9 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
   // Wykres: wybrany zakres, ale min. 30 dni — krótszy wydłużamy wstecz od daty „do”.
   const wykresOd = span(od, do_) >= MIN_WYKRES ? od : clamp(addDays(do_, -(MIN_WYKRES - 1)));
   const grupa = grupaSel ?? autoGrupa(span(wykresOd, do_));
-  const ustaw = (o: string, d: string) => { setZakres({ od: o, do_: d }); setGrupaSel(null); };
+  // Zmiana zakresu wraca do automatu grupowania; „Ten rok” od razu miesięcznie (prośba szefa).
+  const ustaw = (o: string, d: string, g: Grupa | null = null) => { setZakres({ od: o, do_: d }); setGrupaSel(g); };
+  const krotkaData = (iso: string) => dzienLabel(iso).replace(".", "");
 
   const dateInput: React.CSSProperties = {
     padding: "4px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6,
@@ -340,13 +354,21 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
 
   return (
     <Card>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", gap: 12, flexWrap: "wrap", borderBottom: "1px solid var(--border-soft)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>Podsumowanie sprzedaży</h3>
+      {/* Wygląd jak „Pieniądze firmy”: nagłówek, przełączniki i wykres w jednym polu, bez kresek. */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px 6px", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <h3 style={{ margin: 0, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-lo)" }}>
+            Podsumowanie sprzedaży
+          </h3>
           <span title={"Jak w Sellasiście: zamówienia wg daty złożenia, w każdym statusie (nowe, za pobraniem, w realizacji…)"
             + (pomijane.length ? ` OPRÓCZ: ${pomijane.join(", ")}` : "") + ". "
             + "Wartość brutto z wysyłką, obce waluty po kursie NBP. Bez hurtu z Fakturowni. To bieżący ruch — nie zrealizowana sprzedaż z Finansów."}
             style={{ color: "var(--text-lo)", cursor: "help", fontSize: 12 }}>ⓘ</span>
+          {data && (
+            <span className="mono" style={{ padding: "2px 7px", fontSize: 10, fontWeight: 600, background: "var(--surface-2)", color: "var(--text-mid)", borderRadius: 999 }}>
+              {od === do_ ? krotkaData(od) : `${krotkaData(od)}–${krotkaData(do_)}`}
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -362,22 +384,20 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
                 title={k.d === 8 ? "Jak w Sellasiście: dziś + 7 poprzednich dni" : undefined}
                 style={presetBtn(od === odSkrotu(k.d) && do_ === maxD)}>{k.l}</button>
             ))}
-            <button onClick={() => ustaw(odRoku, maxD)} style={presetBtn(od === odRoku && do_ === maxD && odRoku !== odSkrotu(30))}>Ten rok</button>
+            <button onClick={() => ustaw(odRoku, maxD, "m")} style={presetBtn(od === odRoku && do_ === maxD && odRoku !== odSkrotu(30))}>Ten rok</button>
           </div>
         </div>
       </div>
-      {/* Grupowanie osobnym wierszem pod nagłówkiem — w jednym rzędzie z datami było za ciasno. */}
-      <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 14px 0" }}>
-        <SegBtns value={grupa} options={GRUPY} onChange={setGrupaSel} />
-      </div>
-      <div style={{ padding: 14 }}>
+      <div style={{ padding: "10px 20px 14px" }}>
         {!data ? (
           <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-lo)", fontSize: 12 }}>Wczytuję…</div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             {series.map((s) => (
               <Panel key={s.shop || "razem"} s={s} firmy={firmy} od={od} do_={do_} wykresOd={wykresOd} grupa={grupa}
-                showValue={showValue} height={series.length === 1 ? 320 : 220} />
+                showValue={showValue} height={series.length === 1 ? 320 : 220}
+                // Grupowanie wierszem niżej, w linii z nazwą panelu — w nagłówku z datami było za ciasno.
+                prawy={<SegBtns value={grupa} options={GRUPY} onChange={setGrupaSel} />} />
             ))}
           </div>
         )}
