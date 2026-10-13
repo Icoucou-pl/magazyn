@@ -9,7 +9,9 @@
 // zależnym od trendu i gradientem pod linią.
 //
 // Nowe linie włącza się klikając plakietki w legendzie:
-//   • Stan konta            — odczyty księgowej (app_bank_balances), kropki = realne wpisy
+//   • Stan konta            — odczyty księgowej (app_bank_balances), kropki = realne wpisy.
+//                             Suma wszystkich subkont w zł; gdy wyjdzie na minusie, linia stoi na 0
+//                             (z dopiskiem „konto na minusie”), bo debet to nie ujemne pieniądze firmy
 //   • Bez pożyczek          — stan konta MINUS Σ wpłat wspólników o dacie ≤ dany dzień
 //   • Kapitał łącznie       — magazyn + konto (odpowiedź na „czy pieniądze tylko zmieniają postać")
 //   • Wpłaty wspólników     — pionowe znaczniki (app_owner_loans)
@@ -33,7 +35,15 @@ import { fmtPLN, fmtPLNk, fmtNum, fmtPct } from "@/lib/format";
 
 // ── Typy ─────────────────────────────────────────────────────
 export type MoneyPoint = { date: string; value: number; units: number };
-export type BankBalance = { id: number; firma_slug: string; balance_date: string; amount_pln: number; note?: string | null };
+// Linijka odczytu = jedno subkonto w jednej walucie; kurs NBP zamraża backend przy zapisie.
+export type BankBalanceLine = {
+  label?: string | null; currency: string; amount: number;
+  rate: number; rate_date?: string | null; amount_pln: number;
+};
+export type BankBalance = {
+  id: number; firma_slug: string; balance_date: string; amount_pln: number; note?: string | null;
+  lines?: BankBalanceLine[];
+};
 export type OwnerLoan = {
   id: number; firma_slug: string; loan_date: string; amount_pln: number; partner: string;
   numer_umowy?: string | null; data_zawarcia?: string | null; termin_splaty?: string | null;
@@ -94,12 +104,13 @@ const _dLabel = (iso: string) =>
 
 // ── Wykres ───────────────────────────────────────────────────
 function MoneyChart({
-  points, metric, on, balances, loans, transit, height = 220,
+  points, metric, on, balances, loans, transit, debet, height = 220,
 }: {
   points: MoneyPoint[];
   metric: "value" | "units";
   on: Record<SeriesKey, boolean>;
   balances: BankBalance[];
+  debet?: Map<string, number>;   // dzień odczytu → prawdziwa (ujemna) suma; linia stoi wtedy na 0
   loans: OwnerLoan[];
   transit: Record<string, number>;
   height?: number;
@@ -348,6 +359,9 @@ function MoneyChart({
           </div>
           {on.mag && <TipRow label={isUnits ? "Magazyn" : "Magazyn"} value={fmtFull(magVals[hover])} color={magStroke} />}
           {showRaw && money.raw[hover] != null && <TipRow label="Stan konta" value={fmtPLN(money.raw[hover] as number)} color={COLOR.raw} />}
+          {(showRaw || showAdj) && debet?.has(points[hover].date) && (
+            <div style={{ marginTop: 4, color: "var(--critical)", fontSize: 10 }}>Konto na minusie: {fmtPLN(debet.get(points[hover].date))}</div>
+          )}
           {showAdj && money.adj[hover] != null && <TipRow label="Bez pożyczek" value={fmtPLN(money.adj[hover] as number)} color={COLOR.adj} />}
           {showTransit && transitVals[hover] != null && <TipRow label="Zapłacone w drodze" value={fmtPLN(transitVals[hover] as number)} color={TRANSIT} />}
           {showSuma && suma[hover] != null && <TipRow label="Kapitał łącznie" value={fmtPLN(suma[hover] as number)} color={COLOR.suma} />}
@@ -420,7 +434,10 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     return () => { alive = false; };
   }, [canBank, shop, spanDays]);
 
-  const balances = bundle?.balances ?? [];
+  // Suma subkont na minusie (debet) rysuje się jako 0 — prawdziwą kwotę widać w Cashflow.
+  const rawBalances = bundle?.balances;
+  const balances = useMemo(() => (rawBalances ?? []).map((b) => (b.amount_pln < 0 ? { ...b, amount_pln: 0 } : b)), [rawBalances]);
+  const debet = useMemo(() => new Map((rawBalances ?? []).filter((b) => b.amount_pln < 0).map((b) => [b.balance_date, b.amount_pln])), [rawBalances]);
   const loans = bundle?.loans ?? [];
   const hasMoney = canBank && !!shop && balances.length > 0;
 
@@ -569,7 +586,9 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
     // bo prowadzi też do poprawiania i kasowania istniejących wpisów.
     if (lead.when) {
       const c = cumAt(lead.when);
-      return `Ostatni wpis: ${_dLabel(lead.when)}. ${c ? `Wspólnicy wpłacili do tego dnia ${fmtPLN(c)}.` : "Brak pożyczek od wspólników."}`;
+      const minus = debet.get(lead.when);
+      const naMinusie = minus != null ? ` Konto na minusie (${fmtPLN(minus)}) — na wykresie 0.` : "";
+      return `Ostatni wpis: ${_dLabel(lead.when)}.${naMinusie} ${c ? `Wspólnicy wpłacili do tego dnia ${fmtPLN(c)}.` : "Brak pożyczek od wspólników."}`;
     }
     return "Kliknij plakietkę, żeby dołożyć linię. Najedź na nią, żeby przeczytać, co pokazuje.";
   })();
@@ -681,7 +700,7 @@ export function MoneyChartCard({ points, canFin, onOpenEntries }: {
       )}
 
       <div style={{ padding: "0 8px 4px" }}>
-        <MoneyChart points={sliced} metric={metric} on={vis} balances={balances} loans={loans} transit={transit} height={220} />
+        <MoneyChart points={sliced} metric={metric} on={vis} balances={balances} loans={loans} transit={transit} debet={debet} height={220} />
       </div>
     </Card>
   );

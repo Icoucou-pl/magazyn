@@ -5,6 +5,7 @@
 //
 //   • Stan konta  — odczyt podany przez księgową. Jedna firma + jedna data = jeden wpis;
 //     powtórny zapis tej samej daty NADPISUJE (backend robi UPSERT), nie dubluje.
+//     Wpis to kilka subkont w PLN/EUR/USD/CZK; kurs NBP sprzed daty zamraża backend.
 //   • Pożyczki    — wpłata wspólnika (kwota dodatnia) albo zwrot (ujemna). Jednego dnia
 //     może ich być kilka, więc dublowanie jest tu dozwolone.
 //
@@ -110,15 +111,31 @@ export function MoneyEntriesTab({ shop }: { shop: string }) {
 }
 
 // ── Saldo rachunku ───────────────────────────────────────────
+// Odczyt = kilka linijek (subkont): waluta + kwota, opcjonalnie podpis („EUR 1”, „VAT”).
+// Kurs NBP z dnia roboczego przed datą dobiera i ZAMRAŻA backend — front go nie liczy,
+// więc przed zapisem pokazujemy tylko to, co już wiadomo (PLN i kursy zapisane w edytowanym wpisie).
+const WALUTY = ["PLN", "EUR", "USD", "CZK"] as const;
+
+type LineDraft = { label: string; currency: string; amount: string };
+
+const fmtKwota = (n: number, cur: string) =>
+  `${new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${cur}`;
+const fmtKurs = (n: number) => new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 4, maximumFractionDigits: 6 }).format(n);
+
+// Czy wpis jest „prosty” (jedna linijka w zł bez podpisu) — wtedy rozbicie nic nie wnosi.
+const prosty = (r: BankBalance) =>
+  !r.lines || r.lines.length === 0 || (r.lines.length === 1 && r.lines[0].currency === "PLN" && !r.lines[0].label);
+
 function BalancesCard({
   shop, rows, loans, canEdit, onChanged,
 }: { shop: string; rows: BankBalance[]; loans: OwnerLoan[]; canEdit: boolean; onChanged: () => void }) {
   const [adding, setAdding] = useState(false);
   const [date, setDate] = useState(todayISO());
-  const [amount, setAmount] = useState("");
+  const [lines, setLines] = useState<LineDraft[]>([{ label: "", currency: "PLN", amount: "" }]);
   const [note, setNote] = useState("");
   const [editId, setEditId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState<Set<number>>(new Set());
 
   // Ile wspólnicy wpłacili do danego dnia — kolumna „bez pożyczek" liczona narastająco.
   const cumAt = useMemo(() => {
@@ -126,21 +143,65 @@ function BalancesCard({
     return (iso: string) => sorted.reduce((s, l) => (l.loan_date <= iso ? s + l.amount_pln : s), 0);
   }, [loans]);
 
-  const reset = () => { setAdding(false); setEditId(null); setDate(todayISO()); setAmount(""); setNote(""); };
+  const desc = [...rows].sort((a, b) => b.balance_date.localeCompare(a.balance_date));
+  const editRow = editId != null ? rows.find((r) => r.id === editId) : undefined;
+
+  // Nowy wpis podpowiada te same subkonta co ostatni (waluty i podpisy), z pustymi kwotami —
+  // co miesiąc przepisujesz tylko liczby z wyciągu.
+  const startAdd = () => {
+    const last = desc[0];
+    const szablon = last?.lines?.length
+      ? last.lines.map((l) => ({ label: l.label || "", currency: l.currency, amount: "" }))
+      : [{ label: "", currency: "PLN", amount: "" }];
+    setEditId(null);
+    setDate(todayISO());
+    setLines(szablon);
+    setNote("");
+    setAdding(true);
+  };
+
+  const reset = () => { setAdding(false); setEditId(null); setDate(todayISO()); setLines([{ label: "", currency: "PLN", amount: "" }]); setNote(""); };
+
+  const setLine = (i: number, patch: Partial<LineDraft>) => setLines((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
+
+  // Podgląd sumy: PLN zawsze; waluta obca tylko przy edycji tej samej daty (kurs jest już zamrożony).
+  // Przy nowej dacie kurs przyjdzie z NBP dopiero przy zapisie.
+  const zamrozone = useMemo(() => {
+    const m = new Map<string, { rate: number; rate_date?: string | null }>();
+    if (editRow && editRow.balance_date === date) editRow.lines?.forEach((l) => { if (l.currency !== "PLN") m.set(l.currency, l); });
+    return m;
+  }, [editRow, date]);
+  const podglad = (() => {
+    let suma = 0, pelny = true;
+    for (const l of lines) {
+      const v = parseAmount(l.amount);
+      if (v == null || l.amount.trim() === "") continue;
+      if (l.currency === "PLN") suma += v;
+      else if (zamrozone.has(l.currency)) suma += v * zamrozone.get(l.currency)!.rate;
+      else pelny = false;
+    }
+    return { suma, pelny };
+  })();
 
   const save = async () => {
-    const val = parseAmount(amount);
-    if (val == null) { toast("Podaj kwotę", "warning"); return; }
+    const parsed = [];
+    for (const l of lines) {
+      if (l.amount.trim() === "") continue;          // pusta linijka z szablonu = subkonto pominięte
+      const v = parseAmount(l.amount);
+      if (v == null) { toast(`Nieczytelna kwota: ${l.amount}`, "warning"); return; }
+      parsed.push({ label: l.label.trim() || null, currency: l.currency, amount: v });
+    }
+    if (!parsed.length) { toast("Podaj kwotę", "warning"); return; }
     setBusy(true);
     try {
-      const body = { firma_slug: shop, balance_date: date, amount_pln: val, note: note || null };
+      const body = { firma_slug: shop, balance_date: date, lines: parsed, note: note || null };
       if (editId != null) await api.patch(`/bank-balances/${editId}`, body);
       else await api.post("/bank-balances", body);
       toast(editId != null ? "Wpis poprawiony" : "Saldo zapisane", "ok");
       reset();
       onChanged();
-    } catch {
-      toast("Nie udało się zapisać wpisu", "error");
+    } catch (e) {
+      toast((e as Error)?.message || "Nie udało się zapisać wpisu", "error");
     } finally {
       setBusy(false);
     }
@@ -161,11 +222,19 @@ function BalancesCard({
     setEditId(row.id);
     setAdding(true);
     setDate(row.balance_date);
-    setAmount(String(row.amount_pln));
+    setLines(
+      row.lines?.length
+        ? row.lines.map((l) => ({ label: l.label || "", currency: l.currency, amount: String(l.amount) }))
+        : [{ label: "", currency: "PLN", amount: String(row.amount_pln) }],
+    );
     setNote(row.note || "");
   };
 
-  const desc = [...rows].sort((a, b) => b.balance_date.localeCompare(a.balance_date));
+  const toggleOpen = (id: number) => setOpen((s) => {
+    const n = new Set(s);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
 
   return (
     <Card>
@@ -173,16 +242,39 @@ function BalancesCard({
         icon={<I.Wallet size={14} />}
         title="Stan konta"
         hint="odczyty od księgowej"
-        action={canEdit && !adding ? <button onClick={() => setAdding(true)} style={btnAccent}>+ Dodaj wpis</button> : undefined}
+        action={canEdit && !adding ? <button onClick={startAdd} style={btnAccent}>+ Dodaj wpis</button> : undefined}
       />
 
       {adding && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", background: "var(--bg-elevated)" }}>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 140 }} />
-          <input inputMode="decimal" placeholder="Kwota w zł" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, width: 130 }} />
-          <input placeholder="Notatka (opcjonalnie)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, flex: "1 1 140px" }} />
-          <button onClick={save} disabled={busy} style={{ ...btnAccent, opacity: busy ? 0.6 : 1 }}>{editId != null ? "Zapisz zmiany" : "Zapisz"}</button>
-          <button onClick={reset} style={btnStyle}>Anuluj</button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", background: "var(--bg-elevated)" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 140 }} />
+            <input placeholder="Notatka (opcjonalnie)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, flex: "1 1 140px" }} />
+          </div>
+          {lines.map((l, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input placeholder="Subkonto (opcjonalnie)" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} style={{ ...inputStyle, flex: "1 1 120px" }} />
+              <select value={l.currency} onChange={(e) => setLine(i, { currency: e.target.value })} style={{ ...inputStyle, width: 76 }}>
+                {WALUTY.map((w) => <option key={w} value={w}>{w}</option>)}
+              </select>
+              <input inputMode="decimal" placeholder={`Kwota w ${l.currency}`} value={l.amount} onChange={(e) => setLine(i, { amount: e.target.value })} style={{ ...inputStyle, width: 140 }} />
+              {lines.length > 1 && (
+                <button onClick={() => setLines((ls) => ls.filter((_, k) => k !== i))} title="Usuń linijkę" style={{ ...btnStyle, padding: "6px 9px" }}>×</button>
+              )}
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button onClick={() => setLines((ls) => [...ls, { label: "", currency: "EUR", amount: "" }])} style={btnStyle}>+ Subkonto / waluta</button>
+            <span style={{ flex: 1, fontSize: 11, color: "var(--text-lo)", minWidth: 160 }}>
+              {lines.some((l) => l.currency !== "PLN")
+                ? (podglad.pelny
+                  ? <>Razem: <b className="num" style={{ color: podglad.suma < 0 ? "var(--critical)" : "var(--text-hi)" }}>{fmtPLN(podglad.suma)}</b> (kurs zamrożony)</>
+                  : "Kurs NBP z dnia roboczego przed datą doliczy się przy zapisie i zostanie zamrożony.")
+                : <>Razem: <b className="num" style={{ color: podglad.suma < 0 ? "var(--critical)" : "var(--text-hi)" }}>{fmtPLN(podglad.suma)}</b></>}
+            </span>
+            <button onClick={save} disabled={busy} style={{ ...btnAccent, opacity: busy ? 0.6 : 1 }}>{editId != null ? "Zapisz zmiany" : "Zapisz"}</button>
+            <button onClick={reset} style={btnStyle}>Anuluj</button>
+          </div>
         </div>
       )}
 
@@ -202,23 +294,51 @@ function BalancesCard({
             <tbody>
               {desc.map((r) => {
                 const c = cumAt(r.balance_date);
+                const rozbicie = !prosty(r);
+                const otwarte = open.has(r.id);
+                const minus = r.amount_pln < 0;
                 return (
-                  <tr key={r.id}>
-                    <td style={tdStyle}>
-                      <span className="num">{r.balance_date}</span>
-                      {r.note && <div style={{ color: "var(--text-lo)", fontSize: 11, marginTop: 2 }}>{r.note}</div>}
-                    </td>
-                    <td style={{ ...tdStyle, textAlign: "right", color: "var(--text-hi)" }} className="num">{fmtPLN(r.amount_pln)}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", color: c ? "var(--text-mid)" : "var(--text-lo)" }} className="num">
-                      {fmtPLN(r.amount_pln - c)}
-                    </td>
-                    {canEdit && (
-                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
-                        <button onClick={() => startEdit(r)} style={{ ...btnStyle, padding: "3px 8px" }}>Popraw</button>{" "}
-                        <button onClick={() => remove(r)} style={{ ...btnStyle, padding: "3px 8px", color: "var(--critical)" }}>Usuń</button>
+                  <React.Fragment key={r.id}>
+                    <tr>
+                      <td style={{ ...tdStyle, cursor: rozbicie ? "pointer" : undefined }} onClick={rozbicie ? () => toggleOpen(r.id) : undefined}>
+                        <span className="num">{r.balance_date}</span>
+                        {rozbicie && (
+                          <span style={{ marginLeft: 6, fontSize: 10, color: "var(--text-lo)" }}>
+                            {otwarte ? "▾" : "▸"} {r.lines!.length} {r.lines!.length === 1 ? "subkonto" : r.lines!.length < 5 ? "subkonta" : "subkont"}
+                          </span>
+                        )}
+                        {r.note && <div style={{ color: "var(--text-lo)", fontSize: 11, marginTop: 2 }}>{r.note}</div>}
                       </td>
-                    )}
-                  </tr>
+                      <td style={{ ...tdStyle, textAlign: "right", color: minus ? "var(--critical)" : "var(--text-hi)" }} className="num">
+                        {fmtPLN(r.amount_pln)}
+                        {minus && <div style={{ fontSize: 10, marginTop: 2 }}>konto na minusie — na wykresie 0</div>}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right", color: c ? "var(--text-mid)" : "var(--text-lo)" }} className="num">
+                        {fmtPLN(r.amount_pln - c)}
+                      </td>
+                      {canEdit && (
+                        <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                          <button onClick={() => startEdit(r)} style={{ ...btnStyle, padding: "3px 8px" }}>Popraw</button>{" "}
+                          <button onClick={() => remove(r)} style={{ ...btnStyle, padding: "3px 8px", color: "var(--critical)" }}>Usuń</button>
+                        </td>
+                      )}
+                    </tr>
+                    {rozbicie && otwarte && r.lines!.map((l, i) => (
+                      <tr key={`${r.id}-${i}`} style={{ background: "var(--bg-elevated)" }}>
+                        <td style={{ ...tdStyle, paddingLeft: 30, fontSize: 11 }} colSpan={2}>
+                          <span style={{ color: "var(--text-hi)" }}>{l.label || l.currency}</span>
+                          <span className="num" style={{ marginLeft: 8, color: l.amount < 0 ? "var(--critical)" : "var(--text-mid)" }}>
+                            {fmtKwota(l.amount, l.currency)}
+                            {l.currency !== "PLN" && <> × {fmtKurs(l.rate)}{l.rate_date ? ` (kurs z ${l.rate_date})` : ""}</>}
+                            {l.amount < 0 && " · debet"}
+                          </span>
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontSize: 11 }} className="num" colSpan={canEdit ? 2 : 1}>
+                          {fmtPLN(l.amount_pln)}
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
                 );
               })}
             </tbody>
