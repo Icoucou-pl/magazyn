@@ -197,6 +197,21 @@ async def _audit_retention_loop():
         await asyncio.sleep(24 * 60 * 60)
 
 
+async def _pliki_kosz_loop():
+    """Raz na dobę (i zaraz po starcie): kosz zakładki „Pliki” starszy niż 30 dni — na zawsze,
+    także z Supabase Storage. Błąd Storage nie kasuje wierszy, więc następna doba spróbuje znowu."""
+    from services.pliki import wyczysc_stary_kosz, KOSZ_DNI
+    while True:
+        try:
+            async with SessionLocal() as db:
+                n = await wyczysc_stary_kosz(db)
+            if n:
+                print(f"[pliki] kosz starszy niż {KOSZ_DNI} dni: usunięto {n} plików", flush=True)
+        except Exception as e:
+            print(f"[pliki] czyszczenie kosza nieudane (pomijam): {e}")
+        await asyncio.sleep(24 * 60 * 60)
+
+
 async def _snapshot_loop():
     """Snapshoty KPI + stanów 2× dziennie (7:05 i 20:05), po synchronizacji z Subiektem.
 
@@ -543,6 +558,59 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS content_type VARCHAR(120)"))
         await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS file_data BYTEA"))
 
+        # Zakładka „Pliki” (routers/pliki.py, services/pliki.py). Folder ma rodzaj:
+        #   reczny     — założony ręcznie, można zmieniać nazwę, przenosić, usuwać,
+        #   producenci — jeden główny „Producenci”, zakładany sam,
+        #   producent  — po jednym na producenta, pod „Producenci”,
+        #   kontener   — po jednym na parę (kontener, producent) pod folderem producenta;
+        #                kontener skonsolidowany ma więc folder u każdego swojego producenta.
+        # Foldery automatyczne zakłada i nazywa services/pliki.py::synchronizuj_foldery.
+        # usuniety_at ≠ NULL = w koszu (po 30 dniach kasowane na zawsze w _pliki_kosz_loop).
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_PLIKI_FOLDERY} (
+                id SERIAL PRIMARY KEY,
+                parent_id INTEGER REFERENCES {settings.TABLE_PLIKI_FOLDERY}(id) ON DELETE CASCADE,
+                nazwa VARCHAR(255) NOT NULL,
+                rodzaj VARCHAR(20) NOT NULL DEFAULT 'reczny',
+                manufacturer_id INTEGER REFERENCES {settings.TABLE_MANUFACTURERS}(id) ON DELETE SET NULL,
+                container_id INTEGER REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE SET NULL,
+                utworzono TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                utworzyl VARCHAR(255),
+                usuniety_at TIMESTAMP,
+                usunal VARCHAR(255),
+                CONSTRAINT chk_pliki_rodzaj CHECK (rodzaj IN ('reczny','producenci','producent','kontener'))
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_pliki_foldery_parent ON {settings.TABLE_PLIKI_FOLDERY} (parent_id)"))
+        # Jeden „Producenci”, jeden folder na producenta i jeden na parę (kontener, producent) —
+        # na tych indeksach stoi ON CONFLICT DO NOTHING w synchronizacji (bez dubli przy dwóch kartach naraz).
+        await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_producenci ON {settings.TABLE_PLIKI_FOLDERY} (rodzaj) WHERE rodzaj = 'producenci'"))
+        await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_producent ON {settings.TABLE_PLIKI_FOLDERY} (manufacturer_id) WHERE rodzaj = 'producent'"))
+        await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_kontener ON {settings.TABLE_PLIKI_FOLDERY} (container_id, (COALESCE(manufacturer_id, 0))) WHERE rodzaj = 'kontener'"))
+        # Plik: folder_id NULL = główny poziom. container_id = kontener najbliższego folderu
+        # kontenera nad plikiem (liczone przy wgraniu/przeniesieniu), pokaz_na_kontenerze = widać go
+        # też na karcie kontenera. dodano_z_kontenera: wgrany z karty kontenera — usunięcie tam
+        # wrzuca go do kosza; wgrany tutaj i tylko „pokazany” — usunięcie tam zdejmuje sam ptaszek.
+        await conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.TABLE_PLIKI} (
+                id SERIAL PRIMARY KEY,
+                folder_id INTEGER REFERENCES {settings.TABLE_PLIKI_FOLDERY}(id) ON DELETE CASCADE,
+                nazwa VARCHAR(255) NOT NULL,
+                sciezka VARCHAR(255) NOT NULL UNIQUE,
+                content_type VARCHAR(120),
+                rozmiar BIGINT NOT NULL DEFAULT 0,
+                container_id INTEGER REFERENCES {settings.TABLE_CONTAINERS}(id) ON DELETE SET NULL,
+                pokaz_na_kontenerze BOOLEAN NOT NULL DEFAULT FALSE,
+                dodano_z_kontenera BOOLEAN NOT NULL DEFAULT FALSE,
+                dodano TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                dodal VARCHAR(255),
+                usuniety_at TIMESTAMP,
+                usunal VARCHAR(255)
+            )
+        """))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_pliki_folder ON {settings.TABLE_PLIKI} (folder_id)"))
+        await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_pliki_kontener ON {settings.TABLE_PLIKI} (container_id) WHERE pokaz_na_kontenerze"))
+
         # Użytkownicy
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.TABLE_USERS} (
@@ -839,11 +907,12 @@ async def lifespan(app: FastAPI):
     snapshot_task = asyncio.create_task(_snapshot_loop())
     dropy_push_task = asyncio.create_task(_dropy_push_loop())
     audit_task = asyncio.create_task(_audit_retention_loop())
+    pliki_kosz_task = asyncio.create_task(_pliki_kosz_loop())
 
     yield
 
     # Sprzątanie przy zamknięciu
-    for _t in (fx_task, sellasist_task, snapshot_task, dropy_push_task, audit_task):
+    for _t in (fx_task, sellasist_task, snapshot_task, dropy_push_task, audit_task, pliki_kosz_task):
         _t.cancel()
         try:
             await _t

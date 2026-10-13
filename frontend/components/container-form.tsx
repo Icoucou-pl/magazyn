@@ -10,7 +10,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { I } from "./ui";
 import { modalBackdrop, modalCard, btnPrimary, btnSecondary, Portal, type Product, type Manufacturer } from "./products-ui";
-import { STATUS_FLOW, STATUS_FULL_META, SubiektSwitch, type Container, type Attachment } from "./containers-ui";
+import { STATUS_FLOW, STATUS_FULL_META, SubiektSwitch, attDownloadPath, attKey, type Container, type Attachment } from "./containers-ui";
 import { api, download } from "@/lib/api";
 import { toast } from "./toast";
 import { canEdit, can, useUser } from "@/lib/permissions";
@@ -74,7 +74,8 @@ const isBlankLot = (l: LotDraft): boolean =>
   !l.zaplacono_data.trim() &&
   l.advances.every((a) => !a.procent.trim() && !a.kwota.trim() && !a.termin.trim() && !a.data.trim());
 
-type AttDraft = Attachment & { _isNew?: boolean; _file?: File };
+// _mfr: producent, do którego folderu w Plikach trafi nowy plik (kontener skonsolidowany).
+type AttDraft = Attachment & { _isNew?: boolean; _file?: File; _mfr?: string };
 
 // Polska odmiana liczebników: 1 → poj., 2–4 → mnoga, reszta → dopełniacz (12–14 wyjątkiem).
 // Lokalna kopia — ten sam helper żyje w cashflow.tsx, też jako const modułowy.
@@ -526,20 +527,30 @@ export default function ContainerFormModal({
     return e === "pdf" ? "pdf" : (e === "xlsx" || e === "xls") ? "excel" : (["png", "jpg", "jpeg", "webp", "gif"].includes(e) ? "image" : (e || "other"));
   };
   const humanSize = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
-  const MAX = 10 * 1024 * 1024;
+  // 50 MB = limit zakładki Pliki (tam trafiają nowe załączniki). Gdy Storage nie jest jeszcze
+  // skonfigurowany, backend zapisze po staremu do bazy i sam odbije plik > 10 MB.
+  const MAX = 50 * 1024 * 1024;
+
+  // Producenci kontenera — plik z karty ląduje w Plikach w folderze kontenera u jednego z nich.
+  // Wybór pokazujemy tylko w skonsolidowanym z partiami od różnych producentów.
+  const attMfrs = useMemo(() => {
+    const ids = isConsolidated ? lots.map((l) => l.manufacturer_id) : [manufacturerId];
+    return [...new Set(ids.filter(Boolean))].map((id) => ({ id, name: manufacturers.find((m) => String(m.id) === id)?.name || `#${id}` }));
+  }, [isConsolidated, lots, manufacturerId, manufacturers]);
 
   const onFiles = (files: File[]) => {
     const ok = files.filter((f) => f && f.size <= MAX);
-    if (ok.length < files.length) toast("Pominięto plik(i) > 10 MB", "warning");
+    if (ok.length < files.length) toast("Pominięto plik(i) > 50 MB", "warning");
     const additions: AttDraft[] = ok.map((f) => ({
       id: Date.now() + Math.floor(Math.random() * 1e6),
       filename: f.name, file_type: guessType(f.name), file_size: humanSize(f.size),
-      uploaded_at: new Date().toISOString(), _isNew: true, _file: f,
+      uploaded_at: new Date().toISOString(), _isNew: true, _file: f, _mfr: attMfrs[0]?.id,
     }));
     if (additions.length) setAttachments((prev) => [...prev, ...additions]);
   };
-  const removeAttachment = (id: number) => setAttachments(attachments.filter((a) => a.id !== id));
-  const downloadAttachment = (a: AttDraft) => { download(`/attachments/${a.id}/download`, a.filename).catch(() => toast("Nie udało się pobrać pliku", "warning")); };
+  const removeAttachment = (key: string) => setAttachments(attachments.filter((a) => attKey(a) !== key));
+  const setAttMfr = (key: string, mfr: string) => setAttachments((prev) => prev.map((a) => (attKey(a) === key ? { ...a, _mfr: mfr } : a)));
+  const downloadAttachment = (a: AttDraft) => { download(attDownloadPath(a), a.filename).catch(() => toast("Nie udało się pobrać pliku", "warning")); };
 
   const save = async () => {
     if (busy) return;
@@ -633,19 +644,26 @@ export default function ContainerFormModal({
       let attErr = "";
       try {
         const toAdd = attachments.filter((a) => a._isNew && a._file);
-        const initialIds = new Set((initial?.attachments || []).map((a) => a.id));
-        const keptRealIds = new Set(attachments.filter((a) => !a._isNew).map((a) => a.id));
-        const toDelete = [...initialIds].filter((id) => !keptRealIds.has(id));
+        const keptKeys = new Set(attachments.filter((a) => !a._isNew).map(attKey));
+        const toDelete = (initial?.attachments || []).filter((a) => !keptKeys.has(attKey(a)));
+        // Producent pliku tylko, gdy wciąż jest w kontenerze (partię mogli usunąć po dodaniu pliku).
+        const mfrOk = new Set(attMfrs.map((m) => m.id));
         await Promise.all([
-          ...toAdd.map((a) => { const fd = new FormData(); fd.append("file", a._file as File); return api.post(`/containers/${cid}/attachments`, fd); }),
-          ...toDelete.map((id) => api.del(`/attachments/${id}`)),
+          ...toAdd.map((a) => {
+            const fd = new FormData();
+            fd.append("file", a._file as File);
+            if (a._mfr && mfrOk.has(a._mfr)) fd.append("manufacturer_id", a._mfr);
+            return api.post(`/containers/${cid}/attachments`, fd);
+          }),
+          // Plik z Plików: wgrany z karty → do kosza w Plikach, wgrany tam → znika tylko z karty.
+          ...toDelete.map((a) => api.del(a.zrodlo === "pliki" ? `/containers/${cid}/pliki/${a.id}` : `/attachments/${a.id}`)),
         ]);
       } catch (e) {
         attOk = false;
         const st = (e as { status?: number })?.status;
         attErr = st === 422 || st === 405
           ? "backend nieaktualny — przedeployuj serwis web (routers/containers.py + lifespan.py)"
-          : st === 413 ? "plik za duży (max 10 MB)"
+          : st === 413 ? ((e as Error)?.message || "plik za duży")
           : ((e as Error)?.message || "błąd uploadu");
       }
 
@@ -1007,18 +1025,26 @@ export default function ContainerFormModal({
                 {attachments.length === 0 ? (
                   <div style={{ padding: 8, textAlign: "center", fontSize: 11, color: "var(--text-lo)" }}>Brak załączników (faktura, proforma, packing list, BL...)</div>
                 ) : attachments.map((att) => {
+                  const key = attKey(att);
                   const tint = att.file_type === "pdf" ? ["var(--critical-soft)", "var(--critical)"] : att.file_type === "image" ? ["var(--info-soft)", "var(--info)"] : ["var(--ok-soft)", "var(--ok)"];
                   return (
-                    <div key={att.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 6 }}>
+                    <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-1)", border: "1px solid var(--border-soft)", borderRadius: 6 }}>
                       <span className="mono" style={{ padding: "1px 5px", fontSize: 9, fontWeight: 700, background: tint[0], color: tint[1], borderRadius: 3, flexShrink: 0 }}>{(att.file_type || "?").toUpperCase()}</span>
                       {att._isNew ? (
                         <span className="mono" style={{ flex: 1, fontSize: 12, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>
                       ) : (
                         <button type="button" onClick={() => downloadAttachment(att)} title="Pobierz plik" className="mono" style={{ flex: 1, textAlign: "left", background: "transparent", border: "none", padding: 0, fontSize: 12, color: "var(--accent)", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "underline" }}>{att.filename}</button>
                       )}
+                      {att._isNew && attMfrs.length > 1 && (
+                        <select value={att._mfr || ""} onChange={(e) => setAttMfr(key, e.target.value)} title="Do folderu którego producenta w Plikach"
+                          style={{ ...inputStyle, width: "auto", padding: "2px 6px", fontSize: 11, flexShrink: 0 }}>
+                          {attMfrs.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                      )}
+                      {!att._isNew && isConsolidated && att.producent && <span style={{ fontSize: 10, color: "var(--text-lo)", flexShrink: 0 }}>{att.producent}</span>}
                       {att.file_size && <span className="num" style={{ fontSize: 10, color: "var(--text-lo)", flexShrink: 0 }}>{att.file_size}</span>}
                       {att._isNew && <span style={{ fontSize: 9, fontWeight: 700, color: "var(--accent)", background: "var(--accent-soft)", padding: "1px 5px", borderRadius: 3, flexShrink: 0 }}>DO WGRANIA</span>}
-                      {showEdit && <button type="button" onClick={() => removeAttachment(att.id)} style={{ background: "transparent", border: "none", color: "var(--critical)", padding: 4, display: "flex" }}><I.Close size={12} /></button>}
+                      {showEdit && <button type="button" onClick={() => removeAttachment(key)} style={{ background: "transparent", border: "none", color: "var(--critical)", padding: 4, display: "flex" }}><I.Close size={12} /></button>}
                     </div>
                   );
                 })}

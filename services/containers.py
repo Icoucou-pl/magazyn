@@ -83,11 +83,7 @@ def compute_effective_status(
 
 
 async def fetch_attachments(db: AsyncSession, container_id: int) -> List[AttachmentOut]:
-    r = await db.execute(
-        text(f"SELECT id, filename, file_type, file_size, uploaded_at FROM {settings.TABLE_ATTACHMENTS} WHERE container_id = :c ORDER BY uploaded_at DESC"),
-        {"c": container_id},
-    )
-    return [AttachmentOut(**dict(row._mapping)) for row in r]
+    return (await fetch_attachments_bulk(db, [container_id])).get(container_id, [])
 
 
 async def fetch_lots(db: AsyncSession, container_id: int, lot_totals: dict) -> List[ContainerLotOut]:
@@ -140,6 +136,11 @@ async def fetch_attachments_bulk(db: AsyncSession, container_ids: List[int]) -> 
         d = dict(row._mapping)
         cid = d.pop("container_id")
         out.setdefault(cid, []).append(AttachmentOut(**d))
+    # + pliki z zakładki „Pliki” z ptaszkiem „pokaż na kontenerze” (nowe wrzutki z karty też tam lądują).
+    from services.pliki import pliki_na_kontenerach
+    for cid, lista in (await pliki_na_kontenerach(db, list(container_ids))).items():
+        out[cid] = sorted(out.get(cid, []) + [AttachmentOut(**x) for x in lista],
+                          key=lambda a: a.uploaded_at, reverse=True)
     return out
 
 

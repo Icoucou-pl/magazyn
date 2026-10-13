@@ -199,4 +199,23 @@ export async function download(path, filename) {
   URL.revokeObjectURL(url);
 }
 
+// ---- Podgląd pliku w nowej karcie (PDF, zdjęcie) ----
+// Plik idzie z tokenem, więc nie da się podać adresu wprost — pobieramy go i otwieramy jako blob.
+// Kartę otwieramy OD RAZU (jeszcze w kliknięciu), inaczej przeglądarka zablokuje wyskakujące okno.
+export async function openInNewTab(path) {
+  const win = typeof window !== "undefined" ? window.open("", "_blank") : null;
+  try {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new ApiError(`Błąd pobierania ${res.status}`, res.status);
+    const url = URL.createObjectURL(await res.blob());
+    if (win) win.location.href = url;
+    else window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (e) {
+    if (win) win.close();
+    throw e;
+  }
+}
+
 export { API_BASE };

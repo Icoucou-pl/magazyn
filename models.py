@@ -685,6 +685,10 @@ class AttachmentOut(BaseModel):
     file_type: Optional[str]
     file_size: Optional[str]
     uploaded_at: datetime
+    # "baza" = stary załącznik (BYTEA, /attachments/{id}), "pliki" = plik z zakładki Pliki
+    # (Supabase Storage, /pliki/plik/{id}/pobierz). Id są z dwóch różnych tabel.
+    zrodlo: str = "baza"
+    producent: Optional[str] = None          # folder którego producenta (kontener skonsolidowany)
 
 
 class AttachmentCreate(BaseModel):

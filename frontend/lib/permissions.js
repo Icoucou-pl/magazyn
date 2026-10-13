@@ -117,6 +117,9 @@ export const canSeeSalesSummary = (u) => Boolean(u?.is_super_admin || u?.isSuper
 // Rozliczenie z SAD (zakładka „SAD", wgrywanie XML) — tylko superadmin, jako kontrola.
 // Lustro w security.py → require_sad. Inni nie widzą zakładki ani śladu po niej.
 export const canSeeSad = (u) => Boolean(u?.is_super_admin || u?.isSuper);
+// Zakładka „Pliki” (foldery producentów/kontenerów, dokumenty) — na razie tylko superadmin,
+// bez ptaszka w uprawnieniach. Lustro w security.py → require_pliki.
+export const canSeeFiles = (u) => Boolean(u?.is_super_admin || u?.isSuper);
 
 // Zakładka „test-wycena” na karcie produktu (klucze po starej „Cenie”). Lustro w security.py →
 // can_view_product_price / can_edit_product_price. Zapis leży na wierzchu podglądu.

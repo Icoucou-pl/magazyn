@@ -15,7 +15,7 @@ from typing import Callable, List, Optional
 # Obszary (filtr w Ustawieniach → Dziennik audytu)
 # ============================================================
 OBSZARY = ["Produkty", "Ceny", "Kontenery", "Odprawy", "Producenci", "Firmy",
-           "Użytkownicy", "Logowania", "Finanse", "Ustawienia", "Dropy", "Inne"]
+           "Użytkownicy", "Logowania", "Finanse", "Ustawienia", "Dropy", "Pliki", "Inne"]
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
@@ -198,6 +198,7 @@ _POMIJANE = [re.compile(p) for p in POMIJANE]
 
 _SKU = r"(?P<sku>.+?)"
 _ID = r"(?P<id>\d+)"
+_PID = r"(?P<pid>\d+)"
 
 # (metoda, wzorzec, obszar, orzeczenie, akcja, typ zasobu). Kolejność ma znaczenie:
 # szczegółowe ścieżki produktu przed ogólnym DELETE /products/{sku}.
@@ -234,6 +235,17 @@ TRASY = [
     ("POST", rf"^/api/containers/{_ID}/subiekt-wbite$", "Kontenery", "zmienił znacznik „dodano do Subiektu” kontenera #{id}", "CONTAINER_UPDATED", "container"),
     ("POST", rf"^/api/containers/{_ID}/attachments$", "Kontenery", "dodał załącznik do kontenera #{id}", "ATTACHMENT_ADDED", "container"),
     ("DELETE", rf"^/api/attachments/{_ID}$", "Kontenery", "usunął załącznik kontenera", "ATTACHMENT_DELETED", "attachment"),
+    ("DELETE", rf"^/api/containers/{_ID}/pliki/{_PID}$", "Kontenery", "usunął plik z kontenera #{id}", "ATTACHMENT_DELETED", "container"),
+    # Pliki (zakładka „Pliki”; konkretne zdanie dopisuje routers/pliki.py przez audit.note)
+    ("POST", r"^/api/pliki/folder$", "Pliki", "założył folder", "PLIKI_FOLDER_CREATED", "pliki"),
+    ("PATCH", rf"^/api/pliki/folder/{_ID}$", "Pliki", "zmienił folder #{id}", "PLIKI_FOLDER_UPDATED", "pliki"),
+    ("DELETE", rf"^/api/pliki/folder/{_ID}$", "Pliki", "przeniósł folder #{id} do kosza", "PLIKI_TRASHED", "pliki"),
+    ("POST", r"^/api/pliki/wgraj$", "Pliki", "wgrał pliki", "PLIKI_UPLOADED", "pliki"),
+    ("PATCH", rf"^/api/pliki/plik/{_ID}$", "Pliki", "zmienił plik #{id}", "PLIKI_FILE_UPDATED", "pliki"),
+    ("DELETE", rf"^/api/pliki/plik/{_ID}$", "Pliki", "przeniósł plik #{id} do kosza", "PLIKI_TRASHED", "pliki"),
+    ("POST", r"^/api/pliki/kosz/przywroc$", "Pliki", "przywrócił pliki z kosza", "PLIKI_RESTORED", "pliki"),
+    ("POST", r"^/api/pliki/kosz/usun$", "Pliki", "usunął pliki z kosza na zawsze", "PLIKI_PURGED", "pliki"),
+    ("DELETE", r"^/api/pliki/kosz$", "Pliki", "opróżnił kosz plików", "PLIKI_PURGED", "pliki"),
     ("PATCH", r"^/api/cashflow/payment/termin$", "Finanse", "przesunął termin płatności", "MOVE_PAYMENT_TERMIN", "payment"),
     # Odprawy
     ("POST", rf"^/api/kontenery/{_ID}/odprawa$", "Odprawy", "zapisał odprawę kontenera #{id}", "ODPRAWA_SAVED", "container"),
@@ -306,7 +318,7 @@ _OBSZAR_TYPU = {
     "manufacturers": "Producenci", "container-types": "Ustawienia", "firmy": "Firmy",
     "users": "Użytkownicy", "user": "Użytkownicy", "auth": "Logowania",
     "bank-balances": "Finanse", "owner-loans": "Finanse", "cashflow": "Finanse", "payment": "Finanse",
-    "reports": "Ustawienia", "usage": "Ustawienia", "dropy": "Dropy",
+    "reports": "Ustawienia", "usage": "Ustawienia", "dropy": "Dropy", "pliki": "Pliki",
 }
 
 
