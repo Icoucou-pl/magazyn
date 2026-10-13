@@ -3,9 +3,11 @@
 // MAGAZYN — „Podsumowanie sprzedaży" na pulpicie (wzór: panel Sellasista).
 //
 // Jedna karta. Każdy panel:
-//   · 3 kafelki: liczba zamówień, wartość, średnia wartość — za dziś / 7 / 30 dni,
+//   · JEDEN wybór zakresu (od–do, najwcześniej 01.01.2026, skróty dziś / 7D / 30D) —
+//     kafelki (liczba zamówień, wartość, średnia) liczą DOKŁADNIE ten zakres,
 //   · wykres: słupki = liczba zamówień (oś lewa), linia = wartość w PLN (oś prawa),
-//     zakres: 30 dni / ten rok / własny (od–do, najwcześniej 01.01.2026),
+//     ten sam zakres, ale zawsze min. 30 dni (przy „dziś”/7D wykres sięga wstecz,
+//     a dni spoza wybranego zakresu są przygaszone — widać, z czego są kafelki),
 //     grupowanie: dziennie / tygodniowo / miesięcznie — słupek = SUMA za okres.
 //     Niepełny tydzień/miesiąc (bieżący albo ucięty zakresem) jest jaśniejszy, żeby
 //     nie udawał spadku sprzedaży.
@@ -14,8 +16,8 @@
 // data złożenia zamówienia, kwota brutto z wysyłką → PLN po kursie NBP. Robi to backend
 // (services/podsumowanie_sprzedazy.py); tu tylko tniemy okna z jednej pobranej serii.
 //
-// Firma z Topbara: „Wszyscy" → jeden duży panel „Razem" (pod kafelkami mały podpis,
-// ile z tego to każda firma), konkretna firma → tylko jej panel.
+// Firma z Topbara: „Wszyscy" → jeden duży panel „Razem" (podział na firmy w dymku „ⓘ”
+// przy kafelku, tylko na komputerze), konkretna firma → tylko jej panel.
 // Bez viewFinancials backend oddaje value=null — chowamy kwoty i linię wartości.
 // ============================================================
 
@@ -23,7 +25,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Card } from "./ui";
 import { api } from "@/lib/api";
 import { useShop, SHOP_OPTIONS } from "@/lib/shop";
-import { fmtPLN, fmtPLNk, fmtNum } from "@/lib/format";
+import { fmtPLN, fmtNum } from "@/lib/format";
 
 type Point = { date: string; orders: number; value: number | null };
 type Series = { shop: string; points: Point[]; missing_rates: number };
@@ -33,10 +35,11 @@ type Grupa = "d" | "t" | "m";
 // `od`/`do` = pierwszy/ostatni dzień okresu, który faktycznie jest w zakresie.
 type Slupek = Point & { od: string; do: string; dni: number; pelnych: number };
 
-// Okna 1:1 z Sellasistem (sprawdzone na Veluxie co do grosza, 12.10.2026): „30 dni” = dziś
-// + 29 poprzednich, ale „7 dni” = dziś + 7 poprzednich, czyli 8 dni kalendarzowych.
+// Skróty 1:1 z Sellasistem (sprawdzone na Veluxie co do grosza, 12.10.2026): „30D” = dziś
+// + 29 poprzednich, ale „7D” = dziś + 7 poprzednich, czyli 8 dni kalendarzowych.
 // Niekonsekwencja jest po stronie Sellasista — trzymamy się jej, żeby liczby się zgadzały.
-const KPI_OKNA = [{ d: 1, l: "dziś" }, { d: 8, l: "7 dni" }, { d: 30, l: "30 dni" }];
+const SKROTY = [{ d: 1, l: "dziś" }, { d: 8, l: "7D" }, { d: 30, l: "30D" }];
+const MIN_WYKRES = 30;   // wykres nigdy krótszy niż 30 dni (przy „dziś” byłby jednym słupkiem)
 const POCZATEK = "2026-01-01";   // wcześniej danych nie ma — tak samo pilnuje backend (POCZATEK_DANYCH)
 const GRUPY: { v: Grupa; l: string }[] = [{ v: "d", l: "dziennie" }, { v: "t", l: "tygodniowo" }, { v: "m", l: "miesięcznie" }];
 // Grupowanie dobierane do długości zakresu (szef: przy długich okresach dzienny wykres to
@@ -123,7 +126,9 @@ function SegBtns<T extends string | number>({ value, options, onChange }: {
 }
 
 // ── Wykres: słupki (zamówienia) + linia (wartość) ─────────────
-function ComboChart({ points, grupa, showValue, height = 220 }: { points: Slupek[]; grupa: Grupa; showValue: boolean; height?: number }) {
+function ComboChart({ points, grupa, showValue, selOd, selDo, height = 220 }: {
+  points: Slupek[]; grupa: Grupa; showValue: boolean; selOd: string; selDo: string; height?: number;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState(600);
   const [hover, setHover] = useState<number | null>(null);
@@ -147,10 +152,16 @@ function ComboChart({ points, grupa, showValue, height = 220 }: { points: Slupek
   const yO = (v: number) => padT + innerH - (v / maxO) * innerH;
   const yV = (v: number) => padT + innerH - (v / maxV) * innerH;
   const niepelny = (p: Slupek) => p.dni < p.pelnych;
+  // Słupek w wybranym zakresie (to z niego liczą się kafelki) — reszta przygaszona.
+  const wybrany = (p: Slupek) => p.do >= selOd && p.od <= selDo;
+  const przygas = (p: Slupek) => (wybrany(p) ? 1 : 0.35);
   // Linia wartości: odcinki do/od niepełnego okresu przerywane — inaczej bieżący tydzień
   // wygląda jak nagły spadek sprzedaży.
   const pt = (i: number) => `${cx(i).toFixed(1)},${yV(points[i].value ?? 0).toFixed(1)}`;
-  const odcinki = points.slice(1).map((p, k) => ({ d: `M${pt(k)} L${pt(k + 1)}`, przerywany: niepelny(p) || niepelny(points[k]) }));
+  const odcinki = points.slice(1).map((p, k) => ({
+    d: `M${pt(k)} L${pt(k + 1)}`, przerywany: niepelny(p) || niepelny(points[k]),
+    poza: !wybrany(p) || !wybrany(points[k]),
+  }));
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   // Etykiety dat co kilka słupków (ok. 70 px na etykietę) — żeby się nie zlewały.
   const co = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(innerW / 70))));
@@ -185,15 +196,15 @@ function ComboChart({ points, grupa, showValue, height = 220 }: { points: Slupek
         {points.map((p, i) => (
           <rect key={p.date} x={cx(i) - barW / 2} y={yO(p.orders)} width={barW} height={Math.max(0, padT + innerH - yO(p.orders))}
             rx={Math.min(3, barW / 3)} fill={BAR}
-            opacity={(hover == null || hover === i ? 0.45 : 0.25) * (niepelny(p) ? 0.45 : 1)}
+            opacity={(hover == null || hover === i ? 0.45 : 0.25) * (niepelny(p) ? 0.45 : 1) * przygas(p)}
             stroke={niepelny(p) ? BAR : undefined} strokeDasharray={niepelny(p) ? "3,2" : undefined} strokeOpacity={0.6} />
         ))}
         {showValue && odcinki.map((o, k) => (
           <path key={k} d={o.d} fill="none" stroke={LINE} strokeWidth={2} strokeLinecap="round"
-            strokeDasharray={o.przerywany ? "4,4" : undefined} opacity={o.przerywany ? 0.6 : 1} />
+            strokeDasharray={o.przerywany ? "4,4" : undefined} opacity={(o.przerywany ? 0.6 : 1) * (o.poza ? 0.35 : 1)} />
         ))}
         {showValue && n <= 60 && points.map((p, i) => (
-          <circle key={p.date} cx={cx(i)} cy={yV(p.value ?? 0)} r={hover === i ? 4.5 : 3}
+          <circle key={p.date} cx={cx(i)} cy={yV(p.value ?? 0)} r={hover === i ? 4.5 : 3} opacity={przygas(p)}
             fill={niepelny(p) ? "var(--surface-1)" : LINE} stroke={niepelny(p) ? LINE : "var(--surface-1)"} strokeWidth={1.5} />
         ))}
         {points.map((p, i) => (i % co === 0 ? (
@@ -225,36 +236,39 @@ function ComboChart({ points, grupa, showValue, height = 220 }: { points: Slupek
   );
 }
 
-function Kpi({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
+// `info` = podział „Razem” na firmy, w dymku po najechaniu na „ⓘ” — tylko na komputerze
+// (klasa tylko-desktop w globals.css); na telefonie dymek i tak by się nie otworzył.
+function Kpi({ label, value, info }: { label: string; value: React.ReactNode; info?: string }) {
   return (
     <div style={{ minWidth: 0 }}>
       <div style={{ fontSize: 11, color: "var(--text-lo)" }}>{label}</div>
-      <div className="num" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {value}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3, minWidth: 0 }}>
+        <span className="num" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {value}
+        </span>
+        {info && (
+          <span className="tylko-desktop" title={info} style={{ color: "var(--text-lo)", cursor: "help", fontSize: 12, flexShrink: 0 }}>ⓘ</span>
+        )}
       </div>
-      {sub && (
-        <div className="num" style={{ fontSize: 11, color: "var(--text-lo)", marginTop: 2, lineHeight: 1.4 }}>
-          {sub}
-        </div>
-      )}
     </div>
   );
 }
 
-// Suma zamówień i wartości z ostatnich `dni` dni serii (okno kafelków).
-const sumaOkna = (s: Series, dni: number) => {
-  const okno = s.points.slice(-dni);
+// Suma zamówień i wartości serii w zakresie od–do (włącznie) — tyle pokazują kafelki.
+const sumaZakresu = (s: Series, od: string, do_: string) => {
+  const okno = s.points.filter((p) => p.date >= od && p.date <= do_);
   return { zam: okno.reduce((a, p) => a + p.orders, 0), wart: okno.reduce((a, p) => a + (p.value ?? 0), 0) };
 };
 
-function Panel({ s, firmy, kpiDni, od, do_, grupa, showValue, height }: {
-  s: Series; firmy: Series[]; kpiDni: number; od: string; do_: string; grupa: Grupa; showValue: boolean; height: number;
+function Panel({ s, firmy, od, do_, wykresOd, grupa, showValue, height }: {
+  s: Series; firmy: Series[]; od: string; do_: string; wykresOd: string; grupa: Grupa; showValue: boolean; height: number;
 }) {
-  const { zam, wart } = sumaOkna(s, kpiDni);
-  // Panel „Razem”: mały podpis, ile z sumy to każda firma (szef nie chce 3 osobnych wykresów,
-  // ale podział ma zostać widoczny).
-  const podzial = s.shop === "" && firmy.length > 1 ? firmy.map((f) => ({ l: nazwa(f.shop), ...sumaOkna(f, kpiDni) })) : null;
-  const slupki = grupuj(s.points.filter((p) => p.date >= od && p.date <= do_), grupa);
+  const { zam, wart } = sumaZakresu(s, od, do_);
+  // Panel „Razem”: podział na firmy w dymku „ⓘ” (szef nie chce 3 osobnych wykresów ani
+  // podpisów pod kafelkami, ale ma się dać sprawdzić, z czego jest suma).
+  const podzial = s.shop === "" && firmy.length > 1 ? firmy.map((f) => ({ l: nazwa(f.shop), ...sumaZakresu(f, od, do_) })) : null;
+  const dymek = (fmt: (f: { zam: number; wart: number }) => string) => podzial?.map((f) => `${f.l}: ${fmt(f)}`).join("\n");
+  const slupki = grupuj(s.points.filter((p) => p.date >= wykresOd && p.date <= do_), grupa);
   return (
     <div style={{ border: "1px solid var(--border-soft)", borderRadius: "var(--r-md)", padding: "12px 14px 6px", minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -267,14 +281,12 @@ function Panel({ s, firmy, kpiDni, od, do_, grupa, showValue, height }: {
         )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: showValue ? "repeat(3, minmax(0, 1fr))" : "1fr", gap: 12, margin: "10px 0 8px" }}>
-        <Kpi label="Liczba zamówień" value={fmtNum(zam)}
-          sub={podzial?.map((f) => `${f.l} ${fmtNum(f.zam)}`).join(" · ")} />
-        {showValue && <Kpi label="Wartość" value={fmtPLN(wart)}
-          sub={podzial?.map((f) => `${f.l} ${fmtPLNk(f.wart)}`).join(" · ")} />}
+        <Kpi label="Liczba zamówień" value={fmtNum(zam)} info={dymek((f) => fmtNum(f.zam))} />
+        {showValue && <Kpi label="Wartość" value={fmtPLN(wart)} info={dymek((f) => fmtPLN(f.wart))} />}
         {showValue && <Kpi label="Średnia wartość" value={zam ? fmtPLN(wart / zam) : "—"}
-          sub={podzial?.map((f) => `${f.l} ${f.zam ? fmtPLN(f.wart / f.zam) : "—"}`).join(" · ")} />}
+          info={dymek((f) => (f.zam ? fmtPLN(f.wart / f.zam) : "—"))} />}
       </div>
-      <ComboChart points={slupki} grupa={grupa} showValue={showValue} height={height} />
+      <ComboChart points={slupki} grupa={grupa} showValue={showValue} selOd={od} selDo={do_} height={height} />
     </div>
   );
 }
@@ -283,14 +295,13 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
   const { shop } = useShop();
   const [data, setData] = useState<Summary | null>(null);
   const [blad, setBlad] = useState(false);
-  const [kpiDni, setKpiDni] = useState(30);
-  // Zakres wykresu: null = „30 dni” (liczone od ostatniego dnia z serwera, gdy dane dojdą).
+  // Zakres kafelków i wykresu: null = „30D” (liczone od ostatniego dnia z serwera, gdy dane dojdą).
   const [zakres, setZakres] = useState<{ od: string; do_: string } | null>(null);
   const [grupaSel, setGrupaSel] = useState<Grupa | null>(null);   // null = automat wg długości zakresu
 
   useEffect(() => {
     let alive = true;
-    // Jeden fetch od 01.01.2026 — kafelki, „30 dni”, „Ten rok” i własny zakres tniemy z niego.
+    // Jeden fetch od 01.01.2026 — każdy zakres z pickera tniemy z niego, bez kolejnych zapytań.
     api.get(`/sales-summary?od=${POCZATEK}`)
       .then((r) => { if (alive) setData(r as Summary); })
       .catch(() => { if (alive) setBlad(true); });
@@ -309,14 +320,13 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
   const maxD = data?.to ?? POCZATEK;
   const minD = data && data.from > POCZATEK ? data.from : POCZATEK;
   const clamp = (d: string) => (d < minD ? minD : d > maxD ? maxD : d);
-  const od30 = clamp(addDays(maxD, -29));
-  const odRoku = clamp(maxD.slice(0, 4) + "-01-01");
-  const od = zakres ? clamp(zakres.od) : od30;
+  const odSkrotu = (d: number) => clamp(addDays(maxD, -(d - 1)));
+  const od = zakres ? clamp(zakres.od) : odSkrotu(30);
   const do_ = zakres ? clamp(zakres.do_) : maxD;
-  const grupa = grupaSel ?? autoGrupa(span(od, do_));
+  // Wykres: wybrany zakres, ale min. 30 dni — krótszy wydłużamy wstecz od daty „do”.
+  const wykresOd = span(od, do_) >= MIN_WYKRES ? od : clamp(addDays(do_, -(MIN_WYKRES - 1)));
+  const grupa = grupaSel ?? autoGrupa(span(wykresOd, do_));
   const ustaw = (o: string, d: string) => { setZakres({ od: o, do_: d }); setGrupaSel(null); };
-  const jest30 = od === od30 && do_ === maxD;
-  const jestRok = od === odRoku && do_ === maxD && !jest30;
 
   const dateInput: React.CSSProperties = {
     padding: "4px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6,
@@ -338,24 +348,22 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
             style={{ color: "var(--text-lo)", cursor: "help", fontSize: 12 }}>ⓘ</span>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <span style={{ fontSize: 11, color: "var(--text-lo)" }}>kafelki</span>
-          <SegBtns value={kpiDni} options={KPI_OKNA.map((o) => ({ v: o.d, l: o.l }))} onChange={setKpiDni} />
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="date" aria-label="Od" value={od} min={minD} max={do_}
+              onChange={(e) => e.target.value && ustaw(clamp(e.target.value > do_ ? do_ : e.target.value), do_)} style={dateInput} />
+            <span style={{ color: "var(--text-lo)", fontSize: 11 }}>–</span>
+            <input type="date" aria-label="Do" value={do_} min={od} max={maxD}
+              onChange={(e) => e.target.value && ustaw(od, clamp(e.target.value < od ? od : e.target.value))} style={dateInput} />
+          </div>
+          <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
+            {SKROTY.map((k) => (
+              <button key={k.d} onClick={() => ustaw(odSkrotu(k.d), maxD)} className="num"
+                title={k.d === 8 ? "Jak w Sellasiście: dziś + 7 poprzednich dni" : undefined}
+                style={presetBtn(od === odSkrotu(k.d) && do_ === maxD)}>{k.l}</button>
+            ))}
+          </div>
+          <SegBtns value={grupa} options={GRUPY} onChange={setGrupaSel} />
         </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 18px 0" }}>
-        <span style={{ fontSize: 11, color: "var(--text-lo)" }}>wykres</span>
-        <div style={{ display: "flex", gap: 4, background: "var(--surface-2)", padding: 3, borderRadius: 8 }}>
-          <button onClick={() => ustaw(od30, maxD)} className="num" style={presetBtn(jest30)}>30 dni</button>
-          <button onClick={() => ustaw(odRoku, maxD)} style={presetBtn(jestRok)}>Ten rok</button>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <input type="date" aria-label="Wykres od" value={od} min={minD} max={do_}
-            onChange={(e) => e.target.value && ustaw(clamp(e.target.value > do_ ? do_ : e.target.value), do_)} style={dateInput} />
-          <span style={{ color: "var(--text-lo)", fontSize: 11 }}>–</span>
-          <input type="date" aria-label="Wykres do" value={do_} min={od} max={maxD}
-            onChange={(e) => e.target.value && ustaw(od, clamp(e.target.value < od ? od : e.target.value))} style={dateInput} />
-        </div>
-        <SegBtns value={grupa} options={GRUPY} onChange={setGrupaSel} />
       </div>
       <div style={{ padding: 14 }}>
         {!data ? (
@@ -363,7 +371,7 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 480px), 1fr))", gap }}>
             {series.map((s) => (
-              <Panel key={s.shop || "razem"} s={s} firmy={firmy} kpiDni={kpiDni} od={od} do_={do_} grupa={grupa}
+              <Panel key={s.shop || "razem"} s={s} firmy={firmy} od={od} do_={do_} wykresOd={wykresOd} grupa={grupa}
                 showValue={showValue} height={series.length === 1 ? 320 : 220} />
             ))}
           </div>
@@ -373,11 +381,6 @@ export default function SalesSummaryCard({ gap = 16 }: { gap?: number }) {
             <span><span style={{ color: LINE }}>●</span> Wartość zamówień (PLN)</span>
             <span><span style={{ color: BAR, opacity: 0.6 }}>■</span> Liczba zamówień</span>
             {grupa !== "d" && <span><span style={{ color: BAR, opacity: 0.3 }}>■</span> Niepełny {grupa === "t" ? "tydzień" : "miesiąc"}</span>}
-          </div>
-        )}
-        {data && pomijane.length > 0 && (
-          <div style={{ textAlign: "center", marginTop: 6, fontSize: 11, color: "var(--text-lo)" }}>
-            Wszystkie statusy oprócz: {pomijane.join(", ")}
           </div>
         )}
       </div>
