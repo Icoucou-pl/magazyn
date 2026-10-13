@@ -42,7 +42,8 @@ from models import (
 )
 from routers.cena import _policz, _zapisane
 from security import (
-    allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_purchase_price,
+    allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_price_summary_competition,
+    can_view_price_summary_cost,
     has_perm, require_price_summary_view, require_product_price_edit, require_product_price_view,
     resolve_shop,
 )
@@ -273,7 +274,11 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
                         user: CurrentUser = Depends(require_price_summary_view)):
     shop = resolve_shop(shop, user)
     koszt = None
-    if can_view_purchase_price(user):
+    # Koszt liczymy dla boksu „Koszt zakupu” albo dla kalkulatora handlowca (on też go potrzebuje);
+    # boks pokazuje się tylko z koszt_widoczny — sam kalkulator go nie odsłania.
+    koszt_widoczny, kalkulator = can_view_price_summary_cost(user), can_use_sales_calculator(user)
+    konkurencja_widoczna = can_view_price_summary_competition(user)
+    if koszt_widoczny or kalkulator:
         p, _, w, meta, slug, _, _ = await _policz(db, sku, shop, user)
         po_id = {d.item_id: d for d in w.dostawy}
         fifo_d, nb = po_id.get(w.fifo_item_id), po_id.get(w.najblizsza_item_id)
@@ -312,9 +317,10 @@ async def ceny_produktu(sku: str = Query(..., min_length=1), shop: str = Query("
         okres_dni=OKRES_DNI,
         detal=_kanal_sprzedazy(detal, "brutto", md, md.cena_brutto if md else None, ma),
         hurt=_kanal_sprzedazy(hurt, "netto", mh, mh.cena_netto if mh else None),
-        konkurencja=await _konkurencja(db, p.sku),
-        koszt=koszt,
-        kalkulator=can_use_sales_calculator(user),
+        konkurencja=await _konkurencja(db, p.sku) if konkurencja_widoczna else [],
+        konkurencja_widoczna=konkurencja_widoczna,
+        koszt=koszt, koszt_widoczny=koszt_widoczny,
+        kalkulator=kalkulator,
         prowizja_tryb="A" if has_perm(user, "prowizjaOdCeny") else "B",
     )
 

@@ -4,7 +4,9 @@
 //
 // Same wyniki, bez wyliczeń: ceny minimalne (detal, hurt/dropy), ceny sugerowane,
 // alarm „sprzedaż poniżej minimum”, konkurencja na pasku cen.
-// Koszt zakupu — tylko z ceną zakupu (serwer i tak go nie odda bez uprawnienia).
+// Koszt zakupu i Konkurencja — każdy boks ma swój ptaszek (priceSummaryCost / priceSummaryCompetition,
+// domyślnie włączone); koszt dodatkowo tylko z ceną zakupu. O widoczności mówi serwer
+// (koszt_widoczny / konkurencja_widoczna) — bez ptaszka konkurencji nie oddaje wcale.
 // Kalkulator handlowca — ptaszek „Kalkulator handlowca” (+ cena zakupu): handlowiec wpisuje
 // swoją cenę netto i widzi swoją prowizję i zysk firmy, z kolorem względem ceny minimalnej hurt.
 //
@@ -42,7 +44,8 @@ export type CenyProduktu = {
   sugerowana_sklepy_brutto: number | null; sugerowana_dropy_netto: number | null; sugerowana_allegro_brutto: number | null;
   aktualna_detal: Krotko | null;
   okres_dni: number; detal: Sprzedaz; hurt: Sprzedaz;
-  konkurencja: Konkurent[]; koszt: Koszt | null; kalkulator: boolean; prowizja_tryb: TrybProwizji;
+  konkurencja: Konkurent[]; konkurencja_widoczna: boolean;
+  koszt: Koszt | null; koszt_widoczny: boolean; kalkulator: boolean; prowizja_tryb: TrybProwizji;
 };
 
 const zl = (n: number | null | undefined) => (n == null ? "—" : <>{zl2(n)}<small style={small}> zł</small></>);
@@ -75,9 +78,9 @@ export default function ProductTestCena({ sku, shop }: { sku: string; shop: stri
   return (
     <>
       <AlarmPonizej data={data} />
-      {data.koszt && <KosztZakupu k={data.koszt} />}
+      {data.koszt_widoczny && data.koszt && <KosztZakupu k={data.koszt} />}
       <Ceny data={data} />
-      <Konkurencja data={data} />
+      {data.konkurencja_widoczna && <Konkurencja data={data} />}
       {data.kalkulator && data.koszt && <KalkulatorHandlowca data={data} koszt={data.koszt} />}
     </>
   );
@@ -179,13 +182,13 @@ function KosztZakupu({ k }: { k: Koszt }) {
   // wyróżniony i podpisany „do wyceny”.
   if (!k.koszty_bazy.length) {
     return (
-      <Box title="Koszt zakupu" hint="widzą osoby z „Ceną zakupu produktu” · bez rozpisania">
+      <Box title="Koszt zakupu" hint="bez rozpisania">
         <div style={{ ...pusty, padding: 20 }}>Brak dostaw tego produktu w aplikacji — koszt trzeba wpisać ręcznie w kalkulatorze.</div>
       </Box>
     );
   }
   return (
-    <Box title="Koszt zakupu" hint="widzą osoby z „Ceną zakupu produktu” · bez rozpisania">
+    <Box title="Koszt zakupu" hint="bez rozpisania">
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 10 }}>
         {k.koszty_bazy.map((b) => {
           const glowny = b.baza === k.baza_domyslna;

@@ -1802,8 +1802,10 @@ class CenyProduktuOut(BaseModel):
     okres_dni: int = 30
     detal: SprzedazKanaluOut = SprzedazKanaluOut()
     hurt: SprzedazKanaluOut = SprzedazKanaluOut()
-    konkurencja: List[KonkurencjaOut] = []
-    koszt: Optional[KosztZespolOut] = None    # tylko z ceną zakupu
+    konkurencja: List[KonkurencjaOut] = []    # pusta bez ptaszka priceSummaryCompetition
+    konkurencja_widoczna: bool = False        # boks „Konkurencja”
+    koszt: Optional[KosztZespolOut] = None    # tylko z ceną zakupu (dla boksu albo kalkulatora)
+    koszt_widoczny: bool = False              # boks „Koszt zakupu” (priceSummaryCost)
     kalkulator: bool = False                  # kalkulator handlowca dostępny
     prowizja_tryb: Literal["A", "B"] = "B"    # A = % ceny netto, B = % zysku
 
