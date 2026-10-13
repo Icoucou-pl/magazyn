@@ -175,6 +175,20 @@ export default function ProductPage({
     return () => { alive = false; };
   }, [sku, shop, showPrice]);
 
+  // Od której naszej spółki firma kupiła ostatnią dostawę — np. kontener Acti
+  // opłacony przez AMH. Bez kwot: pasek widzi każdy, cenę tylko podpowiadamy
+  // w dymku. Klucz z sku|shop, żeby po przełączeniu firmy nie mignął stary pasek.
+  const [pochodzenie, setPochodzenie] = useState<{ klucz: string; od: string | null } | null>(null);
+  const odSpolki = pochodzenie?.klucz === `${sku}|${shop}` ? pochodzenie.od : null;
+  useEffect(() => {
+    if (!shop || shop === "amh") return;
+    let alive = true;
+    api.get(`/products/${encodeURIComponent(sku)}/pochodzenie?shop=${encodeURIComponent(shop)}`)
+      .then((d) => { if (alive) setPochodzenie({ klucz: `${sku}|${shop}`, od: (d as { od_spolki: string | null }).od_spolki }); })
+      .catch(() => { /* pasek to podpowiedź — bez niego karta działa normalnie */ });
+    return () => { alive = false; };
+  }, [sku, shop]);
+
   // ── Słowniki (raz na montaż) ───────────────────────────────
   useEffect(() => {
     api.get("/manufacturers").then((d) => setManufacturers((d as Manufacturer[]) || [])).catch(() => { /* select producenta pusty — nie blokuje karty */ });
@@ -554,6 +568,15 @@ export default function ProductPage({
           </div>
         </div>
       </div>
+
+      {odSpolki && (
+        <div role="note"
+          title={`Tę partię sprowadziło i opłaciło ${odSpolki}, a ta firma odkupiła ją od ${odSpolki}. Przy wystawianiu faktury patrz na cenę z Fakturowni — to po niej firma kupiła towar.`}
+          style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 16px 12px", padding: "8px 12px", borderRadius: "var(--r-sm, 6px)", background: "var(--warning-soft)", color: "var(--warning)", fontSize: 12.5, fontWeight: 600, cursor: "help" }}>
+          <span aria-hidden>⚠</span>
+          Ten towar sprowadziło i opłaciło {odSpolki}
+        </div>
+      )}
 
       {nowoscOpen && canEditProducts && (
         <NowoscPopover product={product} sku={skuZapisu} onClose={() => setNowoscOpen(false)} onSaved={applyUpdate} />

@@ -1805,3 +1805,8 @@ class CenyProduktuOut(BaseModel):
     koszt: Optional[KosztZespolOut] = None    # tylko z ceną zakupu
     kalkulator: bool = False                  # kalkulator handlowca dostępny
     prowizja_tryb: Literal["A", "B"] = "B"    # A = % ceny netto, B = % zysku
+
+
+class PochodzenieOut(BaseModel):
+    """Od której naszej spółki firma kupiła ostatnią dostawę (pasek na karcie produktu)."""
+    od_spolki: Optional[str] = None
