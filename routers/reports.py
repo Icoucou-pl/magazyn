@@ -228,6 +228,17 @@ def _collapse(items: List[dict], scope: str) -> List[dict]:
     return out
 
 
+async def _obserwowane(db: AsyncSession, scope: str) -> set:
+    """SKU obserwowane w firmie raportu (per firma, services/obserwowanie.py); „all" = w którejkolwiek."""
+    shop = "" if scope == "all" else scope
+    rf = await db.execute(text(f"""
+        SELECT UPPER(TRIM(sku)) FROM {settings.TABLE_PRODUCT_ATTRS}
+        WHERE COALESCE(is_favorite, FALSE)
+          AND NOT (:shop <> '' AND :shop = ANY(COALESCE(unwatched_shops, ARRAY[]::text[])))
+    """), {"shop": shop})
+    return {row[0] for row in rf if row[0]}
+
+
 @router.get("/reports/sku")
 async def sku_report(
     date_from: str = Query(..., alias="from"), date_to: str = Query("", alias="to"),
@@ -262,8 +273,7 @@ async def sku_report(
     # ulubione — flaga trzymana przy atrybutach produktu
     favs = set()
     if favorites_only:
-        rf = await db.execute(text(f"SELECT UPPER(TRIM(sku)) FROM {settings.TABLE_PRODUCT_ATTRS} WHERE COALESCE(is_favorite, FALSE) = TRUE"))
-        favs = {row[0] for row in rf if row[0]}
+        favs = await _obserwowane(db, scope)
 
     picked = {s.strip().upper() for s in skus.split(",") if s.strip()}
 
@@ -331,8 +341,7 @@ async def _live_sku(db: AsyncSession, favorites_only: bool, skus: str, scope: st
     src = await build_stock_rows(db)
     favs = set()
     if favorites_only:
-        rf = await db.execute(text(f"SELECT UPPER(TRIM(sku)) FROM {settings.TABLE_PRODUCT_ATTRS} WHERE COALESCE(is_favorite, FALSE) = TRUE"))
-        favs = {r[0] for r in rf if r[0]}
+        favs = await _obserwowane(db, scope)
     picked = {x.strip().upper() for x in skus.split(",") if x.strip()}
 
     rows = []

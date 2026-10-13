@@ -12,7 +12,7 @@ import { toast, exportCsv, type CsvColumn } from "./toast";
 import { useUser, can, canSeePurchasePrice } from "@/lib/permissions";
 import { useShop } from "@/lib/shop";
 import {
-  ProductsToolbar, ProductsTable, ColPickerModal, BulkBar, AddSampleModal,
+  ProductsToolbar, ProductsTable, ColPickerModal, BulkBar, AddSampleModal, potwierdzOdobserwowanie,
   PRODUCT_COLS, DEFAULT_COLS, STATUS_RANK, displayStatus, monthsDisplay,
   readShowInactive, writeShowInactive,
   type Product, type Manufacturer, type Firma,
@@ -232,9 +232,13 @@ export default function ProductsView({
   // Zmiana firmy: czyścimy zaznaczenie, bo lista SKU się zmienia (inaczej bulk mógłby trafić w SKU spoza widoku).
   useEffect(() => { setSelected(new Set()); }, [shop]);
 
+  // Gwiazdka działa w firmie z fragmentatora — w innych firmach obserwowanie zostaje.
   const onToggleFav = async (p: Product) => {
+    if (p.is_favorite && !potwierdzOdobserwowanie([p], shop)) return;
     try {
-      const updated = (await api.put(`/products/${encodeURIComponent(p.sku)}/favorite`)) as Product;
+      const updated = (await api.put(
+        `/products/${encodeURIComponent(p.sku)}/favorite?shop=${encodeURIComponent(shop)}&on=${!p.is_favorite}`,
+      )) as Product;
       setProducts((prev) => prev.map((x) => (x.sku === p.sku ? updated : x)));
     } catch {
       toast("Nie udało się zmienić obserwowania", "warning");
@@ -373,6 +377,7 @@ export default function ProductsView({
           rows={products}
           manufacturers={manufacturers}
           firmy={firmy}
+          shop={shop}
           onClear={clearSel}
           onReload={reload}
         />
