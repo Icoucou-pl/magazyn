@@ -33,6 +33,17 @@ export type Przyjecie = {
   w_drodze?: boolean;
   wewnetrzne?: boolean;
 };
+
+// Zakup od własnej spółki — np. PZ w Acti z dostawcą AMH, gdy kontener
+// opłaciło AMH, a Acti odkupuje towar po cenie transferowej. Ingesta Fakturowni
+// oznacza go jako WEWNETRZNE (żeby „Sprowadzono" na poziomie grupy nie liczyło
+// tego samego towaru dwa razy), ale dla samej firmy to jej jedyne zakupy
+// tego SKU. Bez nich tabela „Zakupy" w Acti była pusta i nie było widać,
+// skąd wzięła się cena 1140 zł zamiast kosztu importu.
+// PW (przyjęcie wewnętrzne bez kontrahenta) tu nie wpada — nie ma `wewnetrzne`.
+export const zakupOdGrupy = (p: Przyjecie) =>
+  p.typ === "WEWNETRZNE" && !!p.wewnetrzne && p.ilosc > 0
+  && (p.dokument || "").toUpperCase() === "PZ";
 // `wydano` — cały rozchód poza przesunięciami (tym cofa się stan).
 // `sprzedano` — wyłącznie sprzedaż. Różnica to RW i zwroty do
 // dostawcy: schodzą z magazynu, ale nie mają przychodu.
@@ -279,14 +290,22 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
     // „+1 szt" z dnia zwrotu, podczas gdy w tabeli Przyjęć najnowszy wiersz
     // miał 20 szt sprzed tygodnia. Tabela pokazuje same zakupy, więc kafelek
     // musi liczyć to samo, inaczej dwie liczby na jednym ekranie przeczą sobie.
-    const dostawa = (p: Przyjecie) => p.typ === "ZAKUP" || p.typ === "PRZESUNIECIE";
+    // Zakup od spółki z grupy też jest dostawą — tabela go pokazuje, więc
+    // kafelek musi go widzieć (Acti dostaje część towaru wyłącznie od AMH).
+    const dostawa = (p: Przyjecie) =>
+      p.typ === "ZAKUP" || p.typ === "PRZESUNIECIE" || zakupOdGrupy(p);
     const naMagazyn = h.przyjecia.filter((p) => !p.w_drodze && p.ilosc > 0 && dostawa(p));
-    const zakupy = h.przyjecia.filter((p) => p.typ === "ZAKUP");
+    const zakupy = h.przyjecia.filter((p) => p.typ === "ZAKUP" || zakupOdGrupy(p));
     const zrodlo = naMagazyn.length ? naMagazyn : zakupy;
     if (!zrodlo.length) return null;
     const last = zrodlo[zrodlo.length - 1];
     const dni = Math.round((Date.now() - new Date(last.data).getTime()) / 86400000);
     return { ...last, dni, doWDrodze: !naMagazyn.length };
+  }, [h.przyjecia]);
+
+  const zGrupy = useMemo(() => {
+    const z = h.przyjecia.filter(zakupOdGrupy);
+    return { n: z.length, szt: z.reduce((s, p) => s + p.ilosc, 0) };
   }, [h.przyjecia]);
 
   return (
@@ -319,12 +338,15 @@ export function Podsumowanie({ h, showFin }: { h: Historia; showFin: boolean }) 
           wbiciu towaru na magazyn „w drodze", więc towar wtedy dopiero płynie.
           Sztuki i kwota schodzą do podpisu: w historii częściej pyta się „ile
           razy to zamawialiśmy" niż o sumę sztuk od początku świata. */}
+      {/* Zakupy od spółki z grupy nie wchodzą do licznika (to nie import),
+          ale dopisujemy je, żeby „0" w Acti nie sugerowało, że towar spadł z nieba. */}
       <Kafelek
         label="Zamówienia"
         value={h.liczba_zakupow}
-        sub={showFin
+        sub={(showFin
           ? `${fmtNum(h.sprowadzono_szt)} szt · ${fmtNum(h.sprowadzono_pln)} zł`
-          : `${fmtNum(h.sprowadzono_szt)} szt`} />
+          : `${fmtNum(h.sprowadzono_szt)} szt`)
+          + (zGrupy.n ? ` · +${zGrupy.n} z grupy (${fmtNum(zGrupy.szt)} szt)` : "")} />
       {/* Kafelek „Stan dziś" usunięty — to stan bieżący, a nie historia;
           na Przeglądzie stoi i tak, w rozbiciu na magazyn, towar w drodze
           i kontenery. `stan_dzis` zostaje w danych, bo to on kotwiczy krzywą
@@ -1130,8 +1152,11 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
     //
     // Przesunięcia zostają pod przyciskiem, bo one niosą konkret: moment,
     // w którym towar wjechał z magazynu „w drodze" na główny.
+    //
+    // Zakupy od spółki z grupy są zawsze widoczne, z plakietką „z grupy" —
+    // patrz `zakupOdGrupy`.
     const p = h.przyjecia.filter((x) =>
-      x.typ === "ZAKUP" || (wszystkie && x.typ === "PRZESUNIECIE"));
+      x.typ === "ZAKUP" || zakupOdGrupy(x) || (wszystkie && x.typ === "PRZESUNIECIE"));
     return [...p].reverse();
   }, [h.przyjecia, wszystkie]);
 
@@ -1164,6 +1189,7 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
         <span style={sectTitle}>Zakupy</span>
         <span style={sectHint}>
           {ile} {pozycji} · {wszystkie ? "zakupy i przesunięcia" : "dokumenty PZ, czyli moment zapłaty i wbicia towaru"}
+          {wiersze.some(zakupOdGrupy) && " · „z grupy” = odkupione od naszej spółki, cena transferowa, nie koszt importu"}
         </span>
         <button onClick={() => setWszystkie((v) => !v)}
           style={{ marginLeft: "auto", background: "none", border: "1px solid var(--border-soft)", color: "var(--text-mid)", borderRadius: 5, fontSize: 11, padding: "3px 9px", cursor: "pointer" }}>
@@ -1188,7 +1214,11 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
             <tbody>
               {wiersze.map((p, i) => {
                 const poprz = wiersze[i + 1];
+                // Cena od spółki z grupy to cena transferowa — porównanie jej
+                // z ceną fabryki dawałoby fałszywy „+20%". Liczymy zmianę tylko
+                // między zakupami tego samego rodzaju.
                 const delta = poprz && poprz.koszt_jednostkowy && p.koszt_jednostkowy
+                  && zakupOdGrupy(p) === zakupOdGrupy(poprz)
                   ? ((p.koszt_jednostkowy / poprz.koszt_jednostkowy) - 1) * 100 : null;
                 return (
                   <tr key={`${p.data}-${i}`}>
@@ -1215,7 +1245,15 @@ export function TabelaPrzyjec({ h }: { h: Historia }) {
                       <td style={{ ...td, color: TYP_KOLOR[p.typ] || "var(--text-lo)", fontSize: 11 }}>{p.typ}</td>
                     )}
                     <td style={{ ...td, fontSize: 11 }} className="mono">{p.numer_dokumentu || "—"}</td>
-                    <td style={td}>{p.dostawca || <span style={{ color: "var(--text-disabled)" }}>—</span>}</td>
+                    <td style={td}>
+                      {p.dostawca || <span style={{ color: "var(--text-disabled)" }}>—</span>}
+                      {zakupOdGrupy(p) && (
+                        <span className="mono" title="odkupione od spółki z naszej grupy — to ona sprowadziła i opłaciła towar; cena jest transferowa, nie kosztem importu"
+                              style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "var(--warning-soft, var(--surface-2))", color: "var(--warning)" }}>
+                          z grupy
+                        </span>
+                      )}
+                    </td>
                     <td style={{ ...td, textAlign: "right" }} className="mono">{fmtNum(p.ilosc)}</td>
                     <td style={{ ...td, textAlign: "right" }}>
                       <span className="mono" style={{ fontWeight: 600 }}>
