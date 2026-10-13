@@ -250,23 +250,26 @@ export default function ProductsView({
     setSelectedProduct(u);
   };
 
-  const filtered = useMemo(() => {
-    let arr = products;
+  // Wyszukiwarka zawęża bieżącą zakładkę (np. „szp" w Obserwowanych = tylko obserwowane).
+  // Dawniej szukała po wszystkich zakładkach naraz. Liczniki na zakładkach też liczą się
+  // z wyszukiwaniem, więc widać, gdzie jeszcze są trafienia — kliknięcie „Wszystkie" je pokaże.
+  // Nieaktywne dalej wchodzą tylko po włączeniu „Nieaktywne" (nie ma ich w pobranej liście).
+  const znalezione = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (q) {
-      // Szukanie działa globalnie — niezależnie od zakładki statusu, żeby znaleźć też
-      // produkty nieaktywne/martwe (np. stan 0 bez świeżej sprzedaży).
-      arr = arr.filter((p) => p.sku.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
-    } else {
-      if (filter === "active") arr = arr.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK");
-      if (filter === "favorites") arr = arr.filter((p) => p.is_favorite);
-      if (filter === "critical") arr = arr.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
-      if (filter === "dead") arr = arr.filter((p) => p.product_status === "DEAD_STOCK");
-      // „Sample" = wszystkie z ptaszkiem (etykieta pochodzenia), „Nowości" = w okresie nowości.
-      // Filtry mogą się nakładać: sampel płynący albo świeżo dostarczony jest w obu.
-      if (filter === "sample") arr = arr.filter((p) => p.is_sample);
-      if (filter === "nowosc") arr = arr.filter((p) => p.is_new);
-    }
+    if (!q) return products;
+    return products.filter((p) => p.sku.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+  }, [products, search]);
+
+  const filtered = useMemo(() => {
+    let arr = znalezione;
+    if (filter === "active") arr = arr.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK");
+    if (filter === "favorites") arr = arr.filter((p) => p.is_favorite);
+    if (filter === "critical") arr = arr.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ");
+    if (filter === "dead") arr = arr.filter((p) => p.product_status === "DEAD_STOCK");
+    // „Sample" = wszystkie z ptaszkiem (etykieta pochodzenia), „Nowości" = w okresie nowości.
+    // Filtry mogą się nakładać: sampel płynący albo świeżo dostarczony jest w obu.
+    if (filter === "sample") arr = arr.filter((p) => p.is_sample);
+    if (filter === "nowosc") arr = arr.filter((p) => p.is_new);
     if (sort.key) {
       const key = sort.key;
       arr = [...arr].sort((a, b) => {
@@ -278,17 +281,17 @@ export default function ProductsView({
       });
     }
     return arr;
-  }, [products, filter, search, sort]);
+  }, [znalezione, filter, sort]);
 
   const counts = useMemo(() => ({
-    active: products.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK").length,
-    favorites: products.filter((p) => p.is_favorite).length,
-    critical: products.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ").length,
-    dead: products.filter((p) => p.product_status === "DEAD_STOCK").length,
-    sample: products.filter((p) => p.is_sample).length,
-    nowosc: products.filter((p) => p.is_new).length,
-    all: products.length,
-  }), [products]);
+    active: znalezione.filter((p) => p.product_status === "ACTIVE" || p.product_status === "ACTIVE_NO_STOCK").length,
+    favorites: znalezione.filter((p) => p.is_favorite).length,
+    critical: znalezione.filter((p) => p.status === "KRYTYCZNY" || p.status === "ZAMOW_TERAZ").length,
+    dead: znalezione.filter((p) => p.product_status === "DEAD_STOCK").length,
+    sample: znalezione.filter((p) => p.is_sample).length,
+    nowosc: znalezione.filter((p) => p.is_new).length,
+    all: znalezione.length,
+  }), [znalezione]);
 
   const toggleSort = (key: keyof Product | null) => {
     if (!key) return;
