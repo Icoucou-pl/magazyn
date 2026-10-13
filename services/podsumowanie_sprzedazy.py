@@ -20,7 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 
-MAX_DNI = 180   # najdłuższe okno wykresu (jak w Sellasiście: 30 / 60 / 180 dni)
+MAX_DNI = 180   # najdłuższe okno podane w dniach (stare wywołania `?days=`)
+# Najwcześniejszy dzień wykresu „od daty” — wcześniej danych w aplikacji nie ma (jak na
+# wykresie wartości magazynu). Front pobiera raz od tego dnia i sam tnie zakres z pickera.
+POCZATEK_DANYCH = date(2026, 1, 1)
 
 
 def dzis_pl() -> date:
@@ -70,11 +73,17 @@ def zbuduj_serie(wiersze: Iterable[Dict[str, Any]], firmy: List[str], od: date, 
 
 
 async def podsumowanie(db: AsyncSession, firmy: List[str], dni: int = MAX_DNI,
-                       dzis: Optional[date] = None) -> Dict[str, Any]:
-    """Serie z ostatnich `dni` dni (łącznie z dzisiejszym) dla podanych firm + „razem”."""
-    dni = max(1, min(int(dni), MAX_DNI))
+                       dzis: Optional[date] = None, od: Optional[date] = None) -> Dict[str, Any]:
+    """Serie z ostatnich `dni` dni (łącznie z dzisiejszym) dla podanych firm + „razem”.
+
+    Z `od` zakres to od tej daty do dziś (dla „Ten rok” i własnego zakresu) — przycięty
+    do POCZATEK_DANYCH, żeby nikt nie wyciągnął dowolnie długiej historii; `dni` wtedy nie gra."""
     do = dzis or dzis_pl()
-    od = do - timedelta(days=dni - 1)
+    if od is not None:
+        od = min(max(od, POCZATEK_DANYCH), do)
+    else:
+        dni = max(1, min(int(dni), MAX_DNI))
+        od = do - timedelta(days=dni - 1)
     if not firmy:
         return zbuduj_serie([], [], od, do)
 

@@ -164,3 +164,30 @@ def test_lista_pomijanych_idzie_na_karte(klient, monkeypatch):
     monkeypatch.setattr(settings, "PODSUMOWANIE_POMIJANE_STATUSY", "Anulowane,Zwrot - zakończony")
     c, _ = klient()
     assert c.get("/api/sales-summary").json()["excluded_statuses"] == ["Anulowane", "Zwrot - zakończony"]
+
+
+def test_od_daty_do_dzis():
+    """„Ten rok” / własny zakres: od podanej daty do dziś, `dni` wtedy nie gra."""
+    db = _Db([])
+    w = asyncio.run(ps.podsumowanie(db, ["amh"], 30, dzis=D3, od=date(2026, 3, 1)))
+    assert db.params["od"] == date(2026, 3, 1) and db.params["do_"] == date(2026, 10, 13)
+    assert w["from"] == "2026-03-01" and len(w["series"][0]["points"]) == 226
+
+
+def test_od_daty_przyciete_do_poczatku_danych():
+    db = _Db([])
+    asyncio.run(ps.podsumowanie(db, ["amh"], dzis=D3, od=date(2020, 1, 1)))
+    assert db.params["od"] == date(2026, 1, 1)
+
+
+def test_od_daty_z_przyszlosci_to_tylko_dzis():
+    db = _Db([])
+    w = asyncio.run(ps.podsumowanie(db, ["amh"], dzis=D3, od=date(2027, 5, 1)))
+    assert w["from"] == w["to"] == "2026-10-12"
+
+
+def test_endpoint_przyjmuje_od(klient):
+    c, db = klient()
+    assert c.get("/api/sales-summary?od=2026-01-01").status_code == 200
+    assert db.params["od"] == date(2026, 1, 1)
+    assert c.get("/api/sales-summary?od=wczoraj").status_code == 422
