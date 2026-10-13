@@ -28,6 +28,12 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
 - **Dropy** — sprzedaż partnerom (dropshipping). Dwie części:
   `routers/dropy.py` (nasza zakładka w Magazynie) i `dropy_service/` — **osobny serwis** (portal partnera,
   własna rola w bazie, własny JWT; nie importuje niczego z Magazynu).
+- **Pliki** (`routers/pliki.py`, `services/pliki.py`) — dokumenty jak na dysku Google, na razie tylko superadmin
+  (`require_pliki`). Foldery „Producenci / producent / kontener” zakłada sama aplikacja (skonsolidowany =
+  folder u każdego producenta), reszta ręcznie. Pliki w Supabase Storage (bucket `magazyn-pliki`,
+  `services/pliki_storage.py`, konto techniczne `PLIKI_STORAGE_*`), w bazie tylko opis. Plik z karty kontenera
+  ląduje w folderze kontenera z ptaszkiem „pokaż na kontenerze”; kosz 30 dni. Stare załączniki (BYTEA
+  w `app_container_attachments`) jeszcze czekają na przeniesienie (drugi krok).
 - **Asystent AI** (`services/assistant.py`) — czat z narzędziami, dostawca zgodny z API OpenAI
   (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`). Narzędzia finansowe tylko z `assistantFinancials`.
 

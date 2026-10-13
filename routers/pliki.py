@@ -1,0 +1,424 @@
+"""Zakładka „Pliki” — foldery i pliki jak na dysku Google. Na razie tylko superadmin.
+
+Cienka warstwa: logika w services/pliki.py, bucket w services/pliki_storage.py.
+Pliki z karty kontenera wgrywa routers/containers.py (POST /containers/{id}/attachments) —
+trafiają tutaj do folderu kontenera z ptaszkiem „pokaż na kontenerze”.
+"""
+
+import io
+import os
+import tempfile
+import zipfile
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
+
+import audit
+from audit_opisy import etykieta_kontenera, plural
+from config import settings
+from database import get_db
+from models import CurrentUser
+from security import get_current_user, has_perm, is_super_admin, require_pliki
+from services import pliki as svc
+from services import pliki_storage
+
+router = APIRouter(prefix="/api", tags=["pliki"])
+
+F = settings.TABLE_PLIKI_FOLDERY
+P = settings.TABLE_PLIKI
+
+
+class FolderIn(BaseModel):
+    nazwa: str = Field(..., min_length=1, max_length=200)
+    parent_id: Optional[int] = None
+
+
+class FolderPatch(BaseModel):
+    nazwa: Optional[str] = Field(None, min_length=1, max_length=200)
+    parent_id: Optional[int] = None          # przeniesienie tylko, gdy pole jest w żądaniu (null = poziom główny)
+
+
+class PlikPatch(BaseModel):
+    nazwa: Optional[str] = Field(None, min_length=1, max_length=200)
+    folder_id: Optional[int] = None          # j.w.
+    pokaz_na_kontenerze: Optional[bool] = None
+
+
+class Zaznaczenie(BaseModel):
+    pliki: List[int] = []
+    foldery: List[int] = []
+
+
+# ── Pomocnicze ───────────────────────────────────────────────────────────────
+
+async def _folder(db: AsyncSession, fid: int, *, zywy: bool = True) -> dict:
+    r = (await db.execute(text(f"SELECT id, parent_id, nazwa, rodzaj, manufacturer_id, container_id, usuniety_at FROM {F} WHERE id = :id"),
+                          {"id": fid})).mappings().first()
+    if not r:
+        raise HTTPException(404, "Nie ma takiego folderu")
+    if zywy and fid in await _martwe(db):
+        raise HTTPException(404, "Ten folder jest w koszu")
+    return dict(r)
+
+
+async def _martwe(db: AsyncSession) -> set:
+    return {row[0] for row in await db.execute(text(f"WITH {svc.MARTWE_CTE} SELECT id FROM martwe"))}
+
+
+async def _plik(db: AsyncSession, pid: int) -> dict:
+    r = (await db.execute(text(f"SELECT {svc.PLIK_KOLUMNY}, sciezka, usuniety_at FROM {P} WHERE id = :id"),
+                          {"id": pid})).mappings().first()
+    if not r:
+        raise HTTPException(404, "Nie ma takiego pliku")
+    return dict(r)
+
+
+async def _cel(db: AsyncSession, fid: Optional[int]) -> Optional[int]:
+    """Folder docelowy (None = poziom główny) — musi istnieć i nie być w koszu."""
+    if fid is not None:
+        await _folder(db, fid)
+    return fid
+
+
+async def _dubel_folderu(db: AsyncSession, parent_id: Optional[int], nazwa: str, bez_id: Optional[int] = None) -> None:
+    gdzie = "parent_id = :p" if parent_id is not None else "parent_id IS NULL"
+    jest = (await db.execute(text(f"""
+        SELECT 1 FROM {F} WHERE {gdzie} AND LOWER(nazwa) = LOWER(:n) AND usuniety_at IS NULL
+           AND (CAST(:bez AS INTEGER) IS NULL OR id <> :bez) LIMIT 1
+    """), {"p": parent_id, "n": nazwa, "bez": bez_id})).first()
+    if jest:
+        raise HTTPException(409, f"W tym miejscu jest już folder „{nazwa}”")
+
+
+def _storage_wlaczony() -> None:
+    if not pliki_storage.enabled():
+        raise HTTPException(503, "Przechowywanie plików nie jest jeszcze skonfigurowane (Supabase Storage)")
+
+
+async def _czytaj(f: UploadFile) -> bytes:
+    data = await f.read(svc.MAX_PLIK_BYTES + 1)
+    if not data:
+        raise HTTPException(400, f"Pusty plik: {f.filename or ''}")
+    if len(data) > svc.MAX_PLIK_BYTES:
+        raise HTTPException(413, f"Plik „{f.filename}” jest za duży (max {svc.MAX_PLIK_BYTES // (1024 * 1024)} MB)")
+    return data
+
+
+async def zapisz_plik(db: AsyncSession, *, data: bytes, nazwa: str, content_type: Optional[str],
+                      folder_id: Optional[int], pokaz: bool, z_kontenera: bool, kto: str) -> dict:
+    """Bucket, potem wiersz w bazie. Gdy baza odmówi — plik znika z bucketu (bez sierot).
+    Commit robi wołający. Wspólne dla zakładki i karty kontenera."""
+    nazwa = svc.czysta_nazwa(nazwa)
+    sciezka = svc.nowa_sciezka(nazwa)
+    ctype = content_type or "application/octet-stream"
+    try:
+        await pliki_storage.upload(sciezka, data, ctype)
+    except pliki_storage.StorageError as e:
+        raise HTTPException(502, f"Nie udało się zapisać pliku w Supabase: {e}")
+    try:
+        cid = await svc.kontener_nad_folderem(db, folder_id)
+        r = (await db.execute(text(f"""
+            INSERT INTO {P} (folder_id, nazwa, sciezka, content_type, rozmiar, container_id,
+                             pokaz_na_kontenerze, dodano_z_kontenera, dodal)
+            VALUES (:f, :n, :s, :ct, :r, :c, :pok, :zk, :kto)
+            RETURNING {svc.PLIK_KOLUMNY}
+        """), {"f": folder_id, "n": nazwa, "s": sciezka, "ct": ctype, "r": len(data), "c": cid,
+               "pok": bool(pokaz and cid is not None), "zk": z_kontenera, "kto": kto})).mappings().first()
+    except Exception:
+        try:
+            await pliki_storage.remove([sciezka])
+        except Exception:   # noqa: BLE001 — sprzątanie po błędzie, właściwy błąd idzie wyżej
+            pass
+        raise
+    return svc.plik_out(r)
+
+
+def _gdzie(folder: Optional[dict]) -> str:
+    return f"do folderu „{folder['nazwa']}”" if folder else "na główny poziom"
+
+
+# ── Przeglądanie ─────────────────────────────────────────────────────────────
+
+@router.get("/pliki/status")
+async def status(user: CurrentUser = Depends(require_pliki)):
+    return {"storage": pliki_storage.enabled(), "max_mb": svc.MAX_PLIK_BYTES // (1024 * 1024), "kosz_dni": svc.KOSZ_DNI}
+
+
+@router.get("/pliki/lista")
+async def lista(folder_id: Optional[int] = Query(None), db: AsyncSession = Depends(get_db),
+                user: CurrentUser = Depends(require_pliki)):
+    await svc.synchronizuj_foldery(db)
+    await db.commit()
+    folder = await _folder(db, folder_id) if folder_id is not None else None
+    out = await svc.lista_folderu(db, folder_id)
+    out["folder"] = ({**folder, "automatyczny": svc.jest_automatyczny(folder["rodzaj"], folder["manufacturer_id"], folder["container_id"])}
+                     if folder else None)
+    out["sciezka"] = await svc.sciezka_folderu(db, folder_id)
+    return out
+
+
+@router.get("/pliki/drzewo")
+async def drzewo(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    return await svc.drzewo(db)
+
+
+@router.get("/pliki/szukaj")
+async def szukaj(q: str = Query(..., min_length=2, max_length=100), db: AsyncSession = Depends(get_db),
+                 user: CurrentUser = Depends(require_pliki)):
+    return await svc.szukaj(db, q.strip())
+
+
+# ── Foldery ──────────────────────────────────────────────────────────────────
+
+@router.post("/pliki/folder", status_code=201)
+async def nowy_folder(body: FolderIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    nazwa = svc.czysta_nazwa(body.nazwa, "Nowy folder")
+    parent = await _cel(db, body.parent_id)
+    await _dubel_folderu(db, parent, nazwa)
+    fid = (await db.execute(text(f"""
+        INSERT INTO {F} (parent_id, nazwa, rodzaj, utworzyl) VALUES (:p, :n, 'reczny', :kto) RETURNING id
+    """), {"p": parent, "n": nazwa, "kto": user.email})).scalar()
+    await db.commit()
+    rodzic = await _folder(db, parent) if parent is not None else None
+    audit.note(f"założył folder „{nazwa}” " + (f"w „{rodzic['nazwa']}”" if rodzic else "na głównym poziomie"),
+               area="Pliki", resource_type="pliki", resource_id=fid)
+    return {"id": fid, "nazwa": nazwa}
+
+
+@router.patch("/pliki/folder/{fid}")
+async def zmien_folder(fid: int, body: FolderPatch, db: AsyncSession = Depends(get_db),
+                       user: CurrentUser = Depends(require_pliki)):
+    f = await _folder(db, fid)
+    if svc.jest_automatyczny(f["rodzaj"], f["manufacturer_id"], f["container_id"]):
+        raise HTTPException(400, "Folderów producentów i kontenerów nie da się zmieniać — zakłada je i nazywa aplikacja")
+    zmiany = []
+    if body.nazwa is not None:
+        nazwa = svc.czysta_nazwa(body.nazwa, f["nazwa"])
+        if nazwa != f["nazwa"]:
+            await _dubel_folderu(db, f["parent_id"], nazwa, fid)
+            await db.execute(text(f"UPDATE {F} SET nazwa = :n WHERE id = :id"), {"n": nazwa, "id": fid})
+            zmiany.append({"pole": "Nazwa", "bylo": f["nazwa"], "jest": nazwa})
+            f["nazwa"] = nazwa
+    if "parent_id" in body.model_fields_set and body.parent_id != f["parent_id"]:
+        cel = await _cel(db, body.parent_id)
+        if await svc.czy_potomek(db, cel, fid):
+            raise HTTPException(400, "Nie można przenieść folderu do niego samego ani do jego podfolderu")
+        await _dubel_folderu(db, cel, f["nazwa"], fid)
+        await db.execute(text(f"UPDATE {F} SET parent_id = :p WHERE id = :id"), {"p": cel, "id": fid})
+        await svc.przelicz_kontenery_plikow(db)
+        stary = await _folder(db, f["parent_id"], zywy=False) if f["parent_id"] else None
+        nowy = await _folder(db, cel) if cel is not None else None
+        zmiany.append({"pole": "Miejsce", "bylo": stary["nazwa"] if stary else "główny poziom",
+                       "jest": nowy["nazwa"] if nowy else "główny poziom"})
+    await db.commit()
+    audit.note_zmiany(f"folderu „{f['nazwa']}”", zmiany, area="Pliki", resource_type="pliki", resource_id=fid)
+    return {"ok": True}
+
+
+@router.delete("/pliki/folder/{fid}", status_code=204)
+async def folder_do_kosza(fid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    f = await _folder(db, fid)
+    if svc.jest_automatyczny(f["rodzaj"], f["manufacturer_id"], f["container_id"]):
+        raise HTTPException(400, "Folderów producentów i kontenerów nie da się usunąć")
+    await db.execute(text(f"UPDATE {F} SET usuniety_at = CURRENT_TIMESTAMP, usunal = :kto WHERE id = :id"),
+                     {"id": fid, "kto": user.email})
+    await db.commit()
+    audit.note(f"przeniósł folder „{f['nazwa']}” do kosza", area="Pliki", resource_type="pliki", resource_id=fid)
+
+
+# ── Pliki ────────────────────────────────────────────────────────────────────
+
+@router.post("/pliki/wgraj", status_code=201)
+async def wgraj(files: List[UploadFile] = File(...), folder_id: Optional[int] = Form(None),
+                pokaz_na_kontenerze: bool = Form(False),
+                db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    _storage_wlaczony()
+    folder = await _folder(db, folder_id) if folder_id is not None else None
+    dane = [(f, await _czytaj(f)) for f in files]        # najpierw limity, żeby nie wgrać połowy
+    out = []
+    for f, data in dane:
+        out.append(await zapisz_plik(db, data=data, nazwa=f.filename or "plik", content_type=f.content_type,
+                                     folder_id=folder_id, pokaz=pokaz_na_kontenerze, z_kontenera=False, kto=user.email))
+        await db.commit()
+    nazwy = ", ".join(f"„{p['nazwa']}”" for p in out[:3]) + (f" i {len(out) - 3} innych" if len(out) > 3 else "")
+    audit.note(f"wgrał {len(out)} {plural(len(out), 'plik', 'pliki', 'plików')} {_gdzie(folder)}: {nazwy}",
+               area="Pliki", resource_type="pliki", resource_id=folder_id)
+    return out
+
+
+@router.patch("/pliki/plik/{pid}")
+async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    p = await _plik(db, pid)
+    if p["usuniety_at"] is not None:
+        raise HTTPException(404, "Ten plik jest w koszu")
+    zmiany = []
+    if body.nazwa is not None:
+        nazwa = svc.czysta_nazwa(body.nazwa, p["nazwa"])
+        if nazwa != p["nazwa"]:
+            await db.execute(text(f"UPDATE {P} SET nazwa = :n WHERE id = :id"), {"n": nazwa, "id": pid})
+            zmiany.append({"pole": "Nazwa", "bylo": p["nazwa"], "jest": nazwa})
+    if "folder_id" in body.model_fields_set and body.folder_id != p["folder_id"]:
+        cel = await _cel(db, body.folder_id)
+        cid = await svc.kontener_nad_folderem(db, cel)
+        await db.execute(text(f"""
+            UPDATE {P} SET folder_id = :f, container_id = :c,
+                           pokaz_na_kontenerze = (pokaz_na_kontenerze AND CAST(:c AS INTEGER) IS NOT NULL)
+             WHERE id = :id
+        """), {"f": cel, "c": cid, "id": pid})
+        stary = await _folder(db, p["folder_id"], zywy=False) if p["folder_id"] else None
+        nowy = await _folder(db, cel) if cel is not None else None
+        zmiany.append({"pole": "Miejsce", "bylo": stary["nazwa"] if stary else "główny poziom",
+                       "jest": nowy["nazwa"] if nowy else "główny poziom"})
+        p["container_id"] = cid
+    if body.pokaz_na_kontenerze is not None and body.pokaz_na_kontenerze != p["pokaz_na_kontenerze"]:
+        if body.pokaz_na_kontenerze and p["container_id"] is None:
+            raise HTTPException(400, "Plik nie leży w folderze kontenera — nie ma na czym go pokazać")
+        await db.execute(text(f"UPDATE {P} SET pokaz_na_kontenerze = :v WHERE id = :id"),
+                         {"v": body.pokaz_na_kontenerze, "id": pid})
+        zmiany.append({"pole": "Pokaż na kontenerze", "bylo": "tak" if p["pokaz_na_kontenerze"] else "nie",
+                       "jest": "tak" if body.pokaz_na_kontenerze else "nie"})
+    await db.commit()
+    audit.note_zmiany(f"pliku „{p['nazwa']}”", zmiany, area="Pliki", resource_type="pliki", resource_id=pid)
+    r = (await db.execute(text(f"SELECT {svc.PLIK_KOLUMNY} FROM {P} WHERE id = :id"), {"id": pid})).mappings().first()
+    return svc.plik_out(r)
+
+
+@router.delete("/pliki/plik/{pid}", status_code=204)
+async def plik_do_kosza(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    p = await _plik(db, pid)
+    await db.execute(text(f"UPDATE {P} SET usuniety_at = CURRENT_TIMESTAMP, usunal = :kto WHERE id = :id AND usuniety_at IS NULL"),
+                     {"id": pid, "kto": user.email})
+    await db.commit()
+    audit.note(f"przeniósł plik „{p['nazwa']}” do kosza", area="Pliki", resource_type="pliki", resource_id=pid)
+
+
+@router.get("/pliki/plik/{pid}/pobierz")
+async def pobierz(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Superadmin pobiera wszystko (także z kosza — żeby dało się zajrzeć przed przywróceniem).
+    Pozostali tylko pliki pokazane na karcie kontenera i tylko z uprawnieniem do załączników."""
+    p = await _plik(db, pid)
+    if not is_super_admin(user):
+        widoczny = (p["pokaz_na_kontenerze"] and p["usuniety_at"] is None and p["container_id"] is not None
+                    and (p["folder_id"] is None or p["folder_id"] not in await _martwe(db)))
+        if not (widoczny and has_perm(user, "viewAttachments")):
+            raise HTTPException(404, "Nie ma takiego pliku")
+    try:
+        data = await pliki_storage.download(p["sciezka"])
+    except pliki_storage.StorageError as e:
+        raise HTTPException(502, f"Nie udało się pobrać pliku z Supabase: {e}")
+    from routers.containers import _content_disposition
+    return StreamingResponse(io.BytesIO(data), media_type=p["content_type"] or "application/octet-stream",
+                             headers={"Content-Disposition": _content_disposition(p["nazwa"])})
+
+
+# ── Kosz ─────────────────────────────────────────────────────────────────────
+
+@router.get("/pliki/kosz")
+async def kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    return await svc.kosz(db)
+
+
+@router.post("/pliki/kosz/przywroc")
+async def przywroc(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    """Przywraca na stare miejsce. Gdy stary folder sam jest w koszu (albo pod folderem w koszu),
+    rzecz wraca na główny poziom — inaczej „przywrócona” byłaby dalej niewidoczna."""
+    na_glowny = 0
+    if body.foldery:
+        await db.execute(text(f"UPDATE {F} SET usuniety_at = NULL, usunal = NULL WHERE id = ANY(:ids)"), {"ids": body.foldery})
+    if body.pliki:
+        await db.execute(text(f"UPDATE {P} SET usuniety_at = NULL, usunal = NULL WHERE id = ANY(:ids)"), {"ids": body.pliki})
+    martwe = await _martwe(db)
+    for fid in body.foldery:
+        parent = (await db.execute(text(f"SELECT parent_id FROM {F} WHERE id = :id"), {"id": fid})).scalar()
+        if parent is not None and parent in martwe:
+            await db.execute(text(f"UPDATE {F} SET parent_id = NULL WHERE id = :id"), {"id": fid})
+            na_glowny += 1
+    if na_glowny:
+        martwe = await _martwe(db)
+    for pid in body.pliki:
+        folder = (await db.execute(text(f"SELECT folder_id FROM {P} WHERE id = :id"), {"id": pid})).scalar()
+        if folder is not None and folder in martwe:
+            await db.execute(text(f"UPDATE {P} SET folder_id = NULL WHERE id = :id"), {"id": pid})
+            na_glowny += 1
+    if na_glowny:
+        await svc.przelicz_kontenery_plikow(db)
+    await db.commit()
+    n = len(body.pliki) + len(body.foldery)
+    audit.note(f"przywrócił z kosza {n} {plural(n, 'pozycję', 'pozycje', 'pozycji')}",
+               area="Pliki", resource_type="pliki")
+    return {"przywrocone": n, "na_glowny_poziom": na_glowny}
+
+
+@router.post("/pliki/kosz/usun")
+async def usun_z_kosza(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    """Na zawsze — tylko to, co faktycznie leży w koszu (nie da się tak skasować żywego pliku)."""
+    pliki = [r[0] for r in await db.execute(text(f"SELECT id FROM {P} WHERE id = ANY(:ids) AND usuniety_at IS NOT NULL"),
+                                            {"ids": body.pliki})] if body.pliki else []
+    foldery = [r[0] for r in await db.execute(text(f"SELECT id FROM {F} WHERE id = ANY(:ids) AND usuniety_at IS NOT NULL"),
+                                              {"ids": body.foldery})] if body.foldery else []
+    try:
+        n = await svc.usun_na_zawsze(db, pliki=pliki, foldery=foldery)
+    except pliki_storage.StorageError as e:
+        raise HTTPException(502, f"Supabase nie skasował plików, nic nie zostało usunięte: {e}")
+    await db.commit()
+    audit.note(f"usunął z kosza na zawsze {n} {plural(n, 'plik', 'pliki', 'plików')}"
+               + (f" i {len(foldery)} {plural(len(foldery), 'folder', 'foldery', 'folderów')}" if foldery else ""),
+               area="Pliki", resource_type="pliki")
+    return {"usuniete_pliki": n}
+
+
+@router.delete("/pliki/kosz")
+async def oproznij_kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    pliki = [r[0] for r in await db.execute(text(f"SELECT id FROM {P} WHERE usuniety_at IS NOT NULL"))]
+    foldery = [r[0] for r in await db.execute(text(f"SELECT id FROM {F} WHERE usuniety_at IS NOT NULL"))]
+    try:
+        n = await svc.usun_na_zawsze(db, pliki=pliki, foldery=foldery)
+    except pliki_storage.StorageError as e:
+        raise HTTPException(502, f"Supabase nie skasował plików, nic nie zostało usunięte: {e}")
+    await db.commit()
+    audit.note(f"opróżnił kosz plików ({n} {plural(n, 'plik', 'pliki', 'plików')})", area="Pliki", resource_type="pliki")
+    return {"usuniete_pliki": n}
+
+
+# ── Stare załączniki kontenerów (przed przeniesieniem do Plików) ─────────────
+
+@router.get("/pliki/stare-zalaczniki.zip")
+async def stare_zalaczniki(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    """Wszystkie dotychczasowe załączniki kontenerów (trzymane w bazie) w jednym ZIP-ie,
+    po folderze na kontener — kopia na dysk przed przeniesieniem ich do Plików.
+    Pliki czytamy po jednym i piszemy do pliku tymczasowego, żeby nie trzymać wszystkiego w pamięci."""
+    T = settings.TABLE_ATTACHMENTS
+    wiersze = (await db.execute(text(f"""
+        SELECT a.id, a.filename, a.container_id, a.uploaded_at, c.container_number,
+               COALESCE(NULLIF(TRIM(c.order_number), ''),
+                        (SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
+                          WHERE l.container_id = c.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
+                          ORDER BY l.position, l.id LIMIT 1)) AS fv
+          FROM {T} a LEFT JOIN {settings.TABLE_CONTAINERS} c ON c.id = a.container_id
+         WHERE a.file_data IS NOT NULL
+         ORDER BY a.container_id, a.uploaded_at, a.id
+    """))).mappings().all()
+    if not wiersze:
+        raise HTTPException(404, "Brak załączników do pobrania")
+    fd, sciezka = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    uzyte: set = set()
+    with zipfile.ZipFile(sciezka, "w", zipfile.ZIP_DEFLATED) as z:
+        for w in wiersze:
+            folder = svc.czysta_nazwa(etykieta_kontenera(w["container_number"], w["fv"], w["container_id"])).replace(":", "")
+            nazwa = svc.czysta_nazwa(w["filename"])
+            cel, i = f"{folder}/{nazwa}", 1
+            while cel.lower() in uzyte:           # dwa pliki o tej samej nazwie w jednym kontenerze
+                i += 1
+                base, kropka, ext = nazwa.rpartition(".")
+                cel = f"{folder}/{base} ({i}).{ext}" if kropka else f"{folder}/{nazwa} ({i})"
+            uzyte.add(cel.lower())
+            data = (await db.execute(text(f"SELECT file_data FROM {T} WHERE id = :id"), {"id": w["id"]})).scalar()
+            z.writestr(cel, bytes(data or b""))
+    return FileResponse(sciezka, media_type="application/zip", filename="zalaczniki-kontenerow.zip",
+                        background=BackgroundTask(os.remove, sciezka))

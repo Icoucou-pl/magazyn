@@ -35,6 +35,7 @@ const VIEW_BY_SEGMENT: Record<string, string> = {
   finanse: "finance",
   raporty: "reports",
   dropy: "dropy",
+  pliki: "files",
   ustawienia: "settings",
   // Karta producenta nie ma pozycji w menu — wchodzi się na nią z karty produktu.
   producenci: "manufacturers",

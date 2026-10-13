@@ -56,6 +56,7 @@ import FinanceView from "@/components/finance";
 import ReportsView from "@/components/reports";
 import SettingsView from "@/components/settings";
 import DropyView from "@/components/dropy";
+import FilesView from "@/components/files";
 import CommandPalette from "@/components/command-palette";
 import EanScanner from "@/components/ean-scanner";
 import Assistant from "@/components/assistant";
@@ -618,6 +619,8 @@ export default function AppShell() {
           <ReportsView />
         ) : view === "dropy" ? (
           <DropyView/>
+        ) : view === "files" ? (
+          <FilesView onOpenContainer={(key) => openContainerPage(key)} />
         ) : view === "settings" ? (
           <SettingsView
             // key: wejście z adresu na inną podsekcję (np. „Moje konto” z menu pod avatarem, gdy

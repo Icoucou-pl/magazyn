@@ -53,6 +53,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
   { id: "reports",    label: "Raporty",    icon: I.Calendar, perm: "viewReports" },
   { id: "dropy",      label: "Dropy",      icon: I.Cart, superOnly: true },
+  { id: "files",      label: "Pliki",      icon: I.Folder, superOnly: true },
 ];
 
 export const SIDEBAR_WIDTH = 224;

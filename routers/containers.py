@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any, List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1053,9 +1053,15 @@ def _guess_type(filename: str) -> str:
 
 
 @router.post("/containers/{cid}/attachments", response_model=AttachmentOut, status_code=201)
-async def add_attachment(cid: int, file: UploadFile = File(...), user: CurrentUser = Depends(require_edit_containers)):
-    """Wgrywa plik (zawartość w bazie jako BYTEA). Ponawia zapis na świeżym
-    połączeniu przy chwilowych błędach poolера Supabase (działa za 1. razem)."""
+async def add_attachment(cid: int, file: UploadFile = File(...), manufacturer_id: Optional[int] = Form(None),
+                         user: CurrentUser = Depends(require_edit_containers)):
+    """Wgrywa plik. Gdy działa Supabase Storage — do zakładki „Pliki”, folder kontenera u producenta
+    `manufacturer_id` (kontener skonsolidowany: wybór na karcie), z ptaszkiem „pokaż na kontenerze”.
+    Bez Storage — po staremu do bazy (BYTEA), z ponawianiem zapisu na świeżym połączeniu przy
+    chwilowych błędach poolера Supabase (działa za 1. razem)."""
+    from services import pliki_storage
+    if pliki_storage.enabled():
+        return await _attachment_do_plikow(cid, file, manufacturer_id, user)
     data = await file.read()
     if not data:
         raise HTTPException(400, "Pusty plik")
@@ -1084,6 +1090,51 @@ async def add_attachment(cid: int, file: UploadFile = File(...), user: CurrentUs
             last_err = e
             await asyncio.sleep(0.4 * (attempt + 1))
     raise HTTPException(503, f"Zapis załącznika nieudany po kilku próbach: {last_err}")
+
+
+async def _attachment_do_plikow(cid: int, file: UploadFile, manufacturer_id: Optional[int], user: CurrentUser) -> AttachmentOut:
+    from routers.pliki import _czytaj, zapisz_plik
+    from services import pliki as pliki_svc
+
+    data = await _czytaj(file)
+    async with SessionLocal() as db:
+        if not (await db.execute(text(f"SELECT 1 FROM {settings.TABLE_CONTAINERS} WHERE id = :c"), {"c": cid})).first():
+            raise HTTPException(404, "Nie ma takiego kontenera")
+        fid = await pliki_svc.folder_kontenera(db, cid, manufacturer_id)
+        p = await zapisz_plik(db, data=data, nazwa=file.filename or "plik", content_type=file.content_type,
+                              folder_id=fid, pokaz=True, z_kontenera=True, kto=user.email)
+        await db.commit()
+        producent = (await db.execute(text(f"""
+            SELECT m.name FROM {settings.TABLE_PLIKI_FOLDERY} f
+              JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id WHERE f.id = :f
+        """), {"f": fid})).scalar()
+        audit.note(f"dodał plik „{p['nazwa']}” ({p['rozmiar_txt']}) do kontenera {await audit.nazwa_kontenera(db, cid)}"
+                   + (f", folder producenta {producent}" if producent else ""), resource_id=cid)
+    return AttachmentOut(id=p["id"], filename=p["nazwa"], file_type=p["typ"], file_size=p["rozmiar_txt"],
+                         uploaded_at=p["dodano"], zrodlo="pliki", producent=producent)
+
+
+@router.delete("/containers/{cid}/pliki/{pid}", status_code=204)
+async def delete_container_plik(cid: int, pid: int, db: AsyncSession = Depends(get_db),
+                                user: CurrentUser = Depends(require_edit_containers)):
+    """Usunięcie pliku z karty kontenera. Wgrany z karty → do kosza w Plikach (30 dni na ratunek).
+    Wgrany w zakładce Pliki i tylko tu pokazany → zdejmujemy sam ptaszek, plik zostaje w Plikach."""
+    T = settings.TABLE_PLIKI
+    p = (await db.execute(text(f"""
+        SELECT nazwa, dodano_z_kontenera FROM {T}
+         WHERE id = :id AND container_id = :c AND pokaz_na_kontenerze AND usuniety_at IS NULL
+    """), {"id": pid, "c": cid})).mappings().first()
+    if not p:
+        raise HTTPException(404, "Nie ma takiego pliku na tym kontenerze")
+    if p["dodano_z_kontenera"]:
+        await db.execute(text(f"UPDATE {T} SET usuniety_at = CURRENT_TIMESTAMP, usunal = :kto WHERE id = :id"),
+                         {"id": pid, "kto": user.email})
+        co = "usunął plik"
+    else:
+        await db.execute(text(f"UPDATE {T} SET pokaz_na_kontenerze = FALSE WHERE id = :id"), {"id": pid})
+        co = "zdjął z karty plik"
+    await db.commit()
+    audit.note(f"{co} „{p['nazwa']}” kontenera {await audit.nazwa_kontenera(db, cid)}", resource_id=cid)
 
 
 def _content_disposition(filename: str) -> str:

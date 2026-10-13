@@ -67,7 +67,15 @@ export type ContainerLot = {
   subiekt_wbite_at?: string | null;
   total_units: number; total_cbm: number; total_value: number;
 };
-export type Attachment = { id: number; filename: string; file_type: string | null; file_size: string | null; uploaded_at: string };
+// zrodlo: "baza" = stary załącznik trzymany w bazie, "pliki" = plik z zakładki Pliki (Supabase Storage).
+// Id pochodzą z dwóch różnych tabel — kluczem jest para (zrodlo, id), patrz attKey.
+export type Attachment = {
+  id: number; filename: string; file_type: string | null; file_size: string | null; uploaded_at: string;
+  zrodlo?: "baza" | "pliki"; producent?: string | null;
+};
+export const attKey = (a: Pick<Attachment, "id" | "zrodlo">) => `${a.zrodlo || "baza"}:${a.id}`;
+export const attDownloadPath = (a: Pick<Attachment, "id" | "zrodlo">) =>
+  a.zrodlo === "pliki" ? `/pliki/plik/${a.id}/pobierz` : `/attachments/${a.id}/download`;
 export type Container = {
   id: number;
   firma_breakdown?: Record<string, FirmaShare>;
@@ -999,10 +1007,11 @@ function ContainerCardBody({
             {c.attachments.map((att) => {
               const isPdf = att.file_type === "pdf";
               return (
-                <button key={att.id} type="button" onClick={() => download(`/attachments/${att.id}/download`, att.filename).catch(() => toast("Nie udało się pobrać pliku", "warning"))}
+                <button key={attKey(att)} type="button" onClick={() => download(attDownloadPath(att), att.filename).catch(() => toast("Nie udało się pobrać pliku", "warning"))}
                   title="Pobierz plik" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 6, fontSize: 11, color: "var(--text-mid)", cursor: "pointer" }}>
                   <span className="mono" style={{ padding: "0 4px", fontSize: 9, fontWeight: 700, background: isPdf ? "var(--critical-soft)" : "var(--ok-soft)", color: isPdf ? "var(--critical)" : "var(--ok)", borderRadius: 3 }}>{(att.file_type || "?").toUpperCase()}</span>
                   <span style={{ textDecoration: "underline" }}>{att.filename}</span>
+                  {c.is_consolidated && att.producent && <span style={{ fontSize: 10, color: "var(--text-lo)" }}>· {att.producent}</span>}
                 </button>
               );
             })}

@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     TABLE_KPI_SNAPSHOTS: str = "app_kpi_snapshots"      # 4 KPI × firma × pora (2×/dzień)
     TABLE_STOCK_SNAPSHOTS: str = "app_stock_snapshots"  # per SKU × pora (2×/dzień)   # magazyn główny + w drodze (per SKU, świeże ceny)
     TABLE_ATTACHMENTS: str = "app_container_attachments"
+    # Zakładka „Pliki”: drzewo folderów + opis plików. Same pliki leżą w Supabase Storage
+    # (services/pliki_storage.py), w bazie tylko nazwa, folder, ścieżka w buckecie.
+    TABLE_PLIKI_FOLDERY: str = "app_pliki_foldery"
+    TABLE_PLIKI: str = "app_pliki"
     # Zdjęcia produktów (WebP w BYTEA). Bajty w kolumnach thumb_data/full_data siedzą
     # w TOAST — NIGDY nie wolno ich wciągać do zapytań listowych ani do SELECT *.
     TABLE_PRODUCT_PHOTOS: str = "app_product_photos"

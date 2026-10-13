@@ -306,6 +306,15 @@ async def require_sad(user: CurrentUser = Depends(get_current_user)) -> CurrentU
     return user
 
 
+async def require_pliki(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Zakładka „Pliki” — na razie tylko superadmin, bez ptaszka w uprawnieniach (nikt inny
+    nie ma jej zobaczyć nawet przypadkiem). Lustro na froncie: permissions.js → canSeeFiles.
+    Wyjątek poza tym strażnikiem: pobranie pliku pokazanego na kontenerze (routers/pliki.py)."""
+    if not is_super_admin(user):
+        raise HTTPException(403, "Zakładka Pliki jest na razie dostępna tylko dla superadmina")
+    return user
+
+
 async def require_super_admin_403(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Superadmin, z czytelnym 403 dla innych (np. ręczna stawka cła w słowniku)."""
     if not is_super_admin(user):
