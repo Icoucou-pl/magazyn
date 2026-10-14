@@ -365,7 +365,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
       <div style={karta}>
         <Naglowek tytul="Koszt na sztukę" hint={k.krajowa ? "ceny z FV + transport" :
           wiele ? "Wartość lotu = jego płatności, rozłożone po cenach z pozycji"
-            : glowna ? `Wartość towaru = ${pl(glowna.wartosc_waluta, 0)} ${waluta} ${glowna.wartosc_zrodlo === "plan" ? "z cen pozycji" : "z płatności"}, rozłożona po cenach z pozycji kontenera` : undefined} />
+            : glowna ? `Wartość towaru = ${pl(glowna.wartosc_waluta, 0)} ${waluta} ${glowna.wartosc_zrodlo === "plan" ? "z cen pozycji" : "z płatności"}, rozłożona po cenach z pozycji kontenera · kwoty w zł (poza ceną ${waluta}/szt)` : undefined} />
         <div style={{ overflowX: "auto" }}>
           <table style={tabela}>
             <thead><tr>

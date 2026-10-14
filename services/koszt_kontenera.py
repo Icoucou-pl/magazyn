@@ -297,10 +297,19 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
     kurs_est = kurs_ref or g.kurs_ostatni
     oczekiwane_pln = sum((stala[p.item_id] * p.szt * kurs_est) if stala[p.item_id] is not None and kurs_est
                          else plan[p.item_id] for p in pozycje)
-    if not z_kursem or (not ma_balance and oczekiwane_pln > 0
-                        and pln_platnosci < PROG_NIEPELNE_PLATNOSCI * oczekiwane_pln):
-        # Brak płatności (albo same zaliczki bez balance) → wartość z cen planowanych.
-        if z_kursem:
+    niepelne = oczekiwane_pln > 0 and pln_platnosci < PROG_NIEPELNE_PLATNOSCI * oczekiwane_pln
+    # Balance zwykle znaczy „zapłacone w całości”, ale gdy KAŻDA pozycja ma cenę z proformy/FV,
+    # a płatności pokrywają mniej niż próg, to nie rabat — brakuje płatności albo faktura jest
+    # wspólna z innym kontenerem. Bez tego różnica szła jako ujemne „gratisy” i zjadała 70% towaru.
+    wszystkie_ceny = bool(pozycje) and all(stala[p.item_id] is not None for p in pozycje)
+    if not z_kursem or (niepelne and (not ma_balance or wszystkie_ceny)):
+        # Brak płatności (albo za mało płatności) → wartość z cen pozycji / planowanych.
+        if z_kursem and ma_balance:
+            uwagi.append(Uwaga("ostrzezenie", f"Płatności na karcie{etykieta} pokrywają tylko "
+                                              f"{pln_platnosci / oczekiwane_pln:.0%} wartości z cen pozycji — "
+                                              f"brakuje płatności albo faktura jest wspólna z innym kontenerem "
+                                              f"(połącz je we „Wspólnej fakturze”). Wartość towaru z cen pozycji"))
+        elif z_kursem:
             uwagi.append(Uwaga("ostrzezenie", f"Na karcie{etykieta} nie ma balance, a zaliczki pokrywają "
                                               f"mniej niż {PROG_NIEPELNE_PLATNOSCI:.0%} wartości planowanej "
                                               f"— wartość towaru z cen pozycji"))

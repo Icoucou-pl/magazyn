@@ -118,6 +118,15 @@ def test_zaplacono_mniej_niz_ceny_to_rabat_z_ostrzezeniem():
     assert any(u.poziom == "ostrzezenie" and "mniejsze niż ceny pozycji o 50,00 USD" in u.tresc for u in w.uwagi)
 
 
+def test_balance_pokrywajacy_ulamek_cen_z_proformy_nie_robi_ujemnych_gratisow():
+    # Jak kontener z łóżkami YSZP1: 14 020 USD płatności wobec ~46 850 USD z proform — to nie
+    # rabat 70%, tylko brak płatności (albo wspólna faktura). Bierzemy ceny pozycji.
+    w = tylko_towar([poz(1, 100, 1, cena_kontener=10.0)], [zap(300, 4.0, "balance")])
+    assert w.towar == 4000 and w.gratisy == 0
+    assert w.grupy[0].wartosc_zrodlo == "plan" and w.szacunek
+    assert any("pokrywają tylko 30%" in u.tresc for u in w.uwagi)
+
+
 def _z_kosztami(pozycje, platnosci, koszty):
     return policz(Kontener(lenmar_pln=0.0), [Grupa(id=0, platnosci=platnosci, kurs_ostatni=4.0, koszty=koszty)], pozycje)
 
