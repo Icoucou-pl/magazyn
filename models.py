@@ -1757,6 +1757,7 @@ class WycenaOut(BaseModel):
     konkurencja: List[KonkurencjaOut] = []
     szablony: List[WycenaSzablonOut] = []
     moze_zapisac: bool = False
+    moze_usuwac: bool = False                 # usuwanie zapisanych cen — tylko admin (security.can_delete_saved_prices)
 
 
 class SprzedazPonizejOut(BaseModel):
