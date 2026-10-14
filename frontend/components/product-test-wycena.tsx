@@ -49,6 +49,7 @@ type WycenaData = {
   sku: string; shop: string; vat: number; vat_zrodlo: string; fifo: number | null; srednia: number | null;
   koszty_bazy: KosztBazy[]; baza_domyslna: BazaKosztu | null;
   ceny_min: CenaMin[]; ceny_aktualne: CenaAktualna[]; konkurencja: Konkurent[]; szablony: Szablon[]; moze_zapisac: boolean;
+  moze_usuwac: boolean;  // usuwanie zapisanych cen — tylko admin (sprzątanie pomyłek)
 };
 
 // Kolejność kart jak w „Cena”: detal, detal, hurt, hurt — a Allegro (minimalna, sugerowana) rząd niżej.
@@ -99,7 +100,7 @@ export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
 
   return (
     <>
-      <ZapisaneCeny data={data} />
+      <ZapisaneCeny data={data} shop={shop} onZmiana={(c) => popraw((d) => ({ ...d, ceny_min: c }))} />
       <AktualnaCena key={data.sku} data={data} shop={shop} onZmiana={(a) => popraw((d) => ({ ...d, ceny_aktualne: a }))} />
       <Kalkulator key={data.sku} data={data} shop={shop}
         onCenaMin={(c) => popraw((d) => ({ ...d, ceny_min: [c, ...d.ceny_min] }))}
@@ -114,18 +115,43 @@ export default function ProductTestWycena({ sku, shop, onOpenContainer }: {
   );
 }
 
+// ── Usuwanie wpisu (tylko admin) ──────────────────────────────
+// Dwa kliknięcia jak przy konkurencji: „usuń” → „na pewno?”. Serwer kasuje wpis i oddaje świeżą listę.
+function UsunWpis<T>({ sciezka, shop, onZmiana }: { sciezka: string; shop: string; onZmiana: (lista: T) => void }) {
+  const [pytam, setPytam] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const klik = async () => {
+    if (!pytam) { setPytam(true); return; }
+    setBusy(true);
+    try {
+      onZmiana((await api.del(`${sciezka}${shop ? `?shop=${encodeURIComponent(shop)}` : ""}`)) as T);
+      toast("Usunięto wpis", "ok");
+    } catch (e) {
+      toast(`Nie udało się usunąć: ${blad(e)}`, "warning");
+      setBusy(false);
+      setPytam(false);
+    }
+  };
+  return (
+    <button type="button" onClick={klik} onBlur={() => !busy && setPytam(false)} disabled={busy}
+      style={{ ...linkBtn, fontSize: 11, color: pytam ? "var(--critical)" : "var(--text-lo)" }}>
+      {busy ? "usuwam…" : pytam ? "na pewno?" : "usuń"}
+    </button>
+  );
+}
+
 // ── Zapisane ceny (minimalne i sugerowane) ───────────────────
-function ZapisaneCeny({ data }: { data: WycenaData }) {
+function ZapisaneCeny({ data, shop, onZmiana }: { data: WycenaData; shop: string; onZmiana: (c: CenaMin[]) => void }) {
   return (
     <Box title="Zapisane ceny" hint="zapisujesz z kalkulatora poniżej · zespół widzi je w zakładce „Cena”">
       <SiatkaCen>
-        {KANALY.map((k) => <KartaMin key={k} kanal={k} data={data} />)}
+        {KANALY.map((k) => <KartaMin key={k} kanal={k} data={data} shop={shop} onZmiana={onZmiana} />)}
       </SiatkaCen>
     </Box>
   );
 }
 
-function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
+function KartaMin({ kanal, data, shop, onZmiana }: { kanal: Kanal; data: WycenaData; shop: string; onZmiana: (c: CenaMin[]) => void }) {
   const wszystkie = data.ceny_min.filter((c) => c.kanal === kanal);
   const c = wszystkie[0];
   const historia = wszystkie.slice(1);
@@ -147,7 +173,10 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
         <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <span style={{ width: 7, height: 7, borderRadius: 99, background: kropka(kanal) }} />{KANAL_NAZWA[kanal]}
         </span>
-        <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 500 }}>{c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}</span>
+        <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 500 }}>
+          {c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}
+          {data.moze_usuwac && <> · <UsunWpis key={c.id} sciezka={`/wycena/cena/${c.id}`} shop={shop} onZmiana={onZmiana} /></>}
+        </span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
         <div className="num" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
@@ -177,6 +206,7 @@ function KartaMin({ kanal, data }: { kanal: Kanal; data: WycenaData }) {
             {historia.map((h) => (
               <span key={h.id} className="num">
                 {zl2(h.cena_brutto)} zł brutto ({zl2(h.cena_netto)} netto) · {h.ustawil || "—"} · {h.ustawiono ? fmtDay(h.ustawiono) : ""} · {BAZA_NAZWA[h.baza]} {zl2(h.koszt_bazy)} zł, marża {proc1(h.marza)}
+                {data.moze_usuwac && <> · <UsunWpis sciezka={`/wycena/cena/${h.id}`} shop={shop} onZmiana={onZmiana} /></>}
               </span>
             ))}
           </div>
@@ -219,7 +249,10 @@ function AktualnaCena({ data, shop, onZmiana }: { data: WycenaData; shop: string
             <>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", ...hint }}>
                 <span>Obowiązuje</span>
-                <span>{c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}</span>
+                <span>
+                  {c.ustawil || "—"} · {c.ustawiono ? fmtDay(c.ustawiono) : ""}
+                  {data.moze_usuwac && <> · <UsunWpis key={c.id} sciezka={`/wycena/cena-aktualna/${c.id}`} shop={shop} onZmiana={onZmiana} /></>}
+                </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
                 <div className="num" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
@@ -240,7 +273,10 @@ function AktualnaCena({ data, shop, onZmiana }: { data: WycenaData; shop: string
                   <summary style={{ cursor: "pointer", ...hint }}>Historia ({historia.length})</summary>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6, ...hint }}>
                     {historia.map((h) => (
-                      <span key={h.id} className="num">{zl2(h.cena_brutto)} zł brutto · {h.ustawil || "—"} · {h.ustawiono ? fmtDay(h.ustawiono) : ""}</span>
+                      <span key={h.id} className="num">
+                        {zl2(h.cena_brutto)} zł brutto · {h.ustawil || "—"} · {h.ustawiono ? fmtDay(h.ustawiono) : ""}
+                        {data.moze_usuwac && <> · <UsunWpis sciezka={`/wycena/cena-aktualna/${h.id}`} shop={shop} onZmiana={onZmiana} /></>}
+                      </span>
                     ))}
                   </div>
                 </details>

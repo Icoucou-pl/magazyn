@@ -315,6 +315,18 @@ async def require_pliki(user: CurrentUser = Depends(get_current_user)) -> Curren
     return user
 
 
+def can_delete_saved_prices(user: Optional[CurrentUser]) -> bool:
+    """Usuwanie wpisów z zapisanych cen produktu (minimalne / sugerowane / aktualna) — sprzątanie pomyłek.
+    Z automatu rola ADMIN i superadmin; celowo bez ptaszka w ROLE_PERMS (decyzja właściciela)."""
+    return bool(user) and (user.role == "ADMIN" or is_super_admin(user))
+
+
+async def require_saved_prices_delete(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_delete_saved_prices(user):
+        raise HTTPException(403, "Zapisane ceny może usuwać tylko administrator")
+    return user
+
+
 async def require_super_admin_403(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Superadmin, z czytelnym 403 dla innych (np. ręczna stawka cła w słowniku)."""
     if not is_super_admin(user):

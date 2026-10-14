@@ -9,7 +9,9 @@ Dostęp jak dawniej do „Ceny”: „test-wycena” i zapisy — uprawnienia ce
                                             konkurencja, szablony (jak pierwsza „Cena”)
   PUT    /api/wycena/cena                   zapis ceny z kalkulatora: minimalna albo sugerowana
                                             (detal, dropy/hurt, allegro — services/wycena.py → KANALY)
+  DELETE /api/wycena/cena/{id}              usunięcie wpisu zapisanej ceny (tylko admin — sprzątanie pomyłek)
   PUT    /api/wycena/cena-aktualna          aktualna cena sprzedaży detal (brutto, wpisana ręcznie)
+  DELETE /api/wycena/cena-aktualna/{id}     usunięcie wpisu aktualnej ceny (tylko admin)
   POST   /api/wycena/konkurencja            cena u konkurencji (ten sam sklep = nowa cena, stara do historii)
   DELETE /api/wycena/konkurencja/{id}       usunięcie sklepu z listy
   POST   /api/wycena/szablony               nowy szablon kalkulatora
@@ -42,9 +44,10 @@ from models import (
 )
 from routers.cena import _policz, _zapisane
 from security import (
-    allowed_shops, can_edit_product_price, can_use_sales_calculator, can_view_price_summary_competition,
+    allowed_shops, can_delete_saved_prices, can_edit_product_price, can_use_sales_calculator, can_view_price_summary_competition,
     can_view_price_summary_cost,
     has_perm, require_price_summary_view, require_product_price_edit, require_product_price_view,
+    require_saved_prices_delete,
     resolve_shop,
 )
 from services.cena import vat_produktu
@@ -340,6 +343,7 @@ async def wycena(sku: str = Query(..., min_length=1), shop: str = Query(""),
         ceny_min=await _ceny_min(db, p.sku), ceny_aktualne=await _ceny_aktualne(db, p.sku),
         konkurencja=await _konkurencja(db, p.sku),
         szablony=await _szablony(db), moze_zapisac=can_edit_product_price(user),
+        moze_usuwac=can_delete_saved_prices(user),
     )
 
 
@@ -387,6 +391,26 @@ async def zapisz_cene(body: CenaMinimalnaIn, db: AsyncSession = Depends(get_db),
     return nowa
 
 
+@router.delete("/wycena/cena/{wpis_id}", response_model=List[CenaMinimalnaOut])
+async def usun_cene(wpis_id: int, shop: str = Query(""), db: AsyncSession = Depends(get_db),
+                    user: CurrentUser = Depends(require_saved_prices_delete)):
+    """Kasuje jeden wpis (pomyłkę) — z historii albo ten obowiązujący; wtedy obowiązuje poprzedni.
+    Kasujemy naprawdę, bo to sprzątanie śmietnika; ślad zostaje w dzienniku audytu."""
+    r = (await db.execute(text(f"SELECT * FROM {T_MIN} WHERE id = :id"), {"id": wpis_id})).mappings().first()
+    if not r:
+        raise HTTPException(404, "Nie ma takiego wpisu")
+    p = await get_product(db, r["sku"], resolve_shop(shop, user), allowed=allowed_shops(user))
+    await db.execute(text(f"DELETE FROM {T_MIN} WHERE id = :id"), {"id": wpis_id})
+    await db.commit()
+    c = _cena_min(r)
+    jak = "brutto" if c.kanal in KANALY_BRUTTO else "netto"
+    kwota = c.cena_brutto if jak == "brutto" else c.cena_netto
+    audit.note(f"usunął wpis „{KANAL_NAZWA.get(c.kanal, c.kanal)}” produktu {p.sku}: {f_zl(kwota)} {jak}"
+               f" (ustawił {c.ustawil or '—'})",
+               area="Ceny", resource_type="product", resource_id=p.sku)
+    return await _ceny_min(db, p.sku)
+
+
 # ── Aktualna cena sprzedaży (detal, brutto, wpisana ręcznie) ─────────────
 @router.put("/wycena/cena-aktualna", response_model=List[CenaAktualnaOut])
 async def zapisz_cene_aktualna(body: CenaAktualnaIn, db: AsyncSession = Depends(get_db),
@@ -411,6 +435,22 @@ async def zapisz_cene_aktualna(body: CenaAktualnaIn, db: AsyncSession = Depends(
     audit.note(f"zapisał „Aktualna cena sprzedaży detal” produktu {p.sku}: {f_zl(brutto)} brutto"
                + (f" (było {bylo})" if stare else ""),
                changes=[{"pole": "Aktualna cena sprzedaży detal (brutto)", "bylo": bylo, "jest": f_zl(brutto)}],
+               area="Ceny", resource_type="product", resource_id=p.sku)
+    return await _ceny_aktualne(db, p.sku)
+
+
+@router.delete("/wycena/cena-aktualna/{wpis_id}", response_model=List[CenaAktualnaOut])
+async def usun_cene_aktualna(wpis_id: int, shop: str = Query(""), db: AsyncSession = Depends(get_db),
+                             user: CurrentUser = Depends(require_saved_prices_delete)):
+    """Jak usun_cene: kasuje jeden wpis aktualnej ceny sprzedaży (tylko admin)."""
+    r = (await db.execute(text(f"SELECT * FROM {T_AKT} WHERE id = :id"), {"id": wpis_id})).mappings().first()
+    if not r:
+        raise HTTPException(404, "Nie ma takiego wpisu")
+    p = await get_product(db, r["sku"], resolve_shop(shop, user), allowed=allowed_shops(user))
+    await db.execute(text(f"DELETE FROM {T_AKT} WHERE id = :id"), {"id": wpis_id})
+    await db.commit()
+    audit.note(f"usunął wpis „Aktualna cena sprzedaży detal” produktu {p.sku}: {f_zl(float(r['cena_brutto']))} brutto"
+               f" (ustawił {r['ustawil'] or '—'})",
                area="Ceny", resource_type="product", resource_id=p.sku)
     return await _ceny_aktualne(db, p.sku)
 

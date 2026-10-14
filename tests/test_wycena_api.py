@@ -262,3 +262,41 @@ def test_zapis_aktualnej_ceny_liczy_netto(klient, monkeypatch):
     (_, p), = [(q, p) for q, p in zapytania if "INSERT INTO app_cena_aktualna" in q]
     assert p["sku"] == "SZP3" and p["brutto"] == 5999 and p["vat"] == 8.0
     assert p["netto"] == round(5999 / 1.08, 2)
+
+
+# ── Usuwanie zapisanych cen: tylko admin, bez ptaszka w uprawnieniach ────
+USUN = ["/api/wycena/cena/1", "/api/wycena/cena-aktualna/1"]
+
+
+@pytest.mark.parametrize("adres", USUN)
+@pytest.mark.parametrize("role,perms", [
+    ("VIEWER", None), ("IMPORT", None),
+    # Nawet pełne uprawnienia ceny nie dają kasowania — to tylko rola ADMIN.
+    ("VIEWER", {"viewProductPrice": True, "editProductPrice": True, "viewFinancials": True}),
+])
+def test_usuwanie_cen_bez_admina_403(klient, adres, role, perms):
+    assert klient(role, perms).delete(adres).status_code == 403
+
+
+@pytest.mark.parametrize("adres", USUN)
+@pytest.mark.parametrize("role,email", [("ADMIN", "a@firma.pl"), ("VIEWER", SZEF)])
+def test_usuwanie_cen_admin_i_superadmin_przechodza(klient, adres, role, email):
+    class Baza:
+        async def execute(self, *a, **k):
+            raise _DoszloDoBazy()
+
+    async def db():
+        yield Baza()
+    k = klient(role, email=email)
+    app.dependency_overrides[get_db] = db
+    with pytest.raises(_DoszloDoBazy):
+        k.delete(adres)
+
+
+def test_flaga_usuwania_tylko_dla_admina(monkeypatch):
+    from security import can_delete_saved_prices
+    monkeypatch.setattr(settings, "SUPER_ADMIN_EMAIL", SZEF)
+    assert can_delete_saved_prices(CurrentUser(id=1, email="a@f.pl", role="ADMIN"))
+    assert can_delete_saved_prices(CurrentUser(id=1, email=SZEF, role="VIEWER"))
+    assert not can_delete_saved_prices(CurrentUser(id=1, email="z@f.pl", role="VIEWER",
+                                                   perms={"editProductPrice": True, "viewFinancials": True}))
