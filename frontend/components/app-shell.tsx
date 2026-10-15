@@ -37,7 +37,7 @@ import { getUser, logout, setUser, api, markActivity, isIdleExpired } from "@/li
 import { UserContext as RawUserContext } from "@/lib/permissions";
 import { ShopProvider } from "@/lib/shop";
 import {
-  parsePath, pathForContainer, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST, PATH_ACCOUNT,
+  parsePath, pathForContainer, pathForFolder, pathForProduct, pathForView, pathForManufacturer, PATH_MANUFACTURERS_LIST, PATH_ACCOUNT,
   pathForContainerPage, containerSlug,
 } from "@/lib/routes";
 import LoginScreen from "@/components/login";
@@ -139,7 +139,7 @@ export default function AppShell() {
 
   // Widok, deep-link do produktu i do kontenera czytamy z adresu.
   // Nie ma tu useState — dwa źródła prawdy rozjechałyby się przy „wstecz".
-  const { view, sku: pendingProductSku, containerId: pendingContainerId, mfrName, settingsSection, containerKey } = parsePath(pathname);
+  const { view, sku: pendingProductSku, containerId: pendingContainerId, mfrName, settingsSection, containerKey, folderId } = parsePath(pathname);
   // Menu nie ma pozycji „Producenci" — na karcie producenta podświetlamy Produkty,
   // bo wchodzi się na nią z karty produktu.
   // Karta kontenera podświetla Kontenery.
@@ -364,6 +364,8 @@ export default function AppShell() {
         { label: mfrName, path: pathForManufacturer(mfrName) },
       ];
     }
+    // Z Plików na kartę kontenera: ogniwo „Pliki” prowadzi z powrotem do tego samego folderu.
+    if (view === "files") return [{ label: "Pliki", path: pathname }];
     if (view === "containerPage" && containerKey) {
       return [
         { label: "Kontenery", path: pathForView("containers") },
@@ -620,7 +622,11 @@ export default function AppShell() {
         ) : view === "dropy" ? (
           <DropyView/>
         ) : view === "files" ? (
-          <FilesView onOpenContainer={(key) => openContainerPage(key)} />
+          <FilesView
+            folderId={folderId}
+            onFolder={(fid, zamien) => (zamien ? router.replace(pathForFolder(fid)) : router.push(pathForFolder(fid)))}
+            onOpenContainer={(key) => openContainerPage(key)}
+          />
         ) : view === "settings" ? (
           <SettingsView
             // key: wejście z adresu na inną podsekcję (np. „Moje konto” z menu pod avatarem, gdy

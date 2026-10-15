@@ -23,6 +23,8 @@ export type Route = {
   settingsSection: string | null;
   /** Karta kontenera (/kontenery/MSDU6911513 albo /kontenery/SK2605042) — patrz containerSlug. */
   containerKey: string | null;
+  /** Otwarty folder w Plikach (/pliki/123) — w adresie, żeby „wstecz" cofało o folder. */
+  folderId: number | null;
 };
 
 // Segment adresu → identyfikator widoku.
@@ -84,6 +86,11 @@ export const PATH_MANUFACTURERS_LIST = "/ustawienia/producenci";
 /** Ustawienia → Moje konto (hasło, imię i nazwisko, sesje). */
 export const PATH_ACCOUNT = "/ustawienia/konto";
 
+/** Folder w Plikach; null = główny poziom („/pliki"). */
+export function pathForFolder(id: number | null): string {
+  return id == null ? "/pliki" : `/pliki/${id}`;
+}
+
 export function pathForContainer(id: number): string {
   return `/kontenery/${id}`;
 }
@@ -126,7 +133,7 @@ export function containerSlug(c: SlugSource): string {
  * tak samo jak przy wejściu na „/". Stare linki nie wywalają aplikacji.
  */
 export function parsePath(pathname: string | null): Route {
-  const pusty: Route = { view: DEFAULT_VIEW, sku: null, containerId: null, mfrName: null, settingsSection: null, containerKey: null };
+  const pusty: Route = { view: DEFAULT_VIEW, sku: null, containerId: null, mfrName: null, settingsSection: null, containerKey: null, folderId: null };
   if (!pathname) return pusty;
 
   const segments = pathname.split("/").filter(Boolean);
@@ -153,6 +160,9 @@ export function parsePath(pathname: string | null): Route {
     // Sam „/producenci" bez nazwy nie ma własnego widoku — to lista w Ustawieniach.
     if (!drugi) return { ...r, view: "settings", settingsSection: "manufacturers" };
     return { ...r, mfrName: drugi };
+  }
+  if (view === "files") {
+    return { ...r, folderId: drugi != null && /^\d+$/.test(drugi) ? Number(drugi) : null };
   }
   if (view === "settings") {
     return { ...r, settingsSection: segments[1] ? (SETTINGS_SECTION_BY_SEGMENT[segments[1]] ?? null) : null };

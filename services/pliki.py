@@ -333,12 +333,26 @@ PLIK_KOLUMNY = ("id, folder_id, nazwa, content_type, rozmiar, container_id, poka
                 "dodano_z_kontenera, dodano, dodal")
 
 
+_RODZAJ_KOLEJNOSC = {"producenci": 0, "producent": 1, "reczny": 2, "kontener": 3}
+
+
+def _kolejnosc_folderu(f, status: Optional[str]) -> tuple:
+    """Kolejność w folderze: najpierw „Producenci”, producenci i foldery ręczne (po nazwie),
+    potem kontenery — niedostarczone na górze, dostarczone na dole, w obu grupach
+    najpóźniejsza ETA najwyżej (tak chce import: to, co płynie, jest pod ręką)."""
+    rodzaj = _RODZAJ_KOLEJNOSC.get(f["rodzaj"], 9)
+    if f["rodzaj"] != "kontener":
+        return (rodzaj, 0, 0, (f["nazwa"] or "").lower())
+    eta = f["eta_date"].toordinal() if f["eta_date"] else 0
+    return (rodzaj, 1 if status == "DELIVERED" else 0, -eta, (f["nazwa"] or "").lower())
+
+
 async def lista_folderu(db: AsyncSession, fid: Optional[int]) -> dict:
     """Zawartość folderu (None = poziom główny): podfoldery + pliki, bez kosza."""
     gdzie = "f.parent_id = :id" if fid is not None else "f.parent_id IS NULL"
     foldery = (await db.execute(text(f"""
         SELECT f.id, f.nazwa, f.rodzaj, f.manufacturer_id, f.container_id, f.utworzono, f.utworzyl,
-               c.container_number, c.order_number, c.status, c.eta_date, c.order_date,
+               c.container_number, c.order_number, c.status, c.eta_date, c.order_date, c.expected_delivery_date,
                m.color AS kolor,
                (SELECT COUNT(*) FROM {P} p WHERE p.folder_id = f.id AND p.usuniety_at IS NULL) AS ile_plikow,
                (SELECT COUNT(*) FROM {F} x WHERE x.parent_id = f.id AND x.usuniety_at IS NULL) AS ile_folderow
@@ -346,9 +360,13 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int]) -> dict:
           LEFT JOIN {settings.TABLE_CONTAINERS} c ON c.id = f.container_id
           LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id
          WHERE {gdzie} AND f.usuniety_at IS NULL
-         ORDER BY CASE f.rodzaj WHEN 'producenci' THEN 0 WHEN 'producent' THEN 1 WHEN 'reczny' THEN 2 ELSE 3 END,
-                  c.order_date DESC NULLS LAST, LOWER(f.nazwa)
+         ORDER BY LOWER(f.nazwa)
     """), {"id": fid})).mappings().all()
+    # Status jak w zakładce Kontenery (po odprawie kontener sam staje się „Dostarczony”).
+    from services.containers import compute_effective_status
+    status = {f["id"]: compute_effective_status(f["status"], f["eta_date"], f["expected_delivery_date"])[0]
+              for f in foldery if f["container_id"] and f["status"]}
+    foldery = sorted(foldery, key=lambda f: _kolejnosc_folderu(f, status.get(f["id"])))
     gdzie_p = "folder_id = :id" if fid is not None else "folder_id IS NULL"
     pliki = (await db.execute(text(f"""
         SELECT {PLIK_KOLUMNY} FROM {P} WHERE {gdzie_p} AND usuniety_at IS NULL ORDER BY LOWER(nazwa)
@@ -359,7 +377,8 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int]) -> dict:
             "automatyczny": jest_automatyczny(f["rodzaj"], f["manufacturer_id"], f["container_id"]),
             "manufacturer_id": f["manufacturer_id"], "container_id": f["container_id"], "kolor": f["kolor"],
             "kontener": ({"id": f["container_id"], "container_number": f["container_number"],
-                          "order_number": f["order_number"], "status": f["status"], "eta_date": f["eta_date"]}
+                          "order_number": f["order_number"], "status": status.get(f["id"], f["status"]),
+                          "eta_date": f["eta_date"]}
                          if f["container_id"] else None),
             "ile_plikow": int(f["ile_plikow"]), "ile_folderow": int(f["ile_folderow"]),
             "utworzono": f["utworzono"], "utworzyl": f["utworzyl"],
