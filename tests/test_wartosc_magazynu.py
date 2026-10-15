@@ -60,14 +60,17 @@ def test_ruch_spoza_katalogu_i_z_przyszlosci():
 class _Db:
     """Atrapa bazy: zapamiętuje zapytania i oddaje wiersze wg tabeli w zapytaniu."""
 
-    def __init__(self, sprzedaz=(), kontenery=(), fakturownia=()):
-        self.wiersze = {"sprzedaz": list(sprzedaz), "kontenery": list(kontenery), "fakturownia": list(fakturownia)}
+    def __init__(self, sprzedaz=(), kontenery=(), fakturownia=(), siostry=()):
+        self.wiersze = {"sprzedaz": list(sprzedaz), "kontenery": list(kontenery),
+                        "fakturownia": list(fakturownia), "siostry": list(siostry)}
         self.zapytania = []
 
     async def execute(self, sql, params=None):
         s = str(sql)
         if wm.TABELA_RUCHY in s:
             rodzaj = "fakturownia"
+        elif wm.TABELA_PRZYJECIA_SUBIEKT in s:
+            rodzaj = "siostry"
         elif settings.TABLE_CONTAINER_ITEMS in s:
             rodzaj = "kontenery"
         else:
@@ -99,12 +102,12 @@ def test_veluxa_tylko_z_fakturowni(monkeypatch):
     assert [p["units"] for p in w["points"]] == [10, 3, 3]
 
 
-def test_amh_bez_zmian_bez_fakturowni(monkeypatch):
+def test_amh_bez_fakturowni(monkeypatch):
     db = _Db(sprzedaz=[{"sku_norm": "a", "sale_date": _d(1), "qty": 2}],
              kontenery=[{"sku_norm": "a", "deliv_date": _d(2), "qty": 5}])
     w = _uruchom(monkeypatch, db, "amh", [_p("A", 3)])
-    assert [z[0] for z in db.zapytania] == ["sprzedaz", "kontenery"]
-    assert all(z[2]["shop"] == "amh" for z in db.zapytania)
+    assert [z[0] for z in db.zapytania] == ["sprzedaz", "kontenery", "siostry"]
+    assert all(z[2]["shop"] == "amh" for z in db.zapytania[:2])
     assert [p["units"] for p in w["points"]] == [5, 3, 3]  # d−2: 3 + 2 (sprzedaż z d−1 wraca); dostawa z d−2 cofa się dopiero na d−3
 
 
@@ -119,3 +122,23 @@ def test_wszystkie_firmy_amh_z_sellasista_reszta_z_fakturowni(monkeypatch):
     # Fakturownia: wszystkie firmy poza AMH; przekazania w grupie odfiltrowuje warunek na :shop = ''
     assert db.zapytania[2][2]["shop"] == ""
     assert [p["units"] for p in w["points"]] == [7, 2, 2]
+
+
+def test_amh_zakup_od_veluxy_obniza_przeszlosc(monkeypatch):
+    """Towar kupiony od Veluxy i sprzedany: bez przyjęcia przeszłość AMH byłaby zawyżona."""
+    # Wczoraj kupione od Veluxy 4 szt, dziś sprzedane. Stan na koniec dnia: dziś 0,
+    # wczoraj 4, przedwczoraj 0 (towaru jeszcze nie było). Bez przyjęcia wyszłoby 4.
+    db = _Db(sprzedaz=[{"sku_norm": "a", "sale_date": DZIS, "qty": 4}],
+             siostry=[{"sku_norm": "a", "d": _d(1), "qty": 4}])
+    w = _uruchom(monkeypatch, db, "amh", [_p("A", 0)])
+    assert [p["units"] for p in w["points"]] == [0, 4, 0]
+    _, sql, params = db.zapytania[2]
+    assert params["od"] == _d(2) and params["magazyn"] == wm.MAGAZYN_PODSTAWOWY_AMH
+    assert "dostawca_nip" in sql and "ZAKUP" in sql
+
+
+def test_zakupy_od_siostr_tylko_na_zakladce_amh(monkeypatch):
+    for shop in ("", "veluxa", "acti"):
+        db = _Db()
+        _uruchom(monkeypatch, db, shop, [_p("A", 1)])
+        assert "siostry" not in [z[0] for z in db.zapytania], shop
