@@ -38,6 +38,8 @@ type LotDraft = {
 };
 const emptyAdvance = (cur = "USD"): AdvanceDraft => ({ procent: "", kwota: "", waluta: cur, termin: "", data: "" });
 const numStrTop = (n?: number | null) => (n == null ? "" : String(n));
+// Klucz SKU do porównań: bez spacji na brzegach i wielkości liter (jak backendowe get_product).
+const skuKey = (sku: string) => (sku || "").trim().toLowerCase();
 // Zaliczki drafty z danych z backendu; fallback na legacy pojedynczą zaliczkę (dane sprzed migracji).
 const advDraftsFrom = (src: {
   waluta_towaru?: string | null; advances?: { procent?: number | null; kwota?: number | null; waluta?: string | null; termin?: string | null; data?: string | null }[] | null;
@@ -289,10 +291,14 @@ export default function ContainerFormModal({
   const [busy, setBusy] = useState(false);
   const [coverMonths, setCoverMonths] = useState("6");  // horyzont pokrycia dla autosugestii (mies.)
 
+  // SKU porównujemy bez wielkości liter: pozycja kontenera bywa zapisana jako „EFG1k",
+  // a katalog zwraca „EFG1K" (to samo, co robi backendowe get_product). Przy ścisłym
+  // porównaniu edycja kontenera pokazywała w takim wierszu „— wybierz produkt —",
+  // choć towar był na kontenerze.
   const productBySku = useMemo(() => {
     const m = new Map<string, Product>();
-    products.forEach((p) => m.set(p.sku, p));
-    return m;
+    products.forEach((p) => m.set(skuKey(p.sku), p));
+    return { get: (sku: string) => m.get(skuKey(sku)) };
   }, [products]);
 
   const containerType = containerTypes.find((t) => String(t.id) === containerTypeId);
@@ -302,11 +308,11 @@ export default function ContainerFormModal({
   // i reszta śmieciowych SKU zaśmiecały rozwijaną listę. Wyjątek: pozycje już wpisane
   // w kontenerze zostają na liście, żeby edycja starego kontenera nie gubiła SKU.
   const legacySkus = useMemo(
-    () => new Set((initial?.items || []).map((i) => i.sku)),
+    () => new Set((initial?.items || []).map((i) => skuKey(i.sku))),
     [initial],
   );
   const selectableProducts = useMemo(
-    () => products.filter((p) => p.is_favorite || p.is_sample || legacySkus.has(p.sku)),
+    () => products.filter((p) => p.is_favorite || p.is_sample || legacySkus.has(skuKey(p.sku))),
     [products, legacySkus],
   );
 
@@ -396,11 +402,11 @@ export default function ContainerFormModal({
     if (capacity <= 0) { toast("Najpierw wybierz typ kontenera — potrzebna pojemność CBM", "warning"); return; }
     const months = Math.max(0.5, parseFloat(coverMonths.replace(",", ".")) || 6);
 
-    const usedSkus = new Set(items.map((i) => i.sku).filter(Boolean));
+    const usedSkus = new Set(items.map((i) => skuKey(i.sku)).filter(Boolean));
     const mfrId = !isConsolidated && manufacturerId ? Number(manufacturerId) : null;
     // Ta sama pula co w rozwijanej liście (obserwowane), ale bez sampli (status SAMPLE) — próbek się
     // nie dozamawia. NOWOŚĆ (sampel od magazynu w drodze) wchodzi normalnie.
-    const pool = selectableProducts.filter((p) => p.product_status !== "SAMPLE" && !usedSkus.has(p.sku) && (mfrId === null || p.manufacturer_id === mfrId));
+    const pool = selectableProducts.filter((p) => p.product_status !== "SAMPLE" && !usedSkus.has(skuKey(p.sku)) && (mfrId === null || p.manufacturer_id === mfrId));
 
     if (capacity - totalCbm <= 1e-6) { toast("Kontener już pełny — brak wolnego miejsca na autouzupełnienie", "info"); return; }
 
@@ -540,11 +546,11 @@ export default function ContainerFormModal({
     return [...new Set(ids.filter(Boolean))].map((id) => {
       const firmy = new Set(items
         .filter((it) => it.sku && (!isConsolidated || lots[Number(it.lotRef)]?.manufacturer_id === id))
-        .map((it) => products.find((p) => p.sku === it.sku)?.firma_name || "AMH"));
+        .map((it) => productBySku.get(it.sku)?.firma_name || "AMH"));
       const name = manufacturers.find((m) => String(m.id) === id)?.name || `#${id}`;
       return { id, name, label: firmy.size ? `${name} — ${[...firmy].join(", ")}` : name };
     });
-  }, [isConsolidated, lots, manufacturerId, manufacturers, items, products]);
+  }, [isConsolidated, lots, manufacturerId, manufacturers, items, productBySku]);
 
   const onFiles = (files: File[]) => {
     const ok = files.filter((f) => f && f.size <= MAX);
@@ -1280,7 +1286,7 @@ function ItemRow({
           </select>
         )}
 
-        <select value={item.sku} onChange={(e) => onChange("sku", e.target.value)} disabled={disabled || lotFirst} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%", opacity: lotFirst ? 0.5 : 1 }}>
+        <select value={item.product?.sku ?? item.sku} onChange={(e) => onChange("sku", e.target.value)} disabled={disabled || lotFirst} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12, width: "100%", opacity: lotFirst ? 0.5 : 1 }}>
           <option value="">{lotFirst ? "— wybierz lot powyżej —" : "— wybierz produkt —"}</option>
           {sortedProducts.map((p) => (
             <option key={p.sku} value={p.sku}>
