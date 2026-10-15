@@ -533,10 +533,18 @@ export default function ContainerFormModal({
 
   // Producenci kontenera — plik z karty ląduje w Plikach w folderze kontenera u jednego z nich.
   // Wybór pokazujemy tylko w skonsolidowanym z partiami od różnych producentów.
+  // Przy nazwie producenta — czyj towar wiezie (z firm SKU jego partii; bez firmy = AMH),
+  // żeby w skonsolidowanym od razu było widać, do którego folderu idzie np. faktura Veluxy.
   const attMfrs = useMemo(() => {
     const ids = isConsolidated ? lots.map((l) => l.manufacturer_id) : [manufacturerId];
-    return [...new Set(ids.filter(Boolean))].map((id) => ({ id, name: manufacturers.find((m) => String(m.id) === id)?.name || `#${id}` }));
-  }, [isConsolidated, lots, manufacturerId, manufacturers]);
+    return [...new Set(ids.filter(Boolean))].map((id) => {
+      const firmy = new Set(items
+        .filter((it) => it.sku && (!isConsolidated || lots[Number(it.lotRef)]?.manufacturer_id === id))
+        .map((it) => products.find((p) => p.sku === it.sku)?.firma_name || "AMH"));
+      const name = manufacturers.find((m) => String(m.id) === id)?.name || `#${id}`;
+      return { id, name, label: firmy.size ? `${name} — ${[...firmy].join(", ")}` : name };
+    });
+  }, [isConsolidated, lots, manufacturerId, manufacturers, items, products]);
 
   const onFiles = (files: File[]) => {
     const ok = files.filter((f) => f && f.size <= MAX);
@@ -544,7 +552,8 @@ export default function ContainerFormModal({
     const additions: AttDraft[] = ok.map((f) => ({
       id: Date.now() + Math.floor(Math.random() * 1e6),
       filename: f.name, file_type: guessType(f.name), file_size: humanSize(f.size),
-      uploaded_at: new Date().toISOString(), _isNew: true, _file: f, _mfr: attMfrs[0]?.id,
+      // Kilku producentów → bez domyślnego: wybór jest obowiązkowy (kontrola w save).
+      uploaded_at: new Date().toISOString(), _isNew: true, _file: f, _mfr: attMfrs.length === 1 ? attMfrs[0].id : "",
     }));
     if (additions.length) setAttachments((prev) => [...prev, ...additions]);
   };
@@ -559,6 +568,10 @@ export default function ContainerFormModal({
 
     const validItems = items.filter((i) => i.sku && (parseInt(i.quantity, 10) || 0) > 0);
     if (validItems.length === 0) { fail("Dodaj co najmniej jedną pozycję (SKU + ilość)"); return; }
+    if (attMfrs.length > 1 && attachments.some((a) => a._isNew && !attMfrs.some((m) => m.id === a._mfr))) {
+      fail("Przy nowym załączniku wybierz producenta — do jego folderu trafi plik w zakładce Pliki");
+      return;
+    }
 
     if (isConsolidated) {
       if (lots.length < 1) { fail("Skonsolidowany kontener wymaga przynajmniej jednego lotu"); return; }
@@ -1037,8 +1050,10 @@ export default function ContainerFormModal({
                       )}
                       {att._isNew && attMfrs.length > 1 && (
                         <select value={att._mfr || ""} onChange={(e) => setAttMfr(key, e.target.value)} title="Do folderu którego producenta w Plikach"
-                          style={{ ...inputStyle, width: "auto", padding: "2px 6px", fontSize: 11, flexShrink: 0 }}>
-                          {attMfrs.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                          style={{ ...inputStyle, width: "auto", maxWidth: 220, padding: "2px 6px", fontSize: 11, flexShrink: 0,
+                                   borderColor: att._mfr ? undefined : "var(--critical)", color: att._mfr ? undefined : "var(--critical)" }}>
+                          <option value="" disabled>— czyj plik? —</option>
+                          {attMfrs.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                         </select>
                       )}
                       {!att._isNew && isConsolidated && att.producent && <span style={{ fontSize: 10, color: "var(--text-lo)", flexShrink: 0 }}>{att.producent}</span>}

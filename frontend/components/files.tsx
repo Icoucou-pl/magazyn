@@ -14,6 +14,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { api, download } from "@/lib/api";
 import { canSeeFiles, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
+import { useShop } from "@/lib/shop";
 import { toast } from "./toast";
 import { I, Card, CONTAINER_STATUS_META } from "./ui";
 import { Portal } from "./products-ui";
@@ -173,6 +174,8 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
   onOpenContainer?: (key: string) => void;
 }) {
   const user = useUser();
+  // Przełącznik firm u góry: przy AMH widać tylko producentów i kontenery z towarem AMH.
+  const { shop } = useShop();
   // Zawartość odwiedzonych folderów — powrót do folderu pokazuje się od razu, a świeże dane
   // dociągają się w tle. Najechanie na folder ładuje go z wyprzedzeniem.
   const [cache, setCache] = useState<Record<string, Listing>>(() => Object.fromEntries(pamiecFolderow));
@@ -192,10 +195,10 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
 
   const [odswiez, setOdswiez] = useState(0);
   const load = useCallback(() => { setLadowanie(true); setOdswiez((n) => n + 1); }, []);
-  const klucz = (fid: number | null) => String(fid ?? "root");
+  const klucz = (fid: number | null) => `${shop || "wszystkie"}:${fid ?? "root"}`;
   const data = cache[klucz(folderId)] ?? null;
   const pobierzListe = (fid: number | null) =>
-    api.get(`/pliki/lista${fid != null ? `?folder_id=${fid}` : ""}`)
+    api.get(`/pliki/lista?shop=${encodeURIComponent(shop)}${fid != null ? `&folder_id=${fid}` : ""}`)
       .then((r) => {
         pamiecFolderow.set(klucz(fid), r as Listing);
         setCache((c) => ({ ...c, [klucz(fid)]: r as Listing }));
@@ -210,7 +213,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
         if (folderId != null) onFolder(null, true);
       })
       .finally(() => setLadowanie(false));
-  }, [folderId, odswiez]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [folderId, odswiez, shop]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { api.get("/pliki/status").then((s) => setStatus(s as Status)).catch(() => {}); }, []);
 
   // Wyszukiwarka: od 2 znaków, z małym opóźnieniem, żeby nie strzelać przy każdej literze.
@@ -220,10 +223,10 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
   useEffect(() => {
     if (qq.length < 2) return;
     const h = setTimeout(() => {
-      api.get(`/pliki/szukaj?q=${encodeURIComponent(qq)}`).then((r) => setWynikiSzukania(r as typeof wynikiSzukania)).catch(err);
+      api.get(`/pliki/szukaj?q=${encodeURIComponent(qq)}&shop=${encodeURIComponent(shop)}`).then((r) => setWynikiSzukania(r as typeof wynikiSzukania)).catch(err);
     }, 300);
     return () => clearTimeout(h);
-  }, [qq, odswiez]);
+  }, [qq, odswiez, shop]);
 
   const wKontenerze = !!data?.sciezka.some((c) => c.rodzaj === "kontener");
   const idz = (fid: number | null) => {
