@@ -375,8 +375,10 @@ async def transit_paid_history(days: int = 90, shop: str = "",
 
     Kontener znika z tej serii dokładnie w dniu wejścia na magazyn (kaskada
     delivered_date → expected_delivery_date → ETA + odprawa, ta sama, której używa
-    reszta aplikacji). Tego samego dnia jego towar wchodzi do /stock-value-history,
+    reszta aplikacji). Dla AMH tego samego dnia jego towar wchodzi do /stock-value-history,
     więc nie ma okna, w którym byłby policzony dwa razy ani takiego, w którym znika.
+    Acti/Veluxa: tam wykres bierze przyjęcie z dziennika Fakturowni (PZ / przesunięcie
+    z „w drodze"), więc data może się rozjechać o kilka dni z datą kontenera.
 
     Przypisanie do firmy i przeliczenie na PLN — identyczne jak w /cashflow/ledger:
     firma o największym udziale wartości w locie/kontenerze, kurs NBP z dnia

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from audit import log_audit, nazwa_kontenera
 from audit_opisy import f_data, f_kwota
-from config import settings, INCLUDED_STATUS_FILTER
+from config import settings
 from database import get_db
 from models import CurrentUser
 from security import (
@@ -19,6 +19,7 @@ from security import (
 )
 from services.products import fetch_products
 from services.containers import fetch_containers
+from services.wartosc_magazynu import historia_wartosci
 
 router = APIRouter(prefix="/api", tags=["calendar"])
 
@@ -629,150 +630,16 @@ async def cashflow_ledger(
 @router.get("/stock-value-history")
 async def stock_value_history(days: int = 90, shop: str = "", favorites_only: bool = False, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """
-    Symulacja wartości magazynu w czasie - bazuje na obecnym stanie + sprzedaży.
-    To jest aproksymacja, bo Subiekt nie trzyma historii stanu - rekonstruujemy z danych zamówień.
-    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = wartość i stan tylko danego magazynu
-    (sprzedaż wstecz filtrowana po sklepie; dostawy doliczane tylko dla magazynu, który fizycznie ma dany SKU).
+    Wartość magazynu w czasie — odtwarzana wstecz od dzisiejszego stanu (services/wartosc_magazynu.py).
+    AMH: sprzedaż Sellasista + kontenery; Acti/Veluxa: dziennik ruchów Fakturowni.
+    shop="" = wszystkie sklepy; "amh"/"acti"/"veluxa" = wartość i stan tylko danego magazynu.
 
     favorites_only=True → wartość i sztuki liczone TYLKO dla obserwowanych SKU (is_favorite).
-    Dashboard woła z True: KPI „Wartość magazynu" i wykres pokazują żywy, sprzedawany asortyment,
-    a nie cały magazyn (price_map/stock_map budowane są z przefiltrowanej listy, więc reszta odpada sama).
     """
     shop = resolve_shop(shop, user)
-    # DEAD_STOCK też ma stan (i wartość!), więc wchodzi do wykresu — inaczej świeży import bez sprzedaży
-    # (klasyfikowany jako DEAD_STOCK) byłby niewidoczny, a jego dostawa nigdy by się nie doliczyła.
-    products = await fetch_products(db, {"ACTIVE", "ACTIVE_NO_STOCK", "DEAD_STOCK"}, shop)
-    if favorites_only:
-        products = [p for p in products if p.is_favorite]
-
-    today = date.today()
-
-    sales_query = f"""
-        SELECT
-            LOWER(TRIM(oi.{settings.COL_ITEM_SKU})) AS sku_norm,
-            DATE(o.{settings.COL_ORDER_DATE}) AS sale_date,
-            SUM(oi.{settings.COL_ITEM_QTY}) AS qty
-        FROM {settings.TABLE_ORDER_ITEMS} oi
-        JOIN {settings.TABLE_ORDERS} o
-            ON o.{settings.COL_ORDER_ID} = oi.{settings.COL_ITEM_ORDER_ID}
-           AND o.shop = oi.shop
-        WHERE o.{settings.COL_ORDER_DATE} >= NOW() - INTERVAL '{days} days'
-            AND (:shop = '' OR o.shop = :shop)
-            {INCLUDED_STATUS_FILTER}
-        GROUP BY LOWER(TRIM(oi.{settings.COL_ITEM_SKU})), DATE(o.{settings.COL_ORDER_DATE})
-    """
-    sales_result = await db.execute(text(sales_query), {"shop": shop})
-
-    sales_by_sku = {}
-    for r in sales_result:
-        sku_norm = r._mapping["sku_norm"]
-        sale_date = r._mapping["sale_date"]
-        qty = float(r._mapping["qty"] or 0)
-        if sku_norm not in sales_by_sku:
-            sales_by_sku[sku_norm] = {}
-        sales_by_sku[sku_norm][sale_date] = qty
-
-    price_map = {p.sku.strip().lower(): float(p.purchase_price or 0) for p in products}
-    stock_map = {p.sku.strip().lower(): float(p.stock or 0) for p in products}
-
-    # Dostawy: towar wchodzi do magazynu PO odprawie celnej = ETA + CONTAINER_CUSTOMS_DAYS,
-    # albo w ręcznej dacie dostawy (c.delivered_date), jeśli ktoś oznaczył DELIVERED wcześniej.
-    # Przypisanie do sklepu po WŁAŚCICIELSTWIE produktu (firma_id; brak = AMH) — import z Chin
-    # zaopatruje magazyn firmy-właściciela (AMH ma większość importów, Acti/Veluxa tylko część).
-    # Cofając się w czasie odejmujemy dostawy — przed wejściem do magazynu stan był niższy.
-    customs = int(settings.CONTAINER_CUSTOMS_DAYS)
-    deliveries_query = f"""
-        SELECT
-            LOWER(TRIM(ci.sku)) AS sku_norm,
-            DATE(COALESCE(c.delivered_date, c.eta_date + {customs})) AS deliv_date,
-            SUM(ci.quantity) AS qty
-        FROM {settings.TABLE_CONTAINER_ITEMS} ci
-        JOIN {settings.TABLE_CONTAINERS} c ON c.id = ci.container_id
-        -- DISTINCT ON: pa sluzy tu tylko do ustalenia firmy, ale SKU zduplikowane
-        -- wielkoscia liter mnozylo wiersze, a nizej jest SUM(ci.quantity) —
-        -- dostawy z kontenerow liczyly sie wielokrotnie i szly tak do prognozy.
-        LEFT JOIN (SELECT DISTINCT ON (LOWER(TRIM(sku)))
-                          LOWER(TRIM(sku)) AS sku_canon, firma_id
-                   FROM {settings.TABLE_PRODUCT_ATTRS} WHERE sku IS NOT NULL
-                   ORDER BY LOWER(TRIM(sku)), firma_id NULLS LAST,
-                            updated_at DESC NULLS LAST) pa
-               ON pa.sku_canon = LOWER(TRIM(ci.sku))
-        WHERE c.eta_date IS NOT NULL
-            AND COALESCE(c.delivered_date, c.eta_date + {customs}) >= (NOW() - INTERVAL '{days} days')::date
-            AND COALESCE(c.delivered_date, c.eta_date + {customs}) <= NOW()::date
-            AND (:shop = '' OR COALESCE((SELECT LOWER(af.slug) FROM {settings.TABLE_FIRMY} af WHERE af.id = pa.firma_id), 'amh') = :shop)
-        GROUP BY LOWER(TRIM(ci.sku)), DATE(COALESCE(c.delivered_date, c.eta_date + {customs}))
-    """
-    deliveries_result = await db.execute(text(deliveries_query), {"shop": shop})
-
-    deliveries_by_sku = {}
-    for r in deliveries_result:
-        sku_norm = r._mapping["sku_norm"]
-        deliv_date = r._mapping["deliv_date"]
-        qty = float(r._mapping["qty"] or 0)
-        deliveries_by_sku.setdefault(sku_norm, {})[deliv_date] = qty
-
-    # ── Rekonstrukcja wstecz: O(dni × produkty + zdarzenia) zamiast O(dni × produkty × daty_sprzedaży) ──
-    # Wynik identyczny co do grosza ze starą potrójną pętlą — dla każdego dnia stan liczymy tą samą regułą
-    # (stan_dziś + sprzedaż(d→dziś) − dostawy(d→dziś), clamp do 0 per-SKU). Różnica: zamiast dla KAŻDEGO dnia
-    # skanować od nowa wszystkie daty sprzedaży każdego SKU, trzymamy bieżący stan per-SKU i przesuwamy go
-    # tylko o ruch z danego dnia. Sumowanie idzie w tej samej kolejności co wcześniej (kolejność stock_map),
-    # więc float i round() wychodzą bit-w-bit tak samo. Ruch SKU spoza katalogu (stock_map) jest ignorowany — jak dawniej.
-
-    # Ruch pogrupowany po dacie: {data: {sku: qty}} — tylko dla SKU obecnych w katalogu.
-    sales_on_day: dict = {}
-    for sku_norm, per_date in sales_by_sku.items():
-        if sku_norm not in stock_map:
-            continue
-        for sale_d, qty in per_date.items():
-            day_bucket = sales_on_day.setdefault(sale_d, {})
-            day_bucket[sku_norm] = day_bucket.get(sku_norm, 0) + qty
-    deliveries_on_day: dict = {}
-    for sku_norm, per_date in deliveries_by_sku.items():
-        if sku_norm not in stock_map:
-            continue
-        for deliv_d, qty in per_date.items():
-            day_bucket = deliveries_on_day.setdefault(deliv_d, {})
-            day_bucket[sku_norm] = day_bucket.get(sku_norm, 0) + qty
-
-    # Stan bieżący per-SKU (na „dziś"), kolejność jak w stock_map. Sprzedaż/dostawy z datą > dziś
-    # (rzadkie, np. zamówienie z przyszłą datą) doliczamy na starcie — dokładnie jak stary warunek `> d` dla d = dziś.
-    raw = {sku_norm: stock_map[sku_norm] for sku_norm in stock_map}
-    for sale_d, per_sku in sales_on_day.items():
-        if sale_d > today:
-            for sku_norm, qty in per_sku.items():
-                raw[sku_norm] += qty
-    for deliv_d, per_sku in deliveries_on_day.items():
-        if deliv_d > today:
-            for sku_norm, qty in per_sku.items():
-                raw[sku_norm] -= qty
-
-    points = []
-    for offset in range(0, days + 1):
-        d = today - timedelta(days=offset)
-        total_value = 0
-        total_units = 0
-        # clamp do 0 per-SKU tylko przy sumowaniu; `raw` zostaje bez clampu, żeby krok wstecz był poprawny
-        for sku_norm, stock_at_d in raw.items():
-            if stock_at_d <= 0:
-                continue
-            total_value += stock_at_d * price_map.get(sku_norm, 0)
-            total_units += stock_at_d
-        points.append({"date": d.isoformat(), "value": round(total_value, 2), "units": round(total_units)})
-        # przejście do dnia d−1: stan wtedy był wyższy o sprzedaż z dnia d i niższy o dostawy z dnia d
-        for sku_norm, qty in sales_on_day.get(d, {}).items():
-            raw[sku_norm] += qty
-        for sku_norm, qty in deliveries_on_day.get(d, {}).items():
-            raw[sku_norm] -= qty
-
-    points.reverse()  # chronologicznie (najstarszy → najnowszy), tak jak w starej wersji
-
+    wynik = await historia_wartosci(db, shop, days, favorites_only)
     if not has_perm(user, "viewFinancials"):
-        for pt in points:
+        for pt in wynik["points"]:
             pt["value"] = 0
-
-    return {
-        "points": points,
-        "current_value": points[-1]["value"] if points else 0,
-        "current_units": points[-1]["units"] if points else 0,
-    }
+        wynik["current_value"] = 0
+    return wynik
