@@ -24,7 +24,6 @@ from typing import Dict, Iterable, List, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from audit_opisy import etykieta_kontenera
 from config import settings
 from services import pliki_storage
 
@@ -118,17 +117,28 @@ _PARY_SQL = f"""
                         WHERE l.container_id = c.id AND l.manufacturer_id IS NOT NULL) {{c_where}}
 """
 
-_ETYKIETA_SQL = f"""
-    SELECT c.id, c.container_number,
-           COALESCE(NULLIF(TRIM(c.order_number), ''),
-                    (SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
-                      WHERE l.container_id = c.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
-                      ORDER BY l.position, l.id LIMIT 1)) AS fv
-      FROM {settings.TABLE_CONTAINERS} c
+# Nazwa folderu kontenera liczona w bazie — to samo co audit_opisy.etykieta_kontenera
+# (prawdziwy nr, inaczej „FV: …”, inaczej „#id”), żeby nazwy brać jednym zapytaniem.
+# {c_where} zawęża do jednego kontenera przy wgrywaniu z karty.
+_ETYKIETY_CTE = f"""
+    etykiety AS (
+        SELECT x.id,
+               CASE WHEN x.nr <> '' AND LOWER(x.nr) NOT LIKE 'draft-%' THEN x.nr
+                    WHEN x.fv <> '' THEN 'FV: ' || x.fv
+                    ELSE '#' || x.id END AS nazwa
+          FROM (
+            SELECT c.id, TRIM(COALESCE(c.container_number, '')) AS nr,
+                   TRIM(COALESCE(NULLIF(TRIM(c.order_number), ''),
+                        (SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
+                          WHERE l.container_id = c.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
+                          ORDER BY l.position, l.id LIMIT 1), '')) AS fv
+              FROM {settings.TABLE_CONTAINERS} c WHERE TRUE {{c_where}}
+          ) x
+    )
 """
 
 _ostatnia_synchronizacja = {"t": 0.0}
-SYNC_CO_SEKUND = 15
+SYNC_CO_SEKUND = 60
 
 
 async def pary_kontenera(db: AsyncSession, cid: int) -> List[Optional[int]]:
@@ -181,25 +191,25 @@ async def synchronizuj_foldery(db: AsyncSession, *, wymus: bool = False, cid: Op
     if cid is not None:
         lot_where, c_where, params["cid"] = "AND l.container_id = :cid", "AND c.id = :cid", cid
     pary = _PARY_SQL.format(lot_where=lot_where, c_where=c_where)
-    etyk = (await db.execute(text(_ETYKIETA_SQL + (" WHERE c.id = :cid" if cid is not None else "")),
-                             params)).mappings().all()
-    nazwy = {r["id"]: etykieta_kontenera(r["container_number"], r["fv"], r["id"]) for r in etyk}
+    c_where_e = "AND c.id = :cid" if cid is not None else ""
 
-    for row in (await db.execute(text(pary), params)).all():
-        k, m = row[0], row[1]
-        await db.execute(text(f"""
-            INSERT INTO {F} (parent_id, nazwa, rodzaj, manufacturer_id, container_id)
-            SELECT COALESCE((SELECT id FROM {F} WHERE rodzaj = 'producent' AND manufacturer_id = :m), :root),
-                   :n, 'kontener', :m, :k
-            ON CONFLICT (container_id, (COALESCE(manufacturer_id, 0))) WHERE rodzaj = 'kontener' DO NOTHING
-        """), {"root": root, "m": m, "k": k, "n": nazwy.get(k, f"#{k}")})
-
+    # Wszystko zbiorczo, po jednym zapytaniu — pierwsza wersja szła pętlą po kontenerach
+    # (setki wymian z Supabase przy każdym wejściu w Pliki, kilka sekund czekania).
+    await db.execute(text(f"""
+        WITH pary AS ({pary}), {_ETYKIETY_CTE.format(c_where=c_where_e)}
+        INSERT INTO {F} (parent_id, nazwa, rodzaj, manufacturer_id, container_id)
+        SELECT COALESCE(pf.id, :root), e.nazwa, 'kontener', p.manufacturer_id, p.container_id
+          FROM pary p(container_id, manufacturer_id)
+          JOIN etykiety e ON e.id = p.container_id
+          LEFT JOIN {F} pf ON pf.rodzaj = 'producent' AND pf.manufacturer_id = p.manufacturer_id
+        ON CONFLICT (container_id, (COALESCE(manufacturer_id, 0))) WHERE rodzaj = 'kontener' DO NOTHING
+    """), params)
     # Nazwy folderów kontenerów nadążają za numerem kontenera (Draft → prawdziwy nr).
-    for k, n in nazwy.items():
-        await db.execute(text(f"""
-            UPDATE {F} SET nazwa = :n
-             WHERE rodzaj = 'kontener' AND container_id = :k AND nazwa IS DISTINCT FROM :n
-        """), {"k": k, "n": n})
+    await db.execute(text(f"""
+        WITH {_ETYKIETY_CTE.format(c_where=c_where_e)}
+        UPDATE {F} f SET nazwa = e.nazwa FROM etykiety e
+         WHERE f.rodzaj = 'kontener' AND f.container_id = e.id AND f.nazwa IS DISTINCT FROM e.nazwa
+    """), params)
 
     if cid is None:
         # Puste foldery kontenerów, które już nie pasują do żadnej pary — do usunięcia.

@@ -105,6 +105,24 @@ async def download(path: str) -> bytes:
     return await _call("GET", f"/object/authenticated/{BUCKET}/{_sciezka(path)}")
 
 
+async def signed_url(path: str, *, pobierz_jako: Optional[str] = None, sekundy: int = 300) -> str:
+    """Krótko ważny link prosto do pliku w Supabase. Przeglądarka ściąga plik bezpośrednio,
+    bez przechodzenia bajtów przez nasz backend (szybciej, zwłaszcza przy dużych ZIP-ach).
+    `pobierz_jako` = nazwa pliku do zapisania; bez niej przeglądarka otwiera plik (podgląd PDF)."""
+    raw = await _call("POST", f"/object/sign/{BUCKET}/{_sciezka(path)}", json.dumps({"expiresIn": sekundy}).encode())
+    try:
+        r = json.loads(raw or b"{}")
+    except ValueError:
+        r = {}
+    url = r.get("signedURL") or r.get("signedUrl")
+    if not url:
+        raise StorageError(f"Storage nie zwrócił podpisanego linku: {raw[:200]!r}")
+    url = f"{BASE}/storage/v1{url}" if url.startswith("/") else url
+    if pobierz_jako:
+        url += ("&" if "?" in url else "?") + "download=" + urllib.parse.quote(pobierz_jako)
+    return url
+
+
 async def remove(paths: List[str]) -> None:
     # Storage przyjmuje listę naraz; dzielimy na paczki, żeby duży kosz nie zrobił gigantycznego żądania.
     for i in range(0, len(paths), 500):
