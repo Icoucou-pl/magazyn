@@ -426,9 +426,20 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int], shop: str = "") ->
          WHERE {gdzie} AND f.usuniety_at IS NULL
          ORDER BY LOWER(f.nazwa)
     """), {"id": fid})).mappings().all()
+    ile_folderow = {f["id"]: int(f["ile_folderow"]) for f in foldery}
     if shop:
         ukryte = await ukryte_foldery(db, shop)
         foldery = [f for f in foldery if f["id"] not in ukryte]
+        # Licznik „N folderów” też tylko z tym, co przy tej firmie widać (inaczej „Producenci”
+        # pokazywali wszystkich producentów niezależnie od przełącznika).
+        if foldery:
+            r = await db.execute(text(f"""
+                SELECT parent_id, id FROM {F} WHERE parent_id = ANY(:ids) AND usuniety_at IS NULL
+            """), {"ids": [f["id"] for f in foldery]})
+            ile_folderow = {f["id"]: 0 for f in foldery}
+            for parent_id, cid in r:
+                if cid not in ukryte:
+                    ile_folderow[parent_id] += 1
     # Status jak w zakładce Kontenery (po odprawie kontener sam staje się „Dostarczony”).
     from services.containers import compute_effective_status
     status = {f["id"]: compute_effective_status(f["status"], f["eta_date"], f["expected_delivery_date"])[0]
@@ -447,7 +458,7 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int], shop: str = "") ->
                           "order_number": f["order_number"], "status": status.get(f["id"], f["status"]),
                           "eta_date": f["eta_date"]}
                          if f["container_id"] else None),
-            "ile_plikow": int(f["ile_plikow"]), "ile_folderow": int(f["ile_folderow"]),
+            "ile_plikow": int(f["ile_plikow"]), "ile_folderow": ile_folderow.get(f["id"], 0),
             "utworzono": f["utworzono"], "utworzyl": f["utworzyl"],
         } for f in foldery],
         "pliki": [plik_out(p) for p in pliki],
