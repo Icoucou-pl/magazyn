@@ -161,12 +161,21 @@ const rowStyle: React.CSSProperties = {
 // ============================================================
 // WIDOK GŁÓWNY
 // ============================================================
-export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key: string) => void }) {
+// Pamięć folderów poza komponentem: po powrocie z karty kontenera widok montuje się od nowa,
+// a folder ma się pokazać od razu (świeże dane i tak dociągają się w tle).
+const pamiecFolderow = new Map<string, Listing>();
+
+export default function FilesView({ folderId, onFolder, onOpenContainer }: {
+  /** Otwarty folder — z adresu (/pliki/123), żeby „wstecz” w przeglądarce cofało o folder. */
+  folderId: number | null;
+  /** Przejście do folderu; zamien = bez nowego wpisu w historii (folder zniknął). */
+  onFolder: (fid: number | null, zamien?: boolean) => void;
+  onOpenContainer?: (key: string) => void;
+}) {
   const user = useUser();
-  const [folderId, setFolderId] = useState<number | null>(null);
   // Zawartość odwiedzonych folderów — powrót do folderu pokazuje się od razu, a świeże dane
   // dociągają się w tle. Najechanie na folder ładuje go z wyprzedzeniem.
-  const [cache, setCache] = useState<Record<string, Listing>>({});
+  const [cache, setCache] = useState<Record<string, Listing>>(() => Object.fromEntries(pamiecFolderow));
   const [ladowanie, setLadowanie] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [tryb, setTryb] = useState<"lista" | "kosz">("lista");
@@ -187,7 +196,10 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
   const data = cache[klucz(folderId)] ?? null;
   const pobierzListe = (fid: number | null) =>
     api.get(`/pliki/lista${fid != null ? `?folder_id=${fid}` : ""}`)
-      .then((r) => setCache((c) => ({ ...c, [klucz(fid)]: r as Listing })));
+      .then((r) => {
+        pamiecFolderow.set(klucz(fid), r as Listing);
+        setCache((c) => ({ ...c, [klucz(fid)]: r as Listing }));
+      });
   const zWyprzedzeniem = (fid: number) => { if (!cache[klucz(fid)]) pobierzListe(fid).catch(() => {}); };
 
   useEffect(() => {
@@ -195,7 +207,7 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
       .catch((e) => {
         err(e);
         // Folder zniknął (kosz w innej karcie) — wracamy na górę zamiast pustego ekranu.
-        if (folderId != null) setFolderId(null);
+        if (folderId != null) onFolder(null, true);
       })
       .finally(() => setLadowanie(false));
   }, [folderId, odswiez]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -216,7 +228,7 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
   const wKontenerze = !!data?.sciezka.some((c) => c.rodzaj === "kontener");
   const idz = (fid: number | null) => {
     setQ(""); setTryb("lista");
-    if (fid !== folderId) { setLadowanie(true); setFolderId(fid); }
+    if (fid !== folderId) { setLadowanie(true); onFolder(fid); }
   };
 
   // ── Wgrywanie: po jednym pliku, żeby był postęp i żeby jeden zły plik nie zatrzymał reszty ──
