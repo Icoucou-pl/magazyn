@@ -1532,14 +1532,16 @@ async def _tool_sezonowosc(db: AsyncSession, user: CurrentUser, sku: str) -> Dic
     if not pts:
         return {"znaleziono": False, "sku": symbol.upper()}
     agg: Dict[int, int] = {}
+    outlety = 0  # sprzedaż „<SKU>_outlet” — osobno, poza krzywą sezonu
     for p in pts:
         d = p.model_dump()
         m = int(d.get("month") or 0)
         agg[m] = agg.get(m, 0) + int(d.get("qty") or 0)
+        outlety += int(d.get("qty_outlet") or 0)
     total = sum(agg.values())
     szczyt = max(range(12), key=lambda m: agg.get(m, 0)) if total > 0 else None
     return {
-        "znaleziono": True, "sku": symbol.upper(), "razem_sztuk": total,
+        "znaleziono": True, "sku": symbol.upper(), "razem_sztuk": total, "outlety_sztuk": outlety,
         "miesiac_szczytu": (_MIES_PL[szczyt] if szczyt is not None else None),
         "wg_miesiaca": [{"miesiac": _MIES_PL[m], "sztuki": agg.get(m, 0)} for m in range(12)],
     }

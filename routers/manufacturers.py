@@ -47,10 +47,11 @@ async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db), use
     """Sprzedaż miesięczna pojedynczego SKU (qty + przychód netto/brutto w PLN),
     od 1 stycznia zeszłego roku do dziś — pod wykres w karcie produktu.
 
-    Outlety doliczają się do produktu bazowego: SZP1 = SZP1 + Szp1_Outlet,
-    SZP3 = SZP3 + SZP3_Outlet + SZP3_OUTLET2. To ten sam towar (zwrot/powystawowy),
-    więc dla sezonu liczy się łączny popyt. Karta samego outletu pokazuje tylko outlet."""
-    return await _sales_season(db, _WHERE_SKU_Z_OUTLETAMI, _parametry_sku(sku))
+    Outlety (SZP1 → Szp1_Outlet, SZP3 → SZP3_Outlet + SZP3_OUTLET2) wracają
+    w osobnych polach *_outlet — wykres pokazuje je dopiero po włączeniu
+    „Z outletami”. Karta samego outletu pokazuje tylko outlet."""
+    outlet = f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) <> :sku"
+    return await _sales_season(db, _WHERE_SKU_Z_OUTLETAMI, _parametry_sku(sku), outlet)
 
 
 # SKU dokładnie albo „<SKU>_outlet” z opcjonalnym numerem (outlet, outlet2…),
@@ -68,7 +69,8 @@ def _parametry_sku(sku: str) -> dict:
     return {"sku": s, "sku_len": len(s)}
 
 
-async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> List[SeasonPoint]:
+async def _sales_season(db: AsyncSession, where_clause: str, params: dict,
+                        outlet_expr: str = "FALSE") -> List[SeasonPoint]:
     """Wspólne zapytanie sezonowe. Zakres: od 1 stycznia ZESZŁEGO roku do dziś
     (pokrywa cały zeszły rok + bieżący rok do teraz). Po jednym punkcie na miesiąc.
 
@@ -79,14 +81,25 @@ async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> Li
     pozycja wypada z sumy (lepsze niż zawyżanie sumą nominalną; luki widać w /api/admin/fx/status).
 
     value_net = SUM(qty × price_netto × kurs), value_gross = SUM(qty × price × kurs).
-    month 0-11. Dopasowanie SKU LOWER(TRIM(...))."""
+    month 0-11. Dopasowanie SKU LOWER(TRIM(...)).
+    outlet_expr: warunek SQL „ta pozycja to outlet” — takie pozycje idą do pól
+    *_outlet zamiast do qty/value_*. Domyślnie FALSE (producent: wszystko razem)."""
+    def suma(wartosc: str, outlet: bool) -> str:
+        warunek = f"({outlet_expr})" if outlet else f"NOT ({outlet_expr})"
+        return f"SUM(CASE WHEN {warunek} THEN {wartosc} END)"
+    szt = f"i.{settings.COL_ITEM_QTY}"
+    net = f"i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0) * fx.mult"
+    brt = f"i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE}, 0) * fx.mult"
     sql = f"""
         SELECT
             EXTRACT(YEAR  FROM o.{settings.COL_ORDER_DATE})::int                                                           AS yr,
             EXTRACT(MONTH FROM o.{settings.COL_ORDER_DATE})::int                                                           AS mo,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY}), 0)::int                                                               AS qty,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE_NETTO}, 0) * fx.mult), 0)::float  AS val_net,
-            COALESCE(SUM(i.{settings.COL_ITEM_QTY} * COALESCE(i.{settings.COL_ITEM_PRICE},       0) * fx.mult), 0)::float  AS val_gross
+            COALESCE({suma(szt, False)}, 0)::int                                                                         AS qty,
+            COALESCE({suma(net, False)}, 0)::float                                                                       AS val_net,
+            COALESCE({suma(brt, False)}, 0)::float                                                                       AS val_gross,
+            COALESCE({suma(szt, True)}, 0)::int                                                                          AS qty_o,
+            COALESCE({suma(net, True)}, 0)::float                                                                        AS val_net_o,
+            COALESCE({suma(brt, True)}, 0)::float                                                                        AS val_gross_o
         FROM {settings.TABLE_ORDER_ITEMS} i
         JOIN {settings.TABLE_ORDERS} o
             -- order_id jest unikalny tylko w parze ze sklepem — bez `shop`
@@ -121,6 +134,9 @@ async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> Li
             qty=int(row._mapping["qty"] or 0),
             value_net=float(row._mapping["val_net"] or 0.0),
             value_gross=float(row._mapping["val_gross"] or 0.0),
+            qty_outlet=int(row._mapping["qty_o"] or 0),
+            value_net_outlet=float(row._mapping["val_net_o"] or 0.0),
+            value_gross_outlet=float(row._mapping["val_gross_o"] or 0.0),
         )
         for row in r
     ]

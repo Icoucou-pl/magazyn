@@ -1,6 +1,7 @@
-"""Wykres „Sprzedaż — sezon do sezonu” w karcie produktu: outlety liczą się do produktu bazowego.
+"""Wykres „Sprzedaż — sezon do sezonu” w karcie produktu: outlety osobno.
 
-SZP1 = SZP1 + Szp1_Outlet, SZP3 = SZP3 + SZP3_Outlet + SZP3_OUTLET2.
+SZP1 → Szp1_Outlet, SZP3 → SZP3_Outlet + SZP3_OUTLET2. Normalna sprzedaż idzie
+w qty/value_*, outlety w *_outlet — wykres dorysowuje je po kliknięciu „Z outletami”.
 Baza jest podmieniona atrapą, która zapamiętuje zapytanie i parametry.
 
 Uruchomienie:  python3 -m pytest tests/test_sezon_outlety.py -q
@@ -28,7 +29,8 @@ class _Db:
 
     async def execute(self, sql, params=None):
         self.sql, self.params = str(sql), params
-        return [type("R", (), {"_mapping": {"yr": 2026, "mo": 6, "qty": 69, "val_net": 1.0, "val_gross": 1.23}})()]
+        return [type("R", (), {"_mapping": {"yr": 2026, "mo": 6, "qty": 69, "val_net": 1.0, "val_gross": 1.23,
+                                         "qty_o": 4, "val_net_o": 2.0, "val_gross_o": 2.46}})()]
 
 
 def _zapytaj(sku):
@@ -47,11 +49,13 @@ def _zapytaj(sku):
     return db, r.json()
 
 
-def test_szp1_dolicza_outlety():
+def test_szp1_oddaje_outlety_osobno():
     db, dane = _zapytaj(" SZP1 ")
     assert db.params == {"sku": "szp1", "sku_len": 4}, "SKU małymi literami, bez spacji"
-    assert "~ '^_outlet[0-9]*$'" in db.sql, "outlet, outlet2… doliczone do bazowego SKU"
-    assert dane == [{"year": 2026, "month": 5, "qty": 69, "value_net": 1.0, "value_gross": 1.23}]
+    assert "~ '^_outlet[0-9]*$'" in db.sql, "outlet, outlet2… pobierane razem z bazowym SKU"
+    assert "<> :sku" in db.sql, "pozycja z innym SKU niż bazowe to outlet"
+    assert dane == [{"year": 2026, "month": 5, "qty": 69, "value_net": 1.0, "value_gross": 1.23,
+                     "qty_outlet": 4, "value_net_outlet": 2.0, "value_gross_outlet": 2.46}]
 
 
 def test_sku_nie_trafia_do_regexu():
