@@ -333,6 +333,69 @@ PLIK_KOLUMNY = ("id, folder_id, nazwa, content_type, rozmiar, container_id, poka
                 "dodano_z_kontenera, dodano, dodal")
 
 
+# ── Firmy (przełącznik AMH / Acti / Veluxa u góry) ──────────────────────────
+# Kontener nie ma własnej firmy — wynika ona z właścicieli SKU w środku (bez firma_id = AMH),
+# tak jak firma_breakdown na liście kontenerów. Folder kontenera u producenta należy do firm
+# towaru TEGO producenta w kontenerze; folder producenta — do firm jego produktów i kontenerów.
+_FIRMY_FOLDEROW_SQL = f"""
+    WITH pa AS (
+        SELECT DISTINCT ON (LOWER(TRIM(sku))) LOWER(TRIM(sku)) AS sku_canon, firma_id, manufacturer_id
+          FROM {settings.TABLE_PRODUCT_ATTRS}
+         WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+         ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+    ),
+    kont AS (
+        SELECT f.id, f.parent_id, LOWER(COALESCE(fi.slug, 'amh')) AS slug
+          FROM {F} f
+          JOIN {settings.TABLE_CONTAINER_ITEMS} ci ON ci.container_id = f.container_id
+          LEFT JOIN {settings.TABLE_CONTAINER_LOTS} l ON l.id = ci.lot_id
+          LEFT JOIN pa ON pa.sku_canon = LOWER(TRIM(ci.sku))
+          LEFT JOIN {settings.TABLE_FIRMY} fi ON fi.id = pa.firma_id
+         WHERE f.rodzaj = 'kontener' AND f.container_id IS NOT NULL
+           -- pozycja bez partii albo partia bez producenta należy do każdego folderu tego kontenera
+           AND (ci.lot_id IS NULL OR l.manufacturer_id IS NULL OR f.manufacturer_id IS NULL
+                OR l.manufacturer_id = f.manufacturer_id)
+    )
+    SELECT id, slug FROM kont
+    UNION
+    SELECT parent_id, slug FROM kont WHERE parent_id IS NOT NULL
+    UNION
+    SELECT f.id, LOWER(COALESCE(fi.slug, 'amh'))
+      FROM {F} f
+      JOIN pa ON pa.manufacturer_id = f.manufacturer_id
+      LEFT JOIN {settings.TABLE_FIRMY} fi ON fi.id = pa.firma_id
+     WHERE f.rodzaj = 'producent'
+"""
+
+
+async def ukryte_foldery(db: AsyncSession, shop: str) -> set:
+    """Foldery schowane przy wybranej firmie: folder producenta/kontenera bez towaru tej firmy
+    i wszystko pod nim. Kontener jeszcze bez pozycji (świeżo założony) i foldery ręczne widać
+    zawsze — lepiej pokazać za dużo niż zgubić dokument. Producent bez żadnego towaru i kontenera
+    widać tylko przy „Wszyscy”, żeby lista firmy nie zarastała pustymi folderami. "" = wszystkie."""
+    if not shop:
+        return set()
+    firmy: Dict[int, set] = {}
+    for fid, slug in await db.execute(text(_FIRMY_FOLDEROW_SQL)):
+        firmy.setdefault(fid, set()).add(slug)
+    foldery = (await db.execute(text(f"SELECT id, parent_id, rodzaj FROM {F}"))).all()
+    ukryte = {f.id for f in foldery
+              if (f.rodzaj == "producent" and shop not in firmy.get(f.id, ()))
+              or (f.rodzaj == "kontener" and firmy.get(f.id) and shop not in firmy[f.id])}
+    if not ukryte:
+        return ukryte
+    dzieci: Dict[Optional[int], List[int]] = {}
+    for f in foldery:
+        dzieci.setdefault(f.parent_id, []).append(f.id)
+    stos = list(ukryte)
+    while stos:
+        for d in dzieci.get(stos.pop(), []):
+            if d not in ukryte:
+                ukryte.add(d)
+                stos.append(d)
+    return ukryte
+
+
 _RODZAJ_KOLEJNOSC = {"producenci": 0, "producent": 1, "reczny": 2, "kontener": 3}
 
 
@@ -347,8 +410,9 @@ def _kolejnosc_folderu(f, status: Optional[str]) -> tuple:
     return (rodzaj, 1 if status == "DELIVERED" else 0, -eta, (f["nazwa"] or "").lower())
 
 
-async def lista_folderu(db: AsyncSession, fid: Optional[int]) -> dict:
-    """Zawartość folderu (None = poziom główny): podfoldery + pliki, bez kosza."""
+async def lista_folderu(db: AsyncSession, fid: Optional[int], shop: str = "") -> dict:
+    """Zawartość folderu (None = poziom główny): podfoldery + pliki, bez kosza.
+    `shop` = firma z przełącznika u góry — chowa producentów i kontenery bez jej towaru."""
     gdzie = "f.parent_id = :id" if fid is not None else "f.parent_id IS NULL"
     foldery = (await db.execute(text(f"""
         SELECT f.id, f.nazwa, f.rodzaj, f.manufacturer_id, f.container_id, f.utworzono, f.utworzyl,
@@ -362,6 +426,9 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int]) -> dict:
          WHERE {gdzie} AND f.usuniety_at IS NULL
          ORDER BY LOWER(f.nazwa)
     """), {"id": fid})).mappings().all()
+    if shop:
+        ukryte = await ukryte_foldery(db, shop)
+        foldery = [f for f in foldery if f["id"] not in ukryte]
     # Status jak w zakładce Kontenery (po odprawie kontener sam staje się „Dostarczony”).
     from services.containers import compute_effective_status
     status = {f["id"]: compute_effective_status(f["status"], f["eta_date"], f["expected_delivery_date"])[0]
@@ -398,7 +465,7 @@ async def drzewo(db: AsyncSession) -> List[dict]:
     return [dict(x) for x in r.mappings().all()]
 
 
-async def szukaj(db: AsyncSession, q: str, limit: int = 100) -> dict:
+async def szukaj(db: AsyncSession, q: str, limit: int = 100, shop: str = "") -> dict:
     """Pliki i foldery po fragmencie nazwy (bez kosza), z folderem nadrzędnym do podpowiedzi."""
     wzor = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     pliki = (await db.execute(text(f"""
@@ -416,9 +483,10 @@ async def szukaj(db: AsyncSession, q: str, limit: int = 100) -> dict:
          WHERE f.nazwa ILIKE :q AND f.id NOT IN (SELECT id FROM martwe)
          ORDER BY LOWER(f.nazwa) LIMIT :lim
     """), {"q": wzor, "lim": limit})).mappings().all()
+    ukryte = await ukryte_foldery(db, shop)
     return {
-        "pliki": [{**plik_out(p), "folder_nazwa": p["folder_nazwa"]} for p in pliki],
-        "foldery": [dict(f) for f in foldery],
+        "pliki": [{**plik_out(p), "folder_nazwa": p["folder_nazwa"]} for p in pliki if p["folder_id"] not in ukryte],
+        "foldery": [dict(f) for f in foldery if f["id"] not in ukryte],
     }
 
 

@@ -183,3 +183,25 @@ def test_dziennik_zna_trasy_plikow(metoda, sciezka, obszar):
     opis = audit_opisy.opis_sciezki(metoda, sciezka)
     assert opis and opis.obszar == obszar and not opis.orzeczenie.startswith("wykonał zmianę")
     assert "Pliki" in audit_opisy.OBSZARY
+
+
+# ── Przełącznik firm ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("shop,firma", [("", ""), ("amh", "amh"), ("veluxa", "veluxa"), ("zle", ""), ("all", "")])
+def test_firma_z_przelacznika(shop, firma):
+    from routers.pliki import _firma
+    assert _firma(shop, SZEF) == firma
+
+
+def test_lista_bez_firmy_nie_liczy_firm(klient, monkeypatch):
+    """„Wszyscy” nie odpytuje bazy o firmy folderów — to dodatkowe zapytanie tylko przy wybranej firmie."""
+    async def _ukryte(db, shop):
+        raise AssertionError("bez firmy nie powinno być filtrowania")
+    monkeypatch.setattr(svc, "ukryte_foldery", _ukryte)
+    monkeypatch.setattr(svc, "synchronizuj_foldery", lambda *a, **k: _nic())
+    c, _ = klient
+    assert c.get("/api/pliki/lista").status_code == 200
+
+
+async def _nic():
+    return None

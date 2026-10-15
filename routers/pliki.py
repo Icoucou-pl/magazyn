@@ -23,7 +23,7 @@ from audit_opisy import etykieta_kontenera, plural
 from config import settings
 from database import get_db
 from models import CurrentUser
-from security import get_current_user, has_perm, is_super_admin, require_pliki
+from security import ALL_SHOPS, get_current_user, has_perm, is_super_admin, require_pliki, resolve_shop
 from services import pliki as svc
 from services import pliki_storage
 
@@ -55,6 +55,12 @@ class Zaznaczenie(BaseModel):
 
 
 # ── Pomocnicze ───────────────────────────────────────────────────────────────
+
+def _firma(shop: str, user: CurrentUser) -> str:
+    """Firma z przełącznika u góry: "" = wszystkie, inaczej slug z ALL_SHOPS (resolve_shop pilnuje zakresu)."""
+    s = resolve_shop(shop, user)
+    return s if s in ALL_SHOPS else ""
+
 
 async def _folder(db: AsyncSession, fid: int, *, zywy: bool = True) -> dict:
     r = (await db.execute(text(f"SELECT id, parent_id, nazwa, rodzaj, manufacturer_id, container_id, usuniety_at FROM {F} WHERE id = :id"),
@@ -150,12 +156,12 @@ async def status(user: CurrentUser = Depends(require_pliki)):
 
 
 @router.get("/pliki/lista")
-async def lista(folder_id: Optional[int] = Query(None), db: AsyncSession = Depends(get_db),
+async def lista(folder_id: Optional[int] = Query(None), shop: str = Query(""), db: AsyncSession = Depends(get_db),
                 user: CurrentUser = Depends(require_pliki)):
     await svc.synchronizuj_foldery(db)
     await db.commit()
     folder = await _folder(db, folder_id) if folder_id is not None else None
-    out = await svc.lista_folderu(db, folder_id)
+    out = await svc.lista_folderu(db, folder_id, _firma(shop, user))
     out["folder"] = ({**folder, "automatyczny": svc.jest_automatyczny(folder["rodzaj"], folder["manufacturer_id"], folder["container_id"])}
                      if folder else None)
     out["sciezka"] = await svc.sciezka_folderu(db, folder_id)
@@ -168,9 +174,9 @@ async def drzewo(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends
 
 
 @router.get("/pliki/szukaj")
-async def szukaj(q: str = Query(..., min_length=2, max_length=100), db: AsyncSession = Depends(get_db),
-                 user: CurrentUser = Depends(require_pliki)):
-    return await svc.szukaj(db, q.strip())
+async def szukaj(q: str = Query(..., min_length=2, max_length=100), shop: str = Query(""),
+                 db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    return await svc.szukaj(db, q.strip(), shop=_firma(shop, user))
 
 
 # ── Foldery ──────────────────────────────────────────────────────────────────
