@@ -86,6 +86,7 @@ class Dostawa:
     koszt_szacunek: bool = False        # metoda szefa: nie wszystko zapłacone / wartość z cen planowanych
     krajowa: bool = False               # zakup w Polsce (PLN) — bez odprawy i bez narzutu importu
     transport_szt: float = 0.0          # transport do magazynu / szt (dostawa krajowa)
+    wspolne_z: List[str] = field(default_factory=list)   # wspólne zgłoszenie celne: pozostałe kontenery puli
     # wypełniane przez policz_koszty:
     koszt: Optional[float] = None
     szacunek: bool = False

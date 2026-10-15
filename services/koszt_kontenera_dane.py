@@ -18,8 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from services.fx import kursy_przed
-from services.koszt_kontenera import Grupa, Kontener, KosztDodatkowy, Platnosc, Pozycja, Wynik, policz, policz_razem
+from services.koszt_kontenera import (
+    Grupa, Kontener, KosztDodatkowy, Platnosc, Pozycja, Uwaga, Wynik, grupy_zgloszen, policz_wspolnie, towar_razem,
+)
 from services.products import compute_effective_cbm
+from sql import etykieta_kontenera_sql
 
 T_KONTENER = "app_koszt_kontenera"
 T_POZYCJA = "app_koszt_pozycji"
@@ -72,7 +75,20 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
     if not wszystkie and not ids:
         return {}, {}
     zadane = set(ids)
+    # Wspólne zgłoszenie celne: odprawy obejmujące więcej niż jeden kontener. Tabela jest mała,
+    # a konflikt (kontener w dwóch grupach) widać dopiero na całości — bierzemy wszystkie.
+    odprawy: Dict[int, set] = {}
+    for oid, cid in (await db.execute(text("""
+        SELECT ok.odprawa_id, ok.container_id
+          FROM app_odprawa_kontenery ok
+          JOIN app_odprawy o ON o.id = ok.odprawa_id
+         WHERE ok.container_id IS NOT NULL
+    """))).all():
+        odprawy.setdefault(oid, set()).add(cid)
+    grupa_sad, konflikty = grupy_zgloszen(odprawy)
     if not wszystkie:
+        # Pula frachtu grupy potrzebuje wszystkich jej kontenerów.
+        ids = sorted(set(ids).union(*(grupa_sad.get(c, ()) for c in ids)))
         # Kontener rozliczany razem z innymi (wspólna faktura) potrzebuje do rachunku towaru
         # i płatności wszystkich — dociągamy partnerów, choć w wyniku nikt ich nie prosił.
         partnerzy = (await db.execute(text(f"""
@@ -89,7 +105,8 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
     kontenery = (await db.execute(text(f"""
         SELECT c.id, COALESCE(c.is_consolidated, FALSE) AS skonsolidowany,
                c.koszt_transportu, c.koszt_transportu_magazyn, c.delivered_date, c.eta_date,
-               c.waluta_towaru, c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.rozliczenie_grupa
+               c.waluta_towaru, c.balance_kwota, c.balance_waluta, c.zaplacono_data, c.rozliczenie_grupa,
+               {etykieta_kontenera_sql()} AS etykieta
           FROM {settings.TABLE_CONTAINERS} c {filtr_c}
     """), p)).mappings().all()
     if not kontenery:
@@ -217,7 +234,6 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         meta[r["item_id"]] = {"container_id": r["container_id"], "lot_id": r["lot_id"], "firma": r["firma"],
                               "cbm_szt": cbm, "cbm_zrodlo": cbm_zrodlo}
 
-    out: Dict[int, Wynik] = {}
     wejscie: Dict[int, tuple] = {}
     for cid, lista in poz_k.items():
         k = po_k[cid]
@@ -276,14 +292,63 @@ async def policz_kontenery(db: AsyncSession, container_ids: Optional[Sequence[in
         g = po_k[cid]["rozliczenie_grupa"]
         if g is not None and not po_k[cid]["skonsolidowany"] and len(grupy) == 1 and not grupy[0].krajowa:
             pule.setdefault(g, []).append(cid)
+    gotowe: Dict[int, Dict[int, tuple]] = {}
+    razem_z: Dict[int, List[int]] = {}
     for cidy in pule.values():
         if len(cidy) < 2:
             continue
-        for cid, w in policz_razem({c: (wejscie[c][0], wejscie[c][1][0], wejscie[c][2]) for c in cidy}).items():
+        gotowe.update(towar_razem({c: (wejscie[c][0], wejscie[c][1][0], wejscie[c][2]) for c in cidy}))
+        for c in cidy:
+            razem_z[c] = [x for x in sorted(cidy) if x != c]
+
+    # Wspólne zgłoszenie celne: fracht, Lenmar i transport z puli grupy. Dostawa krajowa
+    # (cały kontener w PLN) nie ma frachtu ani cła — do puli nie wchodzi.
+    etykiety = {k["id"]: k["etykieta"] for k in kontenery}
+    uwagi: Dict[int, List[Uwaga]] = {}
+
+    def krajowy(cid: int) -> bool:
+        return all(g.krajowa for g in wejscie[cid][1])
+
+    sklady: List[List[int]] = []
+    przydzielone: set = set()
+    for cid in sorted(wejscie):
+        if cid in przydzielone:
+            continue
+        z = grupa_sad.get(cid)
+        if not z:
+            sklady.append([cid])
+            przydzielone.add(cid)
+            if cid in konflikty:
+                uwagi.setdefault(cid, []).append(Uwaga(
+                    "ostrzezenie", "Kontener należy do dwóch wspólnych zgłoszeń celnych — policzony osobno, "
+                                   "sprawdź odprawy"))
+            continue
+        czlonkowie = sorted(c for c in z if c in wejscie)
+        krajowe = [c for c in czlonkowie if krajowy(c)]
+        reszta = [c for c in czlonkowie if c not in krajowe]
+        for c in krajowe:
+            uwagi.setdefault(c, []).append(Uwaga(
+                "ostrzezenie", "Dostawa krajowa (PLN) ze wspólnym zgłoszeniem celnym — nie wchodzi "
+                               "do wspólnego rozliczenia, liczona osobno"))
+            for x in reszta:
+                uwagi.setdefault(x, []).append(Uwaga(
+                    "ostrzezenie", f"{etykiety.get(c) or f'#{c}'} to dostawa krajowa (PLN) — nie wchodzi "
+                                   f"do puli wspólnego zgłoszenia"))
+        sklady.extend([c] for c in krajowe)
+        if reszta:
+            sklady.append(reszta)
+        przydzielone |= set(czlonkowie)
+
+    out: Dict[int, Wynik] = {}
+    for sklad in sklady:
+        wyniki = policz_wspolnie({c: (wejscie[c][0], wejscie[c][1], wejscie[c][2], gotowe.get(c)) for c in sklad},
+                                 etykiety)
+        for cid, w in wyniki.items():
             w.data_frachtu = wejscie[cid][3]
+            w.razem_z = razem_z.get(cid, [])
+            w.uwagi.extend(uwagi.get(cid, []))
             out[cid] = w
-    for cid, (kont, grupy, lista, data_frachtu) in wejscie.items():
-        if cid not in out:
-            out[cid] = policz(kont, grupy, lista)
-            out[cid].data_frachtu = data_frachtu
+    if not wszystkie:
+        # Partnerzy byli potrzebni tylko do rachunku — ich własne grupy mogą być niepełne.
+        out = {cid: w for cid, w in out.items() if cid in zadane}
     return out, meta

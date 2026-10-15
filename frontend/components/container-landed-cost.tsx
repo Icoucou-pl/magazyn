@@ -63,6 +63,7 @@ export type Odprawa = {
   kurs_towaru: number | null; kurs_kosztow: number | null;
   // Kurs z dni zapłaty zaliczek i balance (jak zakładka „Koszt jednostkowy") — domyślny kurs towaru.
   kurs_platnosci?: number | null; kurs_platnosci_szacunek?: boolean;
+  wspolne_rozliczenie?: string[];   // nowa metoda liczy fracht/Lenmar/transport z puli tych kontenerów
   fv_spedytora: string | null; fv_spedytora_data: string | null;
   suma_towar: number; suma_logistyka: number; suma_clo: number; narzut_proc: number | null;
   mozna_zapisac: boolean; status: string; zrodlo_erp?: string | null;
@@ -536,6 +537,9 @@ export default function LandedCostTab({ containerId, onSaved, krajowa = false }:
         </div>
       )}
 
+      {(dane.wspolne_rozliczenie?.length ?? 0) > 1 && (
+        <Komunikat poziom="info" tresc={`Koszt jednostkowy liczony wspólnie dla: ${dane.wspolne_rozliczenie!.join(", ")} — fracht, Lenmar i transport z jednej puli, po CBM na cały towar (kolumna „Nowa metoda”).`} />
+      )}
       {dane.uwagi.map((u, i) => <Komunikat key={i} poziom={u.poziom} tresc={u.tresc} szczegol={u.szczegol} />)}
 
       {/* Pozycje SAD i przypisany towar */}

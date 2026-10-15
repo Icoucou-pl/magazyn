@@ -19,7 +19,8 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
 - **Kontenery** z Chin: pozycje, loty, zaliczki, załączniki (FV, proformy, BL).
   **Koszt jednostkowy** liczy „metoda szefa” (`services/koszt_kontenera.py`, wejście z bazy
   `services/koszt_kontenera_dane.py`): płatności × kurs NBP sprzed zapłaty, fracht i transport po CBM,
-  ryczałt Lenmara, cło ze słownika `app_stawki_cn` (kod CN → stawka). Na bieżąco, w bazie tylko ręczne
+  ryczałt Lenmara, cło ze słownika `app_stawki_cn` (kod CN → stawka). Kontenery z jednym zapisanym SAD-em
+  (`app_odprawa_kontenery`) liczą fracht, Lenmara i transport z jednej puli po CBM (`policz_wspolnie`). Na bieżąco, w bazie tylko ręczne
   poprawki (`app_koszt_kontenera`, `app_koszt_pozycji`). Z niego biorą FIFO/średnią zakładki „Cena” (dawniej „test-cena”) / „test-wycena” (pierwsza „Cena” z kalkulatorem usunięta) i lista.
   Odprawa z XML WinSAD (`services/sad.py`, `services/odprawy.py`) to już tylko kontrola —
   zakładka „SAD”, wyłącznie superadmin (`require_sad`); dalej uzupełnia kody CN, wagi i słownik stawek.

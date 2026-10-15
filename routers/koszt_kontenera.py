@@ -27,7 +27,7 @@ from audit_opisy import f_num, f_proc, f_zl
 from config import settings
 from database import get_db
 from models import (
-    CurrentUser, KodCnIn, KontenerKrotkoOut, KursOut, RozliczenieRazemIn, RozliczenieRazemOut, KosztGrupaOut, KosztDodatkowyOut, KosztKontenerIn, KosztKontenerOut, KosztNotatkaIn, KosztNotatkaOut, KosztPlatnoscOut,
+    CurrentUser, KodCnIn, KontenerKrotkoOut, KosztPulaKontenerOut, KosztPulaOut, KursOut, RozliczenieRazemIn, RozliczenieRazemOut, KosztGrupaOut, KosztDodatkowyOut, KosztKontenerIn, KosztKontenerOut, KosztNotatkaIn, KosztNotatkaOut, KosztPlatnoscOut,
     KosztPozycjaOut, KosztUwagaOut, StawkaCnIn, StawkaCnOut,
 )
 from routers.odprawy import _etykieta_sql, _koszt_erp
@@ -159,6 +159,12 @@ async def _rachunek(db: AsyncSession, cid: int, user: CurrentUser,
                                         kurs=x.kurs, data_kursu=x.data_kursu) for x in g.platnosci],
         ) for g in w.grupy],
         razem_z=razem,
+        pula=KosztPulaOut(
+            kontenery=[KosztPulaKontenerOut(**vars(x)) for x in w.pula.kontenery],
+            fracht=w.pula.fracht, fracht_usd=w.pula.fracht_usd, lenmar=w.pula.lenmar,
+            transport=w.pula.transport, cbm=w.pula.cbm, fracht_m3=w.pula.fracht_m3,
+        ) if w.pula else None,
+        fracht_udzial=w.fracht_udzial, lenmar_udzial=w.lenmar_udzial, transport_udzial=w.transport_udzial,
         # Tylko koszty tej karty — przy wspólnej fakturze grupa niesie też koszty partnerów.
         koszty=[KosztDodatkowyOut(nazwa=x.nazwa, kwota=x.kwota, waluta=g.waluta, grupa=g.id, dostawca_id=g.dostawca_id,
                                   pozycje=x.pozycje, pln=round(x.kwota * (g.kurs or 0.0), 2), osobna=x.osobna, szt=x.szt)
