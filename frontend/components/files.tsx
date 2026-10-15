@@ -11,7 +11,7 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, download, openInNewTab } from "@/lib/api";
+import { api, download } from "@/lib/api";
 import { canSeeFiles, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
 import { toast } from "./toast";
@@ -164,7 +164,10 @@ const rowStyle: React.CSSProperties = {
 export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key: string) => void }) {
   const user = useUser();
   const [folderId, setFolderId] = useState<number | null>(null);
-  const [data, setData] = useState<Listing | null>(null);
+  // Zawartość odwiedzonych folderów — powrót do folderu pokazuje się od razu, a świeże dane
+  // dociągają się w tle. Najechanie na folder ładuje go z wyprzedzeniem.
+  const [cache, setCache] = useState<Record<string, Listing>>({});
+  const [ladowanie, setLadowanie] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [tryb, setTryb] = useState<"lista" | "kosz">("lista");
   const [q, setQ] = useState("");
@@ -179,17 +182,23 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
   const dragDepth = useRef(0);
 
   const [odswiez, setOdswiez] = useState(0);
-  const load = useCallback(() => setOdswiez((n) => n + 1), []);
+  const load = useCallback(() => { setLadowanie(true); setOdswiez((n) => n + 1); }, []);
+  const klucz = (fid: number | null) => String(fid ?? "root");
+  const data = cache[klucz(folderId)] ?? null;
+  const pobierzListe = (fid: number | null) =>
+    api.get(`/pliki/lista${fid != null ? `?folder_id=${fid}` : ""}`)
+      .then((r) => setCache((c) => ({ ...c, [klucz(fid)]: r as Listing })));
+  const zWyprzedzeniem = (fid: number) => { if (!cache[klucz(fid)]) pobierzListe(fid).catch(() => {}); };
 
   useEffect(() => {
-    api.get(`/pliki/lista${folderId != null ? `?folder_id=${folderId}` : ""}`)
-      .then((r) => setData(r as Listing))
+    pobierzListe(folderId)
       .catch((e) => {
         err(e);
         // Folder zniknął (kosz w innej karcie) — wracamy na górę zamiast pustego ekranu.
         if (folderId != null) setFolderId(null);
-      });
-  }, [folderId, odswiez]);
+      })
+      .finally(() => setLadowanie(false));
+  }, [folderId, odswiez]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { api.get("/pliki/status").then((s) => setStatus(s as Status)).catch(() => {}); }, []);
 
   // Wyszukiwarka: od 2 znaków, z małym opóźnieniem, żeby nie strzelać przy każdej literze.
@@ -205,7 +214,10 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
   }, [qq, odswiez]);
 
   const wKontenerze = !!data?.sciezka.some((c) => c.rodzaj === "kontener");
-  const idz = (fid: number | null) => { setQ(""); setTryb("lista"); setFolderId(fid); };
+  const idz = (fid: number | null) => {
+    setQ(""); setTryb("lista");
+    if (fid !== folderId) { setLadowanie(true); setFolderId(fid); }
+  };
 
   // ── Wgrywanie: po jednym pliku, żeby był postęp i żeby jeden zły plik nie zatrzymał reszty ──
   const wgraj = async (files: File[]) => {
@@ -239,8 +251,28 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
   const maPliki = (e: React.DragEvent) => Array.from(e.dataTransfer.types || []).includes("Files");
 
   // ── Akcje na wierszach ──
-  const pobierz = (f: FileRow) => download(`/pliki/plik/${f.id}/pobierz`, f.nazwa).catch(() => toast("Nie udało się pobrać pliku", "warning"));
-  const pokaz = (f: FileRow) => openInNewTab(`/pliki/plik/${f.id}/pobierz`).catch(() => toast("Nie udało się otworzyć pliku", "warning"));
+  // Pobieranie i podgląd prosto z Supabase (link ważny 5 min) — bajty nie idą przez nasz serwer.
+  const pobierz = async (f: FileRow) => {
+    try {
+      const { url } = (await api.get(`/pliki/plik/${f.id}/link`)) as { url: string };
+      // Link ma „download” w adresie — Supabase każe przeglądarce zapisać plik, strona zostaje.
+      const a = document.createElement("a");
+      a.href = url;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch { toast("Nie udało się pobrać pliku", "warning"); }
+  };
+  const pokaz = async (f: FileRow) => {
+    const okno = window.open("", "_blank");   // od razu w kliknięciu, inaczej blokada wyskakujących okien
+    try {
+      const { url } = (await api.get(`/pliki/plik/${f.id}/link?pobierz=false`)) as { url: string };
+      if (okno) okno.location.href = url; else window.open(url, "_blank");
+    } catch {
+      okno?.close();
+      toast("Nie udało się otworzyć pliku", "warning");
+    }
+  };
   const doKosza = async (t: Target) => {
     try {
       await api.del(t.typ === "plik" ? `/pliki/plik/${t.id}` : `/pliki/folder/${t.id}`);
@@ -294,7 +326,7 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
       f.ile_plikow ? `${f.ile_plikow} ${f.ile_plikow === 1 ? "plik" : "plików"}` : null,
     ].filter(Boolean).join(" · ") || "pusty";
     return (
-      <div key={f.id} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => idz(f.id)} className="hover-row">
+      <div key={f.id} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => idz(f.id)} onMouseEnter={() => zWyprzedzeniem(f.id)} className="hover-row">
         <span style={{ color: f.rodzaj === "kontener" ? "var(--info)" : f.automatyczny ? "var(--accent)" : "var(--text-mid)", display: "flex", flexShrink: 0 }}>
           {f.rodzaj === "kontener" ? <I.Container size={18}/> : <I.Folder size={18}/>}
         </span>
@@ -352,7 +384,7 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
          onDragLeave={() => { dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setPrzeciaganie(false); }}
          onDragOver={(e) => { if (maPliki(e)) e.preventDefault(); }}
          onDrop={onDrop}>
-      <style>{`.hover-row:hover{background:var(--surface-2)} @media (max-width:640px){.pliki-chip-label{display:none}}`}</style>
+      <style>{`.hover-row:hover{background:var(--surface-2)} @media (max-width:640px){.pliki-chip-label{display:none}} @keyframes pliki-spin{to{transform:rotate(360deg)}}`}</style>
 
       {/* Pasek: okruszki + szukaj + akcje */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
@@ -370,6 +402,9 @@ export default function FilesView({ onOpenContainer }: { onOpenContainer?: (key:
               }}>{c.nazwa}</button>
             </React.Fragment>
           ))}
+          {ladowanie && tryb === "lista" && (
+            <I.Refresh size={13} style={{ color: "var(--text-lo)", marginLeft: 6, animation: "pliki-spin 1s linear infinite" }}/>
+          )}
         </nav>
         <div style={{ position: "relative", flex: "0 1 240px", minWidth: 160 }}>
           <I.Search size={14} style={{ position: "absolute", left: 10, top: 10, color: "var(--text-lo)" }}/>

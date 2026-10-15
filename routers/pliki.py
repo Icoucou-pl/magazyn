@@ -297,8 +297,7 @@ async def plik_do_kosza(pid: int, db: AsyncSession = Depends(get_db), user: Curr
     audit.note(f"przeniósł plik „{p['nazwa']}” do kosza", area="Pliki", resource_type="pliki", resource_id=pid)
 
 
-@router.get("/pliki/plik/{pid}/pobierz")
-async def pobierz(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+async def _plik_do_pobrania(db: AsyncSession, pid: int, user: CurrentUser) -> dict:
     """Superadmin pobiera wszystko (także z kosza — żeby dało się zajrzeć przed przywróceniem).
     Pozostali tylko pliki pokazane na karcie kontenera i tylko z uprawnieniem do załączników."""
     p = await _plik(db, pid)
@@ -307,6 +306,24 @@ async def pobierz(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUse
                     and (p["folder_id"] is None or p["folder_id"] not in await _martwe(db)))
         if not (widoczny and has_perm(user, "viewAttachments")):
             raise HTTPException(404, "Nie ma takiego pliku")
+    return p
+
+
+@router.get("/pliki/plik/{pid}/link")
+async def link(pid: int, pobierz: bool = Query(True), db: AsyncSession = Depends(get_db),
+               user: CurrentUser = Depends(get_current_user)):
+    """Link na 5 minut prosto do Supabase (te same uprawnienia co /pobierz). pobierz=false → podgląd."""
+    p = await _plik_do_pobrania(db, pid, user)
+    try:
+        return {"url": await pliki_storage.signed_url(p["sciezka"], pobierz_jako=p["nazwa"] if pobierz else None)}
+    except pliki_storage.StorageError as e:
+        raise HTTPException(502, f"Nie udało się przygotować linku do pliku: {e}")
+
+
+@router.get("/pliki/plik/{pid}/pobierz")
+async def pobierz(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
+    """Plik przez backend (karta kontenera — tam małe załączniki). Uprawnienia jak w /link."""
+    p = await _plik_do_pobrania(db, pid, user)
     try:
         data = await pliki_storage.download(p["sciezka"])
     except pliki_storage.StorageError as e:
