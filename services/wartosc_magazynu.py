@@ -10,7 +10,8 @@ dalej wstecz.
 SKĄD RUCH — ZALEŻNIE OD FIRMY
 -----------------------------
 · AMH         → sprzedaż z Sellasista (whitelista statusów) na minus, kontenery na plus
-                (dzień wejścia na magazyn: delivered_date albo ETA + odprawa).
+                (dzień wejścia na magazyn: delivered_date albo ETA + odprawa), a na zakładce
+                AMH dodatkowo zakupy od naszych firm (Veluxa, Acti) z Subiekta.
 · Acti/Veluxa → dziennik ruchów Fakturowni (`fakturownia_ruchy`), tylko magazyn główny
                 (bez „Towarów w drodze"). Tam jest WSZYSTKO, co zmienia stan: WZ i korekty,
                 hurt spoza Sellasista, przekazania do AMH, RW, PZ i przesunięcia z magazynu
@@ -27,6 +28,14 @@ Na zakładce Acti/Veluxy przekazanie do AMH to normalny rozchód (towar wyjecha�
 magazynu). W widoku „wszystkie firmy" pomijamy ruchy `is_internal`: druga strona (przyjęcie
 w AMH) nie jest w modelu AMH, więc liczenie tylko jednej strony zawyżałoby przeszłość grupy
 o każdą przekazaną sztukę.
+
+Odwrotnie na zakładce AMH: tam ZAKUP od Veluxy/Acti (Subiekt, `subiekt_przyjecia`, dostawca
+z NIP-em naszej firmy) liczymy jako przyjęcie. Bez tego wykres AMH widział sprzedaż towaru
+kupionego od Veluxy, ale nie jego wejście — przeszłość wychodziła zawyżona, a „Kapitał
+łącznie" (konto + magazyn) spadał, bo zapłata Veluxie schodziła z konta, a towar „był" już
+wcześniej. Sprawdzone 10.2026: od lutego ~2,5 tys. szt. za ~740 tys. zł; po doliczeniu
+kapitał AMH od lutego wychodzi płasko zamiast −560 tys. W widoku „wszystkie firmy" te
+zakupy pomijamy — tak jak drugą stronę (wydanie w Fakturowni Veluxy), więc się znoszą.
 """
 
 from datetime import date, timedelta
@@ -40,6 +49,12 @@ from services.fakturownia_history import TABELA as TABELA_RUCHY
 from services.products import fetch_products
 
 AMH = "amh"
+
+# Subiekt (ERP AMH): tabela przyjęć i magazyn podstawowy. Dostawy z Chin idą przez magazyn
+# „w drodze" (100001) i są już policzone jako kontenery; zakupy od naszych firm wpadają
+# prosto na podstawowy. Te same numery co w routers/product_history.py.
+TABELA_PRZYJECIA_SUBIEKT = "subiekt_przyjecia"
+MAGAZYN_PODSTAWOWY_AMH = 100000
 
 # {data: {sku_norm: ruch}} — ruch dodatni = przyjęcie, ujemny = rozchód.
 Ruch = Dict[date, Dict[str, float]]
@@ -135,6 +150,29 @@ async def _ruch_amh(db: AsyncSession, days: int, ruch: Ruch) -> None:
         _dodaj(ruch, r["deliv_date"], r["sku_norm"], float(r["qty"] or 0))
 
 
+async def _ruch_zakupy_od_siostr(db: AsyncSession, od: date, ruch: Ruch) -> None:
+    """AMH: zakupy od Veluxy/Acti (faktura w Subiekcie) na plus, w dniu przyjęcia.
+
+    „Nasza firma" = NIP dostawcy równy NIP-owi którejś firmy z app_firmy poza AMH
+    (porównanie po samych cyfrach — w Subiekcie i w app_firmy bywają myślniki/spacje)."""
+    q = f"""
+        SELECT LOWER(TRIM(p.sku)) AS sku_norm, p.data AS d, SUM(p.ilosc) AS qty
+        FROM {TABELA_PRZYJECIA_SUBIEKT} p
+        WHERE p.sku IS NOT NULL
+            AND p.data >= :od
+            AND p.magazyn_id = :magazyn
+            AND p.typ = 'ZAKUP'
+            AND regexp_replace(COALESCE(p.dostawca_nip, ''), '\\D', '', 'g') IN (
+                SELECT regexp_replace(COALESCE(f.nip, ''), '\\D', '', 'g')
+                FROM {settings.TABLE_FIRMY} f
+                WHERE LOWER(f.slug) <> :amh AND COALESCE(f.nip, '') <> '')
+        GROUP BY LOWER(TRIM(p.sku)), p.data
+    """
+    params = {"od": od, "magazyn": MAGAZYN_PODSTAWOWY_AMH, "amh": AMH}
+    for r in (await db.execute(text(q), params)).mappings():
+        _dodaj(ruch, r["d"], r["sku_norm"], float(r["qty"] or 0))
+
+
 async def _ruch_fakturownia(db: AsyncSession, shop: str, od: date, ruch: Ruch) -> None:
     """Acti/Veluxa: ruch magazynu głównego z dziennika Fakturowni (znak = znak ilości).
 
@@ -168,6 +206,8 @@ async def historia_wartosci(db: AsyncSession, shop: str, days: int, favorites_on
     ruch: Ruch = {}
     if shop in ("", AMH):
         await _ruch_amh(db, days, ruch)
+    if shop == AMH:
+        await _ruch_zakupy_od_siostr(db, today - timedelta(days=days), ruch)
     if shop != AMH:
         await _ruch_fakturownia(db, shop, today - timedelta(days=days), ruch)
 
