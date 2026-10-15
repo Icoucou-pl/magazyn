@@ -141,6 +141,11 @@ ROZLOZ_NA_FAKTURE = 0
 Zero, bo id pozycji kontenera są dodatnie — nie pomyli się z żadnym produktem."""
 
 PROG_NAZWY = 0.15
+
+MAX_PRZEWYZSZENIE = 5.0
+"""Nazwa nie wsadzi SKU do pozycji SAD, której wartość jest ponad 5× mniejsza niż wartość
+planowana tego SKU — ceny planowane bywają nieaktualne, ale nie aż tak. Taka para to
+prawie zawsze krótki opis części albo kartonów, który przypadkiem dzieli słowo z towarem."""
 """Poniżej tego podobieństwa nie rozstrzygamy nazwą — jedno przypadkowe słowo
 w dziesięciowyrazowym opisie celnym to za mało, żeby przesądzić o pozycji."""
 
@@ -207,6 +212,7 @@ def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
     wraca na kartę produktu i następna dostawa tego SKU trafia na miejsce sama.
     """
     opisy = {p.nr: _slowa(p.opis) for p in odprawa.pozycje}
+    kurs = odprawa.kurs_celny or 1.0
     wynik: Dict[str, int] = {}
     for sku in do_ulozenia:
         # Symbol dokładamy do nazwy, bo sam bywa mówiący („PRZE5S” → prześcieradło),
@@ -215,8 +221,13 @@ def _dopasuj_po_nazwie(odprawa: Odprawa, grupy: Dict[str, List[PozycjaTowaru]],
         if not moje:
             continue
         dozw = (dozwolone or {}).get(sku)
+        # Pozycja, która nie pomieści nawet ułamka wartości tego SKU, nie wchodzi w grę, choćby
+        # słowa pasowały: TGCU0114050 — 150 foteli (~9 000 USD) poszło do „kartony zamienne
+        # do foteli” za 20 USD, bo krótszy opis z tym samym słowem wygrywał podobieństwem.
+        plan = sum(t.ilosc * t.cena_planowana for t in grupy[sku]) / kurs
         punkty = sorted(((_podobienstwo(opisy[p.nr], moje), p.nr) for p in odprawa.pozycje
-                         if dozw is None or p.nr in dozw),
+                         if (dozw is None or p.nr in dozw)
+                         and not (plan and p.wartosc and plan > MAX_PRZEWYZSZENIE * p.wartosc)),
                         reverse=True)
         if not punkty:
             continue
