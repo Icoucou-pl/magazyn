@@ -6,13 +6,21 @@
 //   (kwoty tylko dla viewFinancials → prop showFin).
 //   Dane: GET /manufacturers/{id}/sales-season lub /products/{sku}/sales-season
 //   → SeasonPoint[] (year, month 0-11, qty, value_net, value_gross).
+//   Karta produktu dostaje też *_outlet (Szp1_Outlet przy SZP1 itd.) —
+//   przycisk „Z outletami” dorysowuje linię „ten rok + outlety”, a dymek
+//   rozbija miesiąc na normalne i outlety. Bez sprzedaży outletów przycisku nie ma.
 //   Używany przez forecast.tsx (modal producenta) i product-modal.tsx.
 // ============================================================
 
 import React, { useEffect, useRef, useState } from "react";
 import { fmtNum, fmtPLNk } from "@/lib/format";
 
-export type SeasonPoint = { year: number; month: number; qty: number; value_net: number; value_gross: number };
+export type SeasonPoint = {
+  year: number; month: number; qty: number; value_net: number; value_gross: number;
+  qty_outlet?: number; value_net_outlet?: number; value_gross_outlet?: number;
+};
+
+const OUTLET_COLOR = "var(--info)";
 
 const AN_MONTHS = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
 
@@ -23,6 +31,7 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
   const [w, setW] = useState(680);
   const [hover, setHover] = useState<number | null>(null);
   const [metric, setMetric] = useState<Metric>("qty");
+  const [withOutlets, setWithOutlets] = useState(false);
   useEffect(() => {
     if (!ref.current) return;
     const ro = new ResizeObserver((e) => setW(e[0].contentRect.width));
@@ -43,12 +52,24 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
     if (!p) return 0;
     return m === "qty" ? p.qty : m === "net" ? p.value_net : p.value_gross;
   };
+  const outAt = (year: number, mo: number): number => {
+    const p = byKey.get(`${year}-${mo}`);
+    if (!p) return 0;
+    return (m === "qty" ? p.qty_outlet : m === "net" ? p.value_net_outlet : p.value_gross_outlet) || 0;
+  };
+  const hasOutlets = data.some((p) => (p.qty_outlet || 0) > 0);
+  const showOut = hasOutlets && withOutlets;
 
   const prevVals: number[] = Array.from({ length: 12 }, (_, mo) => valAt(yearNow - 1, mo));
   const curVals: (number | null)[] = Array.from({ length: 12 }, (_, mo) => (mo <= monthNow ? valAt(yearNow, mo) : null));
   const labels = AN_MONTHS;
 
-  const curNums = curVals.filter((v): v is number => v != null);
+  const prevOut: number[] = Array.from({ length: 12 }, (_, mo) => outAt(yearNow - 1, mo));
+  const curOut: (number | null)[] = Array.from({ length: 12 }, (_, mo) => (mo <= monthNow ? outAt(yearNow, mo) : null));
+  // Linia „ten rok + outlety” = normalne + outlety w tym samym miesiącu.
+  const curWithOut: (number | null)[] = curVals.map((v, i) => (v == null ? null : v + (curOut[i] || 0)));
+
+  const curNums = (showOut ? curWithOut : curVals).filter((v): v is number => v != null);
   const max = Math.max(...prevVals, ...curNums, 1);
 
   const pad = { t: 16, r: 12, b: 26, l: 40 };
@@ -91,6 +112,11 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-mid)" }}>
             <span style={{ width: 14, height: 0, borderTop: "2px dashed var(--text-lo)" }} /> Rok temu
           </span>
+          {showOut && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-mid)" }}>
+              <span style={{ width: 14, height: 2, background: OUTLET_COLOR, borderRadius: 2 }} /> Ten rok + outlety
+            </span>
+          )}
           {showFin && (
             <div style={{ display: "flex", gap: 2, padding: 2, background: "var(--surface-2)", borderRadius: 7 }}>
               {tabs.map(([k, lab]) => (
@@ -101,6 +127,14 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
                 }}>{lab}</button>
               ))}
             </div>
+          )}
+          {hasOutlets && (
+            <button onClick={() => setWithOutlets((v) => !v)} title="Dorysuj sprzedaż razem z outletami (np. Szp1_Outlet)" style={{
+              padding: "4px 9px", fontSize: 11, fontWeight: 600, borderRadius: 7, cursor: "pointer",
+              border: `1px solid ${withOutlets ? OUTLET_COLOR : "var(--border-soft)"}`,
+              background: withOutlets ? "var(--info-soft)" : "var(--surface-2)",
+              color: withOutlets ? "var(--text-hi)" : "var(--text-mid)",
+            }}>Z outletami</button>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -119,6 +153,8 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
             <text key={f} x={pad.l - 6} y={y(max * f) + 3} fill="var(--text-lo)" fontSize="9" textAnchor="end" fontFamily="var(--font-mono)">{axisLabel(max * f)}</text>
           ))}
           <path d={line(prevVals)} stroke="var(--text-lo)" strokeWidth="1.5" fill="none" strokeDasharray="4,3" opacity="0.7" />
+          {showOut && <path d={line(curWithOut)} stroke={OUTLET_COLOR} strokeWidth="1.8" fill="none" strokeLinejoin="round" />}
+          {showOut && curWithOut.map((v, i) => (v == null ? null : <circle key={`o${i}`} cx={x(i)} cy={y(v)} r={hover === i ? 3.5 : 2} fill={OUTLET_COLOR} />))}
           <path d={line(curVals)} stroke={accent} strokeWidth="2.4" fill="none" strokeLinejoin="round" />
           {curVals.map((v, i) => (v == null ? null : <circle key={i} cx={x(i)} cy={y(v)} r={hover === i ? 4 : 2.5} fill={accent} />))}
           {hover != null && (
@@ -130,13 +166,28 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
         </svg>
         {hover != null && (
           <div style={{
-            position: "absolute", left: Math.min(Math.max(x(hover) - 70, 4), w - 150), top: 6,
+            position: "absolute", left: Math.min(Math.max(x(hover) - 70, 4), w - (showOut ? 190 : 150)), top: 6,
             background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 7,
             padding: "7px 10px", fontSize: 11, pointerEvents: "none", minWidth: 136,
           }}>
             <div style={{ fontSize: 10, color: "var(--text-lo)", fontWeight: 600 }}>{labels[hover]}</div>
-            <div className="num" style={{ color: accent, fontWeight: 600 }}>ten rok: {curVals[hover] == null ? "—" : fmtFull(curVals[hover] as number)}</div>
-            <div className="num" style={{ color: "var(--text-lo)" }}>rok temu: {fmtFull(prevVals[hover])}</div>
+            {showOut ? (
+              <>
+                <div className="num" style={{ color: OUTLET_COLOR, fontWeight: 600 }}>ten rok: {curWithOut[hover] == null ? "—" : fmtFull(curWithOut[hover] as number)}</div>
+                {curVals[hover] != null && (
+                  <div className="num" style={{ color: "var(--text-mid)", paddingLeft: 8 }}>
+                    <span style={{ color: accent }}>normalne {fmtFull(curVals[hover] as number)}</span> · outlety {fmtFull(curOut[hover] || 0)}
+                  </div>
+                )}
+                <div className="num" style={{ color: "var(--text-lo)", marginTop: 2 }}>rok temu: {fmtFull(prevVals[hover] + prevOut[hover])}</div>
+                <div className="num" style={{ color: "var(--text-lo)", paddingLeft: 8 }}>normalne {fmtFull(prevVals[hover])} · outlety {fmtFull(prevOut[hover])}</div>
+              </>
+            ) : (
+              <>
+                <div className="num" style={{ color: accent, fontWeight: 600 }}>ten rok: {curVals[hover] == null ? "—" : fmtFull(curVals[hover] as number)}</div>
+                <div className="num" style={{ color: "var(--text-lo)" }}>rok temu: {fmtFull(prevVals[hover])}</div>
+              </>
+            )}
           </div>
         )}
       </div>

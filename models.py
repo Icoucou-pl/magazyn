@@ -813,12 +813,17 @@ class SeasonPoint(BaseModel):
     month: indeks 0-11 (0=styczeń) — zgodnie z frontendowym SeasonChart.
     qty: liczba sprzedanych sztuk.
     value_net / value_gross: przychód netto/brutto (qty × price_netto / price)
-    z rzeczywistych cen sprzedaży w pozycjach zamówień."""
+    z rzeczywistych cen sprzedaży w pozycjach zamówień.
+    *_outlet: sprzedaż outletów tego SKU (np. Szp1_Outlet przy SZP1) — osobno,
+    żeby wykres mógł je dorysować na życzenie; poza kartą produktu zawsze 0."""
     year: int
     month: int
     qty: int
     value_net: float
     value_gross: float
+    qty_outlet: int = 0
+    value_net_outlet: float = 0.0
+    value_gross_outlet: float = 0.0
 
 
 class Anomaly(BaseModel):
