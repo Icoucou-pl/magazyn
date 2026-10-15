@@ -580,3 +580,19 @@ LEFT JOIN kont  ON kont.k  = s.k
 LEFT JOIN snap  ON snap.k  = s.k
 LEFT JOIN teraz ON teraz.k = s.k;
 """
+
+
+def etykieta_kontenera_sql(c: str = "c") -> str:
+    """Nazwa kontenera do pokazania: numer, a dopóki jest roboczy „Draft-…" — „FV: <nr>".
+
+    Numer roboczy nadajemy wewnętrznie dla unikalności (drobnica, kontener bez numeru);
+    na ekranie go nie pokazujemy — tak samo jak lista kontenerów (containerLabel) i dziennik.
+    FV = zamówienie kontenera, a przy konsolidacji zamówienie pierwszego lotu.
+    """
+    return f"""CASE WHEN COALESCE(TRIM({c}.container_number), '') = ''
+                      OR LOWER(TRIM({c}.container_number)) LIKE 'draft-%'
+                 THEN COALESCE('FV: ' || COALESCE(NULLIF(TRIM({c}.order_number), ''),
+                        (SELECT NULLIF(TRIM(l.order_number), '') FROM {settings.TABLE_CONTAINER_LOTS} l
+                          WHERE l.container_id = {c}.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
+                          ORDER BY l.position, l.id LIMIT 1)), '#' || {c}.id)
+                 ELSE {c}.container_number END"""

@@ -106,6 +106,8 @@ def _dostawa(r, wynik: Optional[Wynik]) -> Dostawa:
         koszt_jednostkowy=p.koszt_jednostkowy if p else None,
         koszt_szacunek=bool(p and p.szacunek),
         krajowa=bool(p and p.krajowa),
+        wspolne_z=[k.etykieta for k in wynik.pula.kontenery if k.container_id != r["container_id"]]
+                  if wynik and wynik.pula else [],
     )
 
 
@@ -284,7 +286,7 @@ async def cena_produktu(sku: str, shop: str = Query(""), db: AsyncSession = Depe
             narzut_proc=d.narzut_proc,
             rozliczenie=("krajowa" if d.krajowa else "szacunek" if d.szacunek
                          else "policzony" if d.policzona else "brak"),
-            odstaje=d.odstaje, fifo=d.fifo,
+            odstaje=d.odstaje, fifo=d.fifo, wspolne_z=d.wspolne_z,
         ) for d in w.dostawy],
         zapisane=await _zapisane(db, p.sku),
         uwagi=w.uwagi,

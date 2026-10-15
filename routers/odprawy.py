@@ -50,7 +50,7 @@ from services.odprawy import (
 )
 from services.products import compute_effective_cbm
 from services.sad import BladSAD, Odprawa, kontrole, parsuj
-from sql import PRODUCT_NAMES_CTE
+from sql import PRODUCT_NAMES_CTE, etykieta_kontenera_sql
 
 router = APIRouter(prefix="/api", tags=["odprawy"])
 
@@ -61,20 +61,8 @@ MAX_XML = 8 * 1024 * 1024   # zgłoszenie z 7 pozycjami waży 36 kB; 8 MB to zap
 # Odczyt kontekstu z bazy
 # ============================================================
 
-def _etykieta_sql(c: str = "c") -> str:
-    """Nazwa kontenera do pokazania: numer, a dopóki jest roboczy „Draft-…" — „FV: <nr>".
-
-    Numer roboczy nadajemy wewnętrznie dla unikalności (drobnica, kontener bez numeru);
-    na ekranie go nie pokazujemy — tak samo jak lista kontenerów (containerLabel) i dziennik.
-    FV = zamówienie kontenera, a przy konsolidacji zamówienie pierwszego lotu.
-    """
-    return f"""CASE WHEN COALESCE(TRIM({c}.container_number), '') = ''
-                      OR LOWER(TRIM({c}.container_number)) LIKE 'draft-%'
-                 THEN COALESCE('FV: ' || COALESCE(NULLIF(TRIM({c}.order_number), ''),
-                        (SELECT NULLIF(TRIM(l.order_number), '') FROM {settings.TABLE_CONTAINER_LOTS} l
-                          WHERE l.container_id = {c}.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
-                          ORDER BY l.position, l.id LIMIT 1)), '#' || {c}.id)
-                 ELSE {c}.container_number END"""
+# Przeniesione do sql.py — liczy z tego także services/koszt_kontenera_dane.py.
+_etykieta_sql = etykieta_kontenera_sql
 
 
 async def _kontener(db: AsyncSession, container_id: int) -> Dict[str, Any]:
@@ -905,7 +893,9 @@ async def _dolicz_nowa_metode(db: AsyncSession, out: Optional[OdprawaOut]) -> Op
     """Kontrola dla superadmina: koszt tej samej pozycji liczony nową metodą (bez SAD-u).
 
     Koszt jednostkowy liczy się dziś z karty kontenera i płatności (services/koszt_kontenera.py);
-    kolumna obok kosztu z SAD pokazuje, jak bardzo jedno odbiega od drugiego.
+    kolumna obok kosztu z SAD pokazuje, jak bardzo jedno odbiega od drugiego. Wynik kontenera
+    z policz_kontenery nie zależy od tego, o jakie kontenery pytamy (partnerów grupy dociąga
+    sam), więc to co do grosza ta sama liczba co w zakładce „Koszt jednostkowy”.
     """
     if out is None or not out.towar:
         return out
@@ -915,6 +905,9 @@ async def _dolicz_nowa_metode(db: AsyncSession, out: Optional[OdprawaOut]) -> Op
     koszt = {p.item_id: p.koszt_jednostkowy for w in wyniki.values() for p in w.pozycje}
     for t in out.towar:
         t.koszt_nowa_metoda = koszt.get(t.item_id)
+    # Ten sam wynik co zakładka „Koszt jednostkowy” — z puli grupy, jeśli zgłoszenie obejmuje kilka kontenerów.
+    pula = next((w.pula for w in wyniki.values() if w.pula), None)
+    out.wspolne_rozliczenie = [k.etykieta for k in pula.kontenery] if pula else []
     out.kurs_platnosci, out.kurs_platnosci_szacunek = await _kurs_z_platnosci(
         db, [t.container_id for t in out.towar], [t.item_id for t in out.towar])
     return out

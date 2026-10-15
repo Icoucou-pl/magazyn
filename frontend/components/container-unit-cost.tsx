@@ -17,6 +17,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { pathForContainer } from "@/lib/routes";
 import { toast } from "./toast";
 
 // ── typy odpowiedzi backendu (models.py: Koszt*Out) ─────────
@@ -47,11 +48,19 @@ type Koszt = {
   transport_reczny: number | null; lenmar_kontener: number; lenmar_zgloszenie: number;
   grupy: Grupa[]; pozycje: Pozycja[]; uwagi: { poziom: string; tresc: string }[];
   razem_z: KontenerKrotko[];
+  // Wspólne zgłoszenie celne: pula kontenerów grupy i udział tego kontenera (suma na jego SKU).
+  pula: Pula | null; fracht_udzial: number; lenmar_udzial: number; transport_udzial: number;
   zapisal: string | null; zapisano: string | null; moze_edytowac: boolean;
   notatki: NotatkaWpis[];
 };
 // Wpis w dzienniku notatek; moze_edytowac = autor wpisu albo administrator (liczy backend).
 type NotatkaWpis = { id: number; tresc: string; kto: string | null; kiedy: string | null; edytowano: string | null; moze_edytowac: boolean };
+
+type PulaKontener = {
+  container_id: number; etykieta: string; cbm: number; fracht_usd: number; fracht: number; fracht_reczny: boolean;
+  lenmar: number; lenmar_reczny: boolean; transport: number; transport_reczny: boolean;
+};
+type Pula = { kontenery: PulaKontener[]; fracht: number; fracht_usd: number; lenmar: number; transport: number; cbm: number; fracht_m3: number | null };
 
 type KontenerKrotko = { id: number; etykieta: string; dostawca?: string | null; eta?: string | null };
 
@@ -253,13 +262,14 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
       n={k.koszty.filter((x) => !x.osobna).map((x) => x.nazwa).join(", ") || "z założeń"} />] : []),
     ...(osobne.length ? [<Kafel key="o" l="Osobne pozycje" v={`${pl(osobnePln, 0)} zł`}
       n={`${osobne.map((x) => x.nazwa).join(", ")} · poza kosztem SKU`} />] : []),
-    <Kafel key="f" l="Fracht" v={`${pl(k.fracht, 0)} zł`}
-      n={k.fracht_reczny != null ? "wpisany ręcznie" : k.fracht_usd ? `${pl(k.fracht_usd, 0)} USD × ${pl(k.kurs_frachtu, 4)}` : "brak na karcie"} />,
-    <Kafel key="l" l="Lenmar" v={`${pl(k.lenmar, 0)} zł`}
-      n={k.lenmar_reczny != null ? "wpisany ręcznie" : `ryczałt · ${k.zgloszen} ${k.zgloszen === 1 ? "zgłoszenie" : "zgłoszenia"}`} />,
+    <Kafel key="f" l="Fracht" v={`${pl(k.pula ? k.fracht_udzial : k.fracht, 0)} zł`}
+      n={k.pula ? "z puli grupy · udział tego kontenera" : k.fracht_reczny != null ? "wpisany ręcznie" : k.fracht_usd ? `${pl(k.fracht_usd, 0)} USD × ${pl(k.kurs_frachtu, 4)}` : "brak na karcie"} />,
+    <Kafel key="l" l="Lenmar" v={`${pl(k.pula ? k.lenmar_udzial : k.lenmar, 0)} zł`}
+      n={k.pula ? "z puli grupy" : k.lenmar_reczny != null ? "wpisany ręcznie" : `ryczałt · ${k.zgloszen} ${k.zgloszen === 1 ? "zgłoszenie" : "zgłoszenia"}`} />,
     <Kafel key="c" l="Cło" v={`${pl(k.clo, 0)} zł`} n="z kodów CN pozycji"
       tag={k.pozycje.some((p) => p.stawka_zrodlo === "brak") ? <Tag t="brak" /> : null} />,
-    <Kafel key="tr" l="Transport krajowy" v={`${pl(k.transport, 0)} zł`} n={`do magazynu, po ${k.podzial === "cbm" ? "CBM" : "wartości"}`} />,
+    <Kafel key="tr" l="Transport krajowy" v={`${pl(k.pula ? k.transport_udzial : k.transport, 0)} zł`}
+      n={k.pula ? "z puli grupy, po CBM" : `do magazynu, po ${k.podzial === "cbm" ? "CBM" : "wartości"}`} />,
     <Kafel key="n" l="Narzut" v={k.narzut_proc != null ? `${pl(k.narzut_proc, 1)}%` : "—"} n="koszty importu / towar" akcent />,
     <Kafel key="k" l="Kurs towaru" pop={popKursu}
       v={wiele ? "per lot" : pl(glowna?.kurs, 4)}
@@ -293,6 +303,14 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
     auto: pl(k.transport_auto), placeholder: pl(k.transport_auto), zrodlo: "z karty kontenera", d: 2,
   });
 
+  // Wspólne zgłoszenie: poprawka frachtu/Lenmara/transportu zmienia koszt także w pozostałych kontenerach.
+  if (k.pula) {
+    const inne = k.pula.kontenery.filter((x) => x.container_id !== containerId).map((x) => x.etykieta).join(", ");
+    for (const z of zalozenia) {
+      if (z.pole !== "kurs") z.pod += ` · wchodzi do wspólnej puli — zmienia koszt także w ${inne}`;
+    }
+  }
+
   // ── tabela ────────────────────────────────────────────────
   const erpNazwa = k.pozycje.find((p) => p.erp_zrodlo)?.erp_zrodlo === "fakturownia" ? "Fakturownia" : "Subiekt";
   const sumaSzt = k.pozycje.reduce((s, p) => s + p.szt, 0);
@@ -300,6 +318,7 @@ export default function UnitCostTab({ containerId }: { containerId: number }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <style>{css}</style>
+      {k.pula && <WspolneRozliczenie pula={k.pula} containerId={containerId} />}
       <div className="kj-kafle">{kafle}</div>
 
       {(k.krajowa || !!k.uwagi.length) && (
@@ -737,6 +756,62 @@ function Naglowek({ tytul, hint }: { tytul: string; hint?: string }) {
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "11px 16px", borderBottom: "1px solid var(--border-soft)" }}>
       <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-mid)" }}>{tytul}</span>
       {hint ? <span style={{ fontSize: 11, color: "var(--text-lo)" }}>{hint}</span> : null}
+    </div>
+  );
+}
+
+// Pasek wspólnego rozliczenia: jedno zgłoszenie celne na kilka kontenerów, więc fracht, Lenmar
+// i transport idą z jednej puli po CBM na cały towar grupy. Bez słowa „SAD” — admin tej zakładki nie widzi.
+function WspolneRozliczenie({ pula, containerId }: { pula: Pula; containerId: number }) {
+  const inne = pula.kontenery.filter((x) => x.container_id !== containerId);
+  const n = pula.kontenery.length;
+  const zrodlo = (r: boolean) => (r ? "ręcznie" : "auto");
+  return (
+    <div className="kj-kafel-pop" tabIndex={0} style={{ ...karta, overflow: "visible", position: "relative", padding: "12px 16px",
+      background: "color-mix(in oklch, var(--accent) 9%, var(--surface-1))",
+      border: "1px solid color-mix(in oklch, var(--accent) 40%, transparent)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+        <span aria-hidden style={{ color: "var(--accent)", fontSize: 15 }}>⛓</span>
+        <span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>WSPÓLNE ROZLICZENIE</span>
+        <b>Wspólne rozliczenie z{" "}
+          {inne.map((x, i) => (
+            <React.Fragment key={x.container_id}>{i > 0 && ", "}
+              <a href={`${pathForContainer(x.container_id)}?tab=koszt`} className="mono" style={{ color: "var(--accent)" }}>{x.etykieta}</a>
+            </React.Fragment>
+          ))}
+        </b>
+        <span style={{ color: "var(--text-mid)" }}>
+          — jedno zgłoszenie celne na {n} {n < 5 ? "kontenery" : "kontenerów"}. Fracht, Lenmar i transport policzone z puli
+          wszystkich i podzielone po CBM na cały towar.
+        </span>
+      </div>
+      <div className="mono" style={{ fontSize: 12, color: "var(--text-mid)", marginTop: 6 }}>
+        Pula: fracht {pl(pula.fracht_usd, 0)} USD ({pl(pula.fracht, 0)} zł) · Lenmar {pl(pula.lenmar, 0)} zł ·
+        transport {pl(pula.transport, 0)} zł · {pl(pula.cbm, 1)} m³
+        {pula.fracht_m3 != null && <> → {pl(pula.fracht_m3)} zł/m³ frachtu</>}
+        <span style={{ fontFamily: "inherit", color: "var(--text-lo)" }}> · najedź po szczegóły</span>
+      </div>
+      <div className="kj-pop" role="tooltip">
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead><tr>
+            <th style={popTh}>Kontener</th><th style={{ ...popTh, textAlign: "right" }}>CBM</th>
+            <th style={{ ...popTh, textAlign: "right" }}>Fracht</th><th style={{ ...popTh, textAlign: "right" }}>Lenmar</th>
+            <th style={{ ...popTh, textAlign: "right" }}>Transport</th>
+          </tr></thead>
+          <tbody>{pula.kontenery.map((x) => (
+            <tr key={x.container_id}>
+              <td style={popTd} className="mono">{x.etykieta}</td>
+              <td style={{ ...popTd, textAlign: "right" }} className="mono">{pl(x.cbm, 1)}</td>
+              <td style={{ ...popTd, textAlign: "right" }} className="mono">{pl(x.fracht, 0)} zł
+                <div style={{ fontSize: 10.5, color: "var(--text-lo)" }}>{x.fracht_usd ? `${pl(x.fracht_usd, 0)} USD · ` : ""}{zrodlo(x.fracht_reczny)}</div></td>
+              <td style={{ ...popTd, textAlign: "right" }} className="mono">{pl(x.lenmar, 0)} zł
+                <div style={{ fontSize: 10.5, color: "var(--text-lo)" }}>{zrodlo(x.lenmar_reczny)}</div></td>
+              <td style={{ ...popTd, textAlign: "right" }} className="mono">{pl(x.transport, 0)} zł
+                <div style={{ fontSize: 10.5, color: "var(--text-lo)" }}>{zrodlo(x.transport_reczny)}</div></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
     </div>
   );
 }

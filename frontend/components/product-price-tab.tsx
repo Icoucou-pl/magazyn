@@ -32,6 +32,7 @@ type Dostawa = {
   cena_fv_pln: number | null; cena_fv_waluta: number | null; waluta: string | null;
   koszt: number | null; szacunek: boolean; narzut_proc: number | null;
   rozliczenie: "policzony" | "szacunek" | "krajowa" | "brak"; odstaje: boolean; fifo: boolean;
+  wspolne_z?: string[];   // wspólne zgłoszenie celne: fracht z puli z tymi kontenerami
 };
 
 // Kontener bez numeru (roboczy „Draft-…") pokazujemy jako „FV: <nr faktury>".
@@ -279,6 +280,8 @@ function Dostawy({ data, onOpen }: { data: CenaData; onOpen?: (d: Dostawa) => vo
                         ? <button onClick={() => onOpen(d)} className="mono" style={cnrBtn} title="Otwórz kartę kontenera">{nrDostawy(d)} ›</button>
                         : <span className="mono" style={{ fontWeight: 600 }}>{nrDostawy(d)}</span>}
                       {d.fifo && <> <span style={{ ...tag, background: "var(--accent-soft)", color: "var(--accent)" }}>FIFO</span></>}
+                      {!!d.wspolne_z?.length && <> <span style={{ ...tag, background: "var(--info-soft)", color: "var(--info)" }}
+                        title={`Wspólne rozliczenie z ${d.wspolne_z.join(", ")} — jedno zgłoszenie celne, fracht, Lenmar i transport z puli`}>Wspólne</span></>}
                       {d.manufacturer_name && <div style={sub}>{d.manufacturer_name}{d.lot_order_number ? ` · ${d.lot_order_number}` : ""}</div>}
                     </td>
                     <td style={{ ...td, textAlign: "left", fontFamily: "var(--font-mono)" }}>

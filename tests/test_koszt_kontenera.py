@@ -365,3 +365,118 @@ def test_kontenery_rozliczane_razem_dziela_platnosci_na_caly_towar():
     # fracht zostaje na swojej karcie
     assert razem[1].fracht == 4000 and razem[2].fracht == 8000
     assert razem[1].razem_z == [2] and razem[2].razem_z == [1]
+
+
+# ── wspólne zgłoszenie celne (jeden SAD na kilka kontenerów) ─────────
+
+def _sad_kontener(fracht_usd, kurs_frachtu, pozycje, **kw):
+    return (Kontener(fracht_usd=fracht_usd, kurs_frachtu=kurs_frachtu, **kw),
+            [Grupa(id=0, platnosci=[zap(sum(p.szt * (p.cena_kontener or 0) for p in pozycje), 4.0, "balance")],
+                   kurs_ostatni=4.0)],
+            pozycje, None)
+
+
+def _grupa_uetu():
+    """Jak UETU8695821 + UETU8696129: ten sam SKU w obu, A załadowany luźniej (mniej m³ na ten sam fracht)."""
+    a = _sad_kontener(5400, 4.0, [poz(11, 10, 1, cbm=1.0, cena_kontener=100.0, stawka=3.7),
+                                  poz(12, 20, 1, cbm=1.0, cena_kontener=50.0)])
+    b = _sad_kontener(5400, 3.8, [poz(21, 10, 1, cbm=1.0, cena_kontener=100.0, stawka=3.7),
+                                  poz(22, 40, 1, cbm=1.0, cena_kontener=50.0)])
+    return {1: a, 2: b}
+
+
+def test_wspolne_zgloszenie_ten_sam_sku_ma_ten_sam_fracht_w_obu_kontenerach():
+    from services.koszt_kontenera import policz_wspolnie
+
+    osobno = {cid: policz(*w) for cid, w in _grupa_uetu().items()}
+    assert osobno[1].po_item()[11].fracht / 10 != osobno[2].po_item()[21].fracht / 10   # dziś: różnie
+    w = policz_wspolnie(_grupa_uetu())
+    a, b = w[1].po_item()[11], w[2].po_item()[21]
+    assert a.fracht == b.fracht and a.lenmar == b.lenmar
+    assert a.clo == b.clo   # cło od towaru + udziału frachtu z puli
+    assert w[1].wspolnie_z == [2] and w[2].wspolnie_z == [1]
+
+
+def test_wspolne_zgloszenie_suma_kosztow_na_sku_rowna_puli():
+    from services.koszt_kontenera import policz_wspolnie
+
+    w = policz_wspolnie(_grupa_uetu())
+    pula = w[1].pula
+    # 3. kursy: każdy fracht po swoim kursie, pula = suma
+    assert pula.fracht == pytest.approx(5400 * 4.0 + 5400 * 3.8)
+    assert pula.lenmar == 2 * LENMAR_KONTENER
+    poz_all = [p for x in w.values() for p in x.pozycje]
+    assert sum(p.fracht for p in poz_all) == pytest.approx(pula.fracht, abs=0.01)
+    assert sum(p.lenmar for p in poz_all) == pytest.approx(pula.lenmar, abs=0.01)
+    assert w[1].fracht_udzial + w[2].fracht_udzial == pytest.approx(pula.fracht, abs=0.01)
+    # kafelek: udział A to 30 z 80 m³ puli; karta A zostaje swoją (do poprawek)
+    assert w[1].fracht_udzial == pytest.approx(pula.fracht * 30 / 80, abs=0.01)
+    assert w[1].fracht == 5400 * 4.0
+    assert pula.fracht_m3 == pytest.approx(pula.fracht / 80, abs=0.01)
+
+
+def test_wspolne_zgloszenie_transport_z_puli():
+    from services.koszt_kontenera import policz_wspolnie
+
+    g = _grupa_uetu()
+    g[1][0].transport_pln = 800.0
+    w = policz_wspolnie(g)
+    assert w[1].pula.transport == 800.0
+    assert sum(p.transport for x in w.values() for p in x.pozycje) == pytest.approx(800.0, abs=0.01)
+    assert w[2].transport_udzial > 0   # B nie ma transportu na karcie, a i tak dostaje udział
+
+
+def test_wspolne_zgloszenie_poprawka_frachtu_jednego_zmienia_oba():
+    from services.koszt_kontenera import policz_wspolnie
+
+    przed = policz_wspolnie(_grupa_uetu())
+    g = _grupa_uetu()
+    g[1][0].fracht_pln = 30000.0
+    po = policz_wspolnie(g)
+    assert po[2].po_item()[21].koszt_jednostkowy > przed[2].po_item()[21].koszt_jednostkowy
+    assert po[1].pula.fracht == pytest.approx(30000.0 + 5400 * 3.8)
+    assert po[1].pula.kontenery[0].fracht_reczny and not po[1].pula.kontenery[1].fracht_reczny
+
+
+def test_pojedynczy_kontener_bez_zmian_przez_wspolne_liczenie():
+    from services.koszt_kontenera import policz_wspolnie
+
+    k, g, p, _ = _grupa_uetu()[1]
+    sam = policz(k, g, p)
+    k2, g2, p2, _ = _grupa_uetu()[1]
+    jako_grupa = policz_wspolnie({7: (k2, g2, p2, None)})[7]
+    assert [vars(x) for x in sam.pozycje] == [vars(x) for x in jako_grupa.pozycje]
+    assert sam.pula is None and jako_grupa.wspolnie_z == []
+    assert sam.fracht_udzial == sam.fracht
+
+
+def test_wspolne_zgloszenie_kontener_bez_frachtu_ostrzega():
+    from services.koszt_kontenera import policz_wspolnie
+
+    g = _grupa_uetu()
+    g[2] = (Kontener(fracht_usd=0, kurs_frachtu=3.8), *g[2][1:])
+    w = policz_wspolnie(g, {1: "UETU8695821", 2: "UETU8696129"})
+    assert any("UETU8696129 nie ma frachtu na karcie" in u.tresc for u in w[1].uwagi)
+
+
+def test_wspolne_zgloszenie_rozny_fracht_na_kartach_to_informacja():
+    from services.koszt_kontenera import policz_wspolnie
+
+    g = _grupa_uetu()
+    g[2] = (Kontener(fracht_usd=4200, kurs_frachtu=3.8), *g[2][1:])
+    w = policz_wspolnie(g)
+    assert any(u.poziom == "info" and "Fracht na kartach różni się: 5 400,00 / 4 200,00 USD" in u.tresc
+               for u in w[1].uwagi)
+
+
+def test_grupy_zgloszen_tylko_odprawy_z_kilkoma_kontenerami_i_bez_konfliktow():
+    from services.koszt_kontenera import grupy_zgloszen
+
+    grupa, konflikty = grupy_zgloszen({
+        1: {10, 11},          # wspólne zgłoszenie
+        2: {10, 11},          # druga spółka w tych samych kontenerach — ta sama grupa
+        3: {20},              # własny SAD — bez grupy
+        4: {30, 31}, 5: {31, 32},   # 31 w dwóch grupach → konflikt, nikt z nich nie łączy
+    })
+    assert grupa == {10: frozenset({10, 11}), 11: frozenset({10, 11})}
+    assert konflikty == {31}

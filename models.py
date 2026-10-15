@@ -1261,6 +1261,8 @@ class OdprawaOut(BaseModel):
     # „Koszt jednostkowy". Domyślny kurs towaru, gdy pole jest puste.
     kurs_platnosci: Optional[float] = None
     kurs_platnosci_szacunek: bool = False
+    # Koszt jednostkowy (nowa metoda) liczony wspólnie dla tych kontenerów — jedno zgłoszenie na kilka.
+    wspolne_rozliczenie: List[str] = []
     kurs_kosztow: Optional[float] = None
     fv_spedytora: Optional[str] = None
     fv_spedytora_data: Optional[date] = None
@@ -1305,6 +1307,7 @@ class CenaDostawaOut(BaseModel):
     rozliczenie: str = "brak"                 # 'odprawa' | 'krajowa' | 'brak'
     odstaje: bool = False                     # narzut daleko od pozostałych dostaw — sprawdzić kontener
     fifo: bool = False
+    wspolne_z: List[str] = []                 # wspólne zgłoszenie celne: fracht z puli z tymi kontenerami
 
 
 class CenaZapisanaOut(BaseModel):
@@ -1499,6 +1502,30 @@ class KosztUwagaOut(BaseModel):
     tresc: str
 
 
+class KosztPulaKontenerOut(BaseModel):
+    container_id: int
+    etykieta: str
+    cbm: float = 0.0
+    fracht_usd: float = 0.0
+    fracht: float = 0.0
+    fracht_reczny: bool = False
+    lenmar: float = 0.0
+    lenmar_reczny: bool = False
+    transport: float = 0.0
+    transport_reczny: bool = False
+
+
+class KosztPulaOut(BaseModel):
+    """Wspólne zgłoszenie celne: fracht, Lenmar i transport kilku kontenerów w jednej puli."""
+    kontenery: List[KosztPulaKontenerOut] = []
+    fracht: float = 0.0
+    fracht_usd: float = 0.0
+    lenmar: float = 0.0
+    transport: float = 0.0
+    cbm: float = 0.0
+    fracht_m3: Optional[float] = None
+
+
 class KosztKontenerOut(BaseModel):
     container_id: int
     krajowa: bool = False
@@ -1531,6 +1558,11 @@ class KosztKontenerOut(BaseModel):
     lenmar_zgloszenie: float = 0.0
     grupy: List[KosztGrupaOut] = []
     razem_z: List[KontenerKrotkoOut] = []     # wspólna faktura: płatności liczone razem z tymi kontenerami
+    # Wspólne zgłoszenie celne: pula grupy i udział tego kontenera (suma przypisana jego SKU).
+    pula: Optional[KosztPulaOut] = None
+    fracht_udzial: float = 0.0
+    lenmar_udzial: float = 0.0
+    transport_udzial: float = 0.0
     pozycje: List[KosztPozycjaOut] = []
     uwagi: List[KosztUwagaOut] = []
     zapisal: Optional[str] = None

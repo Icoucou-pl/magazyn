@@ -31,6 +31,12 @@ RACHUNEK (wszystkie kwoty w PLN)
   6. Transport do magazynu (PLN z karty) po CBM.
   7. Koszt jednostkowy = suma / sztuki. VAT importowy nie jest kosztem.
 
+WSPÓLNE ZGŁOSZENIE CELNE (jeden SAD na kilka kontenerów, `policz_wspolnie`)
+Fracht, Lenmar i transport kontenerów objętych tą samą zapisaną odprawą to jedna pula
+(suma kart, każda po swoim kursie i ze swoimi poprawkami), dzielona po CBM na towar całej
+grupy. Towar, kurs i cło (od towaru + udziału frachtu z puli) — bez zmian, per kontener.
+Pojedynczy kontener to grupa jednoelementowa.
+
 WSPÓLNA FAKTURA (kontenery rozliczane razem)
 Faktura dostawcy bywa rozłożona na kilka kontenerów, a płatności wpisane na kartach według
 faktur — wtedy jeden kontener ma pieniądze za towar, który jedzie w drugim. Połączone
@@ -187,6 +193,36 @@ class Uwaga:
 
 
 @dataclass
+class PulaKontener:
+    """Wkład jednego kontenera do puli grupy (auto albo ręczna poprawka z jego karty)."""
+    container_id: int
+    etykieta: str
+    cbm: float
+    fracht_usd: float
+    fracht: float
+    fracht_reczny: bool
+    lenmar: float
+    lenmar_reczny: bool
+    transport: float
+    transport_reczny: bool
+
+
+@dataclass
+class Pula:
+    """Wspólne zgłoszenie celne: fracht, Lenmar i transport kilku kontenerów w jednym worku."""
+    kontenery: List[PulaKontener]
+    fracht: float
+    fracht_usd: float
+    lenmar: float
+    transport: float
+    cbm: float
+
+    @property
+    def fracht_m3(self) -> Optional[float]:
+        return round(self.fracht / self.cbm, 2) if self.cbm else None
+
+
+@dataclass
 class Wynik:
     pozycje: List[WynikPozycji]
     grupy: List[WynikGrupy]
@@ -210,6 +246,13 @@ class Wynik:
     kontener: Optional[Kontener] = None     # wejście (fracht w USD, kurs frachtu) — do ekranu
     razem_z: List[int] = field(default_factory=list)   # kontenery rozliczane wspólnie (bez tego)
     data_frachtu: Optional[date] = None     # dostawa albo ETA, od której liczy się kurs frachtu
+    # Wspólne zgłoszenie celne: fracht/lenmar/transport wyżej to karta TEGO kontenera (do poprawek),
+    # a *_udzial — to, co z puli grupy trafiło na jego SKU. Bez grupy udział = karta.
+    fracht_udzial: float = 0.0
+    lenmar_udzial: float = 0.0
+    transport_udzial: float = 0.0
+    pula: Optional[Pula] = None
+    wspolnie_z: List[int] = field(default_factory=list)   # pozostałe kontenery grupy zgłoszenia
 
     def po_item(self) -> Dict[int, WynikPozycji]:
         return {p.item_id: p for p in self.pozycje}
@@ -426,14 +469,32 @@ def _policz_grupe(g: Grupa, pozycje: List[Pozycja], kurs_reczny: Optional[float]
     return wg, towar, cena, reczne, gratisy, dodatkowe
 
 
-def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
-           gotowe: Optional[Dict[int, tuple]] = None) -> Wynik:
-    """Pełny rachunek jednego kontenera.
+@dataclass
+class _Czesc:
+    """Jeden kontener przed kosztami wspólnymi: towar policzony, fracht/Lenmar/transport z karty."""
+    kontener: Kontener
+    pozycje: List[Pozycja]
+    wyniki_grup: List[WynikGrupy]
+    towar: Dict[int, float]
+    cena: Dict[int, float]
+    reczne: set
+    gratisy: Dict[int, float]
+    dodatkowe: Dict[int, float]
+    krajowe_grupy: set
+    importowe: List[Pozycja]
+    uwagi: List[Uwaga]
+    fracht_auto: float
+    fracht: float
+    lenmar_auto: float
+    lenmar: float
+    transport_auto: float
+    transport: float
+    zgloszen: int
 
-    `gotowe` = {id grupy: wynik _policz_grupe} policzony wcześniej dla wspólnej faktury kilku
-    kontenerów (policz_razem) — wtedy towar tej grupy bierzemy stamtąd, zamiast liczyć go
-    z płatności samego kontenera.
-    """
+
+def _towar_kontenera(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
+                     gotowe: Optional[Dict[int, tuple]] = None) -> _Czesc:
+    """Towar (z płatności) i koszty z karty jednego kontenera — bez dzielenia na pozycje."""
     uwagi: List[Uwaga] = []
     po_grupie: Dict[int, List[Pozycja]] = {}
     for p in pozycje:
@@ -467,7 +528,6 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
             krajowe_grupy.add(gid)
 
     importowe = [p for p in pozycje if p.grupa not in krajowe_grupy]
-    caly_krajowy = not importowe and bool(pozycje)
 
     # Fracht i Lenmar — tylko gdy jest towar z importu.
     fracht_auto = 0.0
@@ -484,15 +544,58 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
         fracht = lenmar = 0.0
     transport_auto = kontener.transport_pln or 0.0
     transport = kontener.transport_reczny if kontener.transport_reczny is not None else transport_auto
+    return _Czesc(kontener=kontener, pozycje=pozycje, wyniki_grup=wyniki_grup, towar=towar, cena=cena,
+                  reczne=reczne, gratisy=gratisy, dodatkowe=dodatkowe, krajowe_grupy=krajowe_grupy,
+                  importowe=importowe, uwagi=uwagi, fracht_auto=fracht_auto, fracht=fracht,
+                  lenmar_auto=lenmar_auto, lenmar=lenmar, transport_auto=transport_auto,
+                  transport=transport, zgloszen=zgloszen)
 
-    # Klucz podziału kosztów wspólnych.
+
+def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
+           gotowe: Optional[Dict[int, tuple]] = None) -> Wynik:
+    """Pełny rachunek jednego kontenera — grupa wspólnego rozliczenia z jednym kontenerem.
+
+    `gotowe` = {id grupy: wynik _policz_grupe} policzony wcześniej dla wspólnej faktury kilku
+    kontenerów (towar_razem) — wtedy towar tej grupy bierzemy stamtąd, zamiast liczyć go
+    z płatności samego kontenera.
+    """
+    return policz_wspolnie({0: (kontener, grupy, pozycje, gotowe)})[0]
+
+
+def policz_wspolnie(kontenery: Dict[int, "tuple[Kontener, List[Grupa], List[Pozycja], Optional[Dict[int, tuple]]]"],
+                    etykiety: Optional[Dict[int, str]] = None) -> Dict[int, Wynik]:
+    """Kontenery z jednym zgłoszeniem celnym: {container_id: (Kontener, grupy, pozycje, gotowe)}.
+
+    Towar i kurs — jak dotąd, osobno per kontener/lot z jego płatności. Fracht, Lenmar
+    i transport to JEDNA PULA (suma kart, każda po swoim kursie i ze swoimi poprawkami),
+    dzielona po CBM na cały towar grupy: ten sam SKU nie może wyjść drożej tylko dlatego,
+    że jego kontener był luźniej załadowany. Pojedynczy kontener to grupa jednoelementowa —
+    ta sama ścieżka, ten sam wynik co przed wspólnym rozliczeniem.
+    `etykiety` = {container_id: numer do pokazania} — do uwag i tabelki puli.
+    """
+    ids = list(kontenery)
+    czesci = {cid: _towar_kontenera(*kontenery[cid]) for cid in ids}
+    wspolna = len(ids) > 1
+    etykiety = etykiety or {}
+
+    pozycje = [p for cid in ids for p in czesci[cid].pozycje]
+    importowe = [p for cid in ids for p in czesci[cid].importowe]
+    towar = {k: v for cz in czesci.values() for k, v in cz.towar.items()}
+    gratisy = {k: v for cz in czesci.values() for k, v in cz.gratisy.items()}
+    caly_krajowy = not importowe and bool(pozycje)
+    fracht = sum(cz.fracht for cz in czesci.values())
+    lenmar = sum(cz.lenmar for cz in czesci.values())
+    transport = sum(cz.transport for cz in czesci.values())
+
+    # Klucz podziału kosztów wspólnych — dla całej grupy.
+    uwagi_wspolne: List[Uwaga] = []
     bez_cbm = sorted({p.sku for p in importowe if not p.cbm_szt})
     podzial = "cbm"
     if caly_krajowy or bez_cbm:
         podzial = "wartosc"
         if bez_cbm and importowe:
-            uwagi.append(Uwaga("ostrzezenie", f"Brak CBM dla SKU {', '.join(bez_cbm)} — fracht, Lenmar i transport "
-                                              f"dzielone po wartości towaru, nie po kubaturze"))
+            uwagi_wspolne.append(Uwaga("ostrzezenie", f"Brak CBM dla SKU {', '.join(bez_cbm)} — fracht, Lenmar i transport "
+                                                      f"dzielone po wartości towaru, nie po kubaturze"))
     if podzial == "cbm":
         wagi_imp = {p.item_id: p.cbm_szt * p.szt for p in importowe}
         wagi_all = {p.item_id: p.cbm_szt * p.szt for p in pozycje}
@@ -503,64 +606,102 @@ def policz(kontener: Kontener, grupy: List[Grupa], pozycje: List[Pozycja],
     le = _rozloz(lenmar, wagi_imp) if importowe else {}
     tr = _rozloz(transport, wagi_all)
 
-    out: List[WynikPozycji] = []
-    szac_grup = {w.id: w.szacunek for w in wyniki_grup}
-    for p in pozycje:
-        kraj = p.grupa in krajowe_grupy
-        t = towar.get(p.item_id, 0.0)
-        gr = gratisy.get(p.item_id, 0.0)
-        dd = dodatkowe.get(p.item_id, 0.0)
-        f = fr.get(p.item_id, 0.0)
-        if kraj:
-            stawka, zrodlo = 0.0, "krajowa"
-        elif p.stawka_reczna is not None:
-            stawka, zrodlo = float(p.stawka_reczna), "reczna"
-        elif p.stawka_slownik is not None:
-            stawka, zrodlo = float(p.stawka_slownik), "slownik"
-        else:
-            stawka, zrodlo = 0.0, "brak"
-            powod = f"kod CN {p.kod_cn} nie ma stawki w słowniku" if p.kod_cn else "produkt nie ma kodu CN"
-            uwagi.append(Uwaga("blad", f"Brak stawki cła dla SKU {p.sku} ({powod}) — liczymy 0%"))
-        # Dodatkowe koszty zapłacone dostawcy (pakowanie, wysyłka do granicy) są częścią wartości celnej.
-        clo = (t + gr + dd + f) * stawka / 100
-        l_ = le.get(p.item_id, 0.0)
-        tt = tr.get(p.item_id, 0.0)
-        suma = t + gr + dd + f + l_ + clo + tt
-        out.append(WynikPozycji(
-            item_id=p.item_id, sku=p.sku, szt=p.szt, grupa=p.grupa, krajowa=kraj,
-            cena_waluta=round(cena.get(p.item_id, 0.0), 4), cena_reczna=p.item_id in reczne,
-            cena_zrodlo=("reczna" if p.item_id in reczne
-                         else "kontener" if p.cena_kontener is not None and not kraj else "auto"),
-            cena_planowana=p.unit_cost,
-            towar=round(t, 2), gratisy=round(gr, 2), gratis_przypiety=p.gratis and not kraj, fracht=round(f, 2), lenmar=round(l_, 2), clo=round(clo, 2),
-            transport=round(tt, 2), stawka=stawka, stawka_zrodlo=zrodlo, kod_cn=p.kod_cn,
-            suma=round(suma, 2),
-            koszt_jednostkowy=round(suma / p.szt, 2) if p.szt and suma > 0 else None,
-            szacunek=bool(szac_grup.get(p.grupa)), dodatkowe=round(dd, 2),
-        ))
+    pula: Optional[Pula] = None
+    if wspolna:
+        pula = Pula(
+            kontenery=[PulaKontener(
+                container_id=cid, etykieta=etykiety.get(cid) or f"#{cid}", cbm=round(sum(p.cbm_szt * p.szt for p in czesci[cid].pozycje), 3),
+                fracht_usd=czesci[cid].kontener.fracht_usd, fracht=round(czesci[cid].fracht, 2),
+                fracht_reczny=czesci[cid].kontener.fracht_pln is not None,
+                lenmar=round(czesci[cid].lenmar, 2), lenmar_reczny=czesci[cid].kontener.lenmar_pln is not None,
+                transport=round(czesci[cid].transport, 2),
+                transport_reczny=czesci[cid].kontener.transport_reczny is not None,
+            ) for cid in ids],
+            fracht=round(fracht, 2), lenmar=round(lenmar, 2), transport=round(transport, 2),
+            fracht_usd=round(sum(czesci[cid].kontener.fracht_usd for cid in ids), 2),
+            cbm=round(sum(p.cbm_szt * p.szt for p in pozycje), 3),
+        )
+        for pk in pula.kontenery:
+            if not pk.fracht:
+                uwagi_wspolne.append(Uwaga("ostrzezenie", f"{pk.etykieta} nie ma frachtu na karcie "
+                                                          f"— pula frachtu może być zaniżona"))
+        usd = [pk.fracht_usd for pk in pula.kontenery if pk.fracht_usd]
+        if len(usd) > 1 and max(usd) > 1.1 * min(usd):
+            uwagi_wspolne.append(Uwaga("info", "Fracht na kartach różni się: "
+                                               + " / ".join(_pl(x) for x in usd)
+                                               + " USD — sprawdź z fakturą spedytora"))
 
-    w = Wynik(pozycje=out, grupy=wyniki_grup, krajowa=caly_krajowy,
-              fracht_auto=round(fracht_auto, 2), fracht=round(fracht, 2),
-              lenmar_auto=round(lenmar_auto, 2), lenmar=round(lenmar, 2),
-              transport_auto=round(transport_auto, 2), transport=round(transport, 2),
-              zgloszen=zgloszen, podzial=podzial, uwagi=uwagi, kontener=kontener)
-    w.towar = round(sum(p.towar for p in out), 2)
-    w.gratisy = round(sum(p.gratisy for p in out), 2)
-    w.dodatkowe = round(sum(p.dodatkowe for p in out), 2)
-    w.clo = round(sum(p.clo for p in out), 2)
-    w.suma = round(sum(p.suma for p in out), 2)
-    # Gratisy to zapłacony towar, nie koszt importu — narzut liczymy od towaru razem z nimi.
-    baza = w.towar + w.gratisy
-    w.narzut_proc = round((w.suma - baza) / baza * 100, 2) if baza > 0 else None
-    w.szacunek = any(g.szacunek for g in wyniki_grup)
-    return w
+    out: Dict[int, Wynik] = {}
+    for cid in ids:
+        cz = czesci[cid]
+        uwagi = list(cz.uwagi) + uwagi_wspolne
+        wiersze: List[WynikPozycji] = []
+        szac_grup = {w.id: w.szacunek for w in cz.wyniki_grup}
+        for p in cz.pozycje:
+            kraj = p.grupa in cz.krajowe_grupy
+            t = cz.towar.get(p.item_id, 0.0)
+            gr = cz.gratisy.get(p.item_id, 0.0)
+            dd = cz.dodatkowe.get(p.item_id, 0.0)
+            f = fr.get(p.item_id, 0.0)
+            if kraj:
+                stawka, zrodlo = 0.0, "krajowa"
+            elif p.stawka_reczna is not None:
+                stawka, zrodlo = float(p.stawka_reczna), "reczna"
+            elif p.stawka_slownik is not None:
+                stawka, zrodlo = float(p.stawka_slownik), "slownik"
+            else:
+                stawka, zrodlo = 0.0, "brak"
+                powod = f"kod CN {p.kod_cn} nie ma stawki w słowniku" if p.kod_cn else "produkt nie ma kodu CN"
+                uwagi.append(Uwaga("blad", f"Brak stawki cła dla SKU {p.sku} ({powod}) — liczymy 0%"))
+            # Dodatkowe koszty zapłacone dostawcy (pakowanie, wysyłka do granicy) są częścią wartości celnej.
+            clo = (t + gr + dd + f) * stawka / 100
+            l_ = le.get(p.item_id, 0.0)
+            tt = tr.get(p.item_id, 0.0)
+            suma = t + gr + dd + f + l_ + clo + tt
+            wiersze.append(WynikPozycji(
+                item_id=p.item_id, sku=p.sku, szt=p.szt, grupa=p.grupa, krajowa=kraj,
+                cena_waluta=round(cz.cena.get(p.item_id, 0.0), 4), cena_reczna=p.item_id in cz.reczne,
+                cena_zrodlo=("reczna" if p.item_id in cz.reczne
+                             else "kontener" if p.cena_kontener is not None and not kraj else "auto"),
+                cena_planowana=p.unit_cost,
+                towar=round(t, 2), gratisy=round(gr, 2), gratis_przypiety=p.gratis and not kraj, fracht=round(f, 2), lenmar=round(l_, 2), clo=round(clo, 2),
+                transport=round(tt, 2), stawka=stawka, stawka_zrodlo=zrodlo, kod_cn=p.kod_cn,
+                suma=round(suma, 2),
+                koszt_jednostkowy=round(suma / p.szt, 2) if p.szt and suma > 0 else None,
+                szacunek=bool(szac_grup.get(p.grupa)), dodatkowe=round(dd, 2),
+            ))
+
+        moje = {p.item_id for p in cz.pozycje}
+        w = Wynik(pozycje=wiersze, grupy=cz.wyniki_grup, krajowa=not cz.importowe and bool(cz.pozycje),
+                  fracht_auto=round(cz.fracht_auto, 2), fracht=round(cz.fracht, 2),
+                  lenmar_auto=round(cz.lenmar_auto, 2), lenmar=round(cz.lenmar, 2),
+                  transport_auto=round(cz.transport_auto, 2), transport=round(cz.transport, 2),
+                  zgloszen=cz.zgloszen, podzial=podzial, uwagi=uwagi, kontener=cz.kontener)
+        # Udział kontenera w puli — to, co faktycznie trafiło na jego SKU (bez grupy = jego karta).
+        w.fracht_udzial = round(sum(v for k, v in fr.items() if k in moje), 2)
+        w.lenmar_udzial = round(sum(v for k, v in le.items() if k in moje), 2)
+        w.transport_udzial = round(sum(v for k, v in tr.items() if k in moje), 2)
+        w.pula = pula
+        w.wspolnie_z = [x for x in ids if x != cid] if wspolna else []
+        w.towar = round(sum(p.towar for p in wiersze), 2)
+        w.gratisy = round(sum(p.gratisy for p in wiersze), 2)
+        w.dodatkowe = round(sum(p.dodatkowe for p in wiersze), 2)
+        w.clo = round(sum(p.clo for p in wiersze), 2)
+        w.suma = round(sum(p.suma for p in wiersze), 2)
+        # Gratisy to zapłacony towar, nie koszt importu — narzut liczymy od towaru razem z nimi.
+        baza = w.towar + w.gratisy
+        w.narzut_proc = round((w.suma - baza) / baza * 100, 2) if baza > 0 else None
+        w.szacunek = any(g.szacunek for g in cz.wyniki_grup)
+        out[cid] = w
+    return out
 
 
-def policz_razem(kontenery: Dict[int, "tuple[Kontener, Grupa, List[Pozycja]]"]) -> Dict[int, Wynik]:
+def towar_razem(kontenery: Dict[int, "tuple[Kontener, Grupa, List[Pozycja]]"]) -> Dict[int, Dict[int, tuple]]:
     """Kilka kontenerów z jedną fakturą dostawcy: {container_id: (Kontener, Grupa, pozycje)}.
 
     Towar liczymy raz dla wszystkich — płatności wszystkich kart idą na towar wszystkich,
-    po cenach pozycji — a potem każdy kontener liczy swój fracht, Lenmara, cło i transport.
+    po cenach pozycji. Zwraca {container_id: gotowe} do policz/policz_wspolnie — fracht,
+    Lenmar, cło i transport liczy już każdy kontener (albo jego grupa zgłoszenia celnego).
     Ręczny kurs towaru: z pierwszego kontenera, który go ma (jeden kurs dla wspólnej faktury).
     """
     ids = sorted(kontenery)
@@ -579,14 +720,43 @@ def policz_razem(kontenery: Dict[int, "tuple[Kontener, Grupa, List[Pozycja]]"]) 
     kurs_reczny = next((kontenery[c][0].kurs_towaru for c in ids if kontenery[c][0].kurs_towaru), None)
     uwagi: List[Uwaga] = []
     wg, t, c, r, gr, dd = _policz_grupe(wspolna, pozycje, kurs_reczny, uwagi)
-    out: Dict[int, Wynik] = {}
+    out: Dict[int, Dict[int, tuple]] = {}
     for cid in ids:
-        k, _, lista = kontenery[cid]
-        moje = {p.item_id for p in lista}
-        gotowe = {0: (wg, {i: v for i, v in t.items() if i in moje}, {i: v for i, v in c.items() if i in moje},
-                      r & moje, {i: v for i, v in gr.items() if i in moje},
-                      {i: v for i, v in dd.items() if i in moje}, list(uwagi))}
-        w = policz(k, [kontenery[cid][1]], lista, gotowe)
-        w.razem_z = [x for x in ids if x != cid]
+        moje = {p.item_id for p in kontenery[cid][2]}
+        out[cid] = {0: (wg, {i: v for i, v in t.items() if i in moje}, {i: v for i, v in c.items() if i in moje},
+                        r & moje, {i: v for i, v in gr.items() if i in moje},
+                        {i: v for i, v in dd.items() if i in moje}, list(uwagi))}
+    return out
+
+
+def policz_razem(kontenery: Dict[int, "tuple[Kontener, Grupa, List[Pozycja]]"]) -> Dict[int, Wynik]:
+    """Wspólna faktura bez wspólnego zgłoszenia: towar razem, reszta osobno per kontener."""
+    gotowe = towar_razem(kontenery)
+    out: Dict[int, Wynik] = {}
+    for cid, (k, g, lista) in kontenery.items():
+        w = policz(k, [g], lista, gotowe[cid])
+        w.razem_z = [x for x in sorted(kontenery) if x != cid]
         out[cid] = w
     return out
+
+
+def grupy_zgloszen(odprawy: Dict[int, "set[int]"]) -> "tuple[Dict[int, frozenset], set]":
+    """Grupy wspólnego rozliczenia z zapisanych odpraw: {odprawa_id: {container_id, …}}.
+
+    Grupę tworzy WYŁĄCZNIE odprawa obejmująca więcej niż jeden kontener. Kontener w dwóch
+    różnych takich grupach to konflikt — nie zgadujemy, która jest właściwa: grupy z nim
+    odpadają, a ich kontenery liczą się osobno. Zwraca ({container_id: grupa}, {konflikty}).
+    Kilka odpraw na tych samych kontenerach (konsolidacja: SAD per spółka) to ta sama grupa.
+    """
+    zbiory = {frozenset(c) for c in odprawy.values() if len(set(c)) > 1}
+    gdzie: Dict[int, set] = {}
+    for z in zbiory:
+        for cid in z:
+            gdzie.setdefault(cid, set()).add(z)
+    konflikty = {cid for cid, z in gdzie.items() if len(z) > 1}
+    grupa: Dict[int, frozenset] = {}
+    for z in zbiory:
+        if not z & konflikty:
+            for cid in z:
+                grupa[cid] = z
+    return grupa, konflikty
