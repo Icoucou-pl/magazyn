@@ -45,9 +45,27 @@ async def manufacturer_sales_season(mid: int, db: AsyncSession = Depends(get_db)
 @router.get("/products/{sku}/sales-season", response_model=List[SeasonPoint])
 async def product_sales_season(sku: str, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Sprzedaż miesięczna pojedynczego SKU (qty + przychód netto/brutto w PLN),
-    od 1 stycznia zeszłego roku do dziś — pod wykres w karcie produktu."""
-    where = f"LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = LOWER(TRIM(:sku))"
-    return await _sales_season(db, where, {"sku": sku})
+    od 1 stycznia zeszłego roku do dziś — pod wykres w karcie produktu.
+
+    Outlety doliczają się do produktu bazowego: SZP1 = SZP1 + Szp1_Outlet,
+    SZP3 = SZP3 + SZP3_Outlet + SZP3_OUTLET2. To ten sam towar (zwrot/powystawowy),
+    więc dla sezonu liczy się łączny popyt. Karta samego outletu pokazuje tylko outlet."""
+    return await _sales_season(db, _WHERE_SKU_Z_OUTLETAMI, _parametry_sku(sku))
+
+
+# SKU dokładnie albo „<SKU>_outlet” z opcjonalnym numerem (outlet, outlet2…),
+# bez względu na wielkość liter. Bez regexu na wartości od użytkownika —
+# porównujemy prefiks, a regex sprawdza tylko stały ogon.
+_WHERE_SKU_Z_OUTLETAMI = f"""(
+    LOWER(TRIM(i.{settings.COL_ITEM_SKU})) = :sku
+    OR (LEFT(LOWER(TRIM(i.{settings.COL_ITEM_SKU})), :sku_len) = :sku
+        AND SUBSTRING(LOWER(TRIM(i.{settings.COL_ITEM_SKU})) FROM :sku_len + 1) ~ '^_outlet[0-9]*$')
+)"""
+
+
+def _parametry_sku(sku: str) -> dict:
+    s = (sku or "").strip().lower()
+    return {"sku": s, "sku_len": len(s)}
 
 
 async def _sales_season(db: AsyncSession, where_clause: str, params: dict) -> List[SeasonPoint]:
