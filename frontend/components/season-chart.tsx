@@ -8,7 +8,8 @@
 //   → SeasonPoint[] (year, month 0-11, qty, value_net, value_gross).
 //   Karta produktu dostaje też *_outlet (Szp1_Outlet przy SZP1 itd.) —
 //   przycisk „Z outletami” dorysowuje linię „ten rok + outlety”, a dymek
-//   rozbija miesiąc na normalne i outlety. Bez sprzedaży outletów przycisku nie ma.
+//   rozbija miesiąc tego roku na normalne i outlety (bez roku temu).
+//   Bez sprzedaży outletów przycisku nie ma.
 //   Używany przez forecast.tsx (modal producenta) i product-modal.tsx.
 // ============================================================
 
@@ -64,7 +65,6 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
   const curVals: (number | null)[] = Array.from({ length: 12 }, (_, mo) => (mo <= monthNow ? valAt(yearNow, mo) : null));
   const labels = AN_MONTHS;
 
-  const prevOut: number[] = Array.from({ length: 12 }, (_, mo) => outAt(yearNow - 1, mo));
   const curOut: (number | null)[] = Array.from({ length: 12 }, (_, mo) => (mo <= monthNow ? outAt(yearNow, mo) : null));
   // Linia „ten rok + outlety” = normalne + outlety w tym samym miesiącu.
   const curWithOut: (number | null)[] = curVals.map((v, i) => (v == null ? null : v + (curOut[i] || 0)));
@@ -179,8 +179,6 @@ export function SeasonChart({ data, showFin, height = 200, accent = "var(--accen
                     <span style={{ color: accent }}>normalne {fmtFull(curVals[hover] as number)}</span> · outlety {fmtFull(curOut[hover] || 0)}
                   </div>
                 )}
-                <div className="num" style={{ color: "var(--text-lo)", marginTop: 2 }}>rok temu: {fmtFull(prevVals[hover] + prevOut[hover])}</div>
-                <div className="num" style={{ color: "var(--text-lo)", paddingLeft: 8 }}>normalne {fmtFull(prevVals[hover])} · outlety {fmtFull(prevOut[hover])}</div>
               </>
             ) : (
               <>
