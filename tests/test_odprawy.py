@@ -831,3 +831,34 @@ def test_doliczenie_w_usd_przy_sad_w_cny():
     assert (fr.waluta, fr.kwota_waluta, round(fr.kwota, 2)) == ("USD", 50.0, 400.0)
     assert o.waluta_kosztow == "USD" and o.kurs_kosztow == 4.0
     assert all(k.ok for k in kontrole(o)), [k.nazwa for k in kontrole(o) if not k.ok]
+
+# TGCU0114050 (AMH, SAD 1787): fotele i kartony do foteli w jednej odprawie. Krótki opis
+# „kartony zamienne do foteli” wygrywał podobieństwem słów z „fotele z metalu, tapicerowane”.
+SAD_FOTELE = """<?xml version="1.0" encoding="utf-8" ?>
+<SADUE P22WalutaSADu="USD">
+  <P1Kontekst DataDekl="2026-08-31"/>
+  <P8Odbiorca><Firmy Nazwa="TESTOWA SP. Z O.O." NIP="0000000000"/></P8Odbiorca>
+  <P22KursyWalut Waluta="USD" Kurs="3.7945" Mnoznik="1"/>
+  <ZestawySADu P22WartoscZestawu="12845" P35BruttoZestawu="4300" SumaClaZestawu="0">
+    <StatusCelnyAIS MRNAIS="26PL00000000TEST09"/></ZestawySADu>
+  <PozycjeSADu P35MasaBrutto="4297.5" P38MasaNetto="4050" P42WartoscPozycji="12825" P47WartCelna="62525">
+    <P31ZnakiINumery OpisTowaru="Siedzenia nawet zamieniane w łóżka: fotele z metalu, tapicerowane"><Opakowania RodzOpak="CT" LiczbaOpak="150"/>
+      <Kontenery Numer="TGCU0114050"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="94017100"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+  <PozycjeSADu P35MasaBrutto="2.5" P38MasaNetto="2" P42WartoscPozycji="20" P47WartCelna="84">
+    <P31ZnakiINumery OpisTowaru="kartony zamienne do foteli"><Opakowania RodzOpak="CT" LiczbaOpak="10"/>
+      <Kontenery Numer="TGCU0114050"/></P31ZnakiINumery>
+    <P33KodTowaru KodCN="48191000"/>
+    <P47Oplaty Typ="A00" Stawka="0" Kwota="0" MP="L"><Skladowe KwotaOplaty="0"/></P47Oplaty>
+  </PozycjeSADu>
+</SADUE>"""
+
+
+def test_nazwa_nie_wsadza_towaru_do_pozycji_za_grosze():
+    o = parsuj(SAD_FOTELE)
+    towar = [PozycjaTowaru(41, 401, "Fs1cz", 105, 324.9, nazwa="Fotel rozkładany czarny"),
+             PozycjaTowaru(42, 401, "Fs1b", 45, 323.9, nazwa="Fotel rozkładany beżowy")]
+    p = dopasuj(o, towar)
+    assert p[41] == 1 and p[42] == 1, "fotele do pozycji z fotelami, nie do kartonów za 20 USD"
