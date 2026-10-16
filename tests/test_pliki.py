@@ -205,3 +205,19 @@ def test_lista_bez_firmy_nie_liczy_firm(klient, monkeypatch):
 
 async def _nic():
     return None
+
+
+def test_zip_dubel_nazwy_dostaje_numer():
+    uzyte: set = set()
+    assert svc._unikalna("MSKU1/FV.pdf", uzyte) == "MSKU1/FV.pdf"
+    assert svc._unikalna("MSKU1/FV.pdf", uzyte) == "MSKU1/FV (2).pdf"
+    assert svc._unikalna("MSKU1/fv.pdf", uzyte) == "MSKU1/fv (3).pdf"      # bez względu na wielkość liter
+    assert svc._unikalna("MSKU1", uzyte) == "MSKU1"
+    assert svc._unikalna("MSKU1", uzyte) == "MSKU1 (2)"
+
+
+def test_zip_tylko_dla_superadmina_i_bez_wpisu_w_dzienniku(klient):
+    c, stan = klient
+    stan["user"] = ADMIN
+    assert c.post("/api/pliki/zip", json={"foldery": [1]}).status_code == 403
+    assert audit_opisy.opis_sciezki("POST", "/api/pliki/zip") is None

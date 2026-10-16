@@ -193,6 +193,7 @@ POMIJANE = [
     r"^/api/fakturownia",
     r"^/api/admin/fx/",
     r"^/api/dropy/",
+    r"^/api/pliki/zip$",          # pobranie ZIP-a z zaznaczonych — nic nie zmienia
 ]
 _POMIJANE = [re.compile(p) for p in POMIJANE]
 

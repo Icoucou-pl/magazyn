@@ -11,7 +11,7 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, download } from "@/lib/api";
+import { api, download, downloadPost } from "@/lib/api";
 import { canSeeFiles, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
 import { useShop } from "@/lib/shop";
@@ -230,8 +230,38 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
 
   const wKontenerze = !!data?.sciezka.some((c) => c.rodzaj === "kontener");
   const idz = (fid: number | null) => {
-    setQ(""); setTryb("lista");
+    setQ(""); setTryb("lista"); setZazn(new Map());
     if (fid !== folderId) { setLadowanie(true); onFolder(fid); }
+  };
+
+  // ── Zaznaczanie → ZIP. Klucz „f:id” (folder, z całą zawartością) albo „p:id” (plik); wartość = nazwa ──
+  const [zazn, setZazn] = useState<Map<string, string>>(new Map());
+  const [pakuje, setPakuje] = useState(false);
+  const przelacz = (k: string, nazwa: string) => setZazn((m) => {
+    const n = new Map(m);
+    if (n.has(k)) n.delete(k); else n.set(k, nazwa);
+    return n;
+  });
+  const zaznacz = (k: string, nazwa: string) => (
+    <input type="checkbox" checked={zazn.has(k)} aria-label={`Zaznacz ${nazwa}`}
+           onClick={(e) => e.stopPropagation()} onChange={() => przelacz(k, nazwa)}
+           style={{ width: 16, height: 16, flexShrink: 0, cursor: "pointer", accentColor: "var(--accent)" }}/>
+  );
+  const pobierzZip = async () => {
+    if (!zazn.size || pakuje) return;
+    const klucze = [...zazn.keys()];
+    const foldery = klucze.filter((k) => k.startsWith("f:")).map((k) => Number(k.slice(2)));
+    const pliki = klucze.filter((k) => k.startsWith("p:")).map((k) => Number(k.slice(2)));
+    // Jeden zaznaczony folder → ZIP nazywa się jak on; inaczej „pliki-RRRR-MM-DD”.
+    const nazwa = foldery.length === 1 && !pliki.length
+      ? `${(zazn.get(klucze[0]) || "pliki").replace(/[\\/:*?"<>|]/g, " ").trim()}.zip`
+      : `pliki-${new Date().toISOString().slice(0, 10)}.zip`;
+    setPakuje(true);
+    toast("Pakuję ZIP — przy wielu plikach to chwilę potrwa", "ok");
+    try {
+      await downloadPost("/pliki/zip", { pliki, foldery, shop }, nazwa);
+      setZazn(new Map());
+    } catch (e) { err(e); } finally { setPakuje(false); }
   };
 
   // ── Wgrywanie: po jednym pliku, żeby był postęp i żeby jeden zły plik nie zatrzymał reszty ──
@@ -342,6 +372,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
     ].filter(Boolean).join(" · ") || "pusty";
     return (
       <div key={f.id} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => idz(f.id)} onMouseEnter={() => zWyprzedzeniem(f.id)} className="hover-row">
+        {zaznacz(`f:${f.id}`, f.nazwa)}
         <span style={{ color: f.rodzaj === "kontener" ? "var(--info)" : f.automatyczny ? "var(--accent)" : "var(--text-mid)", display: "flex", flexShrink: 0 }}>
           {f.rodzaj === "kontener" ? <I.Container size={18}/> : <I.Folder size={18}/>}
         </span>
@@ -363,6 +394,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
 
   const fileLine = (f: FileRow, gdzie = false) => (
     <div key={`p${f.id}`} style={rowStyle} className="hover-row">
+      {zaznacz(`p:${f.id}`, f.nazwa)}
       <TypBadge typ={f.typ} nazwa={f.nazwa}/>
       <div style={{ flex: 1, minWidth: 0 }}>
         <button onClick={() => (podglad(f) ? pokaz(f) : pobierz(f))} title={podglad(f) ? "Otwórz podgląd" : "Pobierz"} style={{
@@ -461,6 +493,44 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
         <div style={{ fontSize: 12.5, color: "var(--accent)", marginBottom: 10 }}>Wgrywam… {wgrywanie.done}/{wgrywanie.total}</div>
       )}
 
+      {tryb === "lista" && (zazn.size > 0 || (data && !wyniki && (data.foldery.length + data.pliki.length) > 1)) && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "6px 12px",
+          position: "sticky", top: 8, zIndex: 20, borderRadius: 10,
+          background: zazn.size ? "var(--surface-1)" : "transparent",
+          border: `1px solid ${zazn.size ? "var(--accent)" : "transparent"}`,
+        }}>
+          {data && !wyniki && (() => {
+            const widoczne: [string, string][] = [
+              ...data.foldery.map((f) => [`f:${f.id}`, f.nazwa] as [string, string]),
+              ...data.pliki.map((p) => [`p:${p.id}`, p.nazwa] as [string, string]),
+            ];
+            const wszystkie = widoczne.length > 0 && widoczne.every(([k]) => zazn.has(k));
+            return (
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-mid)", cursor: "pointer" }}>
+                <input type="checkbox" checked={wszystkie} style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+                       onChange={() => setZazn((m) => {
+                         const n = new Map(m);
+                         widoczne.forEach(([k, nazwa]) => (wszystkie ? n.delete(k) : n.set(k, nazwa)));
+                         return n;
+                       })}/>
+                Zaznacz wszystko
+              </label>
+            );
+          })()}
+          {zazn.size > 0 && (
+            <>
+              <span style={{ fontSize: 12.5, color: "var(--text-hi)", fontWeight: 600 }}>Zaznaczono: {zazn.size}</span>
+              <div style={{ flex: 1 }}/>
+              <button onClick={pobierzZip} disabled={pakuje} style={btn("primary", true)}>
+                <I.ArrowDown size={13}/> {pakuje ? "Pakuję…" : "Pobierz ZIP"}
+              </button>
+              <button onClick={() => setZazn(new Map())} style={btn("ghost", true)}>Odznacz</button>
+            </>
+          )}
+        </div>
+      )}
+
       {tryb === "kosz" ? (
         <KoszView onZmiana={() => load()} onIdz={idz}/>
       ) : wyniki ? (
@@ -470,6 +540,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
           </div>
           {wyniki.foldery.map((f) => (
             <div key={`f${f.id}`} style={{ ...rowStyle, cursor: "pointer" }} className="hover-row" onClick={() => idz(f.id)}>
+              {zaznacz(`f:${f.id}`, f.nazwa)}
               <span style={{ color: "var(--text-mid)", display: "flex" }}><I.Folder size={18}/></span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13.5, color: "var(--text-hi)" }}>{f.nazwa}</div>

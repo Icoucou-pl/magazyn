@@ -514,6 +514,76 @@ async def szukaj(db: AsyncSession, q: str, limit: int = 100, shop: str = "") -> 
     }
 
 
+# ── ZIP z zaznaczonych ───────────────────────────────────────────────────────
+
+ZIP_MAX_BYTES = 1024 * 1024 * 1024       # 1 GB — powyżej lepiej pobierać mniejszymi kawałkami
+
+
+def _unikalna(sciezka: str, uzyte: set) -> str:
+    """Dwa pliki o tej samej nazwie w jednym folderze ZIP-a → „nazwa (2).pdf”."""
+    cel, i = sciezka, 1
+    while cel.lower() in uzyte:
+        i += 1
+        base, kropka, ext = sciezka.rpartition(".")
+        cel = f"{base} ({i}).{ext}" if kropka and "/" not in ext else f"{sciezka} ({i})"
+    uzyte.add(cel.lower())
+    return cel
+
+
+async def pliki_do_zip(db: AsyncSession, *, pliki: Iterable[int] = (), foldery: Iterable[int] = (),
+                       shop: str = "") -> List[dict]:
+    """Co trafi do ZIP-a: zaznaczone pliki (luzem, w głównym katalogu ZIP-a) i zaznaczone foldery
+    z całą zawartością, z zachowaniem podfolderów („MSKU123/Zdjęcia/a.jpg”). Bez kosza i bez
+    folderów schowanych przy wybranej firmie. Zwraca [{zip, sciezka, rozmiar}] — `sciezka` w buckecie."""
+    pliki, foldery = list(pliki), list(foldery)
+    martwe = {r[0] for r in await db.execute(text(f"WITH {MARTWE_CTE} SELECT id FROM martwe"))}
+    pomin = martwe | await ukryte_foldery(db, shop)
+    wszystkie = (await db.execute(text(f"SELECT id, parent_id, nazwa FROM {F}"))).all()
+    dzieci: Dict[Optional[int], List] = {}
+    for f in wszystkie:
+        dzieci.setdefault(f.parent_id, []).append(f)
+    nazwa_f = {f.id: f.nazwa for f in wszystkie}
+
+    # folder → ścieżka w ZIP-ie (zaznaczony folder jest katalogiem głównym swojej gałęzi)
+    katalog: Dict[int, str] = {}
+    uzyte_kat: set = set()
+    for fid in foldery:
+        if fid in pomin or fid not in nazwa_f or fid in katalog:
+            continue
+        stos = [(fid, _unikalna(czysta_nazwa(nazwa_f[fid], "folder").replace(":", ""), uzyte_kat))]
+        while stos:
+            x, sc = stos.pop()
+            if x in katalog:          # podfolder zaznaczony osobno i już ujęty w nadrzędnym
+                continue
+            katalog[x] = sc
+            for d in dzieci.get(x, []):
+                if d.id not in pomin:
+                    stos.append((d.id, f"{sc}/{czysta_nazwa(d.nazwa, 'folder').replace(':', '')}"))
+
+    wiersze = []
+    if katalog:
+        wiersze += (await db.execute(text(f"""
+            SELECT id, folder_id, nazwa, sciezka, rozmiar FROM {P}
+             WHERE folder_id = ANY(:ids) AND usuniety_at IS NULL ORDER BY folder_id, LOWER(nazwa)
+        """), {"ids": list(katalog)})).mappings().all()
+    if pliki:
+        wiersze += (await db.execute(text(f"""
+            SELECT id, NULL::INTEGER AS folder_id, nazwa, sciezka, rozmiar FROM {P}
+             WHERE id = ANY(:ids) AND usuniety_at IS NULL
+               AND (folder_id IS NULL OR folder_id NOT IN (SELECT UNNEST(CAST(:pomin AS INTEGER[]))))
+        """), {"ids": pliki, "pomin": list(pomin)})).mappings().all()
+
+    out, uzyte, widziane = [], set(), set()
+    for w in wiersze:
+        if w["id"] in widziane:       # plik zaznaczony i jednocześnie w zaznaczonym folderze — raz
+            continue
+        widziane.add(w["id"])
+        nazwa = czysta_nazwa(w["nazwa"])
+        sc = f"{katalog[w['folder_id']]}/{nazwa}" if w["folder_id"] in katalog else nazwa
+        out.append({"zip": _unikalna(sc, uzyte), "sciezka": w["sciezka"], "rozmiar": int(w["rozmiar"] or 0)})
+    return out
+
+
 # ── Kosz ─────────────────────────────────────────────────────────────────────
 
 async def kosz(db: AsyncSession) -> dict:

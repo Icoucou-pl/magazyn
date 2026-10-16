@@ -218,4 +218,25 @@ export async function openInNewTab(path) {
   }
 }
 
+// ---- Pobieranie pliku z POST (np. ZIP z zaznaczonych plików) ----
+export async function downloadPost(path, body, filename) {
+  const token = getToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    let detail = `Błąd pobierania ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch {}
+    throw new ApiError(detail, res.status);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "pliki.zip";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export { API_BASE };
