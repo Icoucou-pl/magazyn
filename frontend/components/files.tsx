@@ -194,8 +194,6 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
   const [wynikiSzukania, setWynikiSzukania] = useState<{ pliki: FileRow[]; foldery: (TreeNode & { folder_nazwa: string | null })[] } | null>(null);
   const [wgrywanie, setWgrywanie] = useState<{ done: number; total: number } | null>(null);
   const [przeciaganie, setPrzeciaganie] = useState(false);
-  const [pokazNaKontenerze, setPokazNaKontenerze] = useState(false);
-  const [calyKontener, setCalyKontener] = useState(false);
   const [nowyFolder, setNowyFolder] = useState(false);
   const [zmianaNazwy, setZmianaNazwy] = useState<Target | null>(null);
   const [przenies, setPrzenies] = useState<Target | null>(null);
@@ -237,7 +235,6 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
     return () => clearTimeout(h);
   }, [qq, odswiez, shop]);
 
-  const wKontenerze = !!data?.sciezka.some((c) => c.rodzaj === "kontener");
   // Bezpośrednio w folderze kontenera skonsolidowanego — tylko tu „cały kontener” ma sens.
   const wieluProducentow = (data?.producentow_kontenera ?? 0) > 1;
   const idz = (fid: number | null) => {
@@ -290,8 +287,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
       const fd = new FormData();
       fd.append("files", f);
       if (folderId != null) fd.append("folder_id", String(folderId));
-      if (wKontenerze && pokazNaKontenerze) fd.append("pokaz_na_kontenerze", "true");
-      if (wieluProducentow && calyKontener) fd.append("caly_kontener", "true");
+      // „Na kontenerze” i „cały kontener” ustawia się potem przy pliku (plakietka / menu „⋯”).
       try { await api.post("/pliki/wgraj", fd); ok += 1; }
       catch (e) { toast(`${f.name}: ${e instanceof Error ? e.message : "błąd"}`, "error"); }
       setWgrywanie({ done: ok, total: dobre.length });
@@ -510,19 +506,6 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
             ustawieniu w Railway zmiennych <span className="mono">PLIKI_STORAGE_EMAIL</span> i <span className="mono">PLIKI_STORAGE_PASSWORD</span> (instrukcja: <span className="mono">sql/2026-10-pliki.sql</span>).
           </div>
         </Card>
-      )}
-
-      {tryb === "lista" && edycja && wKontenerze && !wyniki && status?.storage && (
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-mid)", marginBottom: 10, cursor: "pointer" }}>
-          <input type="checkbox" checked={pokazNaKontenerze} onChange={(e) => setPokazNaKontenerze(e.target.checked)}/>
-          Nowe pliki pokazuj też na karcie kontenera
-        </label>
-      )}
-      {tryb === "lista" && edycja && wieluProducentow && !wyniki && status?.storage && (
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-mid)", marginBottom: 10, marginLeft: 16, cursor: "pointer" }}>
-          <input type="checkbox" checked={calyKontener} onChange={(e) => setCalyKontener(e.target.checked)}/>
-          Nowe pliki dla całego kontenera (widoczne u wszystkich producentów)
-        </label>
       )}
 
       {wgrywanie && (
