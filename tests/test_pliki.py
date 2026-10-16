@@ -291,3 +291,15 @@ def test_uprawnienia_maja_etykiety_w_dzienniku_i_na_froncie():
     for klucz in ("viewFiles", "editFiles"):
         assert f'key: "{klucz}"' in js
         assert klucz in audit_opisy.UPRAWNIENIA
+
+
+# ── „Cały kontener” ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("plik,dostepny", [
+    ({"folder_id": 5, "caly_kontener": False, "container_id": 1}, True),    # folder widoczny
+    ({"folder_id": 9, "caly_kontener": False, "container_id": 1}, False),   # folder schowany
+    ({"folder_id": 9, "caly_kontener": True, "container_id": 1}, True),     # wspólny, kontener widać u innego producenta
+    ({"folder_id": 9, "caly_kontener": True, "container_id": 2}, False),    # wspólny, ale kontenera nie widać nigdzie
+])
+def test_plik_caly_kontener_widac_u_innego_producenta(plik, dostepny):
+    assert svc.plik_dostepny(plik, ukryte={9}, widoczne_kontenery={1}) is dostepny

@@ -76,8 +76,10 @@ const isBlankLot = (l: LotDraft): boolean =>
   !l.zaplacono_data.trim() &&
   l.advances.every((a) => !a.procent.trim() && !a.kwota.trim() && !a.termin.trim() && !a.data.trim());
 
-// _mfr: producent, do którego folderu w Plikach trafi nowy plik (kontener skonsolidowany).
+// _mfr: producent, do którego folderu w Plikach trafi nowy plik (kontener skonsolidowany),
+// albo CALY — plik dla całego kontenera, widoczny w folderach wszystkich producentów.
 type AttDraft = Attachment & { _isNew?: boolean; _file?: File; _mfr?: string };
+const CALY = "caly";
 
 // Polska odmiana liczebników: 1 → poj., 2–4 → mnoga, reszta → dopełniacz (12–14 wyjątkiem).
 // Lokalna kopia — ten sam helper żyje w cashflow.tsx, też jako const modułowy.
@@ -574,7 +576,7 @@ export default function ContainerFormModal({
 
     const validItems = items.filter((i) => i.sku && (parseInt(i.quantity, 10) || 0) > 0);
     if (validItems.length === 0) { fail("Dodaj co najmniej jedną pozycję (SKU + ilość)"); return; }
-    if (attMfrs.length > 1 && attachments.some((a) => a._isNew && !attMfrs.some((m) => m.id === a._mfr))) {
+    if (attMfrs.length > 1 && attachments.some((a) => a._isNew && a._mfr !== CALY && !attMfrs.some((m) => m.id === a._mfr))) {
       fail("Przy nowym załączniku wybierz producenta — do jego folderu trafi plik w zakładce Pliki");
       return;
     }
@@ -671,7 +673,9 @@ export default function ContainerFormModal({
           ...toAdd.map((a) => {
             const fd = new FormData();
             fd.append("file", a._file as File);
-            if (a._mfr && mfrOk.has(a._mfr)) fd.append("manufacturer_id", a._mfr);
+            // „Cały kontener”: jeden plik, widoczny w folderze kontenera u każdego producenta (np. Lenmar).
+            if (a._mfr === CALY && attMfrs.length > 1) fd.append("caly_kontener", "true");
+            else if (a._mfr && mfrOk.has(a._mfr)) fd.append("manufacturer_id", a._mfr);
             return api.post(`/containers/${cid}/attachments`, fd);
           }),
           // Plik z Plików: wgrany z karty → do kosza w Plikach, wgrany tam → znika tylko z karty.
@@ -1059,6 +1063,7 @@ export default function ContainerFormModal({
                           style={{ ...inputStyle, width: "auto", maxWidth: 220, padding: "2px 6px", fontSize: 11, flexShrink: 0,
                                    borderColor: att._mfr ? undefined : "var(--critical)", color: att._mfr ? undefined : "var(--critical)" }}>
                           <option value="" disabled>— czyj plik? —</option>
+                          <option value={CALY}>Cały kontener (wszyscy producenci)</option>
                           {attMfrs.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                         </select>
                       )}

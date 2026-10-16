@@ -31,11 +31,15 @@ type FileRow = {
   id: number; nazwa: string; folder_id: number | null; typ: string; rozmiar: number; rozmiar_txt: string;
   content_type: string | null; container_id: number | null; pokaz_na_kontenerze: boolean;
   dodano_z_kontenera: boolean; dodano: string | null; dodal: string | null; folder_nazwa?: string | null;
+  /** Widoczny w folderze kontenera u wszystkich producentów (np. rozliczenie Lenmara). */
+  caly_kontener: boolean;
 };
 type Crumb = { id: number; nazwa: string; rodzaj: Rodzaj };
 type Listing = {
   folder: (FolderRow & { parent_id: number | null }) | null;
   sciezka: Crumb[]; foldery: FolderRow[]; pliki: FileRow[];
+  /** Ilu producentów ma kontener tego folderu (0 = to nie folder kontenera). */
+  producentow_kontenera?: number;
 };
 type Status = { storage: boolean; max_mb: number; kosz_dni: number };
 type TreeNode = { id: number; parent_id: number | null; nazwa: string; rodzaj: Rodzaj };
@@ -191,6 +195,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
   const [wgrywanie, setWgrywanie] = useState<{ done: number; total: number } | null>(null);
   const [przeciaganie, setPrzeciaganie] = useState(false);
   const [pokazNaKontenerze, setPokazNaKontenerze] = useState(false);
+  const [calyKontener, setCalyKontener] = useState(false);
   const [nowyFolder, setNowyFolder] = useState(false);
   const [zmianaNazwy, setZmianaNazwy] = useState<Target | null>(null);
   const [przenies, setPrzenies] = useState<Target | null>(null);
@@ -233,6 +238,8 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
   }, [qq, odswiez, shop]);
 
   const wKontenerze = !!data?.sciezka.some((c) => c.rodzaj === "kontener");
+  // Bezpośrednio w folderze kontenera skonsolidowanego — tylko tu „cały kontener” ma sens.
+  const wieluProducentow = (data?.producentow_kontenera ?? 0) > 1;
   const idz = (fid: number | null) => {
     setQ(""); setTryb("lista"); setZazn(new Map());
     if (fid !== folderId) { setLadowanie(true); onFolder(fid); }
@@ -284,6 +291,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
       fd.append("files", f);
       if (folderId != null) fd.append("folder_id", String(folderId));
       if (wKontenerze && pokazNaKontenerze) fd.append("pokaz_na_kontenerze", "true");
+      if (wieluProducentow && calyKontener) fd.append("caly_kontener", "true");
       try { await api.post("/pliki/wgraj", fd); ok += 1; }
       catch (e) { toast(`${f.name}: ${e instanceof Error ? e.message : "błąd"}`, "error"); }
       setWgrywanie({ done: ok, total: dobre.length });
@@ -336,6 +344,13 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
       load();
     } catch (e) { err(e); }
   };
+  const przelaczCaly = async (f: FileRow) => {
+    try {
+      await api.patch(`/pliki/plik/${f.id}`, { caly_kontener: !f.caly_kontener });
+      toast(f.caly_kontener ? "Plik tylko w folderze swojego producenta" : "Plik widoczny w folderach wszystkich producentów kontenera", "ok");
+      load();
+    } catch (e) { err(e); }
+  };
   const otworzKontener = (k: NonNullable<FolderRow["kontener"]>) =>
     onOpenContainer?.(containerSlug({ id: k.id, container_number: k.container_number, order_number: k.order_number }));
 
@@ -361,6 +376,10 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
     if (edycja && f.container_id) items.push({
       label: f.pokaz_na_kontenerze ? "Nie pokazuj na kontenerze" : "Pokaż na kontenerze",
       icon: <I.Ship size={14}/>, onClick: () => przelaczKontener(f),
+    });
+    if (edycja && (f.caly_kontener || wieluProducentow)) items.push({
+      label: f.caly_kontener ? "Tylko u tego producenta" : "Pokaż u wszystkich producentów",
+      icon: <I.Container size={14}/>, onClick: () => przelaczCaly(f),
     });
     if (edycja) {
       items.push({ label: "Zmień nazwę", icon: <I.Edit size={14}/>, onClick: () => setZmianaNazwy(t) });
@@ -408,6 +427,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
           fontSize: 13.5, color: "var(--text-hi)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         }}>{f.nazwa}</button>
         <div style={{ fontSize: 11.5, color: "var(--text-lo)", marginTop: 1, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {f.caly_kontener && <span style={{ color: "var(--info)", fontWeight: 600 }}>cały kontener</span>}
           <span>{f.rozmiar_txt}</span>
           <span>{kiedy(f.dodano)}{f.dodal ? ` · ${kto(f.dodal)}` : ""}</span>
           {gdzie && <span>w: {f.folder_nazwa || "główny poziom"}</span>}
@@ -496,6 +516,12 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
         <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-mid)", marginBottom: 10, cursor: "pointer" }}>
           <input type="checkbox" checked={pokazNaKontenerze} onChange={(e) => setPokazNaKontenerze(e.target.checked)}/>
           Nowe pliki pokazuj też na karcie kontenera
+        </label>
+      )}
+      {tryb === "lista" && edycja && wieluProducentow && !wyniki && status?.storage && (
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-mid)", marginBottom: 10, marginLeft: 16, cursor: "pointer" }}>
+          <input type="checkbox" checked={calyKontener} onChange={(e) => setCalyKontener(e.target.checked)}/>
+          Nowe pliki dla całego kontenera (widoczne u wszystkich producentów)
         </label>
       )}
 

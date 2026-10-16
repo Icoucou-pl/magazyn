@@ -35,7 +35,8 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
   starych załączników — tylko superadmin (`require_pliki_super`). Zakres firm usera blokuje foldery serwerowo (`_zabronione`). Foldery „Producenci / producent / kontener” zakłada sama aplikacja (skonsolidowany =
   folder u każdego producenta), reszta ręcznie. Pliki w Supabase Storage (bucket `magazyn-pliki`,
   `services/pliki_storage.py`, konto techniczne `PLIKI_STORAGE_*`), w bazie tylko opis. Plik z karty kontenera
-  ląduje w folderze kontenera z ptaszkiem „pokaż na kontenerze”; kosz 30 dni. Stare załączniki (BYTEA
+  ląduje w folderze kontenera z ptaszkiem „pokaż na kontenerze”; plik „cały kontener” (`caly_kontener`, np. rozliczenie
+  Lenmara) leży u jednego producenta, a widać go w folderze kontenera u każdego (podfoldery osobno); kosz 30 dni. Stare załączniki (BYTEA
   w `app_container_attachments`) przenosi przycisk w Plikach (`/pliki/stare-zalaczniki/przenies`, paczkami);
   przeniesiony wiersz ma `przeniesiony_plik_id` i znika z karty, a bajty zostają w bazie jako zapas
   (do skasowania, gdy właściciel potwierdzi). Przełącznik firm filtruje foldery (`ukryte_foldery`).
