@@ -246,6 +246,7 @@ TRASY = [
     ("POST", r"^/api/pliki/kosz/przywroc$", "Pliki", "przywrócił pliki z kosza", "PLIKI_RESTORED", "pliki"),
     ("POST", r"^/api/pliki/kosz/usun$", "Pliki", "usunął pliki z kosza na zawsze", "PLIKI_PURGED", "pliki"),
     ("DELETE", r"^/api/pliki/kosz$", "Pliki", "opróżnił kosz plików", "PLIKI_PURGED", "pliki"),
+    ("POST", r"^/api/pliki/stare-zalaczniki/przenies$", "Pliki", "przeniósł stare załączniki kontenerów do Plików", "PLIKI_MIGRATED", "pliki"),
     ("PATCH", r"^/api/cashflow/payment/termin$", "Finanse", "przesunął termin płatności", "MOVE_PAYMENT_TERMIN", "payment"),
     # Odprawy
     ("POST", rf"^/api/kontenery/{_ID}/odprawa$", "Odprawy", "zapisał odprawę kontenera #{id}", "ODPRAWA_SAVED", "container"),

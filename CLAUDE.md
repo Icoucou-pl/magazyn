@@ -34,7 +34,9 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
   folder u każdego producenta), reszta ręcznie. Pliki w Supabase Storage (bucket `magazyn-pliki`,
   `services/pliki_storage.py`, konto techniczne `PLIKI_STORAGE_*`), w bazie tylko opis. Plik z karty kontenera
   ląduje w folderze kontenera z ptaszkiem „pokaż na kontenerze”; kosz 30 dni. Stare załączniki (BYTEA
-  w `app_container_attachments`) jeszcze czekają na przeniesienie (drugi krok).
+  w `app_container_attachments`) przenosi przycisk w Plikach (`/pliki/stare-zalaczniki/przenies`, paczkami);
+  przeniesiony wiersz ma `przeniesiony_plik_id` i znika z karty, a bajty zostają w bazie jako zapas
+  (do skasowania, gdy właściciel potwierdzi). Przełącznik firm filtruje foldery (`ukryte_foldery`).
 - **Asystent AI** (`services/assistant.py`) — czat z narzędziami, dostawca zgodny z API OpenAI
   (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`). Narzędzia finansowe tylko z `assistantFinancials`.
 
