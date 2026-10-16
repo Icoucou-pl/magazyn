@@ -12,7 +12,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, download, downloadPost } from "@/lib/api";
-import { canSeeFiles, useUser } from "@/lib/permissions";
+import { canEditFiles, canPurgeFiles, canSeeFiles, useUser } from "@/lib/permissions";
 import { containerSlug } from "@/lib/routes";
 import { useShop } from "@/lib/shop";
 import { toast } from "./toast";
@@ -174,6 +174,10 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
   onOpenContainer?: (key: string) => void;
 }) {
   const user = useUser();
+  // Podgląd: przeglądanie, pobieranie, ZIP. Edycja: wrzucanie, foldery, nazwy, przenoszenie, kosz.
+  // Backend pilnuje tego samego (require_pliki / require_pliki_edycja) — tu tylko chowamy przyciski.
+  const edycja = canEditFiles(user);
+  const superadmin = canPurgeFiles(user);
   // Przełącznik firm u góry: przy AMH widać tylko producentów i kontenery z towarem AMH.
   const { shop } = useShop();
   // Zawartość odwiedzonych folderów — powrót do folderu pokazuje się od razu, a świeże dane
@@ -291,7 +295,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault(); dragDepth.current = 0; setPrzeciaganie(false);
-    if (tryb === "lista" && !wyniki) wgraj(Array.from(e.dataTransfer.files || []));
+    if (edycja && tryb === "lista" && !wyniki) wgraj(Array.from(e.dataTransfer.files || []));
   };
   const maPliki = (e: React.DragEvent) => Array.from(e.dataTransfer.types || []).includes("Files");
 
@@ -336,14 +340,14 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
     onOpenContainer?.(containerSlug({ id: k.id, container_number: k.container_number, order_number: k.order_number }));
 
   if (!canSeeFiles(user)) {
-    return <Card padding={24}><div style={{ color: "var(--text-lo)", fontSize: 13 }}>Zakładka Pliki jest na razie dostępna tylko dla superadmina.</div></Card>;
+    return <Card padding={24}><div style={{ color: "var(--text-lo)", fontSize: 13 }}>Nie masz dostępu do zakładki Pliki — poproś administratora o uprawnienie „Pliki – podgląd”.</div></Card>;
   }
 
   const folderMenu = (f: FolderRow) => {
     const t: Target = { typ: "folder", id: f.id, nazwa: f.nazwa };
     const items: MenuItem[] = [];
     if (f.kontener) items.push({ label: "Otwórz kartę kontenera", icon: <I.Ship size={14}/>, onClick: () => otworzKontener(f.kontener!) });
-    if (!f.automatyczny) {
+    if (edycja && !f.automatyczny) {
       items.push({ label: "Zmień nazwę", icon: <I.Edit size={14}/>, onClick: () => setZmianaNazwy(t) });
       items.push({ label: "Przenieś do…", icon: <I.ArrowRight size={14}/>, onClick: () => setPrzenies(t) });
       items.push({ label: "Do kosza", icon: <I.Trash size={14}/>, onClick: () => doKosza(t), danger: true });
@@ -354,13 +358,15 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
     const t: Target = { typ: "plik", id: f.id, nazwa: f.nazwa };
     const items: MenuItem[] = [{ label: "Pobierz", icon: <I.ArrowDown size={14}/>, onClick: () => { pobierz(f); } }];
     if (podglad(f)) items.push({ label: "Podgląd w nowej karcie", icon: <I.Eye size={14}/>, onClick: () => pokaz(f) });
-    if (f.container_id) items.push({
+    if (edycja && f.container_id) items.push({
       label: f.pokaz_na_kontenerze ? "Nie pokazuj na kontenerze" : "Pokaż na kontenerze",
       icon: <I.Ship size={14}/>, onClick: () => przelaczKontener(f),
     });
-    items.push({ label: "Zmień nazwę", icon: <I.Edit size={14}/>, onClick: () => setZmianaNazwy(t) });
-    items.push({ label: "Przenieś do…", icon: <I.ArrowRight size={14}/>, onClick: () => setPrzenies(t) });
-    items.push({ label: "Do kosza", icon: <I.Trash size={14}/>, onClick: () => doKosza(t), danger: true });
+    if (edycja) {
+      items.push({ label: "Zmień nazwę", icon: <I.Edit size={14}/>, onClick: () => setZmianaNazwy(t) });
+      items.push({ label: "Przenieś do…", icon: <I.ArrowRight size={14}/>, onClick: () => setPrzenies(t) });
+      items.push({ label: "Do kosza", icon: <I.Trash size={14}/>, onClick: () => doKosza(t), danger: true });
+    }
     return items;
   };
 
@@ -408,7 +414,9 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
         </div>
       </div>
       {f.container_id != null && (
-        <button onClick={() => przelaczKontener(f)} title={f.pokaz_na_kontenerze ? "Widoczny na karcie kontenera — kliknij, żeby zdjąć" : "Kliknij, żeby pokazać na karcie kontenera"} style={{
+        <button onClick={() => edycja && przelaczKontener(f)} disabled={!edycja}
+          title={!edycja ? (f.pokaz_na_kontenerze ? "Widoczny na karcie kontenera" : "Niewidoczny na karcie kontenera")
+            : f.pokaz_na_kontenerze ? "Widoczny na karcie kontenera — kliknij, żeby zdjąć" : "Kliknij, żeby pokazać na karcie kontenera"} style={{
           display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px", fontSize: 11, borderRadius: 99, cursor: "pointer", flexShrink: 0,
           background: f.pokaz_na_kontenerze ? "var(--info-soft)" : "transparent",
           color: f.pokaz_na_kontenerze ? "var(--info)" : "var(--text-lo)",
@@ -457,7 +465,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
           <I.Search size={14} style={{ position: "absolute", left: 10, top: 10, color: "var(--text-lo)" }}/>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Szukaj pliku lub folderu" style={{ ...inputStyle, paddingLeft: 30 }}/>
         </div>
-        {tryb === "lista" && (
+        {tryb === "lista" && edycja && (
           <>
             <button onClick={() => setNowyFolder(true)} style={btn()}><I.Plus size={14}/> Folder</button>
             <button onClick={() => fileRef.current?.click()} disabled={!status?.storage || !!wgrywanie} style={{ ...btn("primary"), opacity: status?.storage ? 1 : 0.5 }}
@@ -466,9 +474,11 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
             </button>
           </>
         )}
-        <button onClick={() => { setQ(""); setTryb(tryb === "kosz" ? "lista" : "kosz"); }} style={{ ...btn(), color: tryb === "kosz" ? "var(--text-hi)" : "var(--text-mid)" }} title="Kosz">
-          <I.Trash size={14}/> {tryb === "kosz" ? "Wróć" : "Kosz"}
-        </button>
+        {edycja && (
+          <button onClick={() => { setQ(""); setTryb(tryb === "kosz" ? "lista" : "kosz"); }} style={{ ...btn(), color: tryb === "kosz" ? "var(--text-hi)" : "var(--text-mid)" }} title="Kosz">
+            <I.Trash size={14}/> {tryb === "kosz" ? "Wróć" : "Kosz"}
+          </button>
+        )}
         <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                onChange={(e) => { wgraj(Array.from(e.target.files || [])); if (fileRef.current) fileRef.current.value = ""; }}/>
       </div>
@@ -482,7 +492,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
         </Card>
       )}
 
-      {tryb === "lista" && wKontenerze && !wyniki && status?.storage && (
+      {tryb === "lista" && edycja && wKontenerze && !wyniki && status?.storage && (
         <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-mid)", marginBottom: 10, cursor: "pointer" }}>
           <input type="checkbox" checked={pokazNaKontenerze} onChange={(e) => setPokazNaKontenerze(e.target.checked)}/>
           Nowe pliki pokazuj też na karcie kontenera
@@ -532,7 +542,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
       )}
 
       {tryb === "kosz" ? (
-        <KoszView onZmiana={() => load()} onIdz={idz}/>
+        <KoszView onZmiana={() => load()} onIdz={idz} naZawsze={superadmin}/>
       ) : wyniki ? (
         <Card>
           <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-lo)", borderBottom: "1px solid var(--border-soft)" }}>
@@ -563,12 +573,12 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
               {data.pliki.map((f) => fileLine(f))}
               {pusto && (
                 <div style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--text-lo)" }}>
-                  Pusto. {status?.storage ? "Przeciągnij tu pliki albo kliknij „Wgraj”." : ""}
+                  Pusto. {edycja && status?.storage ? "Przeciągnij tu pliki albo kliknij „Wgraj”." : ""}
                 </div>
               )}
             </>
           )}
-          {przeciaganie && (
+          {przeciaganie && edycja && (
             <div style={{
               position: "absolute", inset: 0, borderRadius: "var(--r-lg)", pointerEvents: "none",
               background: "var(--accent-soft)", border: "2px dashed var(--accent)",
@@ -581,7 +591,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
         </Card>
       )}
 
-      {tryb === "lista" && !wyniki && folderId == null && (
+      {tryb === "lista" && !wyniki && folderId == null && superadmin && (
         <StareZalaczniki storage={!!status?.storage} onPrzeniesione={load}/>
       )}
 
@@ -722,7 +732,11 @@ function PrzeniesModal({ cel, onClose, onDone }: { cel: Target; onClose: () => v
 }
 
 // ── Kosz ─────────────────────────────────────────────────────
-function KoszView({ onZmiana, onIdz }: { onZmiana: () => void; onIdz: (fid: number | null) => void }) {
+function KoszView({ onZmiana, onIdz, naZawsze }: {
+  onZmiana: () => void; onIdz: (fid: number | null) => void;
+  /** „Usuń na zawsze” i „Opróżnij kosz” — tylko superadmin; reszta tylko przywraca. */
+  naZawsze: boolean;
+}) {
   const [k, setK] = useState<(Trash & { teraz: number }) | null>(null);
   const [potwierdz, setPotwierdz] = useState<null | { opis: string; akcja: () => Promise<void> }>(null);
 
@@ -753,7 +767,7 @@ function KoszView({ onZmiana, onIdz }: { onZmiana: () => void; onIdz: (fid: numb
   const akcje = (p: number[], f: number[], nazwa: string) => (
     <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
       <button onClick={() => przywroc(p, f)} style={btn("ghost", true)}>Przywróć</button>
-      <button onClick={() => usun(p, f, nazwa)} style={btn("danger", true)} title="Usuń na zawsze"><I.Trash size={13}/></button>
+      {naZawsze && <button onClick={() => usun(p, f, nazwa)} style={btn("danger", true)} title="Usuń na zawsze"><I.Trash size={13}/></button>}
     </div>
   );
 
@@ -763,7 +777,7 @@ function KoszView({ onZmiana, onIdz }: { onZmiana: () => void; onIdz: (fid: numb
         <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-lo)" }}>
           Rzeczy w koszu kasują się same po {k?.dni ?? 30} dniach. Do tego czasu można je przywrócić na stare miejsce.
         </div>
-        {!pusto && k && <button onClick={oproznij} style={btn("danger", true)}><I.Trash size={13}/> Opróżnij kosz</button>}
+        {naZawsze && !pusto && k && <button onClick={oproznij} style={btn("danger", true)}><I.Trash size={13}/> Opróżnij kosz</button>}
       </div>
       <Card>
         {!k ? (

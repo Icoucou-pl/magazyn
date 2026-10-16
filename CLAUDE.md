@@ -29,8 +29,10 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
 - **Dropy** — sprzedaż partnerom (dropshipping). Dwie części:
   `routers/dropy.py` (nasza zakładka w Magazynie) i `dropy_service/` — **osobny serwis** (portal partnera,
   własna rola w bazie, własny JWT; nie importuje niczego z Magazynu).
-- **Pliki** (`routers/pliki.py`, `services/pliki.py`) — dokumenty jak na dysku Google, na razie tylko superadmin
-  (`require_pliki`). Foldery „Producenci / producent / kontener” zakłada sama aplikacja (skonsolidowany =
+- **Pliki** (`routers/pliki.py`, `services/pliki.py`) — dokumenty jak na dysku Google. Dostęp: ptaszki `viewFiles`
+  („Pliki – podgląd”) i `editFiles` („Pliki – edycja”, na wierzchu podglądu), celowo poza `ROLE_PERMS`; superadmin zawsze
+  (`can_view_files` / `can_edit_files`, `require_pliki` / `require_pliki_edycja`). „Usuń na zawsze”, kosz i przenosiny
+  starych załączników — tylko superadmin (`require_pliki_super`). Zakres firm usera blokuje foldery serwerowo (`_zabronione`). Foldery „Producenci / producent / kontener” zakłada sama aplikacja (skonsolidowany =
   folder u każdego producenta), reszta ręcznie. Pliki w Supabase Storage (bucket `magazyn-pliki`,
   `services/pliki_storage.py`, konto techniczne `PLIKI_STORAGE_*`), w bazie tylko opis. Plik z karty kontenera
   ląduje w folderze kontenera z ptaszkiem „pokaż na kontenerze”; kosz 30 dni. Stare załączniki (BYTEA

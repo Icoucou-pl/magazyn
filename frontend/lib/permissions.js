@@ -25,6 +25,8 @@ export const PERMISSIONS = [
   { key: "viewReports",    label: "Raporty",               desc: "Dostęp do raportów miesięcznych (KPI, PDF/Excel)", group: "Widoczność" },
   { key: "viewSalesSummary", label: "Podsumowanie sprzedaży", desc: "Karta z liczbą i wartością zamówień per firma na pulpicie (kwoty tylko z Dane finansowe). Superadmin widzi zawsze", group: "Widoczność" },
   { key: "viewOccupancy",  label: "Zajętość magazynu",     desc: "Raport kubatury (m³) i kafelek zajętości na pulpicie", group: "Widoczność" },
+  { key: "viewFiles", label: "Pliki – podgląd", desc: "Zakładka „Pliki”: przeglądanie folderów producentów i kontenerów, otwieranie i pobieranie plików, ZIP z zaznaczonych. Przy dostępie do jednej firmy — tylko jej foldery. Superadmin widzi zawsze", group: "Widoczność" },
+  { key: "editFiles", label: "Pliki – edycja", desc: "Wrzucanie plików, zakładanie folderów, zmiana nazw, przenoszenie, kosz i przywracanie (wymaga też Pliki – podgląd). „Usuń na zawsze” zostaje dla superadmina", group: "Dane" },
   { key: "viewAttachments", label: "Załączniki kontenerów", desc: "Podgląd i pobieranie plików (faktury, proformy, packing list, BL)", group: "Widoczność" },
   { key: "viewCalendarPayments", label: "Płatności w kalendarzu", desc: "Terminy płatności „Do zapłaty” jako zdarzenia kalendarza (wymaga też Dane finansowe)", group: "Widoczność" },
   { key: "viewBankBalances", label: "Stan konta firmy", desc: "Saldo rachunku i pożyczki wspólników — wykres na pulpicie i zakładka w Cashflow (wymaga też Dane finansowe)", group: "Widoczność" },
@@ -49,6 +51,7 @@ export const PERMISSIONS = [
 // łącznie z ADMIN; dostęp daje wyłącznie ptaszek postawiony konkretnemu userowi):
 //   · viewOccupancy — Zajętość magazynu.
 //   · viewSalesSummary — Podsumowanie sprzedaży na pulpicie (superadmin widzi zawsze, canSeeSalesSummary).
+//   · viewFiles / editFiles — zakładka „Pliki” (superadmin zawsze; canSeeFiles / canEditFiles).
 // Lustro tej samej reguły po stronie backendu siedzi w security.py → ROLE_PERMS.
 //
 // viewBankBalances / editBankBalances — saldo rachunku i pożyczki wspólników. Domyślnie TYLKO ADMIN.
@@ -117,9 +120,13 @@ export const canSeeSalesSummary = (u) => Boolean(u?.is_super_admin || u?.isSuper
 // Rozliczenie z SAD (zakładka „SAD", wgrywanie XML) — tylko superadmin, jako kontrola.
 // Lustro w security.py → require_sad. Inni nie widzą zakładki ani śladu po niej.
 export const canSeeSad = (u) => Boolean(u?.is_super_admin || u?.isSuper);
-// Zakładka „Pliki” (foldery producentów/kontenerów, dokumenty) — na razie tylko superadmin,
-// bez ptaszka w uprawnieniach. Lustro w security.py → require_pliki.
-export const canSeeFiles = (u) => Boolean(u?.is_super_admin || u?.isSuper);
+// Zakładka „Pliki” (foldery producentów/kontenerów, dokumenty) — superadmin zawsze, inni z ptaszkiem
+// „Pliki – podgląd”. Klucza celowo nie ma w ROLE_PERMS. Lustro w security.py → can_view_files.
+export const canSeeFiles = (u) => Boolean(u?.is_super_admin || u?.isSuper) || can(u, "viewFiles");
+// Edycja Plików leży na wierzchu podglądu (lustro security.py → can_edit_files).
+export const canEditFiles = (u) => Boolean(u?.is_super_admin || u?.isSuper) || (can(u, "viewFiles") && can(u, "editFiles"));
+// „Usuń na zawsze”, opróżnianie kosza, przenosiny starych załączników — tylko superadmin.
+export const canPurgeFiles = (u) => Boolean(u?.is_super_admin || u?.isSuper);
 
 // Zakładka „test-wycena” na karcie produktu (klucze po starej „Cenie”). Lustro w security.py →
 // can_view_product_price / can_edit_product_price. Zapis leży na wierzchu podglądu.

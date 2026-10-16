@@ -221,3 +221,65 @@ def test_zip_tylko_dla_superadmina_i_bez_wpisu_w_dzienniku(klient):
     stan["user"] = ADMIN
     assert c.post("/api/pliki/zip", json={"foldery": [1]}).status_code == 403
     assert audit_opisy.opis_sciezki("POST", "/api/pliki/zip") is None
+
+
+# ── Uprawnienia: „Pliki – podgląd” / „Pliki – edycja” ────────────────────────
+
+PODGLAD = CurrentUser(id=5, email="ola@firma.pl", role="IMPORT", perms={"viewFiles": True})
+EDYCJA = CurrentUser(id=6, email="jan@firma.pl", role="IMPORT", perms={"viewFiles": True, "editFiles": True})
+SAMA_EDYCJA = CurrentUser(id=7, email="ewa@firma.pl", role="IMPORT", perms={"editFiles": True})
+
+
+def test_reguly_uprawnien(monkeypatch):
+    monkeypatch.setattr(settings, "SUPER_ADMIN_EMAIL", "szef@firma.pl")
+    from security import can_edit_files, can_view_files
+    assert can_view_files(SZEF) and can_edit_files(SZEF)
+    assert not can_view_files(ADMIN)                       # rola nic nie daje — tylko ptaszek
+    assert can_view_files(PODGLAD) and not can_edit_files(PODGLAD)
+    assert can_view_files(EDYCJA) and can_edit_files(EDYCJA)
+    assert not can_view_files(SAMA_EDYCJA) and not can_edit_files(SAMA_EDYCJA)   # edycja leży na podglądzie
+
+
+@pytest.mark.parametrize("user,metoda,sciezka,kod", [
+    (PODGLAD, "GET", "/api/pliki/status", 200),
+    (PODGLAD, "POST", "/api/pliki/folder", 403),
+    (PODGLAD, "DELETE", "/api/pliki/plik/1", 403),
+    (PODGLAD, "GET", "/api/pliki/kosz", 403),
+    (SAMA_EDYCJA, "GET", "/api/pliki/status", 403),
+    (SAMA_EDYCJA, "POST", "/api/pliki/folder", 403),
+    (EDYCJA, "POST", "/api/pliki/kosz/usun", 403),          # na zawsze — tylko superadmin
+    (EDYCJA, "DELETE", "/api/pliki/kosz", 403),
+    (EDYCJA, "GET", "/api/pliki/stare-zalaczniki/stan", 403),
+    (EDYCJA, "POST", "/api/pliki/stare-zalaczniki/przenies", 403),
+])
+def test_kto_co_moze(klient, user, metoda, sciezka, kod):
+    c, stan = klient
+    stan["user"] = user
+    r = c.request(metoda, sciezka, json={"nazwa": "x"} if metoda in ("POST", "PATCH") else None)
+    assert r.status_code == kod, (sciezka, r.status_code, r.text)
+
+
+def test_zakres_firm_to_czesc_wspolna(monkeypatch):
+    """User z dwiema firmami nie widzi tylko tego, czego nie ma u ŻADNEJ z nich."""
+    import asyncio
+    from routers.pliki import _zabronione
+    ukryte = {"amh": {1, 2, 3}, "acti": {2, 3, 4}, "veluxa": {9}}
+
+    async def _ukryte(db, shop):
+        return set(ukryte[shop])
+    monkeypatch.setattr(svc, "ukryte_foldery", _ukryte)
+    monkeypatch.setattr(settings, "SUPER_ADMIN_EMAIL", "szef@firma.pl")
+    dwie = CurrentUser(id=8, email="a@b.pl", role="IMPORT", company_scope=["amh", "acti"])
+    wszystkie = CurrentUser(id=9, email="c@d.pl", role="IMPORT", company_scope=["amh", "acti", "veluxa"])
+    bez = CurrentUser(id=10, email="e@f.pl", role="IMPORT")
+    assert asyncio.run(_zabronione(None, dwie)) == {2, 3}
+    assert asyncio.run(_zabronione(None, wszystkie)) == set()
+    assert asyncio.run(_zabronione(None, bez)) == set()
+    assert asyncio.run(_zabronione(None, SZEF)) == set()
+
+
+def test_uprawnienia_maja_etykiety_w_dzienniku_i_na_froncie():
+    js = (Path(__file__).resolve().parents[1] / "frontend/lib/permissions.js").read_text()
+    for klucz in ("viewFiles", "editFiles"):
+        assert f'key: "{klucz}"' in js
+        assert klucz in audit_opisy.UPRAWNIENIA
