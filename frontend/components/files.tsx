@@ -511,13 +511,7 @@ export default function FilesView({ folderId, onFolder, onOpenContainer }: {
       )}
 
       {tryb === "lista" && !wyniki && folderId == null && (
-        <div style={{ marginTop: 14, fontSize: 12.5, color: "var(--text-lo)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          Stare załączniki kontenerów (sprzed zakładki Pliki) są jeszcze w bazie — trafią tu w drugim kroku.
-          <button onClick={() => {
-            toast("Przygotowuję ZIP — przy wielu plikach to chwilę potrwa", "ok");
-            download("/pliki/stare-zalaczniki.zip", "zalaczniki-kontenerow.zip").catch(() => toast("Nie udało się pobrać ZIP-a", "warning"));
-          }} style={btn("ghost", true)}><I.ArrowDown size={13}/> Pobierz wszystkie jako ZIP</button>
-        </div>
+        <StareZalaczniki storage={!!status?.storage} onPrzeniesione={load}/>
       )}
 
       {nowyFolder && (
@@ -752,5 +746,92 @@ function KoszView({ onZmiana, onIdz }: { onZmiana: () => void; onIdz: (fid: numb
         </Modal>
       )}
     </>
+  );
+}
+
+// ── Stare załączniki kontenerów → Pliki (jednorazowe przenosiny) ─────────────
+// Przenosimy paczkami (backend robi po kilkanaście plików na raz), żeby żadne żądanie nie trwało
+// za długo. Stare kopie zostają w bazie ukryte jako zapas — na karcie kontenera każdy plik jest raz.
+type StanStarych = { do_przeniesienia: number; przeniesione: number; bez_pliku: number };
+
+function StareZalaczniki({ storage, onPrzeniesione }: { storage: boolean; onPrzeniesione: () => void }) {
+  const [stan, setStan] = useState<StanStarych | null>(null);
+  const [postep, setPostep] = useState<{ zrobione: number; wszystkie: number } | null>(null);
+  const [pytaj, setPytaj] = useState(false);
+
+  const wczytaj = () => api.get("/pliki/stare-zalaczniki/stan").then((r) => setStan(r as StanStarych)).catch(() => {});
+  useEffect(() => { wczytaj(); }, []);
+
+  const przenies = async () => {
+    if (!stan) return;
+    setPytaj(false);
+    const wszystkie = stan.do_przeniesienia;
+    let zrobione = 0;
+    const bledy: string[] = [];
+    setPostep({ zrobione, wszystkie });
+    try {
+      for (;;) {
+        const r = (await api.post("/pliki/stare-zalaczniki/przenies", {})) as
+          { przeniesione: number; bledy: string[]; zostalo: number; utknelo: boolean };
+        zrobione += r.przeniesione;
+        bledy.push(...r.bledy);
+        setPostep({ zrobione, wszystkie });
+        if (r.zostalo === 0 || r.utknelo) break;
+      }
+      if (bledy.length) toast(`Przeniesiono ${zrobione}, nie udało się ${bledy.length}: ${bledy.slice(0, 3).join("; ")}`, "warning");
+      else toast(`Przeniesiono ${zrobione} załączników do folderów kontenerów`, "ok");
+    } catch (e) { err(e); }
+    setPostep(null);
+    wczytaj();
+    onPrzeniesione();
+  };
+
+  const zip = () => {
+    toast("Przygotowuję ZIP — przy wielu plikach to chwilę potrwa", "ok");
+    download("/pliki/stare-zalaczniki.zip", "zalaczniki-kontenerow.zip").catch(() => toast("Nie udało się pobrać ZIP-a", "warning"));
+  };
+
+  if (!stan || (stan.do_przeniesienia === 0 && stan.przeniesione === 0)) return null;
+  return (
+    <Card padding={14} style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 13, color: "var(--text-mid)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        {postep ? (
+          <span style={{ color: "var(--accent)" }}>Przenoszę stare załączniki… {postep.zrobione}/{postep.wszystkie}</span>
+        ) : stan.do_przeniesienia > 0 ? (
+          <>
+            <span style={{ flex: "1 1 260px" }}>
+              Stare załączniki kontenerów czekające na przeniesienie do folderów: <b>{stan.do_przeniesienia}</b>
+              {stan.przeniesione > 0 && <> (już przeniesione: {stan.przeniesione})</>}
+            </span>
+            <button onClick={() => setPytaj(true)} disabled={!storage} style={{ ...btn("primary", true), opacity: storage ? 1 : 0.5 }}>
+              <I.ArrowRight size={13}/> Przenieś do Plików
+            </button>
+          </>
+        ) : (
+          <span style={{ flex: "1 1 260px" }}>
+            Wszystkie stare załączniki ({stan.przeniesione}) są już w folderach kontenerów. Stare kopie zostały w bazie jako zapas.
+          </span>
+        )}
+        {!postep && <button onClick={zip} style={btn("ghost", true)}><I.ArrowDown size={13}/> Kopia wszystkich jako ZIP</button>}
+      </div>
+      {stan.bez_pliku > 0 && !postep && (
+        <div style={{ fontSize: 11.5, color: "var(--text-lo)", marginTop: 6 }}>
+          {stan.bez_pliku} starych wpisów nie ma samego pliku (dodane przed włączeniem zapisu plików) — tych nie da się przenieść.
+        </div>
+      )}
+      {pytaj && (
+        <Modal title="Przenieść stare załączniki?" onClose={() => setPytaj(false)}>
+          <div style={{ fontSize: 13.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
+            {stan.do_przeniesienia} plików trafi do folderów swoich kontenerów (w skonsolidowanym — do pierwszego producenta)
+            i dalej będzie widocznych na karcie kontenera. Stare kopie zostają w bazie ukryte, jako zapas.
+            <br/><br/>Jeśli nie masz jeszcze kopii, najpierw kliknij „Kopia wszystkich jako ZIP”.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button onClick={() => setPytaj(false)} style={btn()}>Anuluj</button>
+            <button onClick={przenies} style={btn("primary")}>Przenieś</button>
+          </div>
+        </Modal>
+      )}
+    </Card>
   );
 }

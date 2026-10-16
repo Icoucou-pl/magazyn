@@ -410,6 +410,69 @@ async def oproznij_kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = 
 
 # ── Stare załączniki kontenerów (przed przeniesieniem do Plików) ─────────────
 
+@router.get("/pliki/stare-zalaczniki/stan")
+async def stare_zalaczniki_stan(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    """Ile starych załączników kontenerów czeka na przeniesienie do Plików."""
+    T = settings.TABLE_ATTACHMENTS
+    r = (await db.execute(text(f"""
+        SELECT COUNT(*) FILTER (WHERE przeniesiony_plik_id IS NULL AND file_data IS NOT NULL) AS do_przeniesienia,
+               COUNT(*) FILTER (WHERE przeniesiony_plik_id IS NOT NULL) AS przeniesione,
+               COUNT(*) FILTER (WHERE przeniesiony_plik_id IS NULL AND file_data IS NULL) AS bez_pliku
+          FROM {T}
+    """))).mappings().first()
+    return {k: int(v or 0) for k, v in r.items()}
+
+
+PRZENOSINY_PACZKA = 15
+
+
+@router.post("/pliki/stare-zalaczniki/przenies")
+async def stare_zalaczniki_przenies(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    """Kolejna paczka starych załączników → Pliki, do folderu ich kontenera (w skonsolidowanym:
+    u pierwszego producenta), z ptaszkiem „pokaż na kontenerze” i datą dodania sprzed lat.
+    Ekran woła to w pętli, aż `zostalo` = 0 — jedno długie żądanie mogłoby przekroczyć czas Railwaya.
+    Każdy plik zatwierdzany osobno: przerwane przenosiny wystarczy uruchomić jeszcze raz."""
+    _storage_wlaczony()
+    T = settings.TABLE_ATTACHMENTS
+    ids = [row[0] for row in await db.execute(text(f"""
+        SELECT id FROM {T} WHERE przeniesiony_plik_id IS NULL AND file_data IS NOT NULL
+         ORDER BY container_id, uploaded_at, id LIMIT :n
+    """), {"n": PRZENOSINY_PACZKA})]
+    przeniesione, bledy = 0, []
+    for aid in ids:
+        a = (await db.execute(text(f"""
+            SELECT id, container_id, filename, content_type, file_data, uploaded_at FROM {T}
+             WHERE id = :id AND przeniesiony_plik_id IS NULL
+        """), {"id": aid})).mappings().first()
+        if not a:
+            continue
+        try:
+            fid = await svc.folder_kontenera(db, a["container_id"], None)
+            p = await zapisz_plik(db, data=bytes(a["file_data"]), nazwa=a["filename"], content_type=a["content_type"],
+                                  folder_id=fid, pokaz=True, z_kontenera=True, kto="stare załączniki kontenera")
+            await db.execute(text(f"UPDATE {P} SET dodano = COALESCE(:d, dodano) WHERE id = :id"),
+                             {"d": a["uploaded_at"], "id": p["id"]})
+            await db.execute(text(f"""
+                UPDATE {T} SET przeniesiony_plik_id = :p, przeniesiono_at = CURRENT_TIMESTAMP WHERE id = :id
+            """), {"p": p["id"], "id": aid})
+            await db.commit()
+            przeniesione += 1
+        except Exception as e:   # noqa: BLE001 — jeden zły plik nie zatrzymuje reszty; zostaje do ponowienia
+            await db.rollback()
+            bledy.append(f"{a['filename']}: {getattr(e, 'detail', None) or e}")
+    zostalo = (await db.execute(text(f"""
+        SELECT COUNT(*) FROM {T} WHERE przeniesiony_plik_id IS NULL AND file_data IS NOT NULL
+    """))).scalar()
+    if przeniesione:
+        audit.note(f"przeniósł {przeniesione} {plural(przeniesione, 'stary załącznik', 'stare załączniki', 'starych załączników')}"
+                   " kontenerów do Plików", area="Pliki", resource_type="pliki")
+    else:
+        audit.skip()
+    # Gdy cała paczka padła, nie ma sensu kręcić pętli w nieskończoność — ekran się zatrzyma.
+    return {"przeniesione": przeniesione, "bledy": bledy, "zostalo": int(zostalo or 0),
+            "utknelo": bool(ids) and przeniesione == 0}
+
+
 @router.get("/pliki/stare-zalaczniki.zip")
 async def stare_zalaczniki(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
     """Wszystkie dotychczasowe załączniki kontenerów (trzymane w bazie) w jednym ZIP-ie,

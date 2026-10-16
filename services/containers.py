@@ -128,6 +128,8 @@ async def fetch_attachments_bulk(db: AsyncSession, container_ids: List[int]) -> 
     r = await db.execute(
         text(f"SELECT container_id, id, filename, file_type, file_size, uploaded_at "
              f"FROM {settings.TABLE_ATTACHMENTS} WHERE container_id = ANY(:ids) "
+             # przeniesione do Plików pokazują się niżej jako plik z Plików — bez dubla
+             f"AND przeniesiony_plik_id IS NULL "
              f"ORDER BY container_id, uploaded_at DESC"),
         {"ids": list(container_ids)},
     )

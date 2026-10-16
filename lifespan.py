@@ -557,6 +557,11 @@ async def lifespan(app: FastAPI):
         # Doklejenie kolumn na zawartość pliku dla istniejących baz
         await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS content_type VARCHAR(120)"))
         await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS file_data BYTEA"))
+        # Przenosiny do zakładki „Pliki” (routers/pliki.py → /pliki/stare-zalaczniki/przenies):
+        # stary wiersz zostaje w bazie jako zapasowa kopia, ale karta kontenera go już nie pokazuje —
+        # pokazuje nowy plik z Plików (id w przeniesiony_plik_id). Dzięki temu bez dubli i można powtórzyć.
+        await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS przeniesiony_plik_id INTEGER"))
+        await conn.execute(text(f"ALTER TABLE {settings.TABLE_ATTACHMENTS} ADD COLUMN IF NOT EXISTS przeniesiono_at TIMESTAMP"))
 
         # Zakładka „Pliki” (routers/pliki.py, services/pliki.py). Folder ma rodzaj:
         #   reczny     — założony ręcznie, można zmieniać nazwę, przenosić, usuwać,
