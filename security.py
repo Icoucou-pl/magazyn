@@ -127,14 +127,16 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 #   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
 #   · viewSalesSummary — „Podsumowanie sprzedaży” na pulpicie. Superadmin widzi je zawsze
 #     (can_view_sales_summary), reszta tylko z ptaszkiem postawionym w Ustawieniach.
-#   · viewFiles / editFiles — zakładka „Pliki” (podgląd / edycja). Superadmin zawsze
-#     (can_view_files / can_edit_files), reszta tylko z ptaszkiem; edycja wymaga też podglądu.
 #
 # viewBankBalances / editBankBalances — saldo rachunku firmy i pożyczki wspólników.
 # Domyślnie TYLKO ADMIN. Oba są KONIUNKCYJNE z viewFinancials (patrz can_view_bank):
 # wykres i listy niosą kwoty, więc ktoś z zamaskowanymi finansami nie zobaczy ich tędy.
 # editBankBalances bez viewBankBalances nic nie daje — nie ma czego edytować.
 # Dopisanie takiego klucza do ROLE_PERMS otworzy go całej roli — rób to świadomie.
+#
+# viewFiles / editFiles — zakładka „Pliki” (podgląd / edycja). Domyślnie TYLKO ADMIN (decyzja
+# właściciela), reszta z ptaszkiem; superadmin zawsze (can_view_files / can_edit_files).
+# Edycja leży na wierzchu podglądu — samo editFiles nic nie daje.
 #
 # viewProductHistory — zakładka „Historia produktu" (GET /products/{sku}/historia
 # i /historia-firmy). Domyślnie TYLKO ADMIN; super-admin wchodzi zawsze
@@ -185,9 +187,9 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 # viewDashboardKpi — tylko front (karty KPI na pulpicie); tu dla zgodności z permissions.js,
 # żeby zmiana masowa w /users/bulk liczyła „wyjątek względem roli” tak samo jak front.
 ROLE_PERMS = {
-    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True,  "viewProductPrice": True,  "editProductPrice": True,  "viewPriceSummary": True,  "useSalesCalculator": True,  "priceSummaryCost": True,  "priceSummaryCompetition": True,  "prowizjaOdCeny": False},
-    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "priceSummaryCost": False, "priceSummaryCompetition": False,  "prowizjaOdCeny": False},
-    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "viewDashboardKpi": False, "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "priceSummaryCost": False, "priceSummaryCompetition": False,  "prowizjaOdCeny": False},
+    "ADMIN":  {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": True,  "viewForecast": True,  "manageUsers": True,  "viewAudit": True,  "viewReports": True,  "viewAttachments": True,  "viewCalendarPayments": True,  "viewBankBalances": True,  "editBankBalances": True,  "viewProductSales": True,  "viewPurchasePrice": True,  "viewProductHistory": True,  "viewLandedCost": True,  "editLandedCost": True,  "viewProductPrice": True,  "editProductPrice": True,  "viewPriceSummary": True,  "useSalesCalculator": True,  "priceSummaryCost": True,  "priceSummaryCompetition": True,  "prowizjaOdCeny": False, "viewFiles": True, "editFiles": True},
+    "IMPORT": {"editProducts": True,  "editContainers": True,  "import": True,  "export": True,  "generatePO": True,  "viewFinancials": True,  "viewDashboardKpi": True,  "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": True,  "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "priceSummaryCost": False, "priceSummaryCompetition": False,  "prowizjaOdCeny": False, "viewFiles": False, "editFiles": False},
+    "VIEWER": {"editProducts": False, "editContainers": False, "import": False, "export": True,  "generatePO": False, "viewFinancials": True,  "viewDashboardKpi": False, "assistantFinancials": False, "viewForecast": True,  "manageUsers": False, "viewAudit": False, "viewReports": False, "viewAttachments": False, "viewCalendarPayments": False, "viewBankBalances": False, "editBankBalances": False, "viewProductSales": False, "viewPurchasePrice": False, "viewProductHistory": False, "viewLandedCost": False, "editLandedCost": False, "viewProductPrice": False, "editProductPrice": False, "viewPriceSummary": False, "useSalesCalculator": False, "priceSummaryCost": False, "priceSummaryCompetition": False,  "prowizjaOdCeny": False, "viewFiles": False, "editFiles": False},
 }
 
 
@@ -309,8 +311,7 @@ async def require_sad(user: CurrentUser = Depends(get_current_user)) -> CurrentU
 
 
 def can_view_files(user: Optional[CurrentUser]) -> bool:
-    """Zakładka „Pliki” — superadmin zawsze, inni z ptaszkiem viewFiles („Pliki – podgląd”).
-    Klucza celowo nie ma w ROLE_PERMS: żadna rola, nawet ADMIN, nie dostaje Plików z automatu.
+    """Zakładka „Pliki” — superadmin zawsze, ADMIN z roli, inni z ptaszkiem viewFiles („Pliki – podgląd”).
     Lustro na froncie: permissions.js → canSeeFiles."""
     return is_super_admin(user) or has_perm(user, "viewFiles")
 
