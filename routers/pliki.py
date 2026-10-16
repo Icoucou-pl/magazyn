@@ -24,7 +24,8 @@ from audit_opisy import etykieta_kontenera, plural
 from config import settings
 from database import get_db
 from models import CurrentUser
-from security import ALL_SHOPS, get_current_user, has_perm, is_super_admin, require_pliki, resolve_shop
+from security import (ALL_SHOPS, allowed_shops, can_edit_files, can_view_files, get_current_user, has_perm,
+                      is_super_admin, require_pliki, require_pliki_edycja, require_pliki_super, resolve_shop)
 from services import pliki as svc
 from services import pliki_storage
 
@@ -61,6 +62,28 @@ def _firma(shop: str, user: CurrentUser) -> str:
     """Firma z przełącznika u góry: "" = wszystkie, inaczej slug z ALL_SHOPS (resolve_shop pilnuje zakresu)."""
     s = resolve_shop(shop, user)
     return s if s in ALL_SHOPS else ""
+
+
+async def _zabronione(db: AsyncSession, user: CurrentUser) -> set:
+    """Foldery niedostępne dla usera z zakresem firm (np. tylko Veluxa): producenci i kontenery
+    bez towaru ŻADNEJ z jego firm, z całą zawartością. To blokada po stronie serwera — działa
+    też dla linków i id wpisanych ręcznie, nie tylko dla listy. Bez zakresu → pusty zbiór."""
+    scope = [x for x in (allowed_shops(user) or []) if x in ALL_SHOPS]
+    if is_super_admin(user) or not scope or set(ALL_SHOPS) <= set(scope):
+        return set()
+    wynik: Optional[set] = None
+    for firma in scope:
+        u = await svc.ukryte_foldery(db, firma)
+        wynik = u if wynik is None else (wynik & u)
+    return wynik or set()
+
+
+async def _dostep(db: AsyncSession, fid: Optional[int], user: CurrentUser, zab: Optional[set] = None) -> None:
+    """404 (nie 403 — nie zdradzamy, że folder istnieje) dla folderu spoza firm usera."""
+    if fid is None:
+        return
+    if fid in (zab if zab is not None else await _zabronione(db, user)):
+        raise HTTPException(404, "Nie ma takiego folderu")
 
 
 async def _folder(db: AsyncSession, fid: int, *, zywy: bool = True) -> dict:
@@ -161,6 +184,7 @@ async def lista(folder_id: Optional[int] = Query(None), shop: str = Query(""), d
                 user: CurrentUser = Depends(require_pliki)):
     await svc.synchronizuj_foldery(db)
     await db.commit()
+    await _dostep(db, folder_id, user)
     folder = await _folder(db, folder_id) if folder_id is not None else None
     out = await svc.lista_folderu(db, folder_id, _firma(shop, user))
     out["folder"] = ({**folder, "automatyczny": svc.jest_automatyczny(folder["rodzaj"], folder["manufacturer_id"], folder["container_id"])}
@@ -171,7 +195,8 @@ async def lista(folder_id: Optional[int] = Query(None), shop: str = Query(""), d
 
 @router.get("/pliki/drzewo")
 async def drzewo(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
-    return await svc.drzewo(db)
+    zab = await _zabronione(db, user)
+    return [f for f in await svc.drzewo(db) if f["id"] not in zab]
 
 
 @router.get("/pliki/szukaj")
@@ -183,8 +208,9 @@ async def szukaj(q: str = Query(..., min_length=2, max_length=100), shop: str = 
 # ── Foldery ──────────────────────────────────────────────────────────────────
 
 @router.post("/pliki/folder", status_code=201)
-async def nowy_folder(body: FolderIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def nowy_folder(body: FolderIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     nazwa = svc.czysta_nazwa(body.nazwa, "Nowy folder")
+    await _dostep(db, body.parent_id, user)
     parent = await _cel(db, body.parent_id)
     await _dubel_folderu(db, parent, nazwa)
     fid = (await db.execute(text(f"""
@@ -199,7 +225,9 @@ async def nowy_folder(body: FolderIn, db: AsyncSession = Depends(get_db), user: 
 
 @router.patch("/pliki/folder/{fid}")
 async def zmien_folder(fid: int, body: FolderPatch, db: AsyncSession = Depends(get_db),
-                       user: CurrentUser = Depends(require_pliki)):
+                       user: CurrentUser = Depends(require_pliki_edycja)):
+    zab = await _zabronione(db, user)
+    await _dostep(db, fid, user, zab)
     f = await _folder(db, fid)
     if svc.jest_automatyczny(f["rodzaj"], f["manufacturer_id"], f["container_id"]):
         raise HTTPException(400, "Folderów producentów i kontenerów nie da się zmieniać — zakłada je i nazywa aplikacja")
@@ -212,6 +240,7 @@ async def zmien_folder(fid: int, body: FolderPatch, db: AsyncSession = Depends(g
             zmiany.append({"pole": "Nazwa", "bylo": f["nazwa"], "jest": nazwa})
             f["nazwa"] = nazwa
     if "parent_id" in body.model_fields_set and body.parent_id != f["parent_id"]:
+        await _dostep(db, body.parent_id, user, zab)
         cel = await _cel(db, body.parent_id)
         if await svc.czy_potomek(db, cel, fid):
             raise HTTPException(400, "Nie można przenieść folderu do niego samego ani do jego podfolderu")
@@ -228,7 +257,8 @@ async def zmien_folder(fid: int, body: FolderPatch, db: AsyncSession = Depends(g
 
 
 @router.delete("/pliki/folder/{fid}", status_code=204)
-async def folder_do_kosza(fid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def folder_do_kosza(fid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
+    await _dostep(db, fid, user)
     f = await _folder(db, fid)
     if svc.jest_automatyczny(f["rodzaj"], f["manufacturer_id"], f["container_id"]):
         raise HTTPException(400, "Folderów producentów i kontenerów nie da się usunąć")
@@ -243,8 +273,9 @@ async def folder_do_kosza(fid: int, db: AsyncSession = Depends(get_db), user: Cu
 @router.post("/pliki/wgraj", status_code=201)
 async def wgraj(files: List[UploadFile] = File(...), folder_id: Optional[int] = Form(None),
                 pokaz_na_kontenerze: bool = Form(False),
-                db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+                db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     _storage_wlaczony()
+    await _dostep(db, folder_id, user)
     folder = await _folder(db, folder_id) if folder_id is not None else None
     dane = [(f, await _czytaj(f)) for f in files]        # najpierw limity, żeby nie wgrać połowy
     out = []
@@ -259,8 +290,10 @@ async def wgraj(files: List[UploadFile] = File(...), folder_id: Optional[int] = 
 
 
 @router.patch("/pliki/plik/{pid}")
-async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     p = await _plik(db, pid)
+    zab = await _zabronione(db, user)
+    await _dostep(db, p["folder_id"], user, zab)
     if p["usuniety_at"] is not None:
         raise HTTPException(404, "Ten plik jest w koszu")
     zmiany = []
@@ -270,6 +303,7 @@ async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_d
             await db.execute(text(f"UPDATE {P} SET nazwa = :n WHERE id = :id"), {"n": nazwa, "id": pid})
             zmiany.append({"pole": "Nazwa", "bylo": p["nazwa"], "jest": nazwa})
     if "folder_id" in body.model_fields_set and body.folder_id != p["folder_id"]:
+        await _dostep(db, body.folder_id, user, zab)
         cel = await _cel(db, body.folder_id)
         cid = await svc.kontener_nad_folderem(db, cel)
         await db.execute(text(f"""
@@ -296,8 +330,9 @@ async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_d
 
 
 @router.delete("/pliki/plik/{pid}", status_code=204)
-async def plik_do_kosza(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def plik_do_kosza(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     p = await _plik(db, pid)
+    await _dostep(db, p["folder_id"], user)
     await db.execute(text(f"UPDATE {P} SET usuniety_at = CURRENT_TIMESTAMP, usunal = :kto WHERE id = :id AND usuniety_at IS NULL"),
                      {"id": pid, "kto": user.email})
     await db.commit()
@@ -305,9 +340,15 @@ async def plik_do_kosza(pid: int, db: AsyncSession = Depends(get_db), user: Curr
 
 
 async def _plik_do_pobrania(db: AsyncSession, pid: int, user: CurrentUser) -> dict:
-    """Superadmin pobiera wszystko (także z kosza — żeby dało się zajrzeć przed przywróceniem).
-    Pozostali tylko pliki pokazane na karcie kontenera i tylko z uprawnieniem do załączników."""
+    """Kto co pobierze:
+      · superadmin — wszystko, także z kosza (żeby zajrzeć przed przywróceniem),
+      · „Pliki – podgląd” — żywe pliki ze swoich firm; z „edycją” także te w koszu,
+      · reszta — tylko pliki pokazane na karcie kontenera, z uprawnieniem do załączników."""
     p = await _plik(db, pid)
+    if not is_super_admin(user) and can_view_files(user):
+        martwy = p["usuniety_at"] is not None or (p["folder_id"] is not None and p["folder_id"] in await _martwe(db))
+        if (not martwy or can_edit_files(user)) and p["folder_id"] not in await _zabronione(db, user):
+            return p
     if not is_super_admin(user):
         widoczny = (p["pokaz_na_kontenerze"] and p["usuniety_at"] is None and p["container_id"] is not None
                     and (p["folder_id"] is None or p["folder_id"] not in await _martwe(db)))
@@ -373,14 +414,25 @@ async def zip_zaznaczonych(body: ZipIn, db: AsyncSession = Depends(get_db), user
 # ── Kosz ─────────────────────────────────────────────────────────────────────
 
 @router.get("/pliki/kosz")
-async def kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
-    return await svc.kosz(db)
+async def kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
+    k = await svc.kosz(db)
+    zab = await _zabronione(db, user)
+    if zab:
+        k["foldery"] = [f for f in k["foldery"] if f["id"] not in zab and f["parent_id"] not in zab]
+        k["pliki"] = [p for p in k["pliki"] if p["folder_id"] not in zab]
+    return k
 
 
 @router.post("/pliki/kosz/przywroc")
-async def przywroc(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def przywroc(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     """Przywraca na stare miejsce. Gdy stary folder sam jest w koszu (albo pod folderem w koszu),
     rzecz wraca na główny poziom — inaczej „przywrócona” byłaby dalej niewidoczna."""
+    zab = await _zabronione(db, user)
+    if zab:
+        body.foldery = [f for f in body.foldery if f not in zab]
+        body.pliki = [r[0] for r in await db.execute(text(f"""
+            SELECT id FROM {P} WHERE id = ANY(:ids) AND (folder_id IS NULL OR folder_id <> ALL(:zab))
+        """), {"ids": body.pliki, "zab": list(zab)})] if body.pliki else []
     na_glowny = 0
     if body.foldery:
         await db.execute(text(f"UPDATE {F} SET usuniety_at = NULL, usunal = NULL WHERE id = ANY(:ids)"), {"ids": body.foldery})
@@ -409,7 +461,7 @@ async def przywroc(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: 
 
 
 @router.post("/pliki/kosz/usun")
-async def usun_z_kosza(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def usun_z_kosza(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_super)):
     """Na zawsze — tylko to, co faktycznie leży w koszu (nie da się tak skasować żywego pliku)."""
     pliki = [r[0] for r in await db.execute(text(f"SELECT id FROM {P} WHERE id = ANY(:ids) AND usuniety_at IS NOT NULL"),
                                             {"ids": body.pliki})] if body.pliki else []
@@ -427,7 +479,7 @@ async def usun_z_kosza(body: Zaznaczenie, db: AsyncSession = Depends(get_db), us
 
 
 @router.delete("/pliki/kosz")
-async def oproznij_kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def oproznij_kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_super)):
     pliki = [r[0] for r in await db.execute(text(f"SELECT id FROM {P} WHERE usuniety_at IS NOT NULL"))]
     foldery = [r[0] for r in await db.execute(text(f"SELECT id FROM {F} WHERE usuniety_at IS NOT NULL"))]
     try:
@@ -442,7 +494,7 @@ async def oproznij_kosz(db: AsyncSession = Depends(get_db), user: CurrentUser = 
 # ── Stare załączniki kontenerów (przed przeniesieniem do Plików) ─────────────
 
 @router.get("/pliki/stare-zalaczniki/stan")
-async def stare_zalaczniki_stan(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def stare_zalaczniki_stan(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_super)):
     """Ile starych załączników kontenerów czeka na przeniesienie do Plików."""
     T = settings.TABLE_ATTACHMENTS
     r = (await db.execute(text(f"""
@@ -458,7 +510,7 @@ PRZENOSINY_PACZKA = 15
 
 
 @router.post("/pliki/stare-zalaczniki/przenies")
-async def stare_zalaczniki_przenies(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def stare_zalaczniki_przenies(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_super)):
     """Kolejna paczka starych załączników → Pliki, do folderu ich kontenera (w skonsolidowanym:
     u pierwszego producenta), z ptaszkiem „pokaż na kontenerze” i datą dodania sprzed lat.
     Ekran woła to w pętli, aż `zostalo` = 0 — jedno długie żądanie mogłoby przekroczyć czas Railwaya.
@@ -505,7 +557,7 @@ async def stare_zalaczniki_przenies(db: AsyncSession = Depends(get_db), user: Cu
 
 
 @router.get("/pliki/stare-zalaczniki.zip")
-async def stare_zalaczniki(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+async def stare_zalaczniki(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_super)):
     """Wszystkie dotychczasowe załączniki kontenerów (trzymane w bazie) w jednym ZIP-ie,
     po folderze na kontener — kopia na dysk przed przeniesieniem ich do Plików.
     Pliki czytamy po jednym i piszemy do pliku tymczasowego, żeby nie trzymać wszystkiego w pamięci."""

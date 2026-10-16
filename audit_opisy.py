@@ -140,7 +140,7 @@ UPRAWNIENIA = {
     "viewPriceSummary": "Ceny dla zespołu (Cena)", "priceSummaryCost": "Cena: Koszt zakupu",
     "priceSummaryCompetition": "Cena: Konkurencja", "useSalesCalculator": "Kalkulator handlowca",
     "prowizjaOdCeny": "Prowizja od ceny (sposób A)",
-    "viewDropy": "Dropy",
+    "viewDropy": "Dropy", "viewFiles": "Pliki – podgląd", "editFiles": "Pliki – edycja",
 }
 
 

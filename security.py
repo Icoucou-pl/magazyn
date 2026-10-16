@@ -127,6 +127,8 @@ require_import_or_admin = require_role("ADMIN", "IMPORT")
 #   · viewOccupancy — Zajętość magazynu (raport + kafelek na pulpicie).
 #   · viewSalesSummary — „Podsumowanie sprzedaży” na pulpicie. Superadmin widzi je zawsze
 #     (can_view_sales_summary), reszta tylko z ptaszkiem postawionym w Ustawieniach.
+#   · viewFiles / editFiles — zakładka „Pliki” (podgląd / edycja). Superadmin zawsze
+#     (can_view_files / can_edit_files), reszta tylko z ptaszkiem; edycja wymaga też podglądu.
 #
 # viewBankBalances / editBankBalances — saldo rachunku firmy i pożyczki wspólników.
 # Domyślnie TYLKO ADMIN. Oba są KONIUNKCYJNE z viewFinancials (patrz can_view_bank):
@@ -306,12 +308,38 @@ async def require_sad(user: CurrentUser = Depends(get_current_user)) -> CurrentU
     return user
 
 
+def can_view_files(user: Optional[CurrentUser]) -> bool:
+    """Zakładka „Pliki” — superadmin zawsze, inni z ptaszkiem viewFiles („Pliki – podgląd”).
+    Klucza celowo nie ma w ROLE_PERMS: żadna rola, nawet ADMIN, nie dostaje Plików z automatu.
+    Lustro na froncie: permissions.js → canSeeFiles."""
+    return is_super_admin(user) or has_perm(user, "viewFiles")
+
+
+def can_edit_files(user: Optional[CurrentUser]) -> bool:
+    """Wrzucanie, foldery, zmiana nazwy, przenoszenie, kosz i przywracanie. Edycja leży na
+    wierzchu podglądu (samo editFiles bez viewFiles nic nie daje). Lustro: canEditFiles."""
+    return is_super_admin(user) or (has_perm(user, "viewFiles") and has_perm(user, "editFiles"))
+
+
 async def require_pliki(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    """Zakładka „Pliki” — na razie tylko superadmin, bez ptaszka w uprawnieniach (nikt inny
-    nie ma jej zobaczyć nawet przypadkiem). Lustro na froncie: permissions.js → canSeeFiles.
-    Wyjątek poza tym strażnikiem: pobranie pliku pokazanego na kontenerze (routers/pliki.py)."""
+    """Podgląd Plików. Wyjątek poza tym strażnikiem: pobranie pliku pokazanego na kontenerze
+    (viewAttachments, routers/pliki.py::_plik_do_pobrania)."""
+    if not can_view_files(user):
+        raise HTTPException(403, "Brak uprawnienia: Pliki – podgląd")
+    return user
+
+
+async def require_pliki_edycja(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not can_edit_files(user):
+        raise HTTPException(403, "Brak uprawnienia: Pliki – edycja")
+    return user
+
+
+async def require_pliki_super(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Rzeczy nieodwracalne i jednorazowe w Plikach — „usuń na zawsze”, opróżnienie kosza,
+    przenosiny starych załączników — zostają tylko dla superadmina, bez ptaszka."""
     if not is_super_admin(user):
-        raise HTTPException(403, "Zakładka Pliki jest na razie dostępna tylko dla superadmina")
+        raise HTTPException(403, "To może zrobić tylko superadmin")
     return user
 
 

@@ -13,7 +13,7 @@
 
 import React, { useEffect, useState } from "react";
 import { I, Avatar, Pill, type IconProps } from "./ui";
-import { can } from "@/lib/permissions";
+import { can, canSeeFiles } from "@/lib/permissions";
 import { ShopSwitcher } from "@/lib/shop";
 
 export type User = {
@@ -34,13 +34,14 @@ export type User = {
 
 type IconCmp = (props: IconProps) => React.ReactElement;
 
-type NavItem = { id: string; label: string; icon: IconCmp; perm?: string; superOnly?: boolean };
+// visible — własna reguła widoczności (np. „superadmin zawsze ALBO ptaszek”), gdy perm/superOnly nie wystarcza.
+type NavItem = { id: string; label: string; icon: IconCmp; perm?: string; superOnly?: boolean; visible?: (u: User) => boolean };
 
 // Dropy widzi na razie WYŁĄCZNIE super-admin (lustro require_dropy w routers/dropy.py).
 // Backend i tak odmówi reszcie, to tylko chowa pozycję, której i tak nie da się użyć.
 const isSuperUser = (u: User) => !!(u.is_super_admin ?? u.isSuper);
 const visibleNav = (u: User) => NAV_ITEMS.filter(
-  (item) => (!item.perm || can(u, item.perm)) && (!item.superOnly || isSuperUser(u))
+  (item) => (item.visible ? item.visible(u) : (!item.perm || can(u, item.perm)) && (!item.superOnly || isSuperUser(u)))
 );
 
 export const NAV_ITEMS: NavItem[] = [
@@ -53,7 +54,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "forecast",   label: "Prognoza",   icon: I.Activity, perm: "viewForecast" },
   { id: "reports",    label: "Raporty",    icon: I.Calendar, perm: "viewReports" },
   { id: "dropy",      label: "Dropy",      icon: I.Cart, superOnly: true },
-  { id: "files",      label: "Pliki",      icon: I.Folder, superOnly: true },
+  { id: "files",      label: "Pliki",      icon: I.Folder, visible: (u) => canSeeFiles(u) },
 ];
 
 export const SIDEBAR_WIDTH = 224;
