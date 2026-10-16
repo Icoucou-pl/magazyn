@@ -49,6 +49,7 @@ class PlikPatch(BaseModel):
     nazwa: Optional[str] = Field(None, min_length=1, max_length=200)
     folder_id: Optional[int] = None          # j.w.
     pokaz_na_kontenerze: Optional[bool] = None
+    caly_kontener: Optional[bool] = None     # pokazuj u wszystkich producentów kontenera
 
 
 class Zaznaczenie(BaseModel):
@@ -84,6 +85,25 @@ async def _dostep(db: AsyncSession, fid: Optional[int], user: CurrentUser, zab: 
         return
     if fid in (zab if zab is not None else await _zabronione(db, user)):
         raise HTTPException(404, "Nie ma takiego folderu")
+
+
+async def _dostep_plik(db: AsyncSession, p: dict, user: CurrentUser, zab: Optional[set] = None) -> None:
+    """Jak _dostep, ale plik „cały kontener” przepuszczamy, gdy user widzi ten kontener
+    u któregokolwiek producenta (np. Veluxa i rozliczenie wrzucone w folderze producenta AMH)."""
+    zab = zab if zab is not None else await _zabronione(db, user)
+    if p["folder_id"] is None or p["folder_id"] not in zab:
+        return
+    if p.get("caly_kontener") and p["container_id"] in await svc.kontenery_widoczne(db, zab):
+        return
+    raise HTTPException(404, "Nie ma takiego pliku")
+
+
+async def _czy_folder_kontenera(db: AsyncSession, fid: Optional[int]) -> bool:
+    """„Cały kontener” ma sens tylko bezpośrednio w folderze kontenera (podfoldery są osobne)."""
+    if fid is None:
+        return False
+    r = (await db.execute(text(f"SELECT rodzaj, container_id FROM {F} WHERE id = :id"), {"id": fid})).first()
+    return bool(r and r.rodzaj == "kontener" and r.container_id is not None)
 
 
 async def _folder(db: AsyncSession, fid: int, *, zywy: bool = True) -> dict:
@@ -140,7 +160,8 @@ async def _czytaj(f: UploadFile) -> bytes:
 
 
 async def zapisz_plik(db: AsyncSession, *, data: bytes, nazwa: str, content_type: Optional[str],
-                      folder_id: Optional[int], pokaz: bool, z_kontenera: bool, kto: str) -> dict:
+                      folder_id: Optional[int], pokaz: bool, z_kontenera: bool, kto: str,
+                      caly: bool = False) -> dict:
     """Bucket, potem wiersz w bazie. Gdy baza odmówi — plik znika z bucketu (bez sierot).
     Commit robi wołający. Wspólne dla zakładki i karty kontenera."""
     nazwa = svc.czysta_nazwa(nazwa)
@@ -154,11 +175,12 @@ async def zapisz_plik(db: AsyncSession, *, data: bytes, nazwa: str, content_type
         cid = await svc.kontener_nad_folderem(db, folder_id)
         r = (await db.execute(text(f"""
             INSERT INTO {P} (folder_id, nazwa, sciezka, content_type, rozmiar, container_id,
-                             pokaz_na_kontenerze, dodano_z_kontenera, dodal)
-            VALUES (:f, :n, :s, :ct, :r, :c, :pok, :zk, :kto)
+                             pokaz_na_kontenerze, dodano_z_kontenera, dodal, caly_kontener)
+            VALUES (:f, :n, :s, :ct, :r, :c, :pok, :zk, :kto, :caly)
             RETURNING {svc.PLIK_KOLUMNY}
         """), {"f": folder_id, "n": nazwa, "s": sciezka, "ct": ctype, "r": len(data), "c": cid,
-               "pok": bool(pokaz and cid is not None), "zk": z_kontenera, "kto": kto})).mappings().first()
+               "pok": bool(pokaz and cid is not None), "zk": z_kontenera, "kto": kto,
+               "caly": bool(caly and await _czy_folder_kontenera(db, folder_id))})).mappings().first()
     except Exception:
         try:
             await pliki_storage.remove([sciezka])
@@ -272,7 +294,7 @@ async def folder_do_kosza(fid: int, db: AsyncSession = Depends(get_db), user: Cu
 
 @router.post("/pliki/wgraj", status_code=201)
 async def wgraj(files: List[UploadFile] = File(...), folder_id: Optional[int] = Form(None),
-                pokaz_na_kontenerze: bool = Form(False),
+                pokaz_na_kontenerze: bool = Form(False), caly_kontener: bool = Form(False),
                 db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     _storage_wlaczony()
     await _dostep(db, folder_id, user)
@@ -281,7 +303,8 @@ async def wgraj(files: List[UploadFile] = File(...), folder_id: Optional[int] = 
     out = []
     for f, data in dane:
         out.append(await zapisz_plik(db, data=data, nazwa=f.filename or "plik", content_type=f.content_type,
-                                     folder_id=folder_id, pokaz=pokaz_na_kontenerze, z_kontenera=False, kto=user.email))
+                                     folder_id=folder_id, pokaz=pokaz_na_kontenerze, z_kontenera=False, kto=user.email,
+                                     caly=caly_kontener))
         await db.commit()
     nazwy = ", ".join(f"„{p['nazwa']}”" for p in out[:3]) + (f" i {len(out) - 3} innych" if len(out) > 3 else "")
     audit.note(f"wgrał {len(out)} {plural(len(out), 'plik', 'pliki', 'plików')} {_gdzie(folder)}: {nazwy}",
@@ -293,7 +316,7 @@ async def wgraj(files: List[UploadFile] = File(...), folder_id: Optional[int] = 
 async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     p = await _plik(db, pid)
     zab = await _zabronione(db, user)
-    await _dostep(db, p["folder_id"], user, zab)
+    await _dostep_plik(db, p, user, zab)
     if p["usuniety_at"] is not None:
         raise HTTPException(404, "Ten plik jest w koszu")
     zmiany = []
@@ -306,11 +329,16 @@ async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_d
         await _dostep(db, body.folder_id, user, zab)
         cel = await _cel(db, body.folder_id)
         cid = await svc.kontener_nad_folderem(db, cel)
+        # Przeniesienie zdejmuje „cały kontener” — w nowym miejscu to zwykły plik (można włączyć znowu).
         await db.execute(text(f"""
-            UPDATE {P} SET folder_id = :f, container_id = :c,
+            UPDATE {P} SET folder_id = :f, container_id = :c, caly_kontener = FALSE,
                            pokaz_na_kontenerze = (pokaz_na_kontenerze AND CAST(:c AS INTEGER) IS NOT NULL)
              WHERE id = :id
         """), {"f": cel, "c": cid, "id": pid})
+        if p["caly_kontener"]:
+            zmiany.append({"pole": "Cały kontener", "bylo": "tak", "jest": "nie"})
+        p["caly_kontener"] = False
+        p["folder_id"] = cel
         stary = await _folder(db, p["folder_id"], zywy=False) if p["folder_id"] else None
         nowy = await _folder(db, cel) if cel is not None else None
         zmiany.append({"pole": "Miejsce", "bylo": stary["nazwa"] if stary else "główny poziom",
@@ -323,6 +351,12 @@ async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_d
                          {"v": body.pokaz_na_kontenerze, "id": pid})
         zmiany.append({"pole": "Pokaż na kontenerze", "bylo": "tak" if p["pokaz_na_kontenerze"] else "nie",
                        "jest": "tak" if body.pokaz_na_kontenerze else "nie"})
+    if body.caly_kontener is not None and body.caly_kontener != p["caly_kontener"]:
+        if body.caly_kontener and not await _czy_folder_kontenera(db, p["folder_id"]):
+            raise HTTPException(400, "„Cały kontener” działa tylko dla pliku leżącego bezpośrednio w folderze kontenera")
+        await db.execute(text(f"UPDATE {P} SET caly_kontener = :v WHERE id = :id"), {"v": body.caly_kontener, "id": pid})
+        zmiany.append({"pole": "Cały kontener", "bylo": "tak" if p["caly_kontener"] else "nie",
+                       "jest": "tak" if body.caly_kontener else "nie"})
     await db.commit()
     audit.note_zmiany(f"pliku „{p['nazwa']}”", zmiany, area="Pliki", resource_type="pliki", resource_id=pid)
     r = (await db.execute(text(f"SELECT {svc.PLIK_KOLUMNY} FROM {P} WHERE id = :id"), {"id": pid})).mappings().first()
@@ -332,7 +366,7 @@ async def zmien_plik(pid: int, body: PlikPatch, db: AsyncSession = Depends(get_d
 @router.delete("/pliki/plik/{pid}", status_code=204)
 async def plik_do_kosza(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki_edycja)):
     p = await _plik(db, pid)
-    await _dostep(db, p["folder_id"], user)
+    await _dostep_plik(db, p, user)
     await db.execute(text(f"UPDATE {P} SET usuniety_at = CURRENT_TIMESTAMP, usunal = :kto WHERE id = :id AND usuniety_at IS NULL"),
                      {"id": pid, "kto": user.email})
     await db.commit()
@@ -347,8 +381,12 @@ async def _plik_do_pobrania(db: AsyncSession, pid: int, user: CurrentUser) -> di
     p = await _plik(db, pid)
     if not is_super_admin(user) and can_view_files(user):
         martwy = p["usuniety_at"] is not None or (p["folder_id"] is not None and p["folder_id"] in await _martwe(db))
-        if (not martwy or can_edit_files(user)) and p["folder_id"] not in await _zabronione(db, user):
-            return p
+        if not martwy or can_edit_files(user):
+            try:
+                await _dostep_plik(db, p, user)
+                return p
+            except HTTPException:
+                pass
     if not is_super_admin(user):
         widoczny = (p["pokaz_na_kontenerze"] and p["usuniety_at"] is None and p["container_id"] is not None
                     and (p["folder_id"] is None or p["folder_id"] not in await _martwe(db)))
@@ -449,7 +487,7 @@ async def przywroc(body: Zaznaczenie, db: AsyncSession = Depends(get_db), user: 
     for pid in body.pliki:
         folder = (await db.execute(text(f"SELECT folder_id FROM {P} WHERE id = :id"), {"id": pid})).scalar()
         if folder is not None and folder in martwe:
-            await db.execute(text(f"UPDATE {P} SET folder_id = NULL WHERE id = :id"), {"id": pid})
+            await db.execute(text(f"UPDATE {P} SET folder_id = NULL, caly_kontener = FALSE WHERE id = :id"), {"id": pid})
             na_glowny += 1
     if na_glowny:
         await svc.przelicz_kontenery_plikow(db)

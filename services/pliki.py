@@ -338,12 +338,31 @@ def plik_out(r) -> dict:
         "typ": typ_pliku(nazwa), "rozmiar": int(r["rozmiar"] or 0), "rozmiar_txt": ludzki_rozmiar(int(r["rozmiar"] or 0)),
         "content_type": r["content_type"], "container_id": r["container_id"],
         "pokaz_na_kontenerze": bool(r["pokaz_na_kontenerze"]), "dodano_z_kontenera": bool(r["dodano_z_kontenera"]),
-        "dodano": r["dodano"], "dodal": r["dodal"],
+        "dodano": r["dodano"], "dodal": r["dodal"], "caly_kontener": bool(r["caly_kontener"]),
     }
 
 
 PLIK_KOLUMNY = ("id, folder_id, nazwa, content_type, rozmiar, container_id, pokaz_na_kontenerze, "
-                "dodano_z_kontenera, dodano, dodal")
+                "dodano_z_kontenera, dodano, dodal, caly_kontener")
+
+
+async def kontenery_widoczne(db: AsyncSession, ukryte: set) -> set:
+    """Kontenery, których choć jeden folder (u któregoś producenta) jest widoczny. Plik
+    „cały kontener” jest dostępny, gdy jego kontener jest na tej liście — nawet jeśli leży
+    w folderze producenta, którego dany user nie widzi (Veluxa widzi rozliczenie Lenmara
+    wrzucone u producenta AMH)."""
+    r = await db.execute(text(f"""
+        WITH {MARTWE_CTE}
+        SELECT id, container_id FROM {F}
+         WHERE rodzaj = 'kontener' AND container_id IS NOT NULL AND id NOT IN (SELECT id FROM martwe)
+    """))
+    return {cid for fid, cid in r if fid not in ukryte}
+
+
+def plik_dostepny(p, ukryte: set, widoczne_kontenery: set) -> bool:
+    """Plik do pokazania mimo zawężenia: jego folder nie jest schowany ALBO to plik „cały kontener”
+    z kontenera, który user widzi u innego producenta."""
+    return p["folder_id"] not in ukryte or (bool(p["caly_kontener"]) and p["container_id"] in widoczne_kontenery)
 
 
 # ── Firmy (przełącznik AMH / Acti / Veluxa u góry) ──────────────────────────
@@ -431,7 +450,12 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int], shop: str = "") ->
         SELECT f.id, f.nazwa, f.rodzaj, f.manufacturer_id, f.container_id, f.utworzono, f.utworzyl,
                c.container_number, c.order_number, c.status, c.eta_date, c.order_date, c.expected_delivery_date,
                m.color AS kolor,
-               (SELECT COUNT(*) FROM {P} p WHERE p.folder_id = f.id AND p.usuniety_at IS NULL) AS ile_plikow,
+               (SELECT COUNT(*) FROM {P} p WHERE p.usuniety_at IS NULL
+                   AND (p.folder_id = f.id
+                        OR (f.rodzaj = 'kontener' AND f.container_id IS NOT NULL AND p.caly_kontener
+                            AND p.container_id = f.container_id AND p.folder_id <> f.id
+                            AND p.folder_id IN (SELECT x.id FROM {F} x WHERE x.rodzaj = 'kontener'
+                                                   AND x.container_id = f.container_id)))) AS ile_plikow,
                (SELECT COUNT(*) FROM {F} x WHERE x.parent_id = f.id AND x.usuniety_at IS NULL) AS ile_folderow
           FROM {F} f
           LEFT JOIN {settings.TABLE_CONTAINERS} c ON c.id = f.container_id
@@ -459,10 +483,23 @@ async def lista_folderu(db: AsyncSession, fid: Optional[int], shop: str = "") ->
               for f in foldery if f["container_id"] and f["status"]}
     foldery = sorted(foldery, key=lambda f: _kolejnosc_folderu(f, status.get(f["id"])))
     gdzie_p = "folder_id = :id" if fid is not None else "folder_id IS NULL"
+    ten = (await db.execute(text(f"SELECT rodzaj, container_id FROM {F} WHERE id = :id"), {"id": fid})).first() \
+        if fid is not None else None
+    kontener = ten.container_id if ten is not None and ten.rodzaj == "kontener" else None
+    if kontener is not None:
+        # Folder kontenera: własne pliki + pliki „cały kontener” z folderów tego kontenera u innych producentów.
+        gdzie_p = f"""(folder_id = :id OR (caly_kontener AND container_id = :cid AND folder_id IN (
+                        SELECT x.id FROM {F} x WHERE x.rodzaj = 'kontener' AND x.container_id = :cid
+                           AND x.usuniety_at IS NULL)))"""
     pliki = (await db.execute(text(f"""
         SELECT {PLIK_KOLUMNY} FROM {P} WHERE {gdzie_p} AND usuniety_at IS NULL ORDER BY LOWER(nazwa)
-    """), {"id": fid})).mappings().all()
+    """), {"id": fid, "cid": kontener})).mappings().all()
+    # Ilu producentów ma ten kontener — przy jednym nie ma czego współdzielić (bez ptaszka na ekranie).
+    producentow = (await db.execute(text(f"""
+        SELECT COUNT(*) FROM {F} WHERE rodzaj = 'kontener' AND container_id = :cid AND usuniety_at IS NULL
+    """), {"cid": kontener})).scalar() if kontener is not None else 0
     return {
+        "producentow_kontenera": int(producentow or 0),
         "foldery": [{
             "id": f["id"], "nazwa": f["nazwa"], "rodzaj": f["rodzaj"],
             "automatyczny": jest_automatyczny(f["rodzaj"], f["manufacturer_id"], f["container_id"]),
@@ -508,8 +545,10 @@ async def szukaj(db: AsyncSession, q: str, limit: int = 100, shop: str = "") -> 
          ORDER BY LOWER(f.nazwa) LIMIT :lim
     """), {"q": wzor, "lim": limit})).mappings().all()
     ukryte = await ukryte_foldery(db, shop)
+    widoczne = await kontenery_widoczne(db, ukryte) if ukryte else set()
     return {
-        "pliki": [{**plik_out(p), "folder_nazwa": p["folder_nazwa"]} for p in pliki if p["folder_id"] not in ukryte],
+        "pliki": [{**plik_out(p), "folder_nazwa": p["folder_nazwa"]} for p in pliki
+                  if plik_dostepny(p, ukryte, widoczne)],
         "foldery": [dict(f) for f in foldery if f["id"] not in ukryte],
     }
 
@@ -538,11 +577,25 @@ async def pliki_do_zip(db: AsyncSession, *, pliki: Iterable[int] = (), foldery: 
     pliki, foldery = list(pliki), list(foldery)
     martwe = {r[0] for r in await db.execute(text(f"WITH {MARTWE_CTE} SELECT id FROM martwe"))}
     pomin = martwe | await ukryte_foldery(db, shop)
-    wszystkie = (await db.execute(text(f"SELECT id, parent_id, nazwa FROM {F}"))).all()
+    wszystkie = (await db.execute(text(f"""
+        SELECT f.id, f.parent_id, f.nazwa, f.rodzaj, m.name AS producent
+          FROM {F} f LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id
+    """))).all()
     dzieci: Dict[Optional[int], List] = {}
     for f in wszystkie:
         dzieci.setdefault(f.parent_id, []).append(f)
     nazwa_f = {f.id: f.nazwa for f in wszystkie}
+    # Ten sam kontener zaznaczony u dwóch producentów ma dwa foldery o tej samej nazwie —
+    # w ZIP-ie dopisujemy producenta („KONS – Anji”, „KONS – Fosoto”) zamiast „KONS (2)”.
+    po_id = {f.id: f for f in wszystkie}
+    ile_nazw: Dict[str, int] = {}
+    for fid in foldery:
+        if fid in po_id:
+            ile_nazw[nazwa_f[fid].lower()] = ile_nazw.get(nazwa_f[fid].lower(), 0) + 1
+    for fid in foldery:
+        f = po_id.get(fid)
+        if f is not None and f.rodzaj == "kontener" and f.producent and ile_nazw.get(f.nazwa.lower(), 0) > 1:
+            nazwa_f[fid] = f"{f.nazwa} – {f.producent}"
 
     # folder → ścieżka w ZIP-ie (zaznaczony folder jest katalogiem głównym swojej gałęzi)
     katalog: Dict[int, str] = {}
@@ -566,18 +619,32 @@ async def pliki_do_zip(db: AsyncSession, *, pliki: Iterable[int] = (), foldery: 
             SELECT id, folder_id, nazwa, sciezka, rozmiar FROM {P}
              WHERE folder_id = ANY(:ids) AND usuniety_at IS NULL ORDER BY folder_id, LOWER(nazwa)
         """), {"ids": list(katalog)})).mappings().all()
-    if pliki:
+        # Pliki „cały kontener” lądują w folderze kontenera każdego zaznaczonego producenta — tak jak w Plikach.
         wiersze += (await db.execute(text(f"""
-            SELECT id, NULL::INTEGER AS folder_id, nazwa, sciezka, rozmiar FROM {P}
+            SELECT p.id, f.id AS folder_id, p.nazwa, p.sciezka, p.rozmiar
+              FROM {P} p JOIN {F} f ON f.rodzaj = 'kontener' AND f.container_id = p.container_id
+             WHERE f.id = ANY(:ids) AND p.caly_kontener AND p.usuniety_at IS NULL AND p.folder_id <> f.id
+               AND p.folder_id IN (SELECT x.id FROM {F} x WHERE x.rodzaj = 'kontener' AND x.container_id = p.container_id)
+        """), {"ids": list(katalog)})).mappings().all()
+    if pliki:
+        widoczne = await kontenery_widoczne(db, pomin)
+        wiersze += [w | {"folder_id": None} for w in (await db.execute(text(f"""
+            SELECT id, folder_id, nazwa, sciezka, rozmiar, caly_kontener, container_id FROM {P}
              WHERE id = ANY(:ids) AND usuniety_at IS NULL
-               AND (folder_id IS NULL OR folder_id NOT IN (SELECT UNNEST(CAST(:pomin AS INTEGER[]))))
-        """), {"ids": pliki, "pomin": list(pomin)})).mappings().all()
+        """), {"ids": pliki})).mappings().all() if plik_dostepny(w, pomin, widoczne)]
 
-    out, uzyte, widziane = [], set(), set()
+    out, uzyte, w_folderach, widziane = [], set(), set(), set()
     for w in wiersze:
-        if w["id"] in widziane:       # plik zaznaczony i jednocześnie w zaznaczonym folderze — raz
+        if w["folder_id"] in katalog:
+            klucz = (w["id"], w["folder_id"])
+            w_folderach.add(w["id"])
+        elif w["id"] in w_folderach:  # plik zaznaczony i jednocześnie w zaznaczonym folderze — raz
             continue
-        widziane.add(w["id"])
+        else:
+            klucz = (w["id"], None)
+        if klucz in widziane:
+            continue
+        widziane.add(klucz)
         nazwa = czysta_nazwa(w["nazwa"])
         sc = f"{katalog[w['folder_id']]}/{nazwa}" if w["folder_id"] in katalog else nazwa
         out.append({"zip": _unikalna(sc, uzyte), "sciezka": w["sciezka"], "rozmiar": int(w["rozmiar"] or 0)})
@@ -661,7 +728,7 @@ async def pliki_na_kontenerach(db: AsyncSession, container_ids: List[int]) -> Di
     r = await db.execute(text(f"""
         WITH {MARTWE_CTE}
         SELECT p.id, p.container_id, p.nazwa, p.rozmiar, p.dodano, p.dodano_z_kontenera,
-               m.name AS producent
+               CASE WHEN p.caly_kontener THEN 'cały kontener' ELSE m.name END AS producent
           FROM {P} p
           LEFT JOIN {F} f ON f.id = p.folder_id
           LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id AND f.rodzaj = 'kontener'

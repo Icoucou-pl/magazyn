@@ -615,6 +615,11 @@ async def lifespan(app: FastAPI):
         """))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_pliki_folder ON {settings.TABLE_PLIKI} (folder_id)"))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_pliki_kontener ON {settings.TABLE_PLIKI} (container_id) WHERE pokaz_na_kontenerze"))
+        # „Cały kontener”: plik leży w folderze kontenera u jednego producenta, ale pokazuje się
+        # w folderach tego kontenera u WSZYSTKICH producentów (np. rozliczenie Lenmara). Jeden plik,
+        # nie kopie — zmiana nazwy czy kosz działają wszędzie naraz. Tylko bezpośrednio w folderze
+        # kontenera (podfoldery są osobne u każdego producenta).
+        await add_column_if_missing(conn, settings.TABLE_PLIKI, "caly_kontener", "BOOLEAN NOT NULL DEFAULT FALSE")
 
         # Użytkownicy
         await conn.execute(text(f"""
