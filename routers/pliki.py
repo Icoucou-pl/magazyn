@@ -5,6 +5,7 @@ Pliki z karty kontenera wgrywa routers/containers.py (POST /containers/{id}/atta
 trafiają tutaj do folderu kontenera z ptaszkiem „pokaż na kontenerze”.
 """
 
+import asyncio
 import io
 import os
 import tempfile
@@ -337,6 +338,36 @@ async def pobierz(pid: int, db: AsyncSession = Depends(get_db), user: CurrentUse
     from routers.containers import _content_disposition
     return StreamingResponse(io.BytesIO(data), media_type=p["content_type"] or "application/octet-stream",
                              headers={"Content-Disposition": _content_disposition(p["nazwa"])})
+
+
+class ZipIn(Zaznaczenie):
+    shop: str = ""
+
+
+@router.post("/pliki/zip")
+async def zip_zaznaczonych(body: ZipIn, db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(require_pliki)):
+    """Zaznaczone pliki i foldery (z podfolderami) w jednym ZIP-ie. Pliki z Supabase ściągamy
+    po kilka naraz i piszemy do pliku tymczasowego — duży ZIP nie trzyma się w pamięci."""
+    lista = await svc.pliki_do_zip(db, pliki=body.pliki, foldery=body.foldery, shop=_firma(body.shop, user))
+    if not lista:
+        raise HTTPException(404, "W zaznaczonych folderach nie ma plików")
+    razem = sum(x["rozmiar"] for x in lista)
+    if razem > svc.ZIP_MAX_BYTES:
+        raise HTTPException(413, f"Za dużo naraz ({svc.ludzki_rozmiar(razem)}) — zaznacz mniej folderów (max 1 GB)")
+    fd, tmp = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for i in range(0, len(lista), 4):
+                paczka = lista[i:i + 4]
+                dane = await asyncio.gather(*(pliki_storage.download(x["sciezka"]) for x in paczka))
+                for x, d in zip(paczka, dane):
+                    z.writestr(x["zip"], d)
+    except pliki_storage.StorageError as e:
+        os.remove(tmp)
+        raise HTTPException(502, f"Nie udało się pobrać plików z Supabase: {e}")
+    return FileResponse(tmp, media_type="application/zip", filename="pliki.zip",
+                        background=BackgroundTask(os.remove, tmp))
 
 
 # ── Kosz ─────────────────────────────────────────────────────────────────────
