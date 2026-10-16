@@ -28,6 +28,8 @@ from services import pliki as svc  # noqa: E402
 
 SZEF = CurrentUser(id=1, email="szef@firma.pl", role="ADMIN")
 ADMIN = CurrentUser(id=2, email="admin@firma.pl", role="ADMIN")
+# Bez żadnego ptaszka Plików — rola IMPORT ich z automatu nie dostaje (ADMIN dostaje).
+BEZ_PLIKOW = CurrentUser(id=4, email="import@firma.pl", role="IMPORT")
 
 
 class _Wynik:
@@ -97,9 +99,9 @@ def klient(monkeypatch):
     ("DELETE", "/api/pliki/kosz"),
     ("GET", "/api/pliki/stare-zalaczniki.zip"),
 ])
-def test_zakladka_tylko_dla_superadmina(klient, metoda, sciezka):
+def test_zakladka_bez_ptaszka_niedostepna(klient, metoda, sciezka):
     c, stan = klient
-    stan["user"] = ADMIN      # nawet admin z pełną rolą — zakładka jest bez uprawnień w ROLE_PERMS
+    stan["user"] = BEZ_PLIKOW
     r = c.request(metoda, sciezka, json={"nazwa": "x"} if metoda in ("POST", "PATCH") else None)
     assert r.status_code == 403, (sciezka, r.status_code, r.text)
     assert not stan["db"].zapytania, "strażnik ma odbić żądanie, zanim cokolwiek pójdzie do bazy"
@@ -218,7 +220,7 @@ def test_zip_dubel_nazwy_dostaje_numer():
 
 def test_zip_tylko_dla_superadmina_i_bez_wpisu_w_dzienniku(klient):
     c, stan = klient
-    stan["user"] = ADMIN
+    stan["user"] = BEZ_PLIKOW
     assert c.post("/api/pliki/zip", json={"foldery": [1]}).status_code == 403
     assert audit_opisy.opis_sciezki("POST", "/api/pliki/zip") is None
 
@@ -234,7 +236,10 @@ def test_reguly_uprawnien(monkeypatch):
     monkeypatch.setattr(settings, "SUPER_ADMIN_EMAIL", "szef@firma.pl")
     from security import can_edit_files, can_view_files
     assert can_view_files(SZEF) and can_edit_files(SZEF)
-    assert not can_view_files(ADMIN)                       # rola nic nie daje — tylko ptaszek
+    assert can_view_files(ADMIN) and can_edit_files(ADMIN)  # Admin dostaje oba z roli
+    assert not can_view_files(BEZ_PLIKOW)                   # Import i Viewer — tylko z ptaszkiem
+    wylaczony = CurrentUser(id=11, email="x@y.pl", role="ADMIN", perms={"viewFiles": False})
+    assert not can_view_files(wylaczony)                    # ptaszek odznaczony adminowi wygrywa nad rolą
     assert can_view_files(PODGLAD) and not can_edit_files(PODGLAD)
     assert can_view_files(EDYCJA) and can_edit_files(EDYCJA)
     assert not can_view_files(SAMA_EDYCJA) and not can_edit_files(SAMA_EDYCJA)   # edycja leży na podglądzie
@@ -251,6 +256,9 @@ def test_reguly_uprawnien(monkeypatch):
     (EDYCJA, "DELETE", "/api/pliki/kosz", 403),
     (EDYCJA, "GET", "/api/pliki/stare-zalaczniki/stan", 403),
     (EDYCJA, "POST", "/api/pliki/stare-zalaczniki/przenies", 403),
+    (ADMIN, "GET", "/api/pliki/status", 200),
+    (ADMIN, "POST", "/api/pliki/kosz/usun", 403),           # admin też nie usuwa na zawsze
+    (ADMIN, "DELETE", "/api/pliki/kosz", 403),
 ])
 def test_kto_co_moze(klient, user, metoda, sciezka, kod):
     c, stan = klient
