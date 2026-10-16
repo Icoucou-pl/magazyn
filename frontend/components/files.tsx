@@ -885,7 +885,9 @@ function StareZalaczniki({ storage, onPrzeniesione }: { storage: boolean; onPrze
     download("/pliki/stare-zalaczniki.zip", "zalaczniki-kontenerow.zip").catch(() => toast("Nie udało się pobrać ZIP-a", "warning"));
   };
 
-  if (!stan || (stan.do_przeniesienia === 0 && stan.przeniesione === 0)) return null;
+  // Ramka tylko, gdy jest co przenosić — po przenosinach nic tu nie wnosi (właściciel).
+  // Trwają przenosiny → zostaje do końca, żeby było widać postęp.
+  if (!stan || (stan.do_przeniesienia === 0 && !postep)) return null;
   return (
     <Card padding={14} style={{ marginTop: 14 }}>
       <div style={{ fontSize: 13, color: "var(--text-mid)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
