@@ -591,7 +591,11 @@ async def lifespan(app: FastAPI):
         # na tych indeksach stoi ON CONFLICT DO NOTHING w synchronizacji (bez dubli przy dwóch kartach naraz).
         await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_producenci ON {settings.TABLE_PLIKI_FOLDERY} (rodzaj) WHERE rodzaj = 'producenci'"))
         await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_producent ON {settings.TABLE_PLIKI_FOLDERY} (manufacturer_id) WHERE rodzaj = 'producent'"))
-        await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_kontener ON {settings.TABLE_PLIKI_FOLDERY} (container_id, (COALESCE(manufacturer_id, 0))) WHERE rodzaj = 'kontener'"))
+        # Firma partii (amh/acti/veluxa) — tylko gdy producent ma w kontenerze partie kilku firm
+        # (Fosoto osobno dla AMH i dla Veluxy); NULL = zwykły folder kontenera u producenta.
+        await add_column_if_missing(conn, settings.TABLE_PLIKI_FOLDERY, "firma", "VARCHAR(20)")
+        await conn.execute(text("DROP INDEX IF EXISTS ux_pliki_foldery_kontener"))
+        await conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_pliki_foldery_kontener_firma ON {settings.TABLE_PLIKI_FOLDERY} (container_id, (COALESCE(manufacturer_id, 0)), (COALESCE(firma, ''))) WHERE rodzaj = 'kontener'"))
         # Plik: folder_id NULL = główny poziom. container_id = kontener najbliższego folderu
         # kontenera nad plikiem (liczone przy wgraniu/przeniesieniu), pokaz_na_kontenerze = widać go
         # też na karcie kontenera. dodano_z_kontenera: wgrany z karty kontenera — usunięcie tam

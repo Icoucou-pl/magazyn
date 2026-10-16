@@ -106,37 +106,70 @@ def nowa_sciezka(nazwa: str) -> str:
 # Pary (kontener, producent): producenci partii kontenera, a gdy partii z producentem brak —
 # producent z nagłówka kontenera. Bez żadnego producenta: para (kontener, NULL) — folder trafia
 # wtedy wprost pod „Producenci”, żeby wrzucony plik miał gdzie leżeć.
-_PARY_SQL = f"""
-    SELECT DISTINCT l.container_id, l.manufacturer_id
-      FROM {settings.TABLE_CONTAINER_LOTS} l
-     WHERE l.manufacturer_id IS NOT NULL {{lot_where}}
-    UNION
-    SELECT c.id, c.manufacturer_id
-      FROM {settings.TABLE_CONTAINERS} c
-     WHERE NOT EXISTS (SELECT 1 FROM {settings.TABLE_CONTAINER_LOTS} l
-                        WHERE l.container_id = c.id AND l.manufacturer_id IS NOT NULL) {{c_where}}
+# Trójki (kontener, producent, firma) — po jednym folderze kontenera na każdą. Firma partii = firma
+# większości jej towaru (SKU bez firma_id = AMH). Gdy producent ma w kontenerze partie JEDNEJ firmy
+# (zwykły przypadek), firma = NULL i jest jeden folder jak dotąd. Gdy ma partie kilku firm (Fosoto
+# dla AMH i osobno dla Veluxy — zawsze osobne partie), każda firma dostaje własny folder „… – AMH”.
+# Producent bez partii z producentem → producent z nagłówka kontenera (para z firmą NULL).
+_TROJKI_CTE = f"""
+    pa AS (
+        SELECT DISTINCT ON (LOWER(TRIM(sku))) LOWER(TRIM(sku)) AS sku_canon, firma_id
+          FROM {settings.TABLE_PRODUCT_ATTRS}
+         WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+         ORDER BY LOWER(TRIM(sku)), updated_at DESC NULLS LAST
+    ),
+    partie AS (
+        SELECT l.id, l.container_id, l.manufacturer_id, l.position, l.order_number,
+               (SELECT LOWER(COALESCE(fi.slug, 'amh'))
+                  FROM {settings.TABLE_CONTAINER_ITEMS} ci
+                  LEFT JOIN pa ON pa.sku_canon = LOWER(TRIM(ci.sku))
+                  LEFT JOIN {settings.TABLE_FIRMY} fi ON fi.id = pa.firma_id
+                 WHERE ci.lot_id = l.id
+                 GROUP BY 1 ORDER BY SUM(ci.quantity) DESC, 1 LIMIT 1) AS firma
+          FROM {settings.TABLE_CONTAINER_LOTS} l
+         WHERE l.manufacturer_id IS NOT NULL {{lot_where}}
+    ),
+    rozne AS (
+        SELECT container_id, manufacturer_id FROM partie WHERE firma IS NOT NULL
+         GROUP BY container_id, manufacturer_id HAVING COUNT(DISTINCT firma) > 1
+    ),
+    trojki AS (
+        SELECT DISTINCT p.container_id, p.manufacturer_id,
+               CASE WHEN r.container_id IS NOT NULL THEN p.firma END AS firma
+          FROM partie p
+          LEFT JOIN rozne r ON r.container_id = p.container_id AND r.manufacturer_id = p.manufacturer_id
+         WHERE r.container_id IS NULL OR p.firma IS NOT NULL
+        UNION
+        SELECT c.id, c.manufacturer_id, NULL::VARCHAR
+          FROM {settings.TABLE_CONTAINERS} c
+         WHERE NOT EXISTS (SELECT 1 FROM {settings.TABLE_CONTAINER_LOTS} l
+                            WHERE l.container_id = c.id AND l.manufacturer_id IS NOT NULL) {{c_where}}
+    )
 """
 
-# Nazwa folderu kontenera liczona w bazie, dla każdej pary (kontener, producent) z CTE `zrodlo`:
+# Nazwa folderu kontenera dla każdej trójki z CTE `zrodlo` (container_id, manufacturer_id, firma):
 #   1. prawdziwy nr kontenera (bez roboczego „Draft-…”) — ten sam u każdego producenta,
-#   2. inaczej „FV: …” — w skonsolidowanym FV partii TEGO producenta (u Dongguan jego FV,
-#      nie FV pierwszej partii), w zwykłym FV kontenera,
-#   3. inaczej „#id”.
+#   2. inaczej „FV: …” — w skonsolidowanym FV partii TEGO producenta (i tej firmy), w zwykłym FV kontenera,
+#   3. inaczej „#id”;
+# plus „ – AMH” / „ – Veluxa”, gdy producent ma w kontenerze partie kilku firm.
 _ETYKIETY_CTE = f"""
     etykiety AS (
-        SELECT x.container_id, x.manufacturer_id,
+        SELECT x.container_id, x.manufacturer_id, x.firma,
                CASE WHEN x.nr <> '' AND LOWER(x.nr) NOT LIKE 'draft-%' THEN x.nr
                     WHEN x.fv <> '' THEN 'FV: ' || x.fv
-                    ELSE '#' || x.container_id END AS nazwa
+                    ELSE '#' || x.container_id END
+               || CASE WHEN x.firma IS NOT NULL THEN ' – ' || COALESCE(x.firma_nazwa, UPPER(x.firma)) ELSE '' END AS nazwa
           FROM (
-            SELECT z.container_id, z.manufacturer_id, TRIM(COALESCE(c.container_number, '')) AS nr,
+            SELECT z.container_id, z.manufacturer_id, z.firma, TRIM(COALESCE(c.container_number, '')) AS nr,
+                   (SELECT fi.name FROM {settings.TABLE_FIRMY} fi WHERE LOWER(fi.slug) = z.firma LIMIT 1) AS firma_nazwa,
                    TRIM(COALESCE(
-                        CASE WHEN (SELECT COUNT(DISTINCT l.manufacturer_id) FROM {settings.TABLE_CONTAINER_LOTS} l
-                                    WHERE l.container_id = c.id) > 1
-                             THEN (SELECT NULLIF(TRIM(l.order_number), '') FROM {settings.TABLE_CONTAINER_LOTS} l
-                                    WHERE l.container_id = c.id AND l.manufacturer_id = z.manufacturer_id
-                                      AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
-                                    ORDER BY l.position, l.id LIMIT 1) END,
+                        CASE WHEN (SELECT COUNT(*) FROM {settings.TABLE_CONTAINER_LOTS} l
+                                    WHERE l.container_id = c.id AND l.manufacturer_id IS NOT NULL) > 1
+                             THEN (SELECT NULLIF(TRIM(p.order_number), '') FROM partie p
+                                    WHERE p.container_id = c.id AND p.manufacturer_id = z.manufacturer_id
+                                      AND (z.firma IS NULL OR p.firma = z.firma)
+                                      AND NULLIF(TRIM(p.order_number), '') IS NOT NULL
+                                    ORDER BY p.position, p.id LIMIT 1) END,
                         NULLIF(TRIM(c.order_number), ''),
                         (SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
                           WHERE l.container_id = c.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
@@ -148,6 +181,11 @@ _ETYKIETY_CTE = f"""
 
 _ostatnia_synchronizacja = {"t": 0.0}
 SYNC_CO_SEKUND = 60
+
+# Jedna para (kontener, producent, firma) — porównanie z NULL-ami jak w unikalnym indeksie.
+_TA_SAMA_TROJKA = """{a}.container_id = {b}.container_id
+                AND {a}.manufacturer_id IS NOT DISTINCT FROM {b}.manufacturer_id
+                AND {a}.firma IS NOT DISTINCT FROM {b}.firma"""
 
 
 async def pary_kontenera(db: AsyncSession, cid: int) -> List[Optional[int]]:
@@ -170,6 +208,10 @@ async def synchronizuj_foldery(db: AsyncSession, *, wymus: bool = False, cid: Op
     (zmiana nazwy producenta, numer kontenera wpisany po wypłynięciu) i sprząta PUSTE foldery
     kontenerów, które już nie pasują (producent zniknął z kontenera, kontener usunięty).
     Folder z plikami nigdy nie znika sam — zostaje tam, gdzie był.
+
+    Gdy producent zaczyna mieć w kontenerze partie dwóch firm, jego dotychczasowy folder staje się
+    folderem firmy pierwszej partii (pliki zostają), a druga firma dostaje nowy. I odwrotnie: gdy
+    zostaje jedna firma, jej folder wraca do zwykłej nazwy.
 
     Wołane przy przeglądaniu (najwyżej co SYNC_CO_SEKUND) i zawsze przed wgraniem pliku na kontener.
     `cid` zawęża zakładanie folderów kontenerów do jednego kontenera (szybciej przy wgrywaniu)."""
@@ -199,57 +241,89 @@ async def synchronizuj_foldery(db: AsyncSession, *, wymus: bool = False, cid: Op
     lot_where, c_where = "", "AND c.manufacturer_id IS NOT NULL"
     if cid is not None:
         lot_where, c_where, params["cid"] = "AND l.container_id = :cid", "AND c.id = :cid", cid
-    pary = _PARY_SQL.format(lot_where=lot_where, c_where=c_where)
+    trojki = _TROJKI_CTE.format(lot_where=lot_where, c_where=c_where)
     zrodlo_where = "AND container_id = :cid" if cid is not None else ""
+
+    # Producent zaczął mieć partie dwóch firm: jego zwykły folder (firma NULL) staje się folderem
+    # firmy pierwszej partii — pliki zostają na miejscu, druga firma dostanie nowy folder niżej.
+    await db.execute(text(f"""
+        WITH {trojki},
+        pierwsza AS (
+            SELECT DISTINCT ON (p.container_id, p.manufacturer_id) p.container_id, p.manufacturer_id, p.firma
+              FROM partie p JOIN rozne r ON r.container_id = p.container_id AND r.manufacturer_id = p.manufacturer_id
+             WHERE p.firma IS NOT NULL
+             ORDER BY p.container_id, p.manufacturer_id, p.position, p.id
+        )
+        UPDATE {F} f SET firma = p.firma FROM pierwsza p
+         WHERE f.rodzaj = 'kontener' AND f.firma IS NULL AND f.container_id = p.container_id
+           AND f.manufacturer_id IS NOT DISTINCT FROM p.manufacturer_id
+           AND NOT EXISTS (SELECT 1 FROM {F} x WHERE x.rodzaj = 'kontener' AND x.container_id = p.container_id
+                              AND x.manufacturer_id IS NOT DISTINCT FROM p.manufacturer_id AND x.firma IS NOT NULL)
+    """), params)
+    # I odwrotnie: została jedna firma — najstarszy folder firmowy wraca do zwykłego.
+    await db.execute(text(f"""
+        WITH {trojki}
+        UPDATE {F} f SET firma = NULL
+         WHERE f.id IN (
+            SELECT DISTINCT ON (x.container_id, x.manufacturer_id) x.id
+              FROM {F} x JOIN trojki t ON t.container_id = x.container_id
+                                      AND t.manufacturer_id IS NOT DISTINCT FROM x.manufacturer_id AND t.firma IS NULL
+             WHERE x.rodzaj = 'kontener' AND x.firma IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM {F} y WHERE y.rodzaj = 'kontener' AND y.container_id = x.container_id
+                                  AND y.manufacturer_id IS NOT DISTINCT FROM x.manufacturer_id AND y.firma IS NULL)
+             ORDER BY x.container_id, x.manufacturer_id, x.id)
+    """), params)
 
     # Wszystko zbiorczo, po jednym zapytaniu — pierwsza wersja szła pętlą po kontenerach
     # (setki wymian z Supabase przy każdym wejściu w Pliki, kilka sekund czekania).
     await db.execute(text(f"""
-        WITH pary AS ({pary}), zrodlo AS (SELECT container_id, manufacturer_id FROM pary), {_ETYKIETY_CTE}
-        INSERT INTO {F} (parent_id, nazwa, rodzaj, manufacturer_id, container_id)
-        SELECT COALESCE(pf.id, :root), e.nazwa, 'kontener', p.manufacturer_id, p.container_id
-          FROM pary p(container_id, manufacturer_id)
-          JOIN etykiety e ON e.container_id = p.container_id AND e.manufacturer_id IS NOT DISTINCT FROM p.manufacturer_id
-          LEFT JOIN {F} pf ON pf.rodzaj = 'producent' AND pf.manufacturer_id = p.manufacturer_id
-        ON CONFLICT (container_id, (COALESCE(manufacturer_id, 0))) WHERE rodzaj = 'kontener' DO NOTHING
+        WITH {trojki}, zrodlo AS (SELECT container_id, manufacturer_id, firma FROM trojki), {_ETYKIETY_CTE}
+        INSERT INTO {F} (parent_id, nazwa, rodzaj, manufacturer_id, container_id, firma)
+        SELECT COALESCE(pf.id, :root), e.nazwa, 'kontener', t.manufacturer_id, t.container_id, t.firma
+          FROM trojki t
+          JOIN etykiety e ON {_TA_SAMA_TROJKA.format(a="e", b="t")}
+          LEFT JOIN {F} pf ON pf.rodzaj = 'producent' AND pf.manufacturer_id = t.manufacturer_id
+        ON CONFLICT (container_id, (COALESCE(manufacturer_id, 0)), (COALESCE(firma, ''))) WHERE rodzaj = 'kontener'
+        DO NOTHING
     """), params)
-    # Nazwy folderów kontenerów nadążają za numerem kontenera (Draft → prawdziwy nr) i FV partii.
+    # Nazwy folderów kontenerów nadążają za numerem kontenera (Draft → prawdziwy nr), FV partii i firmą.
     await db.execute(text(f"""
-        WITH zrodlo AS (
-            SELECT DISTINCT container_id, manufacturer_id FROM {F}
+        WITH {trojki}, zrodlo AS (
+            SELECT DISTINCT container_id, manufacturer_id, firma FROM {F}
              WHERE rodzaj = 'kontener' AND container_id IS NOT NULL {zrodlo_where}
         ), {_ETYKIETY_CTE}
         UPDATE {F} f SET nazwa = e.nazwa FROM etykiety e
-         WHERE f.rodzaj = 'kontener' AND f.container_id = e.container_id
-           AND f.manufacturer_id IS NOT DISTINCT FROM e.manufacturer_id AND f.nazwa IS DISTINCT FROM e.nazwa
+         WHERE f.rodzaj = 'kontener' AND {_TA_SAMA_TROJKA.format(a="f", b="e")} AND f.nazwa IS DISTINCT FROM e.nazwa
     """), params)
 
     if cid is None:
-        # Puste foldery kontenerów, które już nie pasują do żadnej pary — do usunięcia.
+        # Puste foldery kontenerów, które już nie pasują do żadnej trójki — do usunięcia.
         await db.execute(text(f"""
+            WITH {trojki}
             DELETE FROM {F} f
              WHERE f.rodzaj = 'kontener'
-               AND (f.container_id IS NULL OR f.manufacturer_id IS NULL OR NOT EXISTS (
-                     SELECT 1 FROM ({pary}) p(container_id, manufacturer_id)
-                      WHERE p.container_id = f.container_id
-                        AND p.manufacturer_id IS NOT DISTINCT FROM f.manufacturer_id))
+               AND (f.container_id IS NULL OR f.manufacturer_id IS NULL
+                    OR NOT EXISTS (SELECT 1 FROM trojki t WHERE {_TA_SAMA_TROJKA.format(a="t", b="f")}))
                AND NOT EXISTS (SELECT 1 FROM {P} x WHERE x.folder_id = f.id)
                AND NOT EXISTS (SELECT 1 FROM {F} x WHERE x.parent_id = f.id)
         """), params)
         _ostatnia_synchronizacja["t"] = teraz
 
 
-async def folder_kontenera(db: AsyncSession, cid: int, manufacturer_id: Optional[int]) -> int:
-    """Id folderu (kontener, producent) — po synchronizacji tego kontenera zawsze istnieje.
-    Producent spoza kontenera (np. karta zapisana w międzyczasie) → pierwszy producent kontenera."""
+async def folder_kontenera(db: AsyncSession, cid: int, manufacturer_id: Optional[int],
+                           firma: Optional[str] = None) -> int:
+    """Id folderu (kontener, producent[, firma]) — po synchronizacji tego kontenera zawsze istnieje.
+    Producent spoza kontenera (np. karta zapisana w międzyczasie) → pierwszy producent kontenera.
+    `firma` rozstrzyga, gdy producent ma partie kilku firm; bez niej — folder bez firmy, inaczej najstarszy."""
     await synchronizuj_foldery(db, cid=cid)
     producenci = await pary_kontenera(db, cid)
     if manufacturer_id not in producenci:
         manufacturer_id = producenci[0] if producenci else None
     fid = (await db.execute(text(f"""
         SELECT id FROM {F} WHERE rodzaj = 'kontener' AND container_id = :k
-           AND manufacturer_id IS NOT DISTINCT FROM :m
-    """), {"k": cid, "m": manufacturer_id})).scalar()
+           AND manufacturer_id IS NOT DISTINCT FROM :m AND usuniety_at IS NULL
+         ORDER BY (firma IS NOT DISTINCT FROM CAST(:f AS VARCHAR)) DESC, (firma IS NULL) DESC, id LIMIT 1
+    """), {"k": cid, "m": manufacturer_id, "f": firma})).scalar()
     if fid is None:          # nie powinno się zdarzyć; awaryjnie dowolny folder tego kontenera
         fid = (await db.execute(text(f"SELECT id FROM {F} WHERE rodzaj = 'kontener' AND container_id = :k ORDER BY id LIMIT 1"),
                                 {"k": cid})).scalar()
@@ -410,7 +484,10 @@ async def ukryte_foldery(db: AsyncSession, shop: str) -> set:
     firmy: Dict[int, set] = {}
     for fid, slug in await db.execute(text(_FIRMY_FOLDEROW_SQL)):
         firmy.setdefault(fid, set()).add(slug)
-    foldery = (await db.execute(text(f"SELECT id, parent_id, rodzaj FROM {F}"))).all()
+    foldery = (await db.execute(text(f"SELECT id, parent_id, rodzaj, firma FROM {F}"))).all()
+    for f in foldery:          # folder partii jednej firmy (producent dla kilku firm) — tylko ta firma
+        if f.rodzaj == "kontener" and f.firma:
+            firmy[f.id] = {f.firma}
     ukryte = {f.id for f in foldery
               if (f.rodzaj == "producent" and shop not in firmy.get(f.id, ()))
               or (f.rodzaj == "kontener" and firmy.get(f.id) and shop not in firmy[f.id])}
@@ -728,7 +805,10 @@ async def pliki_na_kontenerach(db: AsyncSession, container_ids: List[int]) -> Di
     r = await db.execute(text(f"""
         WITH {MARTWE_CTE}
         SELECT p.id, p.container_id, p.nazwa, p.rozmiar, p.dodano, p.dodano_z_kontenera,
-               CASE WHEN p.caly_kontener THEN 'cały kontener' ELSE m.name END AS producent
+               CASE WHEN p.caly_kontener THEN 'cały kontener'
+                    WHEN f.firma IS NOT NULL THEN m.name || ' – ' || COALESCE(
+                         (SELECT fi.name FROM {settings.TABLE_FIRMY} fi WHERE LOWER(fi.slug) = f.firma LIMIT 1), UPPER(f.firma))
+                    ELSE m.name END AS producent
           FROM {P} p
           LEFT JOIN {F} f ON f.id = p.folder_id
           LEFT JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id AND f.rodzaj = 'kontener'

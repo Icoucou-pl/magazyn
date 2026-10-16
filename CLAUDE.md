@@ -33,7 +33,7 @@ Zmiany zawsze sprawdzone testami, zanim trafią na `main`.
   („Pliki – podgląd”) i `editFiles` („Pliki – edycja”, na wierzchu podglądu), w `ROLE_PERMS` tylko dla ADMIN; superadmin zawsze
   (`can_view_files` / `can_edit_files`, `require_pliki` / `require_pliki_edycja`). „Usuń na zawsze”, kosz i przenosiny
   starych załączników — tylko superadmin (`require_pliki_super`). Zakres firm usera blokuje foldery serwerowo (`_zabronione`). Foldery „Producenci / producent / kontener” zakłada sama aplikacja (skonsolidowany =
-  folder u każdego producenta), reszta ręcznie. Pliki w Supabase Storage (bucket `magazyn-pliki`,
+  folder u każdego producenta; producent z partiami kilku firm = folder na firmę, „KONS – AMH”, kolumna `firma`), reszta ręcznie. Pliki w Supabase Storage (bucket `magazyn-pliki`,
   `services/pliki_storage.py`, konto techniczne `PLIKI_STORAGE_*`), w bazie tylko opis. Plik z karty kontenera
   ląduje w folderze kontenera z ptaszkiem „pokaż na kontenerze”; plik „cały kontener” (`caly_kontener`, np. rozliczenie
   Lenmara) leży u jednego producenta, a widać go w folderze kontenera u każdego (podfoldery osobno); kosz 30 dni. Stare załączniki (BYTEA

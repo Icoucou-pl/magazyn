@@ -1054,7 +1054,7 @@ def _guess_type(filename: str) -> str:
 
 @router.post("/containers/{cid}/attachments", response_model=AttachmentOut, status_code=201)
 async def add_attachment(cid: int, file: UploadFile = File(...), manufacturer_id: Optional[int] = Form(None),
-                         caly_kontener: bool = Form(False),
+                         caly_kontener: bool = Form(False), firma_id: Optional[int] = Form(None),
                          user: CurrentUser = Depends(require_edit_containers)):
     """Wgrywa plik. Gdy działa Supabase Storage — do zakładki „Pliki”, folder kontenera u producenta
     `manufacturer_id` (kontener skonsolidowany: wybór na karcie), z ptaszkiem „pokaż na kontenerze”.
@@ -1062,7 +1062,7 @@ async def add_attachment(cid: int, file: UploadFile = File(...), manufacturer_id
     chwilowych błędach poolера Supabase (działa za 1. razem)."""
     from services import pliki_storage
     if pliki_storage.enabled():
-        return await _attachment_do_plikow(cid, file, manufacturer_id, user, caly_kontener)
+        return await _attachment_do_plikow(cid, file, manufacturer_id, user, caly_kontener, firma_id)
     data = await file.read()
     if not data:
         raise HTTPException(400, "Pusty plik")
@@ -1094,7 +1094,7 @@ async def add_attachment(cid: int, file: UploadFile = File(...), manufacturer_id
 
 
 async def _attachment_do_plikow(cid: int, file: UploadFile, manufacturer_id: Optional[int], user: CurrentUser,
-                                caly: bool = False) -> AttachmentOut:
+                                caly: bool = False, firma_id: Optional[int] = None) -> AttachmentOut:
     """caly = „Cały kontener (wszyscy producenci)”: plik leży u pierwszego producenta, a pokazuje się
     w folderze kontenera u każdego (np. rozliczenie Lenmara). Na karcie kontenera — raz."""
     from routers.pliki import _czytaj, zapisz_plik
@@ -1104,13 +1104,22 @@ async def _attachment_do_plikow(cid: int, file: UploadFile, manufacturer_id: Opt
     async with SessionLocal() as db:
         if not (await db.execute(text(f"SELECT 1 FROM {settings.TABLE_CONTAINERS} WHERE id = :c"), {"c": cid})).first():
             raise HTTPException(404, "Nie ma takiego kontenera")
-        fid = await pliki_svc.folder_kontenera(db, cid, None if caly else manufacturer_id)
+        # firma_id: przy producencie z partiami kilku firm (Fosoto — AMH / Fosoto — Veluxa).
+        # 0 = produkty bez firmy, czyli AMH (NULL = AMH w całej aplikacji).
+        firma = None
+        if firma_id is not None and not caly:
+            firma = "amh" if firma_id == 0 else (await db.execute(text(
+                f"SELECT LOWER(slug) FROM {settings.TABLE_FIRMY} WHERE id = :id"), {"id": firma_id})).scalar()
+        fid = await pliki_svc.folder_kontenera(db, cid, None if caly else manufacturer_id, firma)
         p = await zapisz_plik(db, data=data, nazwa=file.filename or "plik", content_type=file.content_type,
                               folder_id=fid, pokaz=True, z_kontenera=True, kto=user.email, caly=caly)
         await db.commit()
         producent = (await db.execute(text(f"""
-            SELECT m.name FROM {settings.TABLE_PLIKI_FOLDERY} f
-              JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id WHERE f.id = :f
+            SELECT m.name || CASE WHEN f.firma IS NOT NULL THEN ' – ' || COALESCE(fi.name, UPPER(f.firma)) ELSE '' END
+              FROM {settings.TABLE_PLIKI_FOLDERY} f
+              JOIN {settings.TABLE_MANUFACTURERS} m ON m.id = f.manufacturer_id
+              LEFT JOIN {settings.TABLE_FIRMY} fi ON LOWER(fi.slug) = f.firma
+             WHERE f.id = :f
         """), {"f": fid})).scalar()
         if caly:
             producent = "cały kontener"
