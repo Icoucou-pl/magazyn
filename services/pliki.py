@@ -117,22 +117,31 @@ _PARY_SQL = f"""
                         WHERE l.container_id = c.id AND l.manufacturer_id IS NOT NULL) {{c_where}}
 """
 
-# Nazwa folderu kontenera liczona w bazie — to samo co audit_opisy.etykieta_kontenera
-# (prawdziwy nr, inaczej „FV: …”, inaczej „#id”), żeby nazwy brać jednym zapytaniem.
-# {c_where} zawęża do jednego kontenera przy wgrywaniu z karty.
+# Nazwa folderu kontenera liczona w bazie, dla każdej pary (kontener, producent) z CTE `zrodlo`:
+#   1. prawdziwy nr kontenera (bez roboczego „Draft-…”) — ten sam u każdego producenta,
+#   2. inaczej „FV: …” — w skonsolidowanym FV partii TEGO producenta (u Dongguan jego FV,
+#      nie FV pierwszej partii), w zwykłym FV kontenera,
+#   3. inaczej „#id”.
 _ETYKIETY_CTE = f"""
     etykiety AS (
-        SELECT x.id,
+        SELECT x.container_id, x.manufacturer_id,
                CASE WHEN x.nr <> '' AND LOWER(x.nr) NOT LIKE 'draft-%' THEN x.nr
                     WHEN x.fv <> '' THEN 'FV: ' || x.fv
-                    ELSE '#' || x.id END AS nazwa
+                    ELSE '#' || x.container_id END AS nazwa
           FROM (
-            SELECT c.id, TRIM(COALESCE(c.container_number, '')) AS nr,
-                   TRIM(COALESCE(NULLIF(TRIM(c.order_number), ''),
+            SELECT z.container_id, z.manufacturer_id, TRIM(COALESCE(c.container_number, '')) AS nr,
+                   TRIM(COALESCE(
+                        CASE WHEN (SELECT COUNT(DISTINCT l.manufacturer_id) FROM {settings.TABLE_CONTAINER_LOTS} l
+                                    WHERE l.container_id = c.id) > 1
+                             THEN (SELECT NULLIF(TRIM(l.order_number), '') FROM {settings.TABLE_CONTAINER_LOTS} l
+                                    WHERE l.container_id = c.id AND l.manufacturer_id = z.manufacturer_id
+                                      AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
+                                    ORDER BY l.position, l.id LIMIT 1) END,
+                        NULLIF(TRIM(c.order_number), ''),
                         (SELECT l.order_number FROM {settings.TABLE_CONTAINER_LOTS} l
                           WHERE l.container_id = c.id AND NULLIF(TRIM(l.order_number), '') IS NOT NULL
                           ORDER BY l.position, l.id LIMIT 1), '')) AS fv
-              FROM {settings.TABLE_CONTAINERS} c WHERE TRUE {{c_where}}
+              FROM zrodlo z JOIN {settings.TABLE_CONTAINERS} c ON c.id = z.container_id
           ) x
     )
 """
@@ -191,24 +200,28 @@ async def synchronizuj_foldery(db: AsyncSession, *, wymus: bool = False, cid: Op
     if cid is not None:
         lot_where, c_where, params["cid"] = "AND l.container_id = :cid", "AND c.id = :cid", cid
     pary = _PARY_SQL.format(lot_where=lot_where, c_where=c_where)
-    c_where_e = "AND c.id = :cid" if cid is not None else ""
+    zrodlo_where = "AND container_id = :cid" if cid is not None else ""
 
     # Wszystko zbiorczo, po jednym zapytaniu — pierwsza wersja szła pętlą po kontenerach
     # (setki wymian z Supabase przy każdym wejściu w Pliki, kilka sekund czekania).
     await db.execute(text(f"""
-        WITH pary AS ({pary}), {_ETYKIETY_CTE.format(c_where=c_where_e)}
+        WITH pary AS ({pary}), zrodlo AS (SELECT container_id, manufacturer_id FROM pary), {_ETYKIETY_CTE}
         INSERT INTO {F} (parent_id, nazwa, rodzaj, manufacturer_id, container_id)
         SELECT COALESCE(pf.id, :root), e.nazwa, 'kontener', p.manufacturer_id, p.container_id
           FROM pary p(container_id, manufacturer_id)
-          JOIN etykiety e ON e.id = p.container_id
+          JOIN etykiety e ON e.container_id = p.container_id AND e.manufacturer_id IS NOT DISTINCT FROM p.manufacturer_id
           LEFT JOIN {F} pf ON pf.rodzaj = 'producent' AND pf.manufacturer_id = p.manufacturer_id
         ON CONFLICT (container_id, (COALESCE(manufacturer_id, 0))) WHERE rodzaj = 'kontener' DO NOTHING
     """), params)
-    # Nazwy folderów kontenerów nadążają za numerem kontenera (Draft → prawdziwy nr).
+    # Nazwy folderów kontenerów nadążają za numerem kontenera (Draft → prawdziwy nr) i FV partii.
     await db.execute(text(f"""
-        WITH {_ETYKIETY_CTE.format(c_where=c_where_e)}
+        WITH zrodlo AS (
+            SELECT DISTINCT container_id, manufacturer_id FROM {F}
+             WHERE rodzaj = 'kontener' AND container_id IS NOT NULL {zrodlo_where}
+        ), {_ETYKIETY_CTE}
         UPDATE {F} f SET nazwa = e.nazwa FROM etykiety e
-         WHERE f.rodzaj = 'kontener' AND f.container_id = e.id AND f.nazwa IS DISTINCT FROM e.nazwa
+         WHERE f.rodzaj = 'kontener' AND f.container_id = e.container_id
+           AND f.manufacturer_id IS NOT DISTINCT FROM e.manufacturer_id AND f.nazwa IS DISTINCT FROM e.nazwa
     """), params)
 
     if cid is None:
