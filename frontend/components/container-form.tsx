@@ -543,14 +543,44 @@ export default function ContainerFormModal({
   // Wybór pokazujemy tylko w skonsolidowanym z partiami od różnych producentów.
   // Przy nazwie producenta — czyj towar wiezie (z firm SKU jego partii; bez firmy = AMH),
   // żeby w skonsolidowanym od razu było widać, do którego folderu idzie np. faktura Veluxy.
+  // Opcje „czyj plik?”: producent, a gdy ma w kontenerze partie kilku firm (Fosoto osobno dla AMH
+  // i dla Veluxy) — producent + firma, bo w Plikach każda taka partia ma własny folder. Firma partii
+  // = firma większości jej towaru (bez firmy = AMH), tak samo liczy backend (services/pliki.py).
   const attMfrs = useMemo(() => {
-    const ids = isConsolidated ? lots.map((l) => l.manufacturer_id) : [manufacturerId];
-    return [...new Set(ids.filter(Boolean))].map((id) => {
-      const firmy = new Set(items
-        .filter((it) => it.sku && (!isConsolidated || lots[Number(it.lotRef)]?.manufacturer_id === id))
-        .map((it) => productBySku.get(it.sku)?.firma_name || "AMH"));
-      const name = manufacturers.find((m) => String(m.id) === id)?.name || `#${id}`;
-      return { id, name, label: firmy.size ? `${name} — ${[...firmy].join(", ")}` : name };
+    type Opcja = { id: string; mfr: string; firmaId?: number; label: string };
+    const mfrName = (id: string) => manufacturers.find((m) => String(m.id) === id)?.name || `#${id}`;
+    const firmaOf = (sku: string) => {
+      const p = productBySku.get(sku);
+      return { id: p?.firma_id ?? 0, name: p?.firma_name || "AMH" };
+    };
+    if (!isConsolidated) {
+      if (!manufacturerId) return [] as Opcja[];
+      const firmy = new Set(items.filter((it) => it.sku).map((it) => firmaOf(it.sku).name));
+      const name = mfrName(manufacturerId);
+      return [{ id: manufacturerId, mfr: manufacturerId, label: firmy.size ? `${name} — ${[...firmy].join(", ")}` : name }];
+    }
+    const kolejnosc: string[] = [];
+    const firmyProducenta = new Map<string, Map<number, string>>();
+    lots.forEach((l, i) => {
+      if (!l.manufacturer_id) return;
+      if (!firmyProducenta.has(l.manufacturer_id)) { firmyProducenta.set(l.manufacturer_id, new Map()); kolejnosc.push(l.manufacturer_id); }
+      const ile = new Map<number, { name: string; q: number }>();
+      items.filter((it) => it.sku && it.lotRef === String(i)).forEach((it) => {
+        const f = firmaOf(it.sku);
+        const x = ile.get(f.id) || { name: f.name, q: 0 };
+        x.q += parseInt(it.quantity, 10) || 0;
+        ile.set(f.id, x);
+      });
+      const top = [...ile.entries()].sort((a, b) => b[1].q - a[1].q)[0];
+      if (top) firmyProducenta.get(l.manufacturer_id)!.set(top[0], top[1].name);
+    });
+    return kolejnosc.flatMap((mfr): Opcja[] => {
+      const firmy = firmyProducenta.get(mfr)!;
+      const name = mfrName(mfr);
+      if (firmy.size > 1) {
+        return [...firmy.entries()].map(([fid, fname]) => ({ id: `${mfr}|${fid}`, mfr, firmaId: fid, label: `${name} — ${fname}` }));
+      }
+      return [{ id: mfr, mfr, label: firmy.size ? `${name} — ${[...firmy.values()].join(", ")}` : name }];
     });
   }, [isConsolidated, lots, manufacturerId, manufacturers, items, productBySku]);
 
@@ -667,15 +697,18 @@ export default function ContainerFormModal({
         const toAdd = attachments.filter((a) => a._isNew && a._file);
         const keptKeys = new Set(attachments.filter((a) => !a._isNew).map(attKey));
         const toDelete = (initial?.attachments || []).filter((a) => !keptKeys.has(attKey(a)));
-        // Producent pliku tylko, gdy wciąż jest w kontenerze (partię mogli usunąć po dodaniu pliku).
-        const mfrOk = new Set(attMfrs.map((m) => m.id));
         await Promise.all([
           ...toAdd.map((a) => {
             const fd = new FormData();
             fd.append("file", a._file as File);
             // „Cały kontener”: jeden plik, widoczny w folderze kontenera u każdego producenta (np. Lenmar).
+            // Producent pliku tylko, gdy wciąż jest w kontenerze (partię mogli usunąć po dodaniu pliku).
+            const opcja = attMfrs.find((m) => m.id === a._mfr);
             if (a._mfr === CALY && attMfrs.length > 1) fd.append("caly_kontener", "true");
-            else if (a._mfr && mfrOk.has(a._mfr)) fd.append("manufacturer_id", a._mfr);
+            else if (opcja) {
+              fd.append("manufacturer_id", opcja.mfr);
+              if (opcja.firmaId !== undefined) fd.append("firma_id", String(opcja.firmaId));
+            }
             return api.post(`/containers/${cid}/attachments`, fd);
           }),
           // Plik z Plików: wgrany z karty → do kosza w Plikach, wgrany tam → znika tylko z karty.
